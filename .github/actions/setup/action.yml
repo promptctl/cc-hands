@@ -1,7 +1,8 @@
 # [LAW:one-source-of-truth] the environment test.yml gates on and release.yml builds in: Go for fritter, uv on the
-# Python floor requires-python names, and Homebrew's PortAudio, which PyAudio builds against on a Mac.
+# Python floor requires-python names, Homebrew's PortAudio, which PyAudio builds against on a Mac, and an Xcode whose
+# Swift has swift-testing, which the app's logic library is tested with.
 name: setup
-description: Go, uv on Python 3.12, and PortAudio, for a checkout that has its history and tags
+description: Go, uv on Python 3.12, PortAudio, and Xcode 16.2, for a checkout that has its history and tags
 runs:
   using: composite
   steps:
@@ -18,3 +19,7 @@ runs:
     - name: PortAudio
       shell: bash
       run: brew install portaudio
+    # The runner's default Xcode, 15.4, has no swift-testing; 16.2 is the newest the macos-14 image installs.
+    - name: Xcode
+      shell: bash
+      run: sudo xcode-select -s /Applications/Xcode_16.2.app

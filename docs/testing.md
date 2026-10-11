@@ -56,7 +56,8 @@ is pure. A module that reaches one party, such as `Quartz`, `pyaudio`, or `aiort
 imported only by that party's adapter. A route several parties share, such as
 `subprocess`, `time.monotonic`, or `asyncio.sleep`, may be used only inside adapters. The
 test checks calls as well as imports, so a direct read of the time is caught. The Swift
-side has the same test over `app/`, for frameworks such as `AVFoundation`. Each test
+side has the same test over `app/`, for frameworks such as `AVFoundation`
+(`tests/test_app_boundary.py`). Each test
 arrives with the first interface in its language, and each later interface adds its
 modules to it.
 
@@ -76,7 +77,7 @@ modules to it.
 | `Notifications` | macOS notifications | `daemon/notify.py` runs `osascript` through `child.run`. |
 | `Telemetry` | The OpenTelemetry collector that wide events are exported to | `sessions/otlp.py` posts over HTTP, and tests run a stand-in collector. |
 | `Polar` | License key validation | The app's Info.plist URL, pointed at a local stand-in server. |
-| `Privacy` (Swift) | A permission's status, request, and reset | `HANDS_APP_PERMISSIONS` replaces the whole `hands --permissions` process. The real side's decisions are never tested. |
+| `Privacy` (Swift) | A permission's status, request, and reset | Built: `app/privacy.swift` is the adapter, and what `hands --permissions` does with each access is in `app/HandsLogic`, tested against `FakePrivacy`. The setup window still runs the whole `hands --permissions` process, which `HANDS_APP_PERMISSIONS` replaces in tests. |
 | `Shell` and `Daemon` (Swift) | The login shell's environment, and starting, stopping, and the exit of `hands run` | `HANDS_APP_SHELL`, with a stand-in `hands` script on the stand-in shell's `PATH`. |
 | `Installer` | Homebrew, uv, the release lookup, and the steps `install.sh` runs | Stand-in `brew`, `curl`, `uv`, `sudo`, and `hands` scripts on `PATH`. The stand-in `hands` and the real subcommands agree only by convention. |
 

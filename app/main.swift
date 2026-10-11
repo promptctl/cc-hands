@@ -4,10 +4,17 @@
 // when the daemon ends in failure. It starts hands only for a person whose license key Polar, the merchant of record
 // hands is sold through, says is live.
 import AppKit
+import HandsLogic
 
-// `hands --permissions`: the questions the app asks macOS about its permissions, each in a new process (permissions.swift).
+// `hands --permissions`: the questions the app asks macOS about its permissions, each in a new process (HandsLogic).
 if CommandLine.arguments.dropFirst().first == "--permissions" {
-    exit(permissionsCommand(Array(CommandLine.arguments.dropFirst(2))))
+    do {
+        print(try permissions(Array(CommandLine.arguments.dropFirst(2)), privacy: Mac(), asker: ParentApp()), terminator: "")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("hands --permissions: \(error)\n".utf8))
+        exit(1)
+    }
 }
 
 // Opened from Finder the app runs on the user's login shell, logs to ~/Library/Logs, and keeps the license key in
