@@ -1,0 +1,14 @@
+{
+  "version": "2.1.299",
+  "source": "a config directory given the marketplace hands writes in its home, with no plugin installed",
+  "argv": [
+    "plugin",
+    "install",
+    "--scope",
+    "user",
+    "hands@cc-hands"
+  ],
+  "exit": 0,
+  "stdout": "Installing plugin \"hands@cc-hands\"...\u2714 Successfully installed plugin: hands@cc-hands (scope: user)\n",
+  "stderr": ""
+}

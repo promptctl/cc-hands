@@ -1,238 +1,171 @@
 """`hands install-plugin`: hands writes its plugin into a marketplace in its home and installs it from there, asking
 nothing, on a first install, over an older one, and over a marketplace of its name added from elsewhere.
 
-`claude` is a stand-in that records each call and keeps its marketplaces and plugins in files, as Claude Code does: a
-marketplace added from a directory, and a plugin installed or updated to the version that directory's manifest names.
-Its stdin is never a terminal, and it reads none.
+Claude Code is the fake built from recordings (claudecode_fake): a marketplace added from a directory, and a plugin
+installed or updated to the version that directory's manifest names, as a real one does.
 """
 
 import json
 import os
-import shutil
-import subprocess
+import stat
 import sys
-import tempfile
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from claudecode_fake import Config, Fake, Held, config_dir
 from hands.daemon import cli
+from hands.sessions import claudecode
 from hands.sessions.audit import segment
+from hands.sessions.claudecode import Installed, Instance, Unreachable
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.marketplace import plugin
 
-CLAUDE = r"""#!/bin/bash
-echo "claude $*" >>"$ROOT/calls"
-[ ! -t 0 ] || { echo "claude was given a terminal" >&2; exit 9; }
-json() { "$PYTHON" -c "import json, sys; print($1)" "${@:2}"; }
-# The version the marketplace added from a directory names for its plugin, as an install or update records it.
-offered() {
-  local root
-  root=$(json 'json.load(open(sys.argv[1]))[0]["path"]' "$ROOT/marketplaces")
-  json 'json.load(open(sys.argv[1] + "/" + json.load(open(sys.argv[1] + "/.claude-plugin/marketplace.json"))["plugins"][0]["source"] + "/.claude-plugin/plugin.json"))["version"]' "$root"
-}
-listed() { printf '[{"id": "%s", "scope": "user", "enabled": %s, "version": "%s"}]' "$PLUGIN_ID" "$1" "$2" >"$ROOT/listed"; }
-case "$1 $2 $3" in
-  "plugin list --json")
-    [ ! -e "$ROOT/list-fails" ] || { echo "cannot list" >&2; exit 3; }
-    cat "$ROOT/listed" 2>/dev/null || echo "[]" ;;
-  "plugin marketplace list") cat "$ROOT/marketplaces" 2>/dev/null || echo "[]" ;;
-  "plugin marketplace add")
-    [ ! -e "$ROOT/add-fails" ] || exit 4
-    [ -f "$4/.claude-plugin/marketplace.json" ] || { echo "no marketplace at $4" >&2; exit 5; }
-    printf '[{"name": "cc-hands", "source": "directory", "path": "%s"}]' "$4" >"$ROOT/marketplaces" ;;
-  # Removing a marketplace uninstalls what was installed from it.
-  "plugin marketplace remove") echo "[]" >"$ROOT/marketplaces"; rm -f "$ROOT/listed" ;;
-  "plugin marketplace update") ;;
-  # Over an install, enabled or not, an install enables it and changes no version.
-  "plugin install --scope")
-    if [ -e "$ROOT/listed" ]; then
-      listed true "$(json 'json.load(open(sys.argv[1]))[0]["version"]' "$ROOT/listed")"
-    else
-      listed true "$(offered)"
-    fi ;;
-  "plugin update --scope")
-    [ ! -e "$ROOT/update-hangs" ] || exec sleep 30
-    # An update that exits 0 and moves nothing, as over a manifest Claude Code kept from before.
-    [ ! -e "$ROOT/update-stale" ] || { listed true stale; exit 0; }
-    listed true "$(offered)" ;;
-  *) echo "unexpected: $*" >&2; exit 8 ;;
-esac
-"""
 VERSION = plugin(sys.executable).version
-INSTALLED = [f"claude plugin install --scope user {PLUGIN_ID}", f"claude plugin update --scope user {PLUGIN_ID}", "claude plugin list --json"]
+INSTALLED = [f"plugin install {PLUGIN_ID}", f"plugin update {PLUGIN_ID}", "plugin list"]
 
 
 @pytest.fixture
-def root() -> Iterator[Path]:
-    root = Path(tempfile.mkdtemp(prefix="plug-", dir="/tmp")).resolve()
-    stand_in = root / "bin" / "claude"
-    stand_in.parent.mkdir()
-    stand_in.write_text(CLAUDE)
-    stand_in.chmod(0o755)
-    (root / "person").mkdir()
-    yield root
-    shutil.rmtree(root)
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Home:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path.resolve() / "config"))
+    return Home(tmp_path.resolve() / "home")
 
 
-def person(root: Path) -> dict[str, str]:
-    """The person's own environment: no CLAUDE_CONFIG_DIR, and the stand-in first on PATH."""
-    inherited = {name: value for name, value in os.environ.items() if name != "CLAUDE_CONFIG_DIR"}
-    return {
-        **inherited,
-        "PATH": f"{root / 'bin'}:/usr/bin:/bin",
-        "HOME": str(root / "person"),
-        "ROOT": str(root),
-        "PYTHON": sys.executable,
-        "PLUGIN_ID": PLUGIN_ID,
-        "HANDS_HOME": str(root / "home"),
-    }
+def install(home: Home, fake: Fake) -> int:
+    return cli.install_plugin(fake, home, cli.audit_log_of(home).record)
 
 
-def install(root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
-    given = {**person(root), **environment}
-    return subprocess.run([sys.executable, "-m", "hands.daemon", "install-plugin"], env=given, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+def person(fake: Fake) -> Config:
+    return fake.configs.setdefault(config_dir(os.environ), Config())
 
 
-def events(root: Path) -> list[dict[str, Any]]:
-    lines = (json.loads(line) for line in segment(Home(root / "home").audit, 0).read_text().splitlines())
+def events(home: Home) -> list[dict[str, Any]]:
+    lines = (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines())
     return [line for line in lines if line.get("event") == "plugin.install"]
 
 
-def calls(root: Path) -> list[str]:
-    return (root / "calls").read_text().splitlines()
+def asked(fake: Fake) -> list[str]:
+    return [line for line in fake.transcript if not line.startswith("shown: ")]
 
 
-def listed(root: Path) -> list[dict[str, Any]]:
-    return json.loads((root / "listed").read_text())
+def rendered(home: Home) -> dict[str, object]:
+    return {"config": os.environ["CLAUDE_CONFIG_DIR"], "plugin": str(home.plugins / VERSION), "version": VERSION}
 
 
-def rendered(root: Path) -> dict[str, object]:
-    return {"config": str(root / "person" / ".claude"), "plugin": str(Home(root / "home").plugins / VERSION), "version": VERSION}
-
-
-def added_from(root: Path, source: dict[str, str]) -> None:
-    (root / "marketplaces").write_text(json.dumps([{"name": "cc-hands", **source}]))
-
-
-def test_a_first_install_adds_the_home_s_marketplace_and_installs_this_hands_plugin_asking_nothing(root: Path) -> None:
-    ran = install(root)
-    assert ran.returncode == 0, ran.stderr
-    assert f"the plugin {PLUGIN_ID} {VERSION} is installed and enabled for every session" in ran.stdout
-    plugins = Home(root / "home").plugins
-    assert calls(root) == ["claude plugin marketplace list --json", f"claude plugin marketplace add {plugins}", *INSTALLED]
-    assert listed(root) == [{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": VERSION}]
+def test_a_first_install_adds_the_home_s_marketplace_and_installs_this_hands_plugin_asking_nothing(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake()
+    assert install(home, fake) == 0
+    assert f"the plugin {PLUGIN_ID} {VERSION} is installed and enabled for every session" in capsys.readouterr().out
+    assert asked(fake) == ["plugin marketplace list", f"plugin marketplace add {home.plugins}", *INSTALLED]
+    assert person(fake) == Config(plugin=Held(VERSION), marketplace=home.plugins)
     # [LAW:nothing-unseen] the install's event: where, what it rendered, how it found the marketplace, each exit, and after.
-    [event] = events(root)
-    facts = {**rendered(root), "written": True, "marketplace": "missing", "marketplace_add_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
+    [event] = events(home)
+    facts = {**rendered(home), "written": True, "marketplace": "missing", "marketplace_add_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
     assert (event["outcome"], event["facts"]) == ("ok", facts)
 
 
-def test_an_install_over_another_hands_plugin_moves_it_onto_this_one(root: Path) -> None:
-    added_from(root, {"source": "directory", "path": str(Home(root / "home").plugins)})
-    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": "0123456789abcdef"}]))
-    ran = install(root)
-    assert ran.returncode == 0, ran.stderr
-    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace update cc-hands", *INSTALLED]
-    assert listed(root)[0]["version"] == VERSION
-    [event] = events(root)
-    assert event["facts"] == {**rendered(root), "written": True, "marketplace": "ready", "marketplace_update_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
+def test_an_install_over_another_hands_plugin_moves_it_onto_this_one(home: Home) -> None:
+    fake = Fake()
+    person(fake).marketplace, person(fake).plugin = home.plugins, Held("0123456789abcdef")
+    assert install(home, fake) == 0
+    assert asked(fake) == ["plugin marketplace list", "plugin marketplace update cc-hands", *INSTALLED]
+    assert person(fake).plugin == Held(VERSION)
+    [event] = events(home)
+    assert event["facts"] == {**rendered(home), "written": True, "marketplace": "ready", "marketplace_update_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
 
 
-def test_a_disabled_plugin_is_enabled(root: Path) -> None:
-    added_from(root, {"source": "directory", "path": str(Home(root / "home").plugins)})
-    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": False, "version": VERSION}]))
-    assert install(root).returncode == 0
-    assert listed(root) == [{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": VERSION}]
+def test_a_disabled_plugin_is_enabled(home: Home) -> None:
+    fake = Fake()
+    person(fake).marketplace, person(fake).plugin = home.plugins, Held(VERSION, enabled=False)
+    assert install(home, fake) == 0
+    assert person(fake).plugin == Held(VERSION)
 
 
-def test_a_marketplace_of_its_name_added_from_elsewhere_is_replaced_by_the_home_s(root: Path) -> None:
+def test_a_marketplace_of_its_name_added_from_elsewhere_is_replaced_by_the_home_s(home: Home) -> None:
     # As hands installed its plugin before: from GitHub, through a command the person had to accept.
-    added_from(root, {"source": "github", "repo": "promptctl/cc-hands"})
-    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": "unknown"}]))
-    ran = install(root)
-    assert ran.returncode == 0, ran.stderr
-    plugins = Home(root / "home").plugins
-    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace remove cc-hands", f"claude plugin marketplace add {plugins}", *INSTALLED]
-    assert listed(root)[0]["version"] == VERSION
-    [event] = events(root)
+    fake = Fake()
+    person(fake).marketplace, person(fake).plugin = "github", Held("f24447053e9c")
+    assert install(home, fake) == 0
+    assert asked(fake) == ["plugin marketplace list", "plugin marketplace remove cc-hands", f"plugin marketplace add {home.plugins}", *INSTALLED]
+    assert person(fake) == Config(plugin=Held(VERSION), marketplace=home.plugins)
+    [event] = events(home)
     replaced = {"marketplace": "elsewhere", "marketplace_remove_exit": 0, "marketplace_add_exit": 0}
-    assert event["facts"] == {**rendered(root), "written": True, **replaced, "install_exit": 0, "update_exit": 0, "after": "ready"}
+    assert event["facts"] == {**rendered(home), "written": True, **replaced, "install_exit": 0, "update_exit": 0, "after": "ready"}
 
 
-def test_a_second_install_writes_nothing_new_and_runs_the_same_commands(root: Path) -> None:
-    assert install(root).returncode == 0
-    (root / "calls").unlink()
-    again = install(root)
-    assert again.returncode == 0, again.stderr
-    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace update cc-hands", *INSTALLED]
-    assert events(root)[-1]["facts"]["written"] is False
+def test_a_second_install_writes_nothing_new_and_runs_the_same_commands(home: Home) -> None:
+    fake = Fake()
+    assert install(home, fake) == 0
+    fake.transcript.clear()
+    assert install(home, fake) == 0
+    assert asked(fake) == ["plugin marketplace list", "plugin marketplace update cc-hands", *INSTALLED]
+    assert events(home)[-1]["facts"]["written"] is False
 
 
-def test_a_command_that_fails_stops_the_install_naming_it(root: Path) -> None:
-    (root / "add-fails").touch()
-    ran = install(root)
-    assert ran.returncode == 1
-    plugins = Home(root / "home").plugins
-    assert f"hands install-plugin: `claude plugin marketplace add {plugins}` failed (4)" in ran.stderr
-    assert not (root / "listed").exists()
-    [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {**rendered(root), "written": True, "marketplace": "missing", "marketplace_add_exit": 4})
+def test_a_command_that_fails_stops_the_install_naming_it(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(refuses_marketplace=True)
+    assert install(home, fake) == 1
+    assert f"hands install-plugin: `claude plugin marketplace add {home.plugins}` failed (1)" in capsys.readouterr().err
+    assert person(fake).plugin is None
+    [event] = events(home)
+    assert (event["outcome"], event["facts"]) == ("failed", {**rendered(home), "written": True, "marketplace": "missing", "marketplace_add_exit": 1})
 
 
-def test_a_command_that_hangs_is_stopped_and_said(root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    # In this process, so the command's limit can be a second, not the minutes a real one is given.
-    (root / "update-hangs").touch()
-    # setenv, not a new os.environ: the `claude` this runs inherits the process's own environment.
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    for name, value in person(root).items():
-        monkeypatch.setenv(name, value)
-    monkeypatch.setattr(cli, "PLUGIN_COMMAND_TIMEOUT_SECONDS", 1.0)
-    assert cli.main(["install-plugin"]) == 1
-    assert f"hands install-plugin: `claude plugin update --scope user {PLUGIN_ID}` did not finish in 1s" in capsys.readouterr().err
-    [event] = events(root)
-    assert (event["outcome"], event["facts"]["update_exit"]) == ("failed", "timeout")
+def test_a_command_that_cannot_be_run_stops_the_install_saying_why(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(unrunnable={f"plugin update {PLUGIN_ID}"})
+    assert install(home, fake) == 1
+    assert f"hands install-plugin: `claude plugin update {PLUGIN_ID}` could not be run" in capsys.readouterr().err
+    [event] = events(home)
+    assert (event["outcome"], event["facts"]["update_exit"]) == ("failed", "unreachable")
 
 
-def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_back_here(root: Path) -> None:
-    (root / "update-stale").touch()
-    ran = install(root)
-    assert ran.returncode == 1
-    assert "is stale, not this hands'" in ran.stderr and "exited 0 without making it so" in ran.stderr
-    assert "`hands install-plugin`" not in ran.stderr
+def test_a_command_that_hangs_is_stopped_and_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The real adapter, so the command's limit can be a second, not the minutes a real one is given.
+    hangs = tmp_path / "claude"
+    hangs.write_text("#!/bin/sh\nexec sleep 30\n")
+    hangs.chmod(hangs.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(claudecode, "PLUGIN_COMMAND_SECONDS", 1.0)
+    with pytest.raises(Unreachable, match=f"`claude plugin update --scope user {PLUGIN_ID}` did not finish in 1s"):
+        Installed().update_plugin(Instance(hangs, {}), PLUGIN_ID)
 
 
-def test_an_install_run_from_a_removed_directory_installs_nothing_and_says_why(root: Path) -> None:
-    gone = root / "gone"
+def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_back_here(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(stale=True)
+    person(fake).marketplace, person(fake).plugin = home.plugins, Held("0123456789abcdef")
+    assert install(home, fake) == 1
+    said = capsys.readouterr().err
+    assert "is 0123456789abcdef, not this hands'" in said and "exited 0 without making it so" in said
+    assert "`hands install-plugin`" not in said
+
+
+def test_an_install_run_from_a_removed_directory_installs_nothing_and_says_why(home: Home, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    gone = tmp_path / "gone"
     gone.mkdir()
-    ran = subprocess.run(
-        ["/bin/sh", "-c", 'cd "$1" && rmdir "$1" && exec "$2" -m hands.daemon install-plugin', "sh", str(gone), sys.executable],
-        env=person(root), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
-    )
-    assert ran.returncode == 2
-    assert "hands install-plugin: cannot tell which Claude Code config this runs under" in ran.stderr
-    assert not (root / "calls").exists()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    fake = Fake()
+    assert install(home, fake) == 2
+    assert "hands install-plugin: cannot tell which Claude Code config this runs under" in capsys.readouterr().err
+    assert fake.transcript == []
 
 
-def test_a_claude_that_cannot_list_its_plugins_is_said_and_fails(root: Path) -> None:
-    (root / "list-fails").touch()
-    ran = install(root)
-    assert ran.returncode == 1
-    assert "`claude plugin list` failed (3)" in ran.stderr and "cannot list" in ran.stderr
-    [event] = events(root)
+def test_a_claude_that_cannot_list_its_plugins_is_said_and_fails(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
+    fake = Fake(unrunnable={"plugin list"})
+    assert install(home, fake) == 1
+    assert "cannot ask `claude plugin list`" in capsys.readouterr().err
+    [event] = events(home)
     assert (event["outcome"], event["facts"]["after"]) == ("failed", "unknown")
 
 
-def test_an_install_under_the_brain_s_config_installs_nothing(root: Path) -> None:
+def test_an_install_under_the_brain_s_config_installs_nothing(home: Home, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # The brain's every command inherits its CLAUDE_CONFIG_DIR, which none of the person's sessions run under.
-    brain = Home(root / "home").brain
-    brain.mkdir(parents=True)
-    ran = install(root, CLAUDE_CONFIG_DIR=str(brain))
-    assert ran.returncode == 2
-    assert f"Claude Code here runs under the brain's config, {brain}" in ran.stderr
-    assert not (root / "calls").exists() and not Home(root / "home").plugins.exists()
-    [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {"config": str(brain)})
+    home.brain.mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home.brain))
+    fake = Fake()
+    assert install(home, fake) == 2
+    assert f"Claude Code here runs under the brain's config, {home.brain}" in capsys.readouterr().err
+    assert fake.transcript == [] and not home.plugins.exists()
+    [event] = events(home)
+    assert (event["outcome"], event["facts"]) == ("failed", {"config": str(home.brain)})

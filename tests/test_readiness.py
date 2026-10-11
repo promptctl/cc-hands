@@ -21,13 +21,15 @@ from pathlib import Path
 
 import pytest
 
+from claudecode_fake import Config, Fake, Held, config_dir
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
-from hands.daemon.cli import main
+from hands.daemon.cli import command_line
 from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
 from hands.sessions import marketplace as plugins
+from hands.sessions.claudecode import Answer
 from hands.sessions.hookconfig import MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -65,18 +67,6 @@ def executable(path: Path, text: str) -> Path:
     return path
 
 
-def claude_listing(root: Path, plugins: object) -> str:
-    """A PATH whose `claude plugin list --json` prints plugins, and whose `claude auth status` says it is logged in unless
-    the file logged-out is beside it."""
-    executable(
-        root / "real" / "claude",
-        f"#!/bin/sh\nif [ \"$1 $2\" = 'auth status' ]; then\n"
-        f"  if [ -e \"$(dirname \"$0\")/logged-out\" ]; then echo '{{\"loggedIn\": false}}'; exit 1; fi\n"
-        f"  echo '{{\"loggedIn\": true}}'; exit 0\nfi\ncat <<'EOF'\n{json.dumps(plugins)}\nEOF\n",
-    )
-    return f"{root / 'real'}:/usr/bin:/bin"
-
-
 # The version of the plugin this hands renders, which `hands check` holds the installed one to.
 VERSION = plugins.plugin(sys.executable).version
 
@@ -85,92 +75,105 @@ def listed(id: str, enabled: bool, scope: str = "user", version: str = VERSION) 
     return {"id": id, "version": version, "scope": scope, "enabled": enabled}
 
 
+def plugged(fake: Fake, plugin: Held | None) -> Fake:
+    """`fake` with hands' plugin held as `plugin`, for the Claude Code a check runs here."""
+    fake.configs[config_dir(os.environ)] = Config(plugin=plugin)
+    return fake
+
+
+def plugin(fake: Fake) -> readiness.Finding:
+    return readiness.plugin(fake, "/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN)
+
+
 # The plugin
 
 
-def test_an_enabled_plugin_is_ready(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN)
+def test_an_enabled_plugin_is_ready() -> None:
+    found = plugin(plugged(Fake(), Held(VERSION)))
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
 
 
 def test_a_plugin_enabled_at_any_scope_is_ready() -> None:
-    assert isinstance(readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False), listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN), Ready)
+    assert isinstance(readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False), listed(PLUGIN_ID, True)]).encode(), VERSION, readiness.INSTALL_PLUGIN), Ready)
 
 
 def test_another_hands_plugin_enabled_is_missing_naming_both_versions() -> None:
-    found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, True, version="0123456789abcdef")]), VERSION, readiness.INSTALL_PLUGIN)
+    found = plugin(plugged(Fake(), Held("0123456789abcdef")))
     assert isinstance(found, Missing) and "0123456789abcdef" in found.said and VERSION in found.said and "`hands install-plugin`" in found.said
 
 
 def test_a_disabled_plugin_is_missing_and_says_how_to_install_it() -> None:
-    found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False)]), VERSION, readiness.INSTALL_PLUGIN)
-    assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
+    found = plugin(plugged(Fake(), Held(VERSION, enabled=False)))
+    assert isinstance(found, Missing) and "disabled" in found.said and "`hands install-plugin`" in found.said
 
 
-def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", True)]), VERSION, readiness.INSTALL_PLUGIN)
+def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it() -> None:
+    found = plugin(plugged(Fake(), None))
     assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_an_install_for_one_project_is_not_one_for_every_session() -> None:
     project = {**listed(PLUGIN_ID, True, "local"), "projectPath": "/code/cc-hands"}
-    found = readiness.plugin_listed(json.dumps([project]), VERSION, readiness.INSTALL_PLUGIN)
+    found = readiness.plugin_listed(json.dumps([project]).encode(), VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_another_plugin_listed_unreadably_says_nothing_of_hands() -> None:
-    assert isinstance(readiness.plugin_listed(json.dumps([{"broken": True}, listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN), Ready)
+    assert isinstance(readiness.plugin_listed(json.dumps([{"broken": True}, listed(PLUGIN_ID, True)]).encode(), VERSION, readiness.INSTALL_PLUGIN), Ready)
 
 
 @pytest.mark.parametrize(
-    "printed", ["not json", '{"plugins": []}', '[{"id": "hands@cc-hands", "scope": "user"}]'], ids=["text", "object", "no-enabled"]
+    "printed", [b"not json", b'{"plugins": []}', b'[{"id": "hands@cc-hands", "scope": "user"}]', b"\xff\xfe"], ids=["text", "object", "no-enabled", "not-text"]
 )
-def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> None:
+def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: bytes) -> None:
     assert isinstance(readiness.plugin_listed(printed, VERSION, readiness.INSTALL_PLUGIN), Unknown)
 
 
-def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
-    executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(f"{root / 'real'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN)
+def test_a_claude_that_fails_to_list_is_unknown_and_says_why() -> None:
+    # No real Claude Code has been seen to fail its listing; this is hands' reading of an exit that is not 0, whatever says it.
+    found = readiness.listing(lambda _claude: Answer(3, b"", b"not logged in\n"), "/usr/bin:/bin", "plugin", "whether the plugin is installed")
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
-def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
-    executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN), Unknown)
-
-
-def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN), Unknown)
-
-
-def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
-    # Off a terminal the shim runs the real claude, so the answer is the real one, not fritter's.
-    executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
-    executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
-    path = claude_listing(root, [listed(PLUGIN_ID, True)])
-    assert isinstance(readiness.plugin(f"{root / 'bin'}:{path}", VERSION, readiness.INSTALL_PLUGIN), Ready)
+def test_a_claude_that_cannot_be_asked_is_unknown() -> None:
+    found = plugin(Fake(unrunnable={"plugin list"}))
+    assert isinstance(found, Unknown) and "cannot ask `claude plugin list`" in found.said
 
 
 # The marketplace
 
 
 def test_the_home_s_marketplace_added_from_its_directory_is_ready(tmp_path: Path) -> None:
-    printed = json.dumps([{"name": "other", "source": "github", "repo": "x/y"}, {"name": MARKETPLACE_NAME, "source": "directory", "path": str(tmp_path)}])
-    assert isinstance(readiness.marketplace_listed(printed, tmp_path), Ready)
+    fake = Fake()
+    fake.configs[config_dir(os.environ)] = Config(marketplace=tmp_path)
+    assert isinstance(readiness.marketplace(fake, "/usr/bin:/bin", tmp_path), Ready)
 
 
 def test_no_marketplace_of_its_name_is_missing(tmp_path: Path) -> None:
-    assert isinstance(readiness.marketplace_listed(json.dumps([{"name": "other", "source": "github", "repo": "x/y"}]), tmp_path), Missing)
+    assert isinstance(readiness.marketplace(Fake(), "/usr/bin:/bin", tmp_path), Missing)
+
+
+def test_another_marketplace_beside_the_home_s_says_nothing_of_it(tmp_path: Path) -> None:
+    printed = json.dumps([{"name": "other", "source": "github", "repo": "x/y"}, {"name": MARKETPLACE_NAME, "source": "directory", "path": str(tmp_path)}])
+    assert isinstance(readiness.marketplace_listed(printed.encode(), tmp_path), Ready)
+    assert isinstance(readiness.marketplace_listed(json.dumps([{"name": "other", "source": "github", "repo": "x/y"}]).encode(), tmp_path), Missing)
+
+
+def test_the_marketplace_hands_installed_from_before_is_elsewhere(tmp_path: Path) -> None:
+    # As hands installed its plugin before it wrote a marketplace in its home: from GitHub.
+    fake = Fake()
+    fake.configs[config_dir(os.environ)] = Config(marketplace="github")
+    found = readiness.marketplace(fake, "/usr/bin:/bin", tmp_path)
+    assert isinstance(found, readiness.Elsewhere) and str(tmp_path) in found.said
 
 
 @pytest.mark.parametrize(
     "source",
-    [{"source": "github", "repo": "promptctl/cc-hands"}, {"source": "directory", "path": "/code/cc-hands"}, {"source": {"kind": "unread"}}, {}],
-    ids=["github", "another-directory", "a-source-hands-cannot-read", "no-source"],
+    [{"source": "directory", "path": "/code/cc-hands"}, {"source": {"kind": "unread"}}, {}],
+    ids=["another-directory", "a-source-hands-cannot-read", "no-source"],
 )
 def test_a_marketplace_of_its_name_from_anywhere_else_is_elsewhere(tmp_path: Path, source: dict[str, str]) -> None:
-    found = readiness.marketplace_listed(json.dumps([{"name": MARKETPLACE_NAME, **source}]), tmp_path)
+    found = readiness.marketplace_listed(json.dumps([{"name": MARKETPLACE_NAME, **source}]).encode(), tmp_path)
     assert isinstance(found, readiness.Elsewhere) and str(tmp_path) in found.said
 
 
@@ -804,9 +807,8 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 # The backend
 
 
-def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
-    monkeypatch.setenv("LOGGED_IN", "0")
-    found = readiness.configured(Home(root / "home"), os.environ)
+def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, found_claude: Path) -> None:
+    found = readiness.configured(Fake(), Home(root / "home"), os.environ)
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -814,24 +816,18 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(home, {})
+    reached = readiness.configured(Fake(), home, {})
     assert isinstance(reached, Missing) and str(home.config) in reached.said
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
-    found = readiness.configured(Home(root / "home"), {"HANDS_DEBUG": "1"})
+    found = readiness.configured(Fake(), Home(root / "home"), {"HANDS_DEBUG": "1"})
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
-def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = Home(root / "home")
-
-    def unspawnable(*_: object) -> object:
-        raise PermissionError("claude is not executable")
-
-    monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(home, {})
-    assert isinstance(found, Unknown) and "claude is not executable" in found.said
+def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, found_claude: Path) -> None:
+    found = readiness.configured(Fake(unrunnable={"auth status"}), Home(root / "home"), os.environ)
+    assert isinstance(found, Unknown) and "`claude auth status` could not be run" in found.said
 
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
@@ -873,13 +869,13 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "first-run", "backend", "grant", "running", "sessions"]
 
 
-def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
+def logged_in(_claude_code: object, _llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
     """The brain as its login check finds it logged in: that check is the start's, tested beside it."""
     return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
 
 
-def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: object) -> Home:
-    """A home on which every step of the install is done, with `plugins` listed by its claude."""
+def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Home, Fake]:
+    """A home on which every step of the install is done, and the person's Claude Code, which is the fake."""
     home = Home(root / "home")
     home.bin.mkdir(parents=True)
     shutil.copy2(fritter, home.bin / "fritter")
@@ -887,23 +883,25 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     beating(home)
     monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
-    monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
+    executable(root / "real" / "claude", "#!/bin/sh\nexit 99\n")
+    monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{root / 'real'}:/usr/bin:/bin")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: True)
-    answered(root, home, monkeypatch)
+    fake = Fake()
+    answered(root, home, fake, monkeypatch)
+    fake.configs[root / "config"] = Config(login="claude.ai", plugin=Held(VERSION))
 
-    # The fake claude is a script, whose sessions cannot be told; take it for a native one that runs nowhere.
+    # The found claude is a script, whose sessions cannot be told; take it for a native one that runs nowhere.
     def native(_claude: Path | None) -> Path:
         return root / "versions" / "9.9.9"
 
     monkeypatch.setattr(readiness, "claude_code", native)
-    return home
+    return home, fake
 
 
-def answered(root: Path, home: Home, monkeypatch: pytest.MonkeyPatch, trusted: bool = True) -> None:
+def answered(root: Path, home: Home, fake: Fake, monkeypatch: pytest.MonkeyPatch, trusted: bool = True) -> None:
     """The person's Claude Code, in a config of the test's own, through its onboarding, the smoke folder trusted unless not `trusted`."""
     config = root / "config"
-    config.mkdir(exist_ok=True)
-    (config / ".claude.json").write_text(json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.smoke.resolve()): {"hasTrustDialogAccepted": trusted}}}))
+    fake.files[config / ".claude.json"] = json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.smoke.resolve()): {"hasTrustDialogAccepted": trusted}}}).encode()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
@@ -914,50 +912,54 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
     return {step: line.split()[0] for step, line in zip(STEPS, lines)}
 
 
+def check(home: Home, fake: Fake) -> int:
+    return command_line(["--home", str(home.root), "check"], fake)
+
+
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    assert main(["--home", str(home.root), "check"]) == 0
+    home, fake = set_up(root, fritter, monkeypatch)
+    assert check(home, fake) == 0
     assert marks(capsys) == dict.fromkeys(STEPS, "ok")
 
 
 # Each undoes one step of a home set_up made.
-type Undo = Callable[[Path, Home, pytest.MonkeyPatch], None]
+type Undo = Callable[[Path, Home, Fake, pytest.MonkeyPatch], None]
 
 
-def no_hands(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+def no_hands(root: Path, _home: Home, _fake: Fake, _monkeypatch: pytest.MonkeyPatch) -> None:
     (root / "tools" / "hands").unlink()
 
 
-def unshimmed(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+def unshimmed(_root: Path, home: Home, _fake: Fake, _monkeypatch: pytest.MonkeyPatch) -> None:
     home.shim.unlink()
 
 
-def no_plugin(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    claude_listing(root, [])
+def no_plugin(root: Path, _home: Home, fake: Fake, _monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.configs[root / "config"].plugin = None
 
 
-def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+def logged_out(_root: Path, _home: Home, _fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
     def refused(*_: object) -> object:
         raise Rejected("the brain has no login: `hands login` gives it one")
 
     monkeypatch.setattr(readiness, "resolve", refused)
 
 
-def untrusted(root: Path, home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
-    answered(root, home, monkeypatch, trusted=False)
+def untrusted(root: Path, home: Home, fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
+    answered(root, home, fake, monkeypatch, trusted=False)
 
 
-def person_logged_out(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
-    (root / "real" / "logged-out").touch()
+def person_logged_out(root: Path, _home: Home, fake: Fake, _monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.configs[root / "config"].login = None
 
 
-def ungranted(_root: Path, home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+def ungranted(_root: Path, home: Home, _fake: Fake, monkeypatch: pytest.MonkeyPatch) -> None:
     # A running hands has the grant of the app it runs in, so the grant is missing only where hands is not running.
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
     home.status.unlink()
 
 
-def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+def not_running(_root: Path, home: Home, _fake: Fake, _monkeypatch: pytest.MonkeyPatch) -> None:
     home.status.unlink()
 
 
@@ -978,9 +980,9 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 def test_a_home_missing_steps_names_those_steps_and_exits_1(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, steps: set[str]
 ) -> None:
-    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
-    undo(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"]) == 1
+    home, fake = set_up(root, fritter, monkeypatch)
+    undo(root, home, fake, monkeypatch)
+    assert check(home, fake) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), **dict.fromkeys(steps, "missing")}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
@@ -990,9 +992,10 @@ def test_a_home_missing_steps_names_those_steps_and_exits_1(
 def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    home = set_up(root, fritter, monkeypatch, "unreadable")
-    assert main(["--home", str(home.root), "check"]) == 2
+    home, fake = set_up(root, fritter, monkeypatch)
+    fake.unrunnable.add("plugin list")
+    assert check(home, fake) == 2
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
-    ungranted(root, home, monkeypatch)
-    assert main(["--home", str(home.root), "check"]) == 1
+    ungranted(root, home, fake, monkeypatch)
+    assert check(home, fake) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing", "running": "missing"}

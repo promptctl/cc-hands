@@ -1,0 +1,13 @@
+{
+  "version": "2.1.299",
+  "source": "a config directory with no marketplaces, given the marketplace hands writes in its home",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "add",
+    "/home/plugins"
+  ],
+  "exit": 0,
+  "stdout": "Adding marketplace\u2026\u2714 Successfully added marketplace: cc-hands (declared in user settings)\n",
+  "stderr": ""
+}

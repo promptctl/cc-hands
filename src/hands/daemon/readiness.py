@@ -29,7 +29,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
-from hands.sessions import firstrun, heartbeat, liveness, marketplace as plugins, wrapper
+from hands.sessions import claudecode, firstrun, heartbeat, liveness, marketplace as plugins, wrapper
 from hands.sessions.hookconfig import MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
@@ -68,16 +68,14 @@ Marketplace = Finding | Elsewhere
 # The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
 Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 
-# `claude plugin list` answers in a quarter of a second; one that has not answered in this long is not going to.
-LIST_TIMEOUT_SECONDS = 20.0
 # `hands --version` imports hands' CLI, a couple of seconds; one that has not answered in this long is not going to.
 VERSION_TIMEOUT_SECONDS = 30.0
 # [LAW:one-source-of-truth] the README's one install command, which installs whichever of Claude Code, PortAudio and hands is missing.
 INSTALL = '`/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/promptctl/cc-hands/master/install.sh)"`'
 
 
-def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
-    """Every step, in the order the module names them. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
+def check(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[str, str], granted: bool, reached: Finding, running: Finding, keyboards: Keyboards) -> list[Finding]:
+    """Every step, in the order the module names them, Claude Code asked through `claude_code`. `environment` is the one sessions are started from; `granted`, the grant of the app this runs in;
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     path = environment.get("PATH", "")
@@ -87,8 +85,8 @@ def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Fi
         portaudio(),
         installed(path),
         shim(home, path),
-        plugin(path, plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
-        first_run(home, environment),
+        plugin(claude_code, path, plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
+        first_run(claude_code, home, environment),
         reached,
         hears(granted, running),
         running,
@@ -134,17 +132,17 @@ def installed(path: str) -> Finding:
     return Ready(f"`hands` on this PATH is {found}, {this}")
 
 
-def configured(home: Home, environment: Mapping[str, str]) -> Finding:
+def configured(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[str, str]) -> Finding:
     """Whether the brain has the login it reaches its model with."""
     try:
         config = load(home).config
     except Rejected as error:
         return Missing(f"hands cannot read its settings: {error}")
     try:
-        reached: Finding = reaching(resolve(config.llm, home, environment))
+        reached: Finding = reaching(resolve(claude_code, config.llm, home, environment))
     except Rejected as error:
         reached = Missing(f"hands has no model to talk with: {error}")
-    except OSError as error:
+    except claudecode.Unreachable as error:
         # The brain's claude could not be asked, which says nothing of whether it holds a login.
         reached = Unknown(f"cannot tell whether the [llm] backend can reach its model: {error}")
     return reached
@@ -173,51 +171,42 @@ def daemon(home: Home, now: datetime) -> Finding:
 INSTALL_PLUGIN = "`hands install-plugin`, then /reload-plugins in each running session, which joins hands at its next prompt"
 
 
-def plugin(path: str, version: str, mended: str) -> Finding:
+def plugin(claude_code: claudecode.ClaudeCode, path: str, version: str, mended: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has this hands' plugin, `version`, installed and enabled;
     `mended` says, of one that is not, what makes it so."""
-    match listing(path, ("plugin",), f"whether the plugin {PLUGIN_ID} is installed"):
+    match listing(claude_code.plugins, path, "plugin", f"whether the plugin {PLUGIN_ID} is installed"):
         case Unknown() as unknown:
             return unknown
-        case str() as listed:
+        case bytes() as listed:
             return plugin_listed(listed, version, mended)
 
 
-def marketplace(path: str, root: Path) -> Marketplace:
+def marketplace(claude_code: claudecode.ClaudeCode, path: str, root: Path) -> Marketplace:
     """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands writes at `root`."""
-    match listing(path, ("plugin", "marketplace"), f"whether the marketplace {MARKETPLACE_NAME} is added"):
+    match listing(claude_code.marketplaces, path, "plugin marketplace", f"whether the marketplace {MARKETPLACE_NAME} is added"):
         case Unknown() as unknown:
             return unknown
-        case str() as listed:
+        case bytes() as listed:
             return marketplace_listed(listed, root)
 
 
-def listing(path: str, command: tuple[str, ...], unknown: str) -> str | Unknown:
-    """What `claude <command> list --json` prints, as `claude` on this PATH runs it."""
-    said = " ".join(command)
+def listing(listed: Callable[[claudecode.Instance], claudecode.Answer], path: str, said: str, unknown: str) -> bytes | Unknown:
+    """What `claude <said> list --json`, which `listed` asks, prints, as `claude` on this PATH runs it."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
     # Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
     try:
-        listed = subprocess.run(
-            ["claude", *command, "list", "--json"],
-            env={**os.environ, "PATH": path},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=LIST_TIMEOUT_SECONDS,
-        )
-    # A ValueError is output that is not text.
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        answer = listed(claudecode.Instance("claude", {**os.environ, "PATH": path}))
+    except claudecode.Unreachable as error:
         return Unknown(f"cannot ask `claude {said} list` {unknown}: {error}")
-    if listed.returncode != 0:
-        return Unknown(f"`claude {said} list` failed ({listed.returncode}), so {unknown} is unknown: {listed.stderr.strip()}")
-    return listed.stdout
+    if answer.exit != 0:
+        return Unknown(f"`claude {said} list` failed ({answer.exit}), so {unknown} is unknown: {answer.stderr.decode(errors='replace').strip()}")
+    return answer.stdout
 
 
-def marketplace_listed(raw: str, root: Path) -> Marketplace:
+def marketplace_listed(raw: bytes, root: Path) -> Marketplace:
     """What `claude plugin marketplace list --json` says of the marketplace hands writes at `root`."""
     try:
-        named = [entry for entry in Payload.parse_list(raw.encode(), "each marketplace") if entry.text("name") == MARKETPLACE_NAME]
+        named = [entry for entry in Payload.parse_list(raw, "each marketplace") if entry.text("name") == MARKETPLACE_NAME]
         # A marketplace from a directory names it as `path`; one from anywhere else names no path. Only whether it is this
         # directory is asked, since every other shape of it is replaced the same way.
         sources = [(entry.fields.get("source"), entry.fields.get("path")) for entry in named]
@@ -232,13 +221,13 @@ def marketplace_listed(raw: str, root: Path) -> Marketplace:
             return Elsewhere(f"the marketplace {MARKETPLACE_NAME} is added from {sources}, not from {root}")
 
 
-def plugin_listed(raw: str, version: str, mended: str) -> Finding:
+def plugin_listed(raw: bytes, version: str, mended: str) -> Finding:
     """What `claude plugin list --json` says of hands' plugin, against `version`, the one this hands renders; `mended`
     says, of one that is not it, what makes it so."""
     try:
         # Only a user-scope install joins every session; a project or local one joins the sessions of one directory,
         # and is listed as enabled or not by the directory the listing was asked from.
-        hands = [entry for entry in Payload.parse_list(raw.encode(), "each plugin") if entry.fields.get("id") == PLUGIN_ID]
+        hands = [entry for entry in Payload.parse_list(raw, "each plugin") if entry.fields.get("id") == PLUGIN_ID]
         everywhere = [entry for entry in hands if entry.text("scope") == "user"]
         enabled = {str(entry.fields.get("version")) for entry in everywhere if entry.flag("enabled")}
     except Rejected as error:
@@ -263,7 +252,7 @@ class FirstRun:
     logged_in: bool
 
 
-def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Unknown:
+def first_run_state(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[str, str]) -> FirstRun | Unknown:
     """What `claude` on this environment's PATH, past any hands shim, would ask first in `home.smoke`, run there as `hands
     smoke` runs it."""
     # [LAW:one-source-of-truth] the environment `hands smoke` starts its session in, whichever command looks.
@@ -272,7 +261,7 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
     if claude is None:
         return Unknown("there is no Claude Code on this PATH to ask whether it has been through its first run")
     try:
-        asked = firstrun.persons(environment, home.smoke, config_dir(environment, home.smoke))
+        asked = firstrun.persons(claude_code, environment, home.smoke, config_dir(environment, home.smoke))
     except Rejected as error:
         return Unknown(f"cannot tell what Claude Code would ask first: {error}")
     # `auth status` takes an ANTHROPIC_API_KEY for a login, one it was told not to use among them (2.1.294), so it is asked
@@ -280,8 +269,8 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
     # approved it. A Console login is an API key too, from another source, and counts.
     unkeyed = {name: value for name, value in environment.items() if name != firstrun.API_KEY}
     try:
-        status = subprocess.run([claude, "auth", "status"], env=unkeyed, stdin=subprocess.DEVNULL, capture_output=True, timeout=LIST_TIMEOUT_SECONDS)
-    except (OSError, subprocess.TimeoutExpired) as error:
+        status = claude_code.auth_status(claudecode.Instance(claude, unkeyed))
+    except claudecode.Unreachable as error:
         return Unknown(f"cannot ask {claude} whether it is logged in: {error}")
     try:
         # It exits 1 when logged out, saying so in its JSON as when logged in (2.1.289).
@@ -292,9 +281,9 @@ def first_run_state(home: Home, environment: Mapping[str, str]) -> FirstRun | Un
     return FirstRun(claude, asked.unanswered, account or asked.keyed)
 
 
-def first_run(home: Home, environment: Mapping[str, str]) -> Finding:
+def first_run(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[str, str]) -> Finding:
     """Whether the person's own Claude Code is logged in and would take what `hands smoke` types into its session."""
-    match first_run_state(home, environment):
+    match first_run_state(claude_code, home, environment):
         case Unknown() as unknown:
             return unknown
         case FirstRun(unanswered=None, logged_in=True):

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.299",
+  "source": "a config directory with no marketplaces, given a directory that holds no marketplace",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "add",
+    "/empty"
+  ],
+  "exit": 1,
+  "stdout": "Adding marketplace\u2026\n",
+  "stderr": "\u2718 Failed to add marketplace: Marketplace file not found at /empty/.claude-plugin/marketplace.json\n"
+}

@@ -1,0 +1,13 @@
+{
+  "version": "2.1.299",
+  "source": "the marketplace hands writes in its home, added",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "update",
+    "cc-hands"
+  ],
+  "exit": 0,
+  "stdout": "Updating marketplace: cc-hands...Validating local marketplace\n\u2714 Successfully updated marketplace: cc-hands\n",
+  "stderr": ""
+}

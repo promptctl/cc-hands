@@ -1,0 +1,14 @@
+{
+  "version": "2.1.299",
+  "source": "hands' plugin installed at an older version than the marketplace in the home now offers",
+  "argv": [
+    "plugin",
+    "install",
+    "--scope",
+    "user",
+    "hands@cc-hands"
+  ],
+  "exit": 0,
+  "stdout": "Installing plugin \"hands@cc-hands\"...\u2714 Plugin \"hands@cc-hands\" is already installed (scope: user) \u2014 it loads in place from /home/plugins/49e8f80d6b329a01, so edits there take effect at the next session start or /reload-plugins; `claude plugin update hands@cc-hands` re-records its version, 2f3345fd2ef5c4e7 to 49e8f80d6b329a01\n",
+  "stderr": ""
+}

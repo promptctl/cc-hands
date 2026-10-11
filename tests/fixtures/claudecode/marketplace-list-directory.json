@@ -1,0 +1,13 @@
+{
+  "version": "2.1.299",
+  "source": "the config directory just given the marketplace hands writes in its home",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "stdout": "[\n  {\n    \"name\": \"cc-hands\",\n    \"source\": \"directory\",\n    \"path\": \"/home/plugins\",\n    \"installLocation\": \"/home/plugins\"\n  }\n]\n",
+  "stderr": ""
+}

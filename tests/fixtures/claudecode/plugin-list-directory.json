@@ -1,0 +1,12 @@
+{
+  "version": "2.1.299",
+  "source": "hands' plugin installed from the marketplace hands writes in its home",
+  "argv": [
+    "plugin",
+    "list",
+    "--json"
+  ],
+  "exit": 0,
+  "stdout": "[\n  {\n    \"id\": \"hands@cc-hands\",\n    \"version\": \"49e8f80d6b329a01\",\n    \"scope\": \"user\",\n    \"enabled\": true,\n    \"installPath\": \"/config/plugins/cache/cc-hands/hands/49e8f80d6b329a01\",\n    \"readFromFolder\": \"/home/plugins/49e8f80d6b329a01\",\n    \"folderVersion\": \"49e8f80d6b329a01\",\n    \"installedAt\": \"2026-10-14T03:15:31.525Z\",\n    \"lastUpdated\": \"2026-10-14T03:15:31.525Z\",\n    \"projectEnabled\": false\n  }\n]\n",
+  "stderr": ""
+}

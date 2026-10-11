@@ -1,0 +1,13 @@
+{
+  "version": "2.1.299",
+  "source": "the marketplace hands writes in its home, with hands' plugin installed from it",
+  "argv": [
+    "plugin",
+    "marketplace",
+    "remove",
+    "cc-hands"
+  ],
+  "exit": 0,
+  "stdout": "\u2714 Successfully removed marketplace: cc-hands\nAlso uninstalled 1 plugin from this marketplace:\n  hands@cc-hands\nThe removal also deletes their saved options, secrets and data where it can.\nTo use a plugin again, add the marketplace back and reinstall the plugin.\n",
+  "stderr": ""
+}

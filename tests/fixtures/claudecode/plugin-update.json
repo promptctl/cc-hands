@@ -1,0 +1,14 @@
+{
+  "version": "2.1.299",
+  "source": "hands' plugin installed at an older version than the marketplace in the home now offers",
+  "argv": [
+    "plugin",
+    "update",
+    "--scope",
+    "user",
+    "hands@cc-hands"
+  ],
+  "exit": 0,
+  "stdout": "Checking for updates for plugin \"hands@cc-hands\" at user scope\u2026\n\u2714 Plugin \"hands\" updated from 2f3345fd2ef5c4e7 to 49e8f80d6b329a01 for scope user. Restart to apply changes.\n",
+  "stderr": ""
+}
