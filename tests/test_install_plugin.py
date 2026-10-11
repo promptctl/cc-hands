@@ -205,6 +205,18 @@ def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_ba
     assert "`hands install-plugin`" not in ran.stderr
 
 
+def test_an_install_run_from_a_removed_directory_installs_nothing_and_says_why(root: Path) -> None:
+    gone = root / "gone"
+    gone.mkdir()
+    ran = subprocess.run(
+        ["/bin/sh", "-c", 'cd "$1" && rmdir "$1" && exec "$2" -m hands.daemon install-plugin', "sh", str(gone), sys.executable],
+        env=person(root), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+    )
+    assert ran.returncode == 2
+    assert "hands install-plugin: cannot tell which Claude Code config this runs under" in ran.stderr
+    assert not (root / "calls").exists()
+
+
 def test_a_claude_that_cannot_list_its_plugins_is_said_and_fails(root: Path) -> None:
     (root / "list-fails").touch()
     ran = install(root)

@@ -775,7 +775,10 @@ def install_plugin(home: Home, record: audit.Record) -> int:
     # installed one onto this render. Only how the marketplace is brought there depends on how it was found.
     path = os.environ.get("PATH", "")
     with wide.unit("plugin.install", record):
-        config = readiness.config_dir(os.environ, Path.cwd())
+        try:
+            config = readiness.config_dir(os.environ, Path.cwd())
+        except OSError as error:
+            return not_installed(f"cannot tell which Claude Code config this runs under: {error}", 2)
         wide.annotate(config=config)
         # [LAW:parse-dont-validate] the brain runs under a config of its own, which every command it runs inherits; the
         # person's sessions never run under it, so an install there joins none of them.
