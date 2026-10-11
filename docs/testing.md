@@ -63,7 +63,7 @@ modules to it.
 
 | Interface | What it covers | Today |
 |---|---|---|
-| `Clock` (Python and Swift) | Wall time, monotonic time, sleeping, scheduling, ids, and randomness | `Sessions(clock=, stamp=)` and a few other `clock=` parameters. More than 40 call sites read the time directly, and about 200 test sites wait on real time. |
+| `Clock` (Python and Swift) | Wall time, monotonic time, sleeping, scheduling, ids, and randomness | Swift: built, `MacClock` in `app/parties.swift`, with `FakeClock` in the library's tests. Python: `Sessions(clock=, stamp=)` and a few other `clock=` parameters. More than 40 call sites read the time directly, and about 200 test sites wait on real time. |
 | `Processes` | The process table, a process's start time, cwd and arguments, signals, and child processes | `still_running` is pure, but `process_table()` and `child.run` are called directly. Nine tests fail in a sandbox because they scan the real process table. |
 | `Terminals` | tmux servers, panes and typing, and the fritter control socket | `Sessions(typist=, keyboards=)`. Below that, every pane, capture, and typing behavior needs a real tmux. |
 | `ClaudeCode` | Status files, transcripts, hooks, the `claude` CLI (`auth`, `plugin`, first run), and `.claude.json` | Files are found through `Home` and read by modules such as `sessions/membership.py`. The CLI is replaced by stand-in scripts on `PATH`. |
@@ -76,9 +76,9 @@ modules to it.
 | `Spotify` | The app through AppleScript, and the catalogue through the Web API | `Player` and `Catalogue` already take their routes as parameters, and the tests pass stand-ins. |
 | `Notifications` | macOS notifications | `daemon/notify.py` runs `osascript` through `child.run`. |
 | `Telemetry` | The OpenTelemetry collector that wide events are exported to | `sessions/otlp.py` posts over HTTP, and tests run a stand-in collector. |
-| `Polar` | License key validation | The app's Info.plist URL, pointed at a local stand-in server. |
-| `Privacy` (Swift) | A permission's status, request, and reset | Built: `app/privacy.swift` is the adapter, and what `hands --permissions` does with each access is in `app/HandsLogic`, tested against `FakePrivacy`. The setup window still runs the whole `hands --permissions` process, which `HANDS_APP_PERMISSIONS` replaces in tests. |
-| `Shell` and `Daemon` (Swift) | The login shell's environment, and starting, stopping, and the exit of `hands run` | `HANDS_APP_SHELL`, with a stand-in `hands` script on the stand-in shell's `PATH`. |
+| `Polar` | License key validation | Built: `PolarAPI` in `app/parties.swift`; what the app makes of the reply and the grace period are `answer` and `verdict` in `app/HandsLogic`, tested against `FakePolar`. Its fixtures are one sandbox recording (an unknown key) and three written from Polar's source (live, revoked, expired), each marked, until a sandbox organization can issue keys to record. |
+| `Privacy` (Swift) | A permission's status, request, and reset | Built: `app/privacy.swift` is the adapter, and what `hands --permissions` does with each access is in `app/HandsLogic`, tested against `FakePrivacy`. The setup reaches it through `Asking`, a new `hands --permissions` process each time (`PermissionsProcess`); its fake runs the library's `permissions` against `FakePrivacy`. |
+| `Shell` and `Daemon` (Swift) | The login shell's environment, and starting, stopping, and the exit of `hands run` | Built: `LoginShell` and `HandsRun` in `app/parties.swift`, driven by `Launch` and tested against fakes. `tests/test_app.py` runs the real ones through `HANDS_APP_SHELL`, with a stand-in `hands` script on the stand-in shell's `PATH`. |
 | `Installer` | Homebrew, uv, the release lookup, and the steps `install.sh` runs | Stand-in `brew`, `curl`, `uv`, `sudo`, and `hands` scripts on `PATH`. The stand-in `hands` and the real subcommands agree only by convention. |
 
 Where an interface already exists, it keeps its name and shape, and the work is to make

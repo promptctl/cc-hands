@@ -1,9 +1,10 @@
-"""hands.app's launcher, compiled and run: it starts hands on a license key a stand-in for Polar says is live, or
-offline within the grace period, once a stand-in for macOS grants every permission; the login shell says the environment,
-hands runs on it as the app's child, and a quit winds hands down.
+"""hands.app, compiled and run: what only the process can show. Signals quit it, its log is written and begun again, the
+login shell's environment reaches hands, and its real adapters speak to Polar, the license file, and `--permissions` as
+the library's fakes do.
 
 Only paths on which the app draws nothing run here: a launched app's windows and alerts come up over whatever the person
-is using. Its license prompt, setup window, and failure alert are tested in the app's library (promptctl-testing-c3u.yjb)."""
+is using. Every decision the app makes, the license prompt, the grace period, the setup window, and each phase, is tested
+in its library, app/HandsLogic."""
 
 import json
 import os
@@ -27,11 +28,10 @@ LIVE = "HANDS-1C285B2D-6CE6-4BC7-B8BE-ADB6A7E304DA"
 
 @dataclass
 class Polar:
-    """A stand-in for Polar's license key validation: it answers `status` and `body`, or with `status` None closes the
-    connection unanswered, as a network that fails does; it keeps each request's body."""
+    """A stand-in for Polar's license key validation: it answers `status` and `body`, and keeps each request's body."""
 
     url: str
-    status: int | None = 200
+    status: int = 200
     body: object = field(default_factory=lambda: {"status": "granted", "key": LIVE})
     asked: list[dict[str, object]] = field(default_factory=lambda: list[dict[str, object]]())
 
@@ -41,9 +41,6 @@ def stand_in() -> Iterator[Polar]:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             polar.asked.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            if polar.status is None:
-                self.close_connection = True
-                return
             answer = json.dumps(polar.body).encode()
             self.send_response(polar.status)
             self.send_header("Content-Type", "application/json")
@@ -234,33 +231,6 @@ def test_a_live_key_starts_hands_and_polar_hears_only_the_key_and_the_organizati
     license = json.loads((tmp_path / "license.json").read_text())
     assert datetime.now(UTC) - datetime.fromisoformat(license["validated"]) < timedelta(minutes=1)
     assert (tmp_path / "license.json").stat().st_mode & 0o777 == 0o600
-
-
-@pytest.mark.parametrize(
-    ("status", "body"),
-    [(None, None), (503, {"error": "ServiceUnavailable"}), (200, "<html>Sign in to the hotel Wi-Fi</html>"), (407, "Proxy Authentication Required"), (404, {"detail": "Not Found"})],
-    ids=["unreachable", "down", "captive-portal", "proxy", "no-such-route"],
-)
-def test_a_key_last_seen_live_within_the_grace_period_starts_hands_while_polar_cannot_be_reached(
-    opened: Open, tmp_path: Path, polar: Polar, status: int | None, body: object
-) -> None:
-    validated = kept(tmp_path, LIVE, datetime.now(UTC) - timedelta(days=13, hours=1))
-    polar.status, polar.body = status, body
-    app = opened("", "exit 0")
-    assert app.wait(timeout=30) == 0
-    text = logged(tmp_path, "hands exited 0")
-    assert "could not reach Polar (" in text and "0 whole days of grace left" in text
-    # Running on the grace period does not restart it.
-    assert json.loads((tmp_path / "license.json").read_text())["validated"] == validated
-
-
-def test_the_grace_period_is_never_longer_than_14_days(opened: Open, tmp_path: Path, polar: Polar) -> None:
-    # A clock that ran ahead when Polar last said the key was live.
-    kept(tmp_path, LIVE, datetime.now(UTC) + timedelta(days=30))
-    polar.status = None
-    app = opened("", "exit 0")
-    assert app.wait(timeout=30) == 0
-    assert "14 whole days of grace left" in logged(tmp_path, "hands exited 0")
 
 
 def test_with_every_permission_granted_hands_starts_without_a_setup_step(opened: Open, tmp_path: Path) -> None:

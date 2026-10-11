@@ -1,6 +1,5 @@
-// The setup window: before hands runs, one step for each permission it needs, in turn. A step's Next button shows
-// macOS's request for that permission, and the step advances once macOS says hands has it. Setup ends when every
-// permission is granted, so a launch where they all are shows no window.
+// The setup window: before hands runs, one step for each permission it needs, in turn. Which step shows, what Next does,
+// and when the window goes are HandsLogic's (Launch.swift); this draws the step and passes Next and closing back.
 import AppKit
 import HandsLogic
 
@@ -14,14 +13,8 @@ func setupLevel(_ active: NSRunningApplication?) -> NSWindow.Level {
     active?.processIdentifier == getpid() || active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
 }
 
-// What macOS says is read once a second; HandsLogic's stage decides what the window does with it.
-final class Setup: NSObject, NSWindowDelegate {
-    // What answers `--permissions`: this app's own executable, or a stand-in a test names.
-    let asker: URL
-    let said: (String) -> Void
-    let done: () -> Void
-    let failed: (String) -> Void
-
+final class SetupWindow: NSObject, NSWindowDelegate {
+    let launch: Launch
     let window: NSWindow
     // What sets the window's level each time another app becomes the one the person is using.
     let activations: NSObjectProtocol
@@ -31,15 +24,11 @@ final class Setup: NSObject, NSWindowDelegate {
     let answer = NSTextField(wrappingLabelWithString: "")
     let status = NSTextField(wrappingLabelWithString: "")
     let next = NSButton(title: "Next", target: nil, action: nil)
-    // The step on screen, once setup has shown one.
+    // The step on screen, once the window has shown one.
     var shown: Permission?
-    var over = false
 
-    init(asker: URL, said: @escaping (String) -> Void, done: @escaping () -> Void, failed: @escaping (String) -> Void) {
-        self.asker = asker
-        self.said = said
-        self.done = done
-        self.failed = failed
+    init(_ launch: Launch) {
+        self.launch = launch
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 10), styleMask: [.titled, .closable], backing: .buffered, defer: true)
         window.level = setupLevel(NSWorkspace.shared.frontmostApplication)
         self.window = window
@@ -54,7 +43,7 @@ final class Setup: NSObject, NSWindowDelegate {
         heading.font = .boldSystemFont(ofSize: NSFont.systemFontSize + 4)
         status.textColor = .secondaryLabelColor
         next.target = self
-        next.action = #selector(request)
+        next.action = #selector(chose)
         next.keyEquivalent = "\r"
         let column = NSStackView(views: [counter, heading, purpose, answer, status, next])
         column.orientation = .vertical
@@ -74,112 +63,31 @@ final class Setup: NSObject, NSWindowDelegate {
         NSWorkspace.shared.notificationCenter.removeObserver(activations)
     }
 
-    // Asks macOS, in a new process, what it says of every permission, and acts on the answer.
-    func check() {
-        ask([]) { ended, output, errors in
-            guard ended.terminationReason == .exit && ended.terminationStatus == 0 else {
-                self.fail("hands.app could not ask macOS about its permissions: it \(how(ended)). \(errors)")
-                return
-            }
-            do {
-                self.observe(try accesses(output))
-            } catch {
-                self.fail("hands.app could not read what macOS says of its permissions: \(error)")
-            }
-        }
-    }
-
-    func observe(_ accesses: Accesses) {
-        switch stage(accesses) {
-        case .restricted(let permission):
-            fail("\(HandsLogic.Refusal.restricted(permission))")
-            return
-        case .ready:
-            over = true
-            window.orderOut(nil)
-            said("permissions: macOS grants hands.app every permission it needs")
-            done()
-            return
-        case .step(let permission, let access):
-            if permission != shown {
-                show(permission, access)
-            }
-        }
-        // [LAW:no-ambient-temporal-coupling] the next check is scheduled when this one ends, so two never overlap.
-        let later = Timer(timeInterval: 1, repeats: false) { _ in self.check() }
-        RunLoop.main.add(later, forMode: .common)
-    }
-
-    func show(_ permission: Permission, _ access: Pending) {
-        said("permissions: showing the \(permission.name) step; macOS says it is \(access.rawValue)")
+    func show(_ permission: Permission, status said: String, next enabled: Bool) {
+        status.stringValue = said
+        next.isEnabled = enabled
+        guard permission != shown else { return }
         shown = permission
         counter.stringValue = permission.counter
         heading.stringValue = permission.name
         purpose.stringValue = permission.purpose
         answer.stringValue = permission.answer
-        status.stringValue = ""
-        next.isEnabled = true
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
 
-    @objc func request() {
-        let permission = shown!
-        said("permissions: asking macOS for \(permission.name)")
-        status.stringValue = "Waiting for macOS to give hands \(permission.name). If you closed its request, choose Next to see it again."
-        // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
-        // System Settings list the request just opened. One request after another is safe: each lists hands again.
-        next.isEnabled = false
-        ask(["request", permission.service]) { ended, _, errors in
-            // A request that ends after its step was left has nothing to say about the step now shown.
-            guard self.shown == permission else { return }
-            self.next.isEnabled = true
-            // [LAW:no-silent-failure] a request macOS never showed is reported in the window, not waited on.
-            if ended.terminationReason != .exit || ended.terminationStatus != 0 {
-                let why = "macOS could not show its request for \(permission.name): it \(how(ended)). \(errors)"
-                self.said("permissions: \(why)")
-                self.status.stringValue = why
-            }
-        }
-    }
-
-    // Runs `--permissions ARGUMENTS`, and hands its end, its output, and its error output to `then` on the main thread.
-    func ask(_ arguments: [String], then: @escaping (Process, String, String) -> Void) {
-        let asking = Process()
-        asking.executableURL = asker
-        asking.arguments = ["--permissions"] + arguments
-        let output = Pipe()
-        let errors = Pipe()
-        asking.standardInput = FileHandle.nullDevice
-        asking.standardOutput = output
-        asking.standardError = errors
-        asking.terminationHandler = { ended in
-            let said = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            let erred = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            onMain {
-                // A check that ends after setup did is not acted on: hands is already starting, or the app ending.
-                guard !self.over else { return }
-                then(ended, said, erred.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-        }
-        do {
-            try asking.run()
-        } catch {
-            fail("hands.app could not run \(asker.path) to ask macOS about its permissions: \(error.localizedDescription)")
-        }
-    }
-
-    func fail(_ why: String) {
-        over = true
+    func hide() {
         window.orderOut(nil)
-        failed(why)
+    }
+
+    @objc func chose() {
+        launch.next()
     }
 
     // Closing the window quits the app: hands does not run without its permissions.
     func windowWillClose(_ notification: Notification) {
-        over = true
-        NSApp.terminate(nil)
+        launch.leave()
     }
 }

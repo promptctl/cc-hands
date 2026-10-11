@@ -20,7 +20,7 @@ final class FakePrivacy: Privacy {
     }
 
     var accesses: [Permission: Access]
-    let resets: Reset
+    var resets: Reset
     // macOS answers with a value no recording has, as a later macOS might.
     var unrecorded = false
     private(set) var calls: [Call] = []
