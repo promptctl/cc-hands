@@ -132,7 +132,7 @@ public enum Refusal: Error, Equatable, CustomStringConvertible {
         case .askerEnded:
             "the app that asked has ended"
         case .restricted(let permission):
-            "your Mac's administrator does not allow hands to use \(permission.name), so macOS shows no request for it"
+            "your Mac's administrator does not allow hands to use \(permission.name), so macOS shows no request for it and hands cannot run without it"
         case .unreset(let permission, let why):
             // tccutil finds hands.app through Spotlight, so it fails for a bundle Spotlight does not index.
             "could not reset \(permission.name), so macOS would show no request for it: \(why)"
@@ -192,9 +192,27 @@ struct Unreadable: Error, CustomStringConvertible {
     var description: String { "it answered \(output.debugDescription), not a line for each of \(Permission.allCases.map(\.service).joined(separator: ", "))" }
 }
 
-// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access, in Permission.allCases' order: one
-// line for each permission, and nothing else.
-public func accesses(_ output: String) throws -> [Access] {
+// What macOS says of every permission, one field each, so no permission can be missing from it.
+public struct Accesses: Equatable, Sendable {
+    public let microphone: Access
+    public let inputMonitoring: Access
+
+    public init(microphone: Access, inputMonitoring: Access) {
+        self.microphone = microphone
+        self.inputMonitoring = inputMonitoring
+    }
+
+    public subscript(_ permission: Permission) -> Access {
+        switch permission {
+        case .microphone: microphone
+        case .inputMonitoring: inputMonitoring
+        }
+    }
+}
+
+// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access: one line for each permission, and
+// nothing else.
+public func accesses(_ output: String) throws -> Accesses {
     let unreadable = Unreadable(output: output)
     let said = try Dictionary(output.split(separator: "\n").map { line -> (String, Access) in
         let words = line.split(separator: " ").map(String.init)
@@ -202,8 +220,9 @@ public func accesses(_ output: String) throws -> [Access] {
         return (words[0], access)
     }, uniquingKeysWith: { _, _ in throw unreadable })
     guard said.count == Permission.allCases.count else { throw unreadable }
-    return try Permission.allCases.map { permission in
+    func of(_ permission: Permission) throws -> Access {
         guard let access = said[permission.service] else { throw unreadable }
         return access
     }
+    return Accesses(microphone: try of(.microphone), inputMonitoring: try of(.inputMonitoring))
 }

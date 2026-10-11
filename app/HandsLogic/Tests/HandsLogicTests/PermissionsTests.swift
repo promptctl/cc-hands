@@ -128,7 +128,7 @@ func aRequestFromAnAppThatHasEndedAsksMacOSNothing(access: Access) {
     let privacy = FakePrivacy([.microphone: .denied, .inputMonitoring: .undecided])
     let said = try permissions([], privacy: privacy, asker: FakeAsker(running: false))
     #expect(said == "Microphone denied\nListenEvent undecided\n")
-    #expect(try accesses(said) == [.denied, .undecided])
+    #expect(try accesses(said) == Accesses(microphone: .denied, inputMonitoring: .undecided))
     #expect(privacy.calls == [.status(.microphone), .status(.inputMonitoring)])
 }
 
