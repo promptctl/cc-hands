@@ -34,9 +34,16 @@ func eachPermissionNotGrantedIsItsOwnStep(permission: Permission) throws {
     #expect(try standing(privacy) == .step(.microphone, .undecided))
 }
 
-// A restricted permission stops setup even behind a step the person could still take: no step taken would let hands run.
-@Test func aRestrictedPermissionStopsTheAppWithItsReason() throws {
-    let stopped = try standing(FakePrivacy([.microphone: .undecided, .inputMonitoring: .restricted]))
-    #expect(stopped == .stopped(.restricted(.inputMonitoring)))
-    #expect("\(Refusal.restricted(.inputMonitoring))" == "hands cannot run without Input Monitoring: your Mac's administrator does not allow hands to use it")
+// A restricted permission stops setup wherever it falls, even behind a step the person could still take: no step taken
+// would let hands run.
+@Test(arguments: Permission.allCases)
+func aRestrictedPermissionStopsTheAppWithItsReason(permission: Permission) throws {
+    var given = Dictionary(uniqueKeysWithValues: Permission.allCases.map { ($0, Access.undecided) })
+    given[permission] = .restricted
+    #expect(try standing(FakePrivacy(given)) == .restricted(permission))
+    #expect("\(Refusal.restricted(permission))" == "your Mac's administrator does not allow hands to use \(permission.name), so macOS shows no request for it and hands cannot run without it")
+}
+
+@Test func eachStepSaysWhereItFallsAmongTheSteps() {
+    #expect(Permission.allCases.map(\.counter) == ["Step 1 of 2", "Step 2 of 2"])
 }

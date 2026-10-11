@@ -89,10 +89,10 @@ final class Setup: NSObject, NSWindowDelegate {
         }
     }
 
-    func observe(_ accesses: [Access]) {
+    func observe(_ accesses: Accesses) {
         switch stage(accesses) {
-        case .stopped(let why):
-            fail("\(why)")
+        case .restricted(let permission):
+            fail("\(HandsLogic.Refusal.restricted(permission))")
             return
         case .ready:
             over = true
@@ -110,10 +110,10 @@ final class Setup: NSObject, NSWindowDelegate {
         RunLoop.main.add(later, forMode: .common)
     }
 
-    func show(_ permission: Permission, _ access: Access) {
+    func show(_ permission: Permission, _ access: Pending) {
         said("permissions: showing the \(permission.name) step; macOS says it is \(access.rawValue)")
         shown = permission
-        counter.stringValue = "Step \(Permission.allCases.firstIndex(of: permission)! + 1) of \(Permission.allCases.count)"
+        counter.stringValue = permission.counter
         heading.stringValue = permission.name
         purpose.stringValue = permission.purpose
         answer.stringValue = permission.answer

@@ -132,7 +132,7 @@ public enum Refusal: Error, Equatable, CustomStringConvertible {
         case .askerEnded:
             "the app that asked has ended"
         case .restricted(let permission):
-            "hands cannot run without \(permission.name): your Mac's administrator does not allow hands to use it"
+            "your Mac's administrator does not allow hands to use \(permission.name), so macOS shows no request for it and hands cannot run without it"
         case .unreset(let permission, let why):
             // tccutil finds hands.app through Spotlight, so it fails for a bundle Spotlight does not index.
             "could not reset \(permission.name), so macOS would show no request for it: \(why)"
@@ -192,9 +192,27 @@ struct Unreadable: Error, CustomStringConvertible {
     var description: String { "it answered \(output.debugDescription), not a line for each of \(Permission.allCases.map(\.service).joined(separator: ", "))" }
 }
 
-// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access, in Permission.allCases' order: one
-// line for each permission, and nothing else.
-public func accesses(_ output: String) throws -> [Access] {
+// What macOS says of every permission, one field each, so no permission can be missing from it.
+public struct Accesses: Equatable, Sendable {
+    public let microphone: Access
+    public let inputMonitoring: Access
+
+    public init(microphone: Access, inputMonitoring: Access) {
+        self.microphone = microphone
+        self.inputMonitoring = inputMonitoring
+    }
+
+    public subscript(_ permission: Permission) -> Access {
+        switch permission {
+        case .microphone: microphone
+        case .inputMonitoring: inputMonitoring
+        }
+    }
+}
+
+// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access: one line for each permission, and
+// nothing else.
+public func accesses(_ output: String) throws -> Accesses {
     let unreadable = Unreadable(output: output)
     let said = try Dictionary(output.split(separator: "\n").map { line -> (String, Access) in
         let words = line.split(separator: " ").map(String.init)
@@ -202,30 +220,9 @@ public func accesses(_ output: String) throws -> [Access] {
         return (words[0], access)
     }, uniquingKeysWith: { _, _ in throw unreadable })
     guard said.count == Permission.allCases.count else { throw unreadable }
-    return try Permission.allCases.map { permission in
+    func of(_ permission: Permission) throws -> Access {
         guard let access = said[permission.service] else { throw unreadable }
         return access
     }
-}
-
-// Where the setup window stands, given what macOS says of every permission.
-public enum Stage: Equatable, Sendable {
-    // macOS grants every permission: hands runs, and the window is gone.
-    case ready
-    // The step the window shows: the first permission macOS does not grant, and what macOS says of it.
-    case step(Permission, Access)
-    // A permission the person cannot grant: the app stops and says why.
-    case stopped(Refusal)
-}
-
-// [LAW:one-source-of-truth] the step shown is never stored: it is read from macOS's answer each time. A restricted
-// permission stops setup wherever it falls, even behind a step the person could still take, since no step taken
-// would let hands run.
-public func stage(_ accesses: [Access]) -> Stage {
-    let said = zip(Permission.allCases, accesses)
-    if let (blocked, _) = said.first(where: { $0.1 == .restricted }) {
-        return .stopped(.restricted(blocked))
-    }
-    guard let (permission, access) = said.first(where: { $0.1 != .granted }) else { return .ready }
-    return .step(permission, access)
+    return Accesses(microphone: try of(.microphone), inputMonitoring: try of(.inputMonitoring))
 }
