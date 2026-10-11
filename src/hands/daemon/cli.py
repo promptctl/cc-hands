@@ -30,7 +30,7 @@ from hands.core.tmux import Keyboard
 from hands.sessions import audit, firstrun, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.startsession import as_from_a_terminal
-from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
+from hands.sessions.hookconfig import MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -166,10 +166,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     chosen.add_argument("--claudeai", action="store_const", const="claudeai", dest="method", help="log the brain in on a Claude plan, as a brain with no login is when neither is named")
     chosen.add_argument("--console", action="store_const", const="console", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
-    commands.add_parser("install-plugin", help=f"install hands' Claude Code plugin, {PLUGIN_ID}, for every session, at this terminal: Claude Code shows the command `hands plugin` and asks the person to accept it, which is said before it asks; exits 0 only when the plugin is installed and enabled, asking nothing when it already is; 1 when Claude Code asked and it is not, as when the person declines; 2 when Claude Code could not be asked")
+    commands.add_parser("install-plugin", help=f"write hands' Claude Code plugin, its hooks and skills run by this hands' Python, into a marketplace in the home, and install it from there, {PLUGIN_ID}, for every session, asking nothing; exits 0 only when Claude Code lists this plugin installed and enabled; 1 when it does not; 2 when run under the brain's Claude Code config, which no session of the person's runs under")
     commands.add_parser("first-run", help="answer, at this terminal, what the person's own Claude Code asks only once: its theme and login, whether to trust the folder `hands smoke` starts its session in, and whether to use an API key it is given, by starting it there, then its own login if it has none; each said before it is asked, and nothing asked when all are answered; exits 0 only when they are; 1 when something is still unanswered after; 2 when Claude Code could not be asked")
     commands.add_parser("grant", help="have the app hands runs in given macOS's Input Monitoring grant, which hands needs to hear the talk key in other apps: macOS is asked, System Settings opened at the grant, what to turn on said, and a new process asked each second whether it has the grant, for up to 5 minutes; exits 0 only when it has; 1 when it was not given in time; 2 when no app holds hands, as over ssh, so it cannot be given here")
-    commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
@@ -314,7 +313,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "install-fritter":
             return install_fritter(home, record)
         case "install-plugin":
-            return install_plugin(record)
+            return install_plugin(home, record)
         case "first-run":
             return first_run(home, record)
         case "grant":
@@ -322,8 +321,6 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             from hands.voice import grant
 
             return grant.give(grant.on_this_mac(), record)
-        case "plugin":
-            return render_plugin(home, record)
         case "restart":
             return asked_to_restart(home)
         case "smoke":
@@ -766,51 +763,49 @@ def install_fritter(home: Home, record: audit.Record) -> int:
                 return 1
 
 
-def install_plugin(record: audit.Record) -> int:
-    # [LAW:nothing-unseen] an install is a unit of work: what Claude Code said of the plugin before, whether the
-    # marketplace it comes from was there or added, what its install exited with when it asked, and what it said after.
-    # Exits 1 when Claude Code asked and the plugin is not there after, as when the person declines; 2 when Claude Code
-    # could not be asked, which asking again does not mend.
+def install_plugin(home: Home, record: audit.Record) -> int:
+    # [LAW:nothing-unseen] an install is a unit of work: the config it installs into, the plugin it rendered, how it found
+    # the marketplace, each `claude plugin` command it ran and how it exited, and what Claude Code lists after.
+    # [LAW:dataflow-not-control-flow] the same commands run on every install, a first or an upgrade: the marketplace is
+    # brought to the home's, then the plugin installed, which enables one that is disabled, then updated, which moves an
+    # installed one onto this render. Only how the marketplace is brought there depends on how it was found.
     path = os.environ.get("PATH", "")
     with wide.unit("plugin.install", record):
-        before = readiness.plugin(path)
-        wide.annotate(before=type(before).__name__.lower())
-        match before:
-            case readiness.Ready(said=said):
-                print(said)
-                return 0
+        config = readiness.config_dir(os.environ, Path.cwd())
+        wide.annotate(config=config)
+        # [LAW:parse-dont-validate] the brain runs under a config of its own, which every command it runs inherits; the
+        # person's sessions never run under it, so an install there joins none of them.
+        if config == Path(os.path.realpath(home.brain)):
+            return not_installed(f"Claude Code here runs under the brain's config, {config}, which none of the person's sessions run under: run `hands install-plugin` in a terminal", 2)
+        rendered = marketplace.render(home, sys.executable)
+        wide.annotate(plugin=rendered.plugin, version=rendered.version, written=rendered.written)
+        found = readiness.marketplace(path, home.plugins)
+        wide.annotate(marketplace=type(found).__name__.lower())
+        root = str(home.plugins)
+        match found:
             case readiness.Unknown(said=said):
-                return not_installed(said, 2)
-            case readiness.Missing():
-                pass
-        # A marketplace the person added from a checkout is theirs: Claude Code refuses to add the same name again
-        # from another source.
-        source = readiness.marketplace(path)
-        wide.annotate(marketplace=type(source).__name__.lower())
-        match source:
-            case readiness.Unknown(said=said):
-                return not_installed(said, 2)
-            case readiness.Missing():
-                added = subprocess.run(["claude", "plugin", "marketplace", "add", MARKETPLACE])
-                wide.annotate(marketplace_add_exit=added.returncode)
-                if added.returncode != 0:
-                    return not_installed(f"`claude plugin marketplace add {MARKETPLACE}` failed ({added.returncode})", 2)
+                return not_installed(said, 1)
             case readiness.Ready():
-                pass
-        told(f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y")
-        # Over an install that is disabled, this enables it again and asks nothing (Claude Code 2.1.289).
-        installed = subprocess.run(["claude", "plugin", "install", "--scope", "user", PLUGIN_ID])
-        wide.annotate(install_exit=installed.returncode)
-        after = readiness.plugin(path)
+                brought = [("marketplace_update", ("plugin", "marketplace", "update", MARKETPLACE_NAME))]
+            case readiness.Missing():
+                brought = [("marketplace_add", ("plugin", "marketplace", "add", root))]
+            case readiness.Elsewhere():
+                # Claude Code refuses to add a marketplace under a name it already has from another source.
+                brought = [("marketplace_remove", ("plugin", "marketplace", "remove", MARKETPLACE_NAME)), ("marketplace_add", ("plugin", "marketplace", "add", root))]
+        installed = [("install", ("plugin", "install", "--scope", "user", PLUGIN_ID)), ("update", ("plugin", "update", "--scope", "user", PLUGIN_ID))]
+        for step, command in [*brought, *installed]:
+            ran = subprocess.run(["claude", *command], stdin=subprocess.DEVNULL)
+            wide.annotate(**{f"{step}_exit": ran.returncode})
+            if ran.returncode != 0:
+                return not_installed(f"`claude {' '.join(command)}` failed ({ran.returncode})", 1)
+        after = readiness.plugin(path, rendered.version)
         wide.annotate(after=type(after).__name__.lower())
         match after:
             case readiness.Ready(said=said):
                 print(said)
                 return 0
-            case readiness.Missing(said=said):
+            case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 return not_installed(said, 1)
-            case readiness.Unknown(said=said):
-                return not_installed(said, 2)
 
 
 def typed_ahead_dropped() -> None:
@@ -882,20 +877,6 @@ def not_installed(said: str, status: int) -> int:
     wide.fail(said)
     print(f"hands install-plugin: {said}", file=sys.stderr)
     return status
-
-
-def render_plugin(home: Home, record: audit.Record) -> int:
-    # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
-    # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
-    # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
-    # report and never costs a session its hooks.
-    with wide.unit("plugin.render", record):
-        wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
-        rendered = marketplace.render(home, sys.executable)
-        wide.annotate(plugin=rendered.plugin, written=rendered.written)
-    # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory.
-    print(rendered.plugin)
-    return 0
 
 
 # How often `hands log` looks for new lines.

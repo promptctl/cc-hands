@@ -1,13 +1,14 @@
-"""The plugin hands' marketplace entry installs: the directory its command source, `hands plugin`, prints.
+"""hands' Claude Code plugin, written by the installed hands into a marketplace in its home that Claude Code installs from.
 
-Claude Code runs that command at install and again once per session, and copies the directory it prints into its plugin
-cache (code.claude.com/docs/en/plugins/marketplace-reference, "command plugin source"), so a session's hooks are always
-the installed hands' own. The plugin's files are in hands' package, beside this module. The one thing a package cannot
-carry is which interpreter runs it, so the launcher every hook and skill names is written here, for the interpreter
-that runs this.
+The plugin's files are in hands' package, beside this module. The one thing a package cannot carry is which interpreter
+runs it, so the launcher every hook and skill names is written here, for the interpreter that runs this. Claude Code loads
+a plugin from a local marketplace in place, from the directory the marketplace's manifest names, so each plugin rendered
+is a directory of its own, named by its content, and the manifest is moved onto the newest.
 """
 
 import hashlib
+import json
+import os
 import shlex
 import shutil
 import tempfile
@@ -15,17 +16,31 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from hands.sessions.hookconfig import LAUNCHER
+from hands.sessions.hookconfig import LAUNCHER, MARKETPLACE_NAME
 from hands.sessions.home import Home
 
 # The plugin's files as hands' package carries them: everything but its launcher.
 PACKAGED = Path(__file__).parent / "plugin"
+# Where a plugin's manifest is within it, and a marketplace's within its root.
+PLUGIN_MANIFEST = ".claude-plugin/plugin.json"
+MARKETPLACE_MANIFEST = ".claude-plugin/marketplace.json"
+
+
+@dataclass(frozen=True)
+class Plugin:
+    """The plugin for one interpreter, before it is written."""
+
+    # [LAW:one-source-of-truth] the digest of the package's files and the launcher: the directory's name, and the version
+    # its manifest carries, so what Claude Code lists of an installed plugin says which render it is.
+    version: str
+    files: Mapping[str, bytes]
 
 
 @dataclass(frozen=True)
 class Rendered:
     plugin: Path
-    # False when a session before had rendered this same plugin: the directory is named by its content.
+    version: str
+    # False when an install before had rendered this same plugin.
     written: bool
 
 
@@ -40,42 +55,68 @@ def launcher(interpreter: str) -> str:
     quoted = shlex.quote(interpreter)
     return (
         "#!/bin/sh\n"
-        f"[ -x {quoted} ] || {{ echo {shlex.quote(f'hands: the plugin runs {interpreter}, which is gone; install hands, then run `claude plugin update hands@cc-hands`')} >&2; exit 1; }}\n"
+        f"[ -x {quoted} ] || {{ echo {shlex.quote(f'hands: the plugin runs {interpreter}, which is gone; install hands again')} >&2; exit 1; }}\n"
         f'exec {quoted} -I "$@"\n'
     )
 
 
-def render(home: Home, interpreter: str) -> Rendered:
-    """Write the plugin, its launcher running `interpreter`, under the home, in a directory named by its content."""
-    # [LAW:one-source-of-truth] the plugin's every file by its path within it, the package's and the launcher: what the
-    # directory is named by and what is written into it.
+def plugin(interpreter: str) -> Plugin:
+    """The plugin whose launcher runs `interpreter`."""
     files = {path.relative_to(PACKAGED).as_posix(): path.read_bytes() for path in PACKAGED.rglob("*") if path.is_file()}
     files[LAUNCHER] = launcher(interpreter).encode()
-    plugin = home.plugins / digest(files)
-    # Claude Code runs this before every session: once a session has written these files, the rest only name them.
-    if plugin.is_dir():
-        return Rendered(plugin, written=False)
-    home.plugins.mkdir(parents=True, exist_ok=True)
-    staged = Path(tempfile.mkdtemp(prefix=".staged-", dir=home.plugins))
+    version = digest(files)
+    manifest = json.loads(files[PLUGIN_MANIFEST])
+    return Plugin(version, {**files, PLUGIN_MANIFEST: json.dumps({**manifest, "version": version}, indent=2).encode()})
+
+
+def render(home: Home, interpreter: str) -> Rendered:
+    """Write the plugin, its launcher running `interpreter`, into the home's marketplace, and point the marketplace at it."""
+    rendering = plugin(interpreter)
+    rendered = _written(home.plugins / rendering.version, rendering)
+    manifest = json.loads(rendering.files[PLUGIN_MANIFEST])
+    marketplace = {
+        "name": MARKETPLACE_NAME,
+        "description": "hands, hands-free control of Claude Code, as the hands installed writes it.",
+        "owner": manifest["author"],
+        "plugins": [{"name": manifest["name"], "description": manifest["description"], "source": f"./{rendered.plugin.name}"}],
+    }
+    _replace(home.plugins / MARKETPLACE_MANIFEST, json.dumps(marketplace, indent=2).encode())
+    return rendered
+
+
+def _written(directory: Path, rendering: Plugin) -> Rendered:
+    # Sessions load the plugin from this directory, so one already there is never written again.
+    if directory.is_dir():
+        return Rendered(directory, rendering.version, written=False)
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=".staged-", dir=directory.parent))
     try:
-        for name, content in files.items():
+        for name, content in rendering.files.items():
             (staged / name).parent.mkdir(parents=True, exist_ok=True)
             (staged / name).write_bytes(content)
         (staged / LAUNCHER).chmod(0o755)
         staged.chmod(0o755)
-        # [LAW:no-ambient-temporal-coupling] sessions start together, each running this: a directory is staged whole and
-        # renamed into place, so Claude Code never copies one half written, and one already there has these same files.
+        # [LAW:no-ambient-temporal-coupling] a directory is staged whole and renamed into place, so Claude Code never
+        # loads one half written, and one already there has these same files.
         try:
-            staged.rename(plugin)
+            staged.rename(directory)
         except OSError:
-            if not plugin.is_dir():
+            if not directory.is_dir():
                 raise
-            return Rendered(plugin, written=False)
-        return Rendered(plugin, written=True)
+            return Rendered(directory, rendering.version, written=False)
+        return Rendered(directory, rendering.version, written=True)
     finally:
         # Renamed into place, the staged directory is gone; anything else it became, failed or redundant, goes with it.
         if staged.exists():
             shutil.rmtree(staged)
+
+
+def _replace(path: Path, content: bytes) -> None:
+    """Write `path` whole, beside it and renamed into place, so a reader never sees half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    staging.write_bytes(content)
+    staging.replace(path)
 
 
 def digest(files: Mapping[str, bytes]) -> str:

@@ -1,52 +1,64 @@
-"""`hands install-plugin`, run at a terminal as install.sh runs it: Claude Code's own accept prompt is said before it is
-asked and answered by the person alone, and a plugin already installed is not asked for again.
+"""`hands install-plugin`: hands writes its plugin into a marketplace in its home and installs it from there, asking
+nothing, on a first install, over an older one, and over a marketplace of its name added from elsewhere.
 
-`claude` is a stand-in that records each call, lists the plugin as its state file says, and reads its [y/N] answer from
-the terminal as Claude Code does.
+`claude` is a stand-in that records each call and keeps its marketplaces and plugins in files, as Claude Code does: a
+marketplace added from a directory, and a plugin installed or updated to the version that directory's manifest names.
+Its stdin is never a terminal, and it reads none.
 """
 
 import json
 import os
-import select
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
-from hands.sessions.hookconfig import MARKETPLACE, PLUGIN_ID
+from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.marketplace import plugin
 
 CLAUDE = r"""#!/bin/bash
 echo "claude $*" >>"$ROOT/calls"
-case "$1 $2" in
-  "plugin list")
+[ ! -t 0 ] || { echo "claude was given a terminal" >&2; exit 9; }
+json() { "$PYTHON" -c "import json, sys; print($1)" "${@:2}"; }
+# The version the marketplace added from a directory names for its plugin, as an install or update records it.
+offered() {
+  local root
+  root=$(json 'json.load(open(sys.argv[1]))[0]["path"]' "$ROOT/marketplaces")
+  json 'json.load(open(sys.argv[1] + "/" + json.load(open(sys.argv[1] + "/.claude-plugin/marketplace.json"))["plugins"][0]["source"] + "/.claude-plugin/plugin.json"))["version"]' "$root"
+}
+listed() { printf '[{"id": "%s", "scope": "user", "enabled": %s, "version": "%s"}]' "$PLUGIN_ID" "$1" "$2" >"$ROOT/listed"; }
+case "$1 $2 $3" in
+  "plugin list --json")
     [ ! -e "$ROOT/list-fails" ] || { echo "cannot list" >&2; exit 3; }
     cat "$ROOT/listed" 2>/dev/null || echo "[]" ;;
-  "plugin marketplace")
-    case "$3" in
-      list) cat "$ROOT/marketplaces" 2>/dev/null || echo "[]" ;;
-      add)
-        [ ! -e "$ROOT/add-fails" ] || exit 4
-        printf '[{"name": "cc-hands", "source": "github", "repo": "%s"}]' "$4" >"$ROOT/marketplaces" ;;
-    esac ;;
-  "plugin install")
-    printf 'Run this command now? [y/N] '
-    read -r answer
-    if [ "$answer" = y ]; then
-      printf '[{"id": "%s", "scope": "user", "enabled": true}]' "$PLUGIN_ID" >"$ROOT/listed"
+  "plugin marketplace list") cat "$ROOT/marketplaces" 2>/dev/null || echo "[]" ;;
+  "plugin marketplace add")
+    [ ! -e "$ROOT/add-fails" ] || exit 4
+    [ -f "$4/.claude-plugin/marketplace.json" ] || { echo "no marketplace at $4" >&2; exit 5; }
+    printf '[{"name": "cc-hands", "source": "directory", "path": "%s"}]' "$4" >"$ROOT/marketplaces" ;;
+  # Removing a marketplace uninstalls what was installed from it.
+  "plugin marketplace remove") echo "[]" >"$ROOT/marketplaces"; rm -f "$ROOT/listed" ;;
+  "plugin marketplace update") ;;
+  # Over an install, enabled or not, an install enables it and changes no version.
+  "plugin install --scope")
+    if [ -e "$ROOT/listed" ]; then
+      listed true "$(json 'json.load(open(sys.argv[1]))[0]["version"]' "$ROOT/listed")"
     else
-      echo Aborted.
-      exit 1
+      listed true "$(offered)"
     fi ;;
+  "plugin update --scope") listed true "$(offered)" ;;
+  *) echo "unexpected: $*" >&2; exit 8 ;;
 esac
 """
-ANNOUNCED = f"Claude Code now shows the command `hands plugin`, which installs {PLUGIN_ID}, and asks whether to run it: answer y"
+VERSION = plugin(sys.executable).version
+INSTALLED = [f"claude plugin install --scope user {PLUGIN_ID}", f"claude plugin update --scope user {PLUGIN_ID}", "claude plugin list --json"]
 
 
 @pytest.fixture
@@ -56,43 +68,28 @@ def root() -> Iterator[Path]:
     stand_in.parent.mkdir()
     stand_in.write_text(CLAUDE)
     stand_in.chmod(0o755)
+    (root / "person").mkdir()
     yield root
     shutil.rmtree(root)
 
 
-def at_a_terminal(root: Path, typed_ahead: bytes, answer: bytes) -> tuple[int, str]:
-    """Run `hands install-plugin` on a terminal holding typed_ahead before it starts, answer the [y/N] with answer once
-    it is asked, and return its exit and everything the terminal showed."""
-    controller, terminal = os.openpty()
-    os.write(controller, typed_ahead)
-    environment = {**os.environ, "PATH": f"{root / 'bin'}:/usr/bin:/bin", "ROOT": str(root), "PLUGIN_ID": PLUGIN_ID, "HANDS_HOME": str(root / "home")}
-    process = subprocess.Popen([sys.executable, "-m", "hands.daemon", "install-plugin"], env=environment, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
-    os.close(terminal)
-    shown = b""
-    answered = False
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([controller], [], [], 0.1)
-        if not ready:
-            if process.poll() is not None:
-                break
-            continue
-        try:
-            chunk = os.read(controller, 4096)
-        except OSError:  # EIO: the last process holding the terminal let go of it
-            break
-        if not chunk:
-            break
-        shown += chunk
-        if not answered and b"[y/N]" in shown:
-            os.write(controller, answer)
-            answered = True
-    exit = process.wait(timeout=10)
-    os.close(controller)
-    return exit, shown.decode().replace("\r\n", "\n")
+def install(root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
+    # The person's own environment: no CLAUDE_CONFIG_DIR unless the case gives one.
+    inherited = {name: value for name, value in os.environ.items() if name != "CLAUDE_CONFIG_DIR"}
+    given = {
+        **inherited,
+        "PATH": f"{root / 'bin'}:/usr/bin:/bin",
+        "HOME": str(root / "person"),
+        "ROOT": str(root),
+        "PYTHON": sys.executable,
+        "PLUGIN_ID": PLUGIN_ID,
+        "HANDS_HOME": str(root / "home"),
+        **environment,
+    }
+    return subprocess.run([sys.executable, "-m", "hands.daemon", "install-plugin"], env=given, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
 
 
-def events(root: Path) -> list[dict[str, object]]:
+def events(root: Path) -> list[dict[str, Any]]:
     lines = (json.loads(line) for line in segment(Home(root / "home").audit, 0).read_text().splitlines())
     return [line for line in lines if line.get("event") == "plugin.install"]
 
@@ -101,61 +98,99 @@ def calls(root: Path) -> list[str]:
     return (root / "calls").read_text().splitlines()
 
 
-def test_the_accept_prompt_is_announced_and_a_key_typed_before_it_is_not_taken_as_the_answer(root: Path) -> None:
-    # An n pressed during the run's earlier steps sits in the terminal; the y the person gives at the prompt answers it.
-    exit, shown = at_a_terminal(root, typed_ahead=b"n\n", answer=b"y\n")
-    assert exit == 0, shown
-    assert shown.index(ANNOUNCED) < shown.index("[y/N]")
-    assert f"the plugin {PLUGIN_ID} is installed and enabled for every session" in shown
-    list_call = "claude plugin list --json"
-    added = [list_call, "claude plugin marketplace list --json", f"claude plugin marketplace add {MARKETPLACE}"]
-    assert calls(root) == [*added, f"claude plugin install --scope user {PLUGIN_ID}", list_call]
-    # [LAW:nothing-unseen] the install's event: what was found before, what the install exited with, what was there after.
+def listed(root: Path) -> list[dict[str, Any]]:
+    return json.loads((root / "listed").read_text())
+
+
+def rendered(root: Path) -> dict[str, object]:
+    return {"config": str(root / "person" / ".claude"), "plugin": str(Home(root / "home").plugins / VERSION), "version": VERSION}
+
+
+def added_from(root: Path, source: dict[str, str]) -> None:
+    (root / "marketplaces").write_text(json.dumps([{"name": "cc-hands", **source}]))
+
+
+def test_a_first_install_adds_the_home_s_marketplace_and_installs_this_hands_plugin_asking_nothing(root: Path) -> None:
+    ran = install(root)
+    assert ran.returncode == 0, ran.stderr
+    assert f"the plugin {PLUGIN_ID} {VERSION} is installed and enabled for every session" in ran.stdout
+    plugins = Home(root / "home").plugins
+    assert calls(root) == ["claude plugin marketplace list --json", f"claude plugin marketplace add {plugins}", *INSTALLED]
+    assert listed(root) == [{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": VERSION}]
+    # [LAW:nothing-unseen] the install's event: where, what it rendered, how it found the marketplace, each exit, and after.
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("ok", {"before": "missing", "marketplace": "missing", "marketplace_add_exit": 0, "install_exit": 0, "after": "ready"})
+    facts = {**rendered(root), "written": True, "marketplace": "missing", "marketplace_add_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
+    assert (event["outcome"], event["facts"]) == ("ok", facts)
 
 
-def test_declining_the_accept_prompt_fails_naming_the_plugin_as_not_installed(root: Path) -> None:
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"n\n")
-    assert exit == 1
-    assert f"hands install-plugin: the plugin {PLUGIN_ID} is not installed" in shown
+def test_an_install_over_another_hands_plugin_moves_it_onto_this_one(root: Path) -> None:
+    added_from(root, {"source": "directory", "path": str(Home(root / "home").plugins)})
+    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": "0123456789abcdef"}]))
+    ran = install(root)
+    assert ran.returncode == 0, ran.stderr
+    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace update cc-hands", *INSTALLED]
+    assert listed(root)[0]["version"] == VERSION
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {"before": "missing", "marketplace": "missing", "marketplace_add_exit": 0, "install_exit": 1, "after": "missing"})
+    assert event["facts"] == {**rendered(root), "written": True, "marketplace": "ready", "marketplace_update_exit": 0, "install_exit": 0, "update_exit": 0, "after": "ready"}
 
 
-def test_a_plugin_already_installed_is_not_asked_for_again(root: Path) -> None:
-    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True}]))
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 0, shown
-    assert ANNOUNCED not in shown and "[y/N]" not in shown
-    assert calls(root) == ["claude plugin list --json"]
+def test_a_disabled_plugin_is_enabled(root: Path) -> None:
+    added_from(root, {"source": "directory", "path": str(Home(root / "home").plugins)})
+    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": False, "version": VERSION}]))
+    assert install(root).returncode == 0
+    assert listed(root) == [{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": VERSION}]
+
+
+def test_a_marketplace_of_its_name_added_from_elsewhere_is_replaced_by_the_home_s(root: Path) -> None:
+    # As hands installed its plugin before: from GitHub, through a command the person had to accept.
+    added_from(root, {"source": "github", "repo": "promptctl/cc-hands"})
+    (root / "listed").write_text(json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True, "version": "unknown"}]))
+    ran = install(root)
+    assert ran.returncode == 0, ran.stderr
+    plugins = Home(root / "home").plugins
+    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace remove cc-hands", f"claude plugin marketplace add {plugins}", *INSTALLED]
+    assert listed(root)[0]["version"] == VERSION
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("ok", {"before": "ready"})
+    replaced = {"marketplace": "elsewhere", "marketplace_remove_exit": 0, "marketplace_add_exit": 0}
+    assert event["facts"] == {**rendered(root), "written": True, **replaced, "install_exit": 0, "update_exit": 0, "after": "ready"}
 
 
-def test_a_marketplace_that_cannot_be_added_fails_before_anything_is_asked(root: Path) -> None:
+def test_a_second_install_writes_nothing_new_and_runs_the_same_commands(root: Path) -> None:
+    assert install(root).returncode == 0
+    (root / "calls").unlink()
+    again = install(root)
+    assert again.returncode == 0, again.stderr
+    assert calls(root) == ["claude plugin marketplace list --json", "claude plugin marketplace update cc-hands", *INSTALLED]
+    assert events(root)[-1]["facts"]["written"] is False
+
+
+def test_a_command_that_fails_stops_the_install_naming_it(root: Path) -> None:
     (root / "add-fails").touch()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 2
-    assert f"`claude plugin marketplace add {MARKETPLACE}` failed (4)" in shown and "[y/N]" not in shown
+    ran = install(root)
+    assert ran.returncode == 1
+    plugins = Home(root / "home").plugins
+    assert f"hands install-plugin: `claude plugin marketplace add {plugins}` failed (4)" in ran.stderr
+    assert not (root / "listed").exists()
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {"before": "missing", "marketplace": "missing", "marketplace_add_exit": 4})
+    assert (event["outcome"], event["facts"]) == ("failed", {**rendered(root), "written": True, "marketplace": "missing", "marketplace_add_exit": 4})
 
 
-def test_a_claude_that_cannot_list_its_plugins_installs_nothing(root: Path) -> None:
+def test_a_claude_that_cannot_list_its_plugins_is_said_and_fails(root: Path) -> None:
     (root / "list-fails").touch()
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 2
-    assert "`claude plugin list` failed (3)" in shown and "cannot list" in shown
-    assert calls(root) == ["claude plugin list --json"]
+    ran = install(root)
+    assert ran.returncode == 1
+    assert "`claude plugin list` failed (3)" in ran.stderr and "cannot list" in ran.stderr
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("failed", {"before": "unknown"})
+    assert (event["outcome"], event["facts"]["after"]) == ("failed", "unknown")
 
 
-def test_a_marketplace_the_person_added_from_a_checkout_is_installed_from_as_it_is(root: Path) -> None:
-    (root / "marketplaces").write_text(json.dumps([{"name": "cc-hands", "source": "directory", "path": "/code/cc-hands"}]))
-    exit, shown = at_a_terminal(root, typed_ahead=b"", answer=b"y\n")
-    assert exit == 0, shown
-    assert not [call for call in calls(root) if call.startswith("claude plugin marketplace add")]
+def test_an_install_under_the_brain_s_config_installs_nothing(root: Path) -> None:
+    # The brain's every command inherits its CLAUDE_CONFIG_DIR, which none of the person's sessions run under.
+    brain = Home(root / "home").brain
+    brain.mkdir(parents=True)
+    ran = install(root, CLAUDE_CONFIG_DIR=str(brain))
+    assert ran.returncode == 2
+    assert f"Claude Code here runs under the brain's config, {brain}" in ran.stderr
+    assert not (root / "calls").exists() and not Home(root / "home").plugins.exists()
     [event] = events(root)
-    assert (event["outcome"], event["facts"]) == ("ok", {"before": "missing", "marketplace": "ready", "install_exit": 0, "after": "ready"})
+    assert (event["outcome"], event["facts"]) == ("failed", {"config": str(brain)})

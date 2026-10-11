@@ -22,7 +22,8 @@ from hands.sessions.hookconfig import (
     rendered,
 )
 from hands.sessions.hooks import hook_output
-from hands.sessions.marketplace import PACKAGED
+from hands.sessions.home import Home
+from hands.sessions.marketplace import MARKETPLACE_MANIFEST, PACKAGED, PLUGIN_MANIFEST, render
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 
@@ -78,8 +79,9 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}
 
 
-def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_whose_entry_runs_hands_plugin() -> None:
-    marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
-    plugin = json.loads((PACKAGED / ".claude-plugin" / "plugin.json").read_text())
+def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_hands_writes(tmp_path: Path) -> None:
+    rendered = render(Home(tmp_path), sys.executable)
+    marketplace = json.loads((tmp_path / "plugins" / MARKETPLACE_MANIFEST).read_text())
+    plugin = json.loads((PACKAGED / PLUGIN_MANIFEST).read_text())
     assert f"{plugin['name']}@{marketplace['name']}" == PLUGIN_ID
-    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [{"source": "command", "command": "hands plugin"}]
+    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [f"./{rendered.plugin.name}"]

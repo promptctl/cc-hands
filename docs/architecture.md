@@ -675,23 +675,26 @@ report too late to be useful: that a tool the daemon is still waiting on a permi
 for has run, because its dialog was answered at the keyboard. They are declared
 `async`, so the shim they spawn on every tool call never delays the agent.
 
-**Installing the hooks.** The repository is a Claude Code marketplace
-(`.claude-plugin/marketplace.json`) whose only entry, `hands@cc-hands`, has a `command`
-source: Claude Code runs `hands plugin` and copies the directory it prints into its
-plugin cache, at install and again once per session, so the hooks always come from the
-installed hands. The plugin's files are package data, in
-`src/hands/sessions/plugin`: `.claude-plugin/plugin.json`, `hooks/hooks.json`, and the
-skills. A package cannot specify which interpreter runs it, so `hands plugin`
-(`hands.sessions.marketplace`) copies these files and writes the launcher
-`hooks/python` next to them. The launcher execs the interpreter that ran `hands plugin`
-with `-I`. This keeps the session's directory (where Claude Code runs the hook) and the
-user's `PYTHON*` variables off the path, so a project's own `json.py` or `hands/`
-cannot replace hands' modules. `hands plugin` writes the files under the hands home
-directory, in `plugins/<digest>`, a directory named by its content. The directory is
-staged in full and then renamed into place, so sessions that start at the same time
-never give Claude Code a partially written directory. Installing the plugin installs
-the hooks; disabling or uninstalling it removes them, and hands does not edit any
-settings file. `hooks.json` is generated from `hookconfig` (`python -m
+**Installing the hooks.** `hands install-plugin` writes the plugin and installs it, and
+asks nothing. The plugin's files are package data, in `src/hands/sessions/plugin`:
+`.claude-plugin/plugin.json`, `hooks/hooks.json`, and the skills. A package cannot
+specify which interpreter runs it, so `hands.sessions.marketplace` copies these files and
+writes the launcher `hooks/python` next to them. The launcher execs the interpreter of
+the hands that wrote it, with `-I`. This keeps the session's directory (where Claude
+Code runs the hook) and the user's `PYTHON*` variables off the path, so a project's own
+`json.py` or `hands/` cannot replace hands' modules. The files go in the hands home
+directory, in `plugins/<digest>`, a directory named by its content, and the plugin's
+manifest carries that digest as its version. The directory is staged in full and then
+renamed into place, so Claude Code never loads a partially written one. `plugins/` is
+also a local marketplace, `cc-hands`: its `.claude-plugin/marketplace.json` names the
+newest directory. `hands install-plugin` adds that marketplace to the Claude Code config
+of the terminal it runs in, replacing a `cc-hands` added from anywhere else, then runs
+`claude plugin install` and `claude plugin update` at user scope, the same commands on a
+first install and on an upgrade. It succeeds only when `claude plugin list` shows this
+hands' version enabled, and `hands check` holds the installed version to the same digest.
+It refuses to run under the brain's `CLAUDE_CONFIG_DIR`, which no session of the
+person's runs under. Installing the plugin installs the hooks; disabling or
+uninstalling it removes them, and hands does not edit any settings file. `hooks.json` is generated from `hookconfig` (`python -m
 hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json`), and a test
 fails when the checked-in file differs from what `hookconfig` declares.
 `MessageDisplay` is an HTTP hook to `hookconfig.DISPLAY_URL`, a fixed loopback port,
@@ -2494,10 +2497,9 @@ event. `hands tmux-status` is excluded because it reads the heartbeat, tmux runs
 written by the dispatcher that those commands go through (`hands.daemon.cli.commanded`),
 and it contains the command, the home it ran on, its parsed arguments, its exit code, and
 its duration. It ends as failed if the command exits with a nonzero code, and the unit of
-work the command ran, such as `plugin.render`, is in its trace. These events are written
-only to the log: Claude Code waits for `hands plugin` before a session starts, and `hands
-status` must respond regardless of the config, so no command waits on a collector or reads
-a config.toml to find one. hands specifies only the collector; the homelab determines
+work the command ran, such as `plugin.install`, is in its trace. These events are written
+only to the log: `hands status` must respond regardless of the config, so no command waits
+on a collector or reads a config.toml to find one. hands specifies only the collector; the homelab determines
 which stores are behind it.
 
 ## Endurance
