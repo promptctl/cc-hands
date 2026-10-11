@@ -14,8 +14,7 @@ func setupLevel(_ active: NSRunningApplication?) -> NSWindow.Level {
     active?.processIdentifier == getpid() || active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
 }
 
-// [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
-// from macOS once a second.
+// What macOS says is read once a second; HandsLogic's stage decides what the window does with it.
 final class Setup: NSObject, NSWindowDelegate {
     // What answers `--permissions`: this app's own executable, or a stand-in a test names.
     let asker: URL
@@ -33,7 +32,7 @@ final class Setup: NSObject, NSWindowDelegate {
     let status = NSTextField(wrappingLabelWithString: "")
     let next = NSButton(title: "Next", target: nil, action: nil)
     // The step on screen, once setup has shown one.
-    var shown: Int?
+    var shown: Permission?
     var over = false
 
     init(asker: URL, said: @escaping (String) -> Void, done: @escaping () -> Void, failed: @escaping (String) -> Void) {
@@ -91,30 +90,30 @@ final class Setup: NSObject, NSWindowDelegate {
     }
 
     func observe(_ accesses: [Access]) {
-        if let blocked = accesses.firstIndex(of: .restricted) {
-            fail("Your Mac's administrator does not allow hands to use \(Permission.allCases[blocked].name), and hands cannot run without it.")
+        switch stage(accesses) {
+        case .stopped(let why):
+            fail("\(why)")
             return
-        }
-        guard let step = accesses.firstIndex(where: { $0 != .granted }) else {
+        case .ready:
             over = true
             window.orderOut(nil)
             said("permissions: macOS grants hands.app every permission it needs")
             done()
             return
-        }
-        if step != shown {
-            show(step, accesses[step])
+        case .step(let permission, let access):
+            if permission != shown {
+                show(permission, access)
+            }
         }
         // [LAW:no-ambient-temporal-coupling] the next check is scheduled when this one ends, so two never overlap.
         let later = Timer(timeInterval: 1, repeats: false) { _ in self.check() }
         RunLoop.main.add(later, forMode: .common)
     }
 
-    func show(_ step: Int, _ access: Access) {
-        let permission = Permission.allCases[step]
+    func show(_ permission: Permission, _ access: Access) {
         said("permissions: showing the \(permission.name) step; macOS says it is \(access.rawValue)")
-        shown = step
-        counter.stringValue = "Step \(step + 1) of \(Permission.allCases.count)"
+        shown = permission
+        counter.stringValue = "Step \(Permission.allCases.firstIndex(of: permission)! + 1) of \(Permission.allCases.count)"
         heading.stringValue = permission.name
         purpose.stringValue = permission.purpose
         answer.stringValue = permission.answer
@@ -127,8 +126,7 @@ final class Setup: NSObject, NSWindowDelegate {
     }
 
     @objc func request() {
-        let step = shown!
-        let permission = Permission.allCases[step]
+        let permission = shown!
         said("permissions: asking macOS for \(permission.name)")
         status.stringValue = "Waiting for macOS to give hands \(permission.name). If you closed its request, choose Next to see it again."
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
@@ -136,7 +134,7 @@ final class Setup: NSObject, NSWindowDelegate {
         next.isEnabled = false
         ask(["request", permission.service]) { ended, _, errors in
             // A request that ends after its step was left has nothing to say about the step now shown.
-            guard self.shown == step else { return }
+            guard self.shown == permission else { return }
             self.next.isEnabled = true
             // [LAW:no-silent-failure] a request macOS never showed is reported in the window, not waited on.
             if ended.terminationReason != .exit || ended.terminationStatus != 0 {

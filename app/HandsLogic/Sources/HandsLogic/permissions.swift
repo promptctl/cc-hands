@@ -132,7 +132,7 @@ public enum Refusal: Error, Equatable, CustomStringConvertible {
         case .askerEnded:
             "the app that asked has ended"
         case .restricted(let permission):
-            "your Mac's administrator does not allow hands to use \(permission.name), so macOS shows no request for it"
+            "hands cannot run without \(permission.name): your Mac's administrator does not allow hands to use it"
         case .unreset(let permission, let why):
             // tccutil finds hands.app through Spotlight, so it fails for a bundle Spotlight does not index.
             "could not reset \(permission.name), so macOS would show no request for it: \(why)"
@@ -206,4 +206,26 @@ public func accesses(_ output: String) throws -> [Access] {
         guard let access = said[permission.service] else { throw unreadable }
         return access
     }
+}
+
+// Where the setup window stands, given what macOS says of every permission.
+public enum Stage: Equatable, Sendable {
+    // macOS grants every permission: hands runs, and the window is gone.
+    case ready
+    // The step the window shows: the first permission macOS does not grant, and what macOS says of it.
+    case step(Permission, Access)
+    // A permission the person cannot grant: the app stops and says why.
+    case stopped(Refusal)
+}
+
+// [LAW:one-source-of-truth] the step shown is never stored: it is read from macOS's answer each time. A restricted
+// permission stops setup wherever it falls, even behind a step the person could still take, since no step taken
+// would let hands run.
+public func stage(_ accesses: [Access]) -> Stage {
+    let said = zip(Permission.allCases, accesses)
+    if let (blocked, _) = said.first(where: { $0.1 == .restricted }) {
+        return .stopped(.restricted(blocked))
+    }
+    guard let (permission, access) = said.first(where: { $0.1 != .granted }) else { return .ready }
+    return .step(permission, access)
 }
