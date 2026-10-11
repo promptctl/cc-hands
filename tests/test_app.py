@@ -1,6 +1,9 @@
-"""hands.app's launcher, compiled and run: it starts hands only on a license key a stand-in for Polar says is live, or
-offline within the grace period, and only once a stand-in for macOS grants every permission; the login shell says the environment, hands runs on it as the app's child, a quit winds
-hands down, and a failure is told with this launch's own lines."""
+"""hands.app's launcher, compiled and run: it starts hands on a license key a stand-in for Polar says is live, or
+offline within the grace period, once a stand-in for macOS grants every permission; the login shell says the environment,
+hands runs on it as the app's child, and a quit winds hands down.
+
+Only paths on which the app draws nothing run here: a launched app's windows and alerts come up over whatever the person
+is using. Its license prompt, setup window, and failure alert are tested in the app's library (promptctl-testing-c3u.yjb)."""
 
 import json
 import os
@@ -84,14 +87,6 @@ def executable(tmp_path_factory: pytest.TempPathFactory, stand_in: Polar) -> Pat
 
 Open = Callable[[str, str], subprocess.Popen[bytes]]
 
-GRANTED = "Microphone granted\nListenEvent granted\n"
-
-
-def permitted(tmp_path: Path, answer: str) -> None:
-    """What the stand-in for macOS answers `hands --permissions` from here on."""
-    (tmp_path / "permissions").write_text(answer)
-
-
 def kept(tmp_path: Path, key: str, validated: datetime) -> str:
     """A license the app kept, last seen live at `validated`, as the app writes that time."""
     written = validated.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -103,12 +98,11 @@ def kept(tmp_path: Path, key: str, validated: datetime) -> str:
 def opened(executable: Path, tmp_path: Path, polar: Polar) -> Iterator[Open]:
     """Open the app on a login shell that runs `rc` before it says its environment, with `hands` on its PATH running
     `hands`; its log is tmp_path/hands.log, and the license it keeps is tmp_path/license.json, the live key unless the
-    test kept another. Asked about its permissions, a stand-in for macOS answers what tmp_path/permissions says, every one
-    granted unless the test said otherwise, and adds each question to tmp_path/asked."""
+    test kept another. Asked about its permissions, a stand-in for macOS answers every one granted, and adds each question
+    to tmp_path/asked."""
     kept(tmp_path, LIVE, datetime.now(UTC))
-    permitted(tmp_path, GRANTED)
     asker = tmp_path / "asker"
-    asker.write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "asked"}\n[ $# -eq 1 ] && exec cat {tmp_path / "permissions"}\nexit 0\n')
+    asker.write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "asked"}\n[ $# -eq 1 ] && printf "Microphone granted\\nListenEvent granted\\n"\nexit 0\n')
     asker.chmod(0o755)
     apps: list[subprocess.Popen[bytes]] = []
 
@@ -189,24 +183,6 @@ def test_a_hands_that_does_not_end_on_sigterm_is_killed_when_the_app_is_quit_aga
     assert "hands has not ended on SIGTERM, and the app was quit again: killing it" in text
 
 
-def test_a_failed_hands_is_told_with_this_launchs_lines(opened: Open, tmp_path: Path) -> None:
-    (tmp_path / "hands.log").write_text("an earlier launch's line\n")
-    app = opened("", 'echo "refused: hands is already running"; exit 3')
-    told = logged(tmp_path, "stopped: hands exited 3.").split("stopped: ", 1)[1]
-    assert "refused: hands is already running" in told and "an earlier launch's line" not in told
-    # A SIGTERM ends the app while its alert is up.
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-
-
-def test_a_shell_that_cannot_say_its_environment_is_told_with_its_words(opened: Open, tmp_path: Path) -> None:
-    app = opened('echo "open terminal failed: not a terminal" >&2; exit 1', "exit 0")
-    told = logged(tmp_path, "stopped: hands.app could not read the environment").split("stopped: ", 1)[1]
-    app.send_signal(signal.SIGTERM)
-    assert "it exited 1" in told and "open terminal failed: not a terminal" in told
-    assert "started hands run" not in logged(tmp_path, "stopped: ")
-
-
 def test_a_quit_while_the_shell_reads_its_rc_files_ends_the_app_and_the_shell(opened: Open, tmp_path: Path) -> None:
     # An interactive shell ignores SIGTERM while it reads its rc files.
     app = opened(f"echo $$ > {tmp_path / 'shell.pid'}; trap '' TERM; while :; do sleep 0.1; done", "exit 0")
@@ -261,29 +237,6 @@ def test_a_live_key_starts_hands_and_polar_hears_only_the_key_and_the_organizati
 
 
 @pytest.mark.parametrize(
-    ("status", "body", "said"),
-    [
-        (404, {"error": "ResourceNotFound", "detail": "License key is no longer active."}, "License key is no longer active."),
-        (404, {"error": "ResourceNotFound", "detail": "License key has expired."}, "License key has expired."),
-        (404, {"error": "ResourceNotFound", "detail": "License key not found."}, "License key not found."),
-        (200, {"status": "revoked", "key": LIVE}, "the key is revoked"),
-    ],
-)
-def test_a_key_polar_refuses_does_not_start_hands_and_the_person_is_told_why(
-    opened: Open, tmp_path: Path, polar: Polar, status: int, body: object, said: str
-) -> None:
-    polar.status, polar.body = status, body
-    app = opened("", "echo hands ran")
-    text = logged(tmp_path, "license: asking for a key: ")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert f"Polar did not accept the license key ending E304DA; if your subscription ended, renew it and start hands again. Polar says: {said}\n" in text
-    assert "started hands run" not in logged(tmp_path, "asking for a key") and LIVE not in text
-    # A refused key is not kept, so no later start runs it on the grace period while Polar cannot be reached.
-    assert not (tmp_path / "license.json").exists()
-
-
-@pytest.mark.parametrize(
     ("status", "body"),
     [(None, None), (503, {"error": "ServiceUnavailable"}), (200, "<html>Sign in to the hotel Wi-Fi</html>"), (407, "Proxy Authentication Required"), (404, {"detail": "Not Found"})],
     ids=["unreachable", "down", "captive-portal", "proxy", "no-such-route"],
@@ -301,26 +254,6 @@ def test_a_key_last_seen_live_within_the_grace_period_starts_hands_while_polar_c
     assert json.loads((tmp_path / "license.json").read_text())["validated"] == validated
 
 
-def test_a_key_not_seen_live_within_the_grace_period_does_not_start_hands_while_polar_cannot_be_reached(opened: Open, tmp_path: Path, polar: Polar) -> None:
-    kept(tmp_path, LIVE, datetime.now(UTC) - timedelta(days=14, hours=1))
-    polar.status, polar.body = 503, {"error": "ServiceUnavailable"}
-    app = opened("", "echo hands ran")
-    text = logged(tmp_path, "license: asking for a key: ")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert "hands has not been able to check your subscription with Polar since" in text and "HTTP 503, with no word from Polar on the key" in text
-    assert "started hands run" not in logged(tmp_path, "asking for a key")
-
-
-def test_with_no_key_kept_the_person_is_asked_for_one_and_polar_is_not(opened: Open, tmp_path: Path, polar: Polar) -> None:
-    (tmp_path / "license.json").unlink()
-    app = opened("", "echo hands ran")
-    text = logged(tmp_path, "license: asking for a key: ")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert "license: asking for a key: none is kept yet" in text and polar.asked == []
-
-
 def test_the_grace_period_is_never_longer_than_14_days(opened: Open, tmp_path: Path, polar: Polar) -> None:
     # A clock that ran ahead when Polar last said the key was live.
     kept(tmp_path, LIVE, datetime.now(UTC) + timedelta(days=30))
@@ -330,110 +263,11 @@ def test_the_grace_period_is_never_longer_than_14_days(opened: Open, tmp_path: P
     assert "14 whole days of grace left" in logged(tmp_path, "hands exited 0")
 
 
-def test_a_kept_license_that_cannot_be_read_asks_for_a_key_and_says_why(opened: Open, tmp_path: Path, polar: Polar) -> None:
-    (tmp_path / "license.json").write_text("not a license")
-    app = opened("", "echo hands ran")
-    text = logged(tmp_path, "license: asking for a key: ")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert f"license: asking for a key: The license key hands keeps in {tmp_path / 'license.json'} could not be read" in text
-    assert polar.asked == []
-
-
-def test_a_live_key_the_app_cannot_keep_does_not_start_hands_and_says_why(opened: Open, tmp_path: Path, polar: Polar) -> None:
-    # The app writes the license beside it first; a directory stands there.
-    (tmp_path / "license.json.new").mkdir()
-    app = opened("", "echo hands ran")
-    text = logged(tmp_path, "stopped: ")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert f"stopped: hands.app could not keep your license key in {tmp_path / 'license.json'}" in text
-    assert "started hands run" not in text
-
-
-def test_a_build_that_names_no_merchant_does_not_start_and_says_why(executable: Path, tmp_path: Path) -> None:
-    contents = tmp_path / "hands.app" / "Contents"
-    (contents / "MacOS").mkdir(parents=True)
-    shutil.copy(ROOT / "app" / "Info.plist", contents / "Info.plist")
-    shutil.copy(executable, contents / "MacOS" / "hands")
-    app = subprocess.Popen([contents / "MacOS" / "hands"], env={**os.environ, "HANDS_APP_LOG": str(tmp_path / "hands.log")})
-    try:
-        text = logged(tmp_path, "stopped: ")
-    finally:
-        app.kill()
-        app.wait()
-    assert "stopped: hands.app cannot start hands: this build of hands.app names no HandsLicenseValidate in its Info.plist" in text
-
-
-def checked(tmp_path: Path, more: int) -> None:
-    """Returns once the app has asked the stand-in for macOS about its permissions `more` more times."""
-    def count() -> int:
-        return (tmp_path / "asked").read_text().count("--permissions\n") if (tmp_path / "asked").exists() else 0
-
-    target = count() + more
-    deadline = time.monotonic() + 10
-    while count() < target:
-        assert time.monotonic() < deadline, f"the app asked about its permissions {count()} times, not {target}"
-        time.sleep(0.05)
-
-
-def test_hands_waits_for_every_permission_and_starts_once_macos_grants_them(opened: Open, tmp_path: Path) -> None:
-    permitted(tmp_path, "Microphone denied\nListenEvent undecided\n")
-    app = opened("", "exit 0")
-    logged(tmp_path, "permissions: showing the Microphone step; macOS says it is denied")
-    permitted(tmp_path, "Microphone granted\nListenEvent undecided\n")
-    logged(tmp_path, "permissions: showing the Input Monitoring step; macOS says it is undecided")
-    # Each check the step outlives is one where hands could have started, had the app not waited for the permission.
-    checked(tmp_path, 2)
-    assert "started hands run" not in (tmp_path / "hands.log").read_text()
-    permitted(tmp_path, GRANTED)
-    assert app.wait(timeout=10) == 0
-    text = logged(tmp_path, "hands exited 0")
-    assert text.index("permissions: macOS grants hands.app every permission it needs") < text.index("started hands run")
-
-
 def test_with_every_permission_granted_hands_starts_without_a_setup_step(opened: Open, tmp_path: Path) -> None:
     app = opened("", "exit 0")
     assert app.wait(timeout=10) == 0
     assert "permissions: showing" not in logged(tmp_path, "hands exited 0")
     assert (tmp_path / "asked").read_text() == "--permissions\n"
-
-
-def test_a_quit_during_setup_ends_the_app_and_hands_never_starts(opened: Open, tmp_path: Path) -> None:
-    permitted(tmp_path, "Microphone undecided\nListenEvent undecided\n")
-    app = opened("", "exit 0")
-    logged(tmp_path, "permissions: showing the Microphone step")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert "started hands run" not in logged(tmp_path, "permissions: ")
-
-
-@pytest.mark.parametrize(
-    ("answer", "told"),
-    [
-        ("Microphone granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
-        ("Microphone granted\nListenEvent maybe\n", "hands.app could not read what macOS says of its permissions: it answered"),
-        ("Microphone granted\nMicrophone denied\nListenEvent granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
-        ("Microphone granted\nListenEvent granted\nAccessibility granted\n", "hands.app could not read what macOS says of its permissions: it answered"),
-        ("Microphone restricted\nListenEvent granted\n", "Your Mac's administrator does not allow hands to use Microphone, and hands cannot run without it."),
-    ],
-)
-def test_an_answer_about_permissions_hands_cannot_run_on_stops_the_app_and_says_why(opened: Open, tmp_path: Path, answer: str, told: str) -> None:
-    permitted(tmp_path, answer)
-    app = opened("", "exit 0")
-    text = logged(tmp_path, f"stopped: {told}")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert "started hands run" not in text
-
-
-def test_a_failed_question_about_permissions_stops_the_app_and_says_why(opened: Open, tmp_path: Path) -> None:
-    (tmp_path / "permissions").unlink()
-    app = opened("", "exit 0")
-    text = logged(tmp_path, "stopped: hands.app could not ask macOS about its permissions: it exited 1.")
-    app.send_signal(signal.SIGTERM)
-    assert app.wait(timeout=5) == 0
-    assert "No such file or directory" in text and "started hands run" not in text
 
 
 def test_the_app_answers_what_macos_says_of_each_permission(executable: Path) -> None:
