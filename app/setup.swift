@@ -3,6 +3,16 @@
 // permission is granted, so a launch where they all are shows no window.
 import AppKit
 
+// System Settings, where the person turns on each permission's switch.
+let SETTINGS = "com.apple.systempreferences"
+
+// [LAW:one-source-of-truth] the setup window's level, from the app that has the person: among the apps while it is
+// hands, whose window is in front already, or System Settings, so the window never covers macOS's request or the switch
+// they turn on; in sight above any other, so a step left undone is not lost in an app with no Dock icon to find it by.
+func setupLevel(_ active: NSRunningApplication?) -> NSWindow.Level {
+    active?.processIdentifier == getpid() || active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
+}
+
 // [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
 // from macOS once a second.
 final class Setup: NSObject, NSWindowDelegate {
@@ -12,7 +22,9 @@ final class Setup: NSObject, NSWindowDelegate {
     let done: () -> Void
     let failed: (String) -> Void
 
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 10), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+    let window: NSWindow
+    // What sets the window's level each time another app becomes the one the person is using.
+    let activations: NSObjectProtocol
     let counter = NSTextField(labelWithString: "")
     let heading = NSTextField(labelWithString: "")
     let purpose = NSTextField(wrappingLabelWithString: "")
@@ -28,6 +40,12 @@ final class Setup: NSObject, NSWindowDelegate {
         self.said = said
         self.done = done
         self.failed = failed
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 10), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window.level = setupLevel(NSWorkspace.shared.frontmostApplication)
+        self.window = window
+        activations = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { activated in
+            window.level = setupLevel((activated.userInfo![NSWorkspace.applicationUserInfoKey] as! NSRunningApplication))
+        }
         super.init()
         window.title = "Set up hands"
         window.isReleasedWhenClosed = false
@@ -50,6 +68,10 @@ final class Setup: NSObject, NSWindowDelegate {
         for label in [purpose, answer, status] {
             label.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -40).isActive = true
         }
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(activations)
     }
 
     // Asks macOS, in a new process, what it says of every permission, and acts on the answer.
@@ -100,7 +122,6 @@ final class Setup: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
-        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 

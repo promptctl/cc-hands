@@ -78,7 +78,6 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         phase = .licensing
-        NSApp.activate(ignoringOtherApps: true)
         let held: License?
         do {
             held = try stored()
@@ -120,9 +119,8 @@ final class Launcher: NSObject, NSApplicationDelegate {
     func ask(_ why: String?, key: String, held: License?) {
         said("license: asking for a key: \(why ?? "none is kept yet")")
         let alert = NSAlert()
-        // Above every app, not in front of them: it stays in sight beside the portal Manage Subscription… opens, where the
-        // person copies their key, and takes the keyboard from no one.
-        alert.window.level = .floating
+        // In sight beside the portal Manage Subscription… opens, where the person copies their key.
+        alert.window.level = IN_SIGHT
         alert.messageText = "hands runs with a hands subscription"
         alert.informativeText = [why, "Enter the license key from your hands purchase. Your key and your subscription are at \(merchant.portal.absoluteString)."]
             .compactMap { $0 }.joined(separator: "\n\n")
@@ -457,9 +455,14 @@ func how(_ ended: Process) -> String {
     ended.terminationReason == .exit ? "exited \(ended.terminationStatus)" : "was ended by signal \(ended.terminationStatus)"
 }
 
+// [LAW:one-source-of-truth] the level every window the person must answer is put at: above every app, never in front of
+// them. hands never asks macOS to make it the active app, so no launch (a test run, a script, a failure while the person
+// works elsewhere) takes the keyboard from the app they are using; they give it to hands by clicking its window.
+let IN_SIGHT = NSWindow.Level.floating
+
 func fail(_ message: String) {
-    NSApp.activate(ignoringOtherApps: true)
     let alert = NSAlert()
+    alert.window.level = IN_SIGHT
     alert.alertStyle = .critical
     alert.messageText = "hands stopped"
     alert.informativeText = message
