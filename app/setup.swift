@@ -5,6 +5,9 @@ import AppKit
 
 // [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
 // from macOS once a second.
+// System Settings, where the person turns on each permission's switch.
+let SETTINGS = "com.apple.systempreferences"
+
 final class Setup: NSObject, NSWindowDelegate {
     // What answers `--permissions`: this app's own executable, or a stand-in a test names.
     let asker: URL
@@ -22,6 +25,8 @@ final class Setup: NSObject, NSWindowDelegate {
     // The step on screen, once setup has shown one.
     var shown: Int?
     var over = false
+    // What tells the window which app has the person, for as long as setup lasts.
+    var activations: NSObjectProtocol?
 
     init(asker: URL, said: @escaping (String) -> Void, done: @escaping () -> Void, failed: @escaping (String) -> Void) {
         self.asker = asker
@@ -50,6 +55,17 @@ final class Setup: NSObject, NSWindowDelegate {
         for label in [purpose, answer, status] {
             label.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -40).isActive = true
         }
+        // While System Settings has the person the window sits among the apps, so it never covers the switch they turn
+        // on; whichever app they move to next, it floats above again, so a step left undone stays in sight in an app
+        // with no Dock icon to find it by.
+        activations = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [window] activated in
+            let active = activated.userInfo![NSWorkspace.applicationUserInfoKey] as! NSRunningApplication
+            window.level = active.bundleIdentifier == SETTINGS ? .normal : .floating
+        }
+    }
+
+    deinit {
+        NSWorkspace.shared.notificationCenter.removeObserver(activations!)
     }
 
     // Asks macOS, in a new process, what it says of every permission, and acts on the answer.
@@ -112,7 +128,6 @@ final class Setup: NSObject, NSWindowDelegate {
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
         // System Settings list the request just opened. One request after another is safe: each lists hands again.
         next.isEnabled = false
-        aside(window)
         ask(["request", permission.service]) { ended, _, errors in
             // A request that ends after its step was left has nothing to say about the step now shown.
             guard self.shown == step else { return }
