@@ -83,7 +83,7 @@ def dead_pid() -> Callable[[], int]:
 
 @pytest.fixture
 def plugin(tmp_path: Path) -> Path:
-    """hands' plugin as `hands plugin` writes it for the hands under test: its launcher runs this interpreter."""
+    """hands' plugin as `hands install-plugin` renders it for the hands under test: its launcher runs this interpreter."""
     return render(Home(tmp_path / "rendering"), sys.executable).plugin
 
 

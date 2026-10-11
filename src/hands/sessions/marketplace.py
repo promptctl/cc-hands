@@ -8,7 +8,6 @@ is a directory of its own, named by its content, and the manifest is moved onto 
 
 import hashlib
 import json
-import os
 import shlex
 import shutil
 import tempfile
@@ -16,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hands.sessions.files import replace_whole
 from hands.sessions.hookconfig import LAUNCHER, MARKETPLACE_NAME
 from hands.sessions.home import Home
 
@@ -80,7 +80,7 @@ def render(home: Home, interpreter: str) -> Rendered:
         "owner": manifest["author"],
         "plugins": [{"name": manifest["name"], "description": manifest["description"], "source": f"./{rendered.plugin.name}"}],
     }
-    _replace(home.plugins / MARKETPLACE_MANIFEST, json.dumps(marketplace, indent=2).encode())
+    replace_whole(home.plugins / MARKETPLACE_MANIFEST, json.dumps(marketplace, indent=2), 0o644)
     return rendered
 
 
@@ -109,14 +109,6 @@ def _written(directory: Path, rendering: Plugin) -> Rendered:
         # Renamed into place, the staged directory is gone; anything else it became, failed or redundant, goes with it.
         if staged.exists():
             shutil.rmtree(staged)
-
-
-def _replace(path: Path, content: bytes) -> None:
-    """Write `path` whole, beside it and renamed into place, so a reader never sees half of it."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    staging.write_bytes(content)
-    staging.replace(path)
 
 
 def digest(files: Mapping[str, bytes]) -> str:

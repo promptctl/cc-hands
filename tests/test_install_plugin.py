@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from hands.daemon import cli
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -53,7 +54,11 @@ case "$1 $2 $3" in
     else
       listed true "$(offered)"
     fi ;;
-  "plugin update --scope") listed true "$(offered)" ;;
+  "plugin update --scope")
+    [ ! -e "$ROOT/update-hangs" ] || exec sleep 30
+    # An update that exits 0 and moves nothing, as over a manifest Claude Code kept from before.
+    [ ! -e "$ROOT/update-stale" ] || { listed true stale; exit 0; }
+    listed true "$(offered)" ;;
   *) echo "unexpected: $*" >&2; exit 8 ;;
 esac
 """
@@ -73,10 +78,10 @@ def root() -> Iterator[Path]:
     shutil.rmtree(root)
 
 
-def install(root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
-    # The person's own environment: no CLAUDE_CONFIG_DIR unless the case gives one.
+def person(root: Path) -> dict[str, str]:
+    """The person's own environment: no CLAUDE_CONFIG_DIR, and the stand-in first on PATH."""
     inherited = {name: value for name, value in os.environ.items() if name != "CLAUDE_CONFIG_DIR"}
-    given = {
+    return {
         **inherited,
         "PATH": f"{root / 'bin'}:/usr/bin:/bin",
         "HOME": str(root / "person"),
@@ -84,8 +89,11 @@ def install(root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
         "PYTHON": sys.executable,
         "PLUGIN_ID": PLUGIN_ID,
         "HANDS_HOME": str(root / "home"),
-        **environment,
     }
+
+
+def install(root: Path, **environment: str) -> subprocess.CompletedProcess[str]:
+    given = {**person(root), **environment}
     return subprocess.run([sys.executable, "-m", "hands.daemon", "install-plugin"], env=given, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
 
 
@@ -173,6 +181,28 @@ def test_a_command_that_fails_stops_the_install_naming_it(root: Path) -> None:
     assert not (root / "listed").exists()
     [event] = events(root)
     assert (event["outcome"], event["facts"]) == ("failed", {**rendered(root), "written": True, "marketplace": "missing", "marketplace_add_exit": 4})
+
+
+def test_a_command_that_hangs_is_stopped_and_said(root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    # In this process, so the command's limit can be a second, not the minutes a real one is given.
+    (root / "update-hangs").touch()
+    # setenv, not a new os.environ: the `claude` this runs inherits the process's own environment.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    for name, value in person(root).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(cli, "PLUGIN_COMMAND_TIMEOUT_SECONDS", 1.0)
+    assert cli.main(["install-plugin"]) == 1
+    assert f"hands install-plugin: `claude plugin update --scope user {PLUGIN_ID}` did not finish in 1s" in capsys.readouterr().err
+    [event] = events(root)
+    assert (event["outcome"], event["facts"]["update_exit"]) == ("failed", "timeout")
+
+
+def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_back_here(root: Path) -> None:
+    (root / "update-stale").touch()
+    ran = install(root)
+    assert ran.returncode == 1
+    assert "is stale, not this hands'" in ran.stderr and "exited 0 without making it so" in ran.stderr
+    assert "`hands install-plugin`" not in ran.stderr
 
 
 def test_a_claude_that_cannot_list_its_plugins_is_said_and_fails(root: Path) -> None:

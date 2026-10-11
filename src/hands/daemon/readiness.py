@@ -87,7 +87,7 @@ def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Fi
         portaudio(),
         installed(path),
         shim(home, path),
-        plugin(path, plugins.plugin(sys.executable).version),
+        plugin(path, plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
         first_run(home, environment),
         reached,
         hears(granted, running),
@@ -168,13 +168,19 @@ def daemon(home: Home, now: datetime) -> Finding:
             return Missing(f"{said}: open hands.app, or `hands run` in a terminal that has the Input Monitoring grant")
 
 
-def plugin(path: str, version: str) -> Finding:
-    """Whether Claude Code, as `claude` on this PATH runs it, has this hands' plugin, `version`, installed and enabled."""
+# What brings the plugin to this hands' render, said by a check of it; the install itself, which has just tried, says
+# something else.
+INSTALL_PLUGIN = "`hands install-plugin`, then /reload-plugins in each running session, which joins hands at its next prompt"
+
+
+def plugin(path: str, version: str, mended: str) -> Finding:
+    """Whether Claude Code, as `claude` on this PATH runs it, has this hands' plugin, `version`, installed and enabled;
+    `mended` says, of one that is not, what makes it so."""
     match listing(path, ("plugin",), f"whether the plugin {PLUGIN_ID} is installed"):
         case Unknown() as unknown:
             return unknown
         case str() as listed:
-            return plugin_listed(listed, version)
+            return plugin_listed(listed, version, mended)
 
 
 def marketplace(path: str, root: Path) -> Marketplace:
@@ -212,8 +218,9 @@ def marketplace_listed(raw: str, root: Path) -> Marketplace:
     """What `claude plugin marketplace list --json` says of the marketplace hands writes at `root`."""
     try:
         named = [entry for entry in Payload.parse_list(raw.encode(), "each marketplace") if entry.text("name") == MARKETPLACE_NAME]
-        # A marketplace from a directory names it as `path`; one from anywhere else names no path.
-        sources = [(entry.text("source"), entry.fields.get("path")) for entry in named]
+        # A marketplace from a directory names it as `path`; one from anywhere else names no path. Only whether it is this
+        # directory is asked, since every other shape of it is replaced the same way.
+        sources = [(entry.fields.get("source"), entry.fields.get("path")) for entry in named]
     except Rejected as error:
         return Unknown(f"`claude plugin marketplace list --json` printed what hands cannot read: {error}")
     match sources:
@@ -225,8 +232,9 @@ def marketplace_listed(raw: str, root: Path) -> Marketplace:
             return Elsewhere(f"the marketplace {MARKETPLACE_NAME} is added from {sources}, not from {root}")
 
 
-def plugin_listed(raw: str, version: str) -> Finding:
-    """What `claude plugin list --json` says of hands' plugin, against `version`, the one this hands renders."""
+def plugin_listed(raw: str, version: str, mended: str) -> Finding:
+    """What `claude plugin list --json` says of hands' plugin, against `version`, the one this hands renders; `mended`
+    says, of one that is not it, what makes it so."""
     try:
         # Only a user-scope install joins every session; a project or local one joins the sessions of one directory,
         # and is listed as enabled or not by the directory the listing was asked from.
@@ -235,7 +243,6 @@ def plugin_listed(raw: str, version: str) -> Finding:
         enabled = {str(entry.fields.get("version")) for entry in everywhere if entry.flag("enabled")}
     except Rejected as error:
         return Unknown(f"`claude plugin list --json` printed what hands cannot read: {error}")
-    mended = "`hands install-plugin`, then /reload-plugins in each running session, which joins hands at its next prompt"
     if version in enabled:
         return Ready(f"the plugin {PLUGIN_ID} {version} is installed and enabled for every session: a session started since, or reloaded with /reload-plugins, joins hands at its next prompt")
     if enabled:

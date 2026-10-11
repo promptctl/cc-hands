@@ -763,6 +763,10 @@ def install_fritter(home: Home, record: audit.Record) -> int:
                 return 1
 
 
+# How long one `claude plugin` command may take: each works on a marketplace in a folder of hands' home, and needs no network.
+PLUGIN_COMMAND_TIMEOUT_SECONDS = 120.0
+
+
 def install_plugin(home: Home, record: audit.Record) -> int:
     # [LAW:nothing-unseen] an install is a unit of work: the config it installs into, the plugin it rendered, how it found
     # the marketplace, each `claude plugin` command it ran and how it exited, and what Claude Code lists after.
@@ -794,11 +798,18 @@ def install_plugin(home: Home, record: audit.Record) -> int:
                 brought = [("marketplace_remove", ("plugin", "marketplace", "remove", MARKETPLACE_NAME)), ("marketplace_add", ("plugin", "marketplace", "add", root))]
         installed = [("install", ("plugin", "install", "--scope", "user", PLUGIN_ID)), ("update", ("plugin", "update", "--scope", "user", PLUGIN_ID))]
         for step, command in [*brought, *installed]:
-            ran = subprocess.run(["claude", *command], stdin=subprocess.DEVNULL)
+            said = f"`claude {' '.join(command)}`"
+            # [LAW:no-silent-failure] the installer shows only a spinner while this runs, so one that hangs is stopped and said.
+            try:
+                ran = subprocess.run(["claude", *command], stdin=subprocess.DEVNULL, timeout=PLUGIN_COMMAND_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                wide.annotate(**{f"{step}_exit": "timeout"})
+                return not_installed(f"{said} did not finish in {PLUGIN_COMMAND_TIMEOUT_SECONDS:g}s", 1)
             wide.annotate(**{f"{step}_exit": ran.returncode})
             if ran.returncode != 0:
-                return not_installed(f"`claude {' '.join(command)}` failed ({ran.returncode})", 1)
-        after = readiness.plugin(path, rendered.version)
+                return not_installed(f"{said} failed ({ran.returncode})", 1)
+        # Every command above exited 0, so running them again would only do it again.
+        after = readiness.plugin(path, rendered.version, "Claude Code's `claude plugin install` and `update` exited 0 without making it so")
         wide.annotate(after=type(after).__name__.lower())
         match after:
             case readiness.Ready(said=said):
