@@ -7,10 +7,10 @@ import AppKit
 let SETTINGS = "com.apple.systempreferences"
 
 // [LAW:one-source-of-truth] the setup window's level, from the app that has the person: among the apps while it is
-// System Settings, so the window never covers the switch they turn on, and in sight above any other, so a step left
-// undone is not lost in an app with no Dock icon to find it by.
+// hands, whose window is in front already, or System Settings, so the window never covers macOS's request or the switch
+// they turn on; in sight above any other, so a step left undone is not lost in an app with no Dock icon to find it by.
 func setupLevel(_ active: NSRunningApplication?) -> NSWindow.Level {
-    active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
+    active?.processIdentifier == getpid() || active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
 }
 
 // [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
@@ -122,8 +122,7 @@ final class Setup: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
-        // Ordered in without being made key: hands stays inactive until the person clicks the window.
-        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
     }
 
     @objc func request() {
