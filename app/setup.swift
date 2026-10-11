@@ -2,6 +2,7 @@
 // macOS's request for that permission, and the step advances once macOS says hands has it. Setup ends when every
 // permission is granted, so a launch where they all are shows no window.
 import AppKit
+import HandsLogic
 
 // System Settings, where the person turns on each permission's switch.
 let SETTINGS = "com.apple.systempreferences"
@@ -84,14 +85,14 @@ final class Setup: NSObject, NSWindowDelegate {
             do {
                 self.observe(try accesses(output))
             } catch {
-                self.fail("hands.app could not read what macOS says of its permissions: \(error.localizedDescription)")
+                self.fail("hands.app could not read what macOS says of its permissions: \(error)")
             }
         }
     }
 
     func observe(_ accesses: [Access]) {
         if let blocked = accesses.firstIndex(of: .restricted) {
-            fail("Your Mac's administrator does not allow hands to use \(PERMISSIONS[blocked].name), and hands cannot run without it.")
+            fail("Your Mac's administrator does not allow hands to use \(Permission.allCases[blocked].name), and hands cannot run without it.")
             return
         }
         guard let step = accesses.firstIndex(where: { $0 != .granted }) else {
@@ -110,10 +111,10 @@ final class Setup: NSObject, NSWindowDelegate {
     }
 
     func show(_ step: Int, _ access: Access) {
-        let permission = PERMISSIONS[step]
+        let permission = Permission.allCases[step]
         said("permissions: showing the \(permission.name) step; macOS says it is \(access.rawValue)")
         shown = step
-        counter.stringValue = "Step \(step + 1) of \(PERMISSIONS.count)"
+        counter.stringValue = "Step \(step + 1) of \(Permission.allCases.count)"
         heading.stringValue = permission.name
         purpose.stringValue = permission.purpose
         answer.stringValue = permission.answer
@@ -127,7 +128,7 @@ final class Setup: NSObject, NSWindowDelegate {
 
     @objc func request() {
         let step = shown!
-        let permission = PERMISSIONS[step]
+        let permission = Permission.allCases[step]
         said("permissions: asking macOS for \(permission.name)")
         status.stringValue = "Waiting for macOS to give hands \(permission.name). If you closed its request, choose Next to see it again."
         // [LAW:no-ambient-temporal-coupling] one request at a time: a reset racing a request can leave hands off the
@@ -182,26 +183,5 @@ final class Setup: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         over = true
         NSApp.terminate(nil)
-    }
-}
-
-struct Unreadable: LocalizedError {
-    let output: String
-    var errorDescription: String? { "it answered \(output.debugDescription), not a line for each of \(PERMISSIONS.map(\.service).joined(separator: ", "))" }
-}
-
-// [LAW:parse-dont-validate] `--permissions`'s answer as each permission's access, in PERMISSIONS' order: one line for
-// each permission, and nothing else.
-func accesses(_ output: String) throws -> [Access] {
-    let unreadable = Unreadable(output: output)
-    let said = try Dictionary(output.split(separator: "\n").map { line -> (String, Access) in
-        let words = line.split(separator: " ").map(String.init)
-        guard words.count == 2, let access = Access(rawValue: words[1]) else { throw unreadable }
-        return (words[0], access)
-    }, uniquingKeysWith: { _, _ in throw unreadable })
-    guard said.count == PERMISSIONS.count else { throw unreadable }
-    return try PERMISSIONS.map { permission in
-        guard let access = said[permission.service] else { throw unreadable }
-        return access
     }
 }
