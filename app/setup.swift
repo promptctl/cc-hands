@@ -6,6 +6,13 @@ import AppKit
 // System Settings, where the person turns on each permission's switch.
 let SETTINGS = "com.apple.systempreferences"
 
+// [LAW:one-source-of-truth] the setup window's level, from the app that has the person: among the apps while it is
+// System Settings, so the window never covers the switch they turn on, and in sight above any other, so a step left
+// undone is not lost in an app with no Dock icon to find it by.
+func setupLevel(_ active: NSRunningApplication?) -> NSWindow.Level {
+    active?.bundleIdentifier == SETTINGS ? .normal : IN_SIGHT
+}
+
 // [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
 // from macOS once a second.
 final class Setup: NSObject, NSWindowDelegate {
@@ -15,7 +22,9 @@ final class Setup: NSObject, NSWindowDelegate {
     let done: () -> Void
     let failed: (String) -> Void
 
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 10), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+    let window: NSWindow
+    // What sets the window's level each time another app becomes the one the person is using.
+    let activations: NSObjectProtocol
     let counter = NSTextField(labelWithString: "")
     let heading = NSTextField(labelWithString: "")
     let purpose = NSTextField(wrappingLabelWithString: "")
@@ -25,14 +34,18 @@ final class Setup: NSObject, NSWindowDelegate {
     // The step on screen, once setup has shown one.
     var shown: Int?
     var over = false
-    // What tells the window which app has the person, for as long as setup lasts.
-    var activations: NSObjectProtocol?
 
     init(asker: URL, said: @escaping (String) -> Void, done: @escaping () -> Void, failed: @escaping (String) -> Void) {
         self.asker = asker
         self.said = said
         self.done = done
         self.failed = failed
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 10), styleMask: [.titled, .closable], backing: .buffered, defer: true)
+        window.level = setupLevel(NSWorkspace.shared.frontmostApplication)
+        self.window = window
+        activations = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { activated in
+            window.level = setupLevel((activated.userInfo![NSWorkspace.applicationUserInfoKey] as! NSRunningApplication))
+        }
         super.init()
         window.title = "Set up hands"
         window.isReleasedWhenClosed = false
@@ -55,17 +68,10 @@ final class Setup: NSObject, NSWindowDelegate {
         for label in [purpose, answer, status] {
             label.widthAnchor.constraint(equalTo: column.widthAnchor, constant: -40).isActive = true
         }
-        // While System Settings has the person the window sits among the apps, so it never covers the switch they turn
-        // on; whichever app they move to next, it floats above again, so a step left undone stays in sight in an app
-        // with no Dock icon to find it by.
-        activations = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [window] activated in
-            let active = activated.userInfo![NSWorkspace.applicationUserInfoKey] as! NSRunningApplication
-            window.level = active.bundleIdentifier == SETTINGS ? .normal : .floating
-        }
     }
 
     deinit {
-        NSWorkspace.shared.notificationCenter.removeObserver(activations!)
+        NSWorkspace.shared.notificationCenter.removeObserver(activations)
     }
 
     // Asks macOS, in a new process, what it says of every permission, and acts on the answer.
@@ -116,7 +122,6 @@ final class Setup: NSObject, NSWindowDelegate {
         window.layoutIfNeeded()
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
-        inSight(window)
         // Ordered in without being made key: hands stays inactive until the person clicks the window.
         window.orderFrontRegardless()
     }
@@ -138,7 +143,6 @@ final class Setup: NSObject, NSWindowDelegate {
                 let why = "macOS could not show its request for \(permission.name): it \(how(ended)). \(errors)"
                 self.said("permissions: \(why)")
                 self.status.stringValue = why
-                inSight(self.window)
             }
         }
     }
