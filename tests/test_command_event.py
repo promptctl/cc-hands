@@ -25,20 +25,20 @@ def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_eve
     home = Home(tmp_path / "home")
     # No heartbeat: hands has never run here, which `hands status` says by exiting 1.
     assert main(["--home", str(home.root), "status"]) == 1
-    assert main(["--home", str(home.root), "plugin"]) == 0
+    assert main(["--home", str(home.root), "recall"]) == 0
     capsys.readouterr()
 
-    status, render, plugin = events(home)
+    status, recalled, command = events(home)
     assert (status["event"], status["outcome"], status["error"]) == ("hands.command", "failed", "exited 1")
     # [LAW:nothing-unseen] what the exit code was decided by, beside it.
     assert status["facts"] == {"command": "status", "home": str(home.root), "arguments.home": str(home.root), "verdict": {"type": "NeverRan", "path": str(home.status)}, "exit_code": 1}
-    assert (plugin["event"], plugin["outcome"], plugin["error"]) == ("hands.command", "ok", None)
-    assert plugin["facts"] == {"command": "plugin", "home": str(home.root), "arguments.home": str(home.root), "exit_code": 0}
-    assert plugin["duration_ms"] >= render["duration_ms"] > 0
-    # The render is a part of the command's run, in its trace; each command is a trace of its own.
-    assert render["event"] == "plugin.render"
-    assert (render["trace_id"], render["parent_id"]) == (plugin["trace_id"], plugin["span_id"])
-    assert plugin["parent_id"] is None and status["trace_id"] != plugin["trace_id"]
+    assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "ok", None)
+    assert command["facts"] == {"command": "recall", "home": str(home.root), "arguments.home": str(home.root), "arguments.words": [], "arguments.most": 20, "exit_code": 0}
+    assert command["duration_ms"] >= recalled["duration_ms"] > 0
+    # The recall is a part of the command's run, in its trace; each command is a trace of its own.
+    assert recalled["event"] == "memory.recall"
+    assert (recalled["trace_id"], recalled["parent_id"]) == (command["trace_id"], command["span_id"])
+    assert command["parent_id"] is None and status["trace_id"] != command["trace_id"]
 
 
 def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -78,12 +78,13 @@ def test_a_command_that_raises_exits_its_own_code_saying_its_traceback_and_is_a_
         raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(marketplace, "render", full_disk)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # Not 1, which install.sh reads as a step asked and not given.
-    assert main(["--home", str(home.root), "plugin"]) == CRASHED
+    assert main(["--home", str(home.root), "install-plugin"]) == CRASHED
     assert "Traceback (most recent call last)" in (said := capsys.readouterr().err) and "OSError: [Errno 28] No space left on device" in said
     [_, command] = events(home)
     assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "OSError: [Errno 28] No space left on device")
-    assert command["facts"] == {"command": "plugin", "home": str(home.root), "arguments.home": str(home.root)}
+    assert command["facts"] == {"command": "install-plugin", "home": str(home.root), "arguments.home": str(home.root)}
 
 
 def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

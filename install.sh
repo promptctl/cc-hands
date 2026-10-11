@@ -10,8 +10,8 @@
 #
 # Tool output goes to a log file. If a tool fails, the end of the log is shown. The installer stops for input only where
 # the user must act: the administrator password (for Homebrew), Claude Code's first-run questions and sign-in, the
-# brain's sign-in, the confirmation Claude Code requires to install the plugin, and the Input Monitoring permission in
-# System Settings. Each one is explained before it is requested. If the user does not finish one, the installer offers
+# brain's sign-in, and the Input Monitoring permission in System Settings. Each one is explained before it is requested,
+# and every step that needs no one runs before the first of them. If the user does not finish one, the installer offers
 # to retry it immediately. If the installer is stopped, running it again continues where it left off.
 set -euo pipefail
 
@@ -41,8 +41,8 @@ tilde() { local home='~'; printf '%s' "${1/#$HOME/$home}"; }
 ok() { printf '      %s✓%s %s\n' "$green" "$reset" "$*"; }
 fail() { printf '\n      %s✗ %s%s\n' "$red" "$*" "$reset" >&2; exit 1; }
 # Discards keys typed earlier (for example, Enter pressed during a long install), so they do not answer the next prompt.
-# Python is not available on a new Mac, but perl is.
-flush_input() { perl -MPOSIX -e 'tcflush(0, TCIFLUSH)' 2>/dev/null || true; }
+# Python is not available on a new Mac, but perl is. It is called only when the input is a terminal.
+flush_input() { perl -MPOSIX -e 'tcflush(0, TCIFLUSH) or die "cannot discard the keys typed ahead: $!\n"' || fail "The installer could not clear this terminal's input, so a key typed earlier would answer the next question."; }
 # Prints a prompt and waits for Enter. End of input (Control-D) stops the installer.
 wait_for_enter() {
   flush_input
@@ -93,11 +93,11 @@ quietly() {
 }
 
 # The login shell that new terminals start, as recorded for the user's account. $SHELL is only the shell this script
-# was started from, which can differ (for example, a tool running bash for a user whose terminals run zsh). The search
-# node also covers network accounts. A value containing a space is printed on the line after the key, so both lines
-# are read. If the lookup fails, $SHELL is used.
-login_shell=$(dscl /Search -read "/Users/$(id -un)" UserShell 2>/dev/null | sed -e 's/^UserShell:[[:space:]]*//' -e 's/^[[:space:]]*//' | tr -d '\n') || login_shell=''
-[ -n "$login_shell" ] || login_shell=${SHELL:-}
+# was started from, which can differ (for example, a tool running bash for a user whose terminals run zsh), so it never
+# stands in for the account's: the PATH lines would go in a profile no new terminal reads. The search node also covers
+# network accounts. A value containing a space is printed on the line after the key, so both lines are read.
+# [LAW:no-silent-failure] a lookup that fails stops the install, saying so.
+login_shell=$(dscl /Search -read "/Users/$(id -un)" UserShell | sed -e 's/^UserShell:[[:space:]]*//' -e 's/^[[:space:]]*//' | tr -d '\n') || fail "macOS could not say which shell your account's terminals start (dscl /Search -read /Users/$(id -un) UserShell failed), so the installer cannot tell which profile they read."
 [ -x "$login_shell" ] || fail "Your account's login shell, '$login_shell', is not a program on this Mac."
 
 printf '\n%shands installer%s\n\n' "$bold" "$reset"
@@ -105,7 +105,6 @@ note "This sets up hands, which lets you talk to Claude Code, on this Mac."
 note "Most of it runs on its own. It explains each thing only you can do before asking:"
 note "  - your Mac password, if Homebrew isn't installed yet"
 note "  - signing in to Claude in your browser: once for Claude Code, once for hands"
-note "  - one \"y\" so Claude Code loads hands' plugin"
 note "  - one switch in System Settings, so hands hears the Right Shift key"
 note "Anything already set up is skipped. Tool output goes to $(tilde "$LOG_FILE")"
 pause
@@ -171,7 +170,6 @@ else
   quietly "Installing hands $version" uv tool install --reinstall --python 3.12 --constraints "$release/constraints.txt" "$release/hands-$version-$WHEEL_TAG.whl"
   ok "installed"
 fi
-# Claude Code runs `hands plugin` from this PATH when it installs the plugin.
 export PATH="$bin:$PATH"
 
 title "Your terminal"
@@ -243,6 +241,12 @@ if [ "$(terminal_claude)" != "$shims/claude" ]; then
 fi
 ok "\`claude\` in a new terminal starts sessions hands can type into"
 
+title "hands' Claude Code plugin"
+# hands writes its plugin into a marketplace in its home and installs it from there for every session, asking nothing.
+# A run after an upgrade moves the installed plugin onto the new hands'.
+quietly "Installing hands' Claude Code plugin" hands install-plugin
+ok "every new Claude Code session joins hands"
+
 # Runs `hands <command>` at this terminal for a step only the user can finish. Exit codes from hands: 0 means done;
 # 1 means the user did not finish (retried here if a user is present, otherwise the installer stops); 2 means it cannot be
 # asked here; any other code is a failure. $2 describes what is not done; $3 says why it cannot be done here.
@@ -308,13 +312,6 @@ else
   person login "$brain_missing" "$brain_missing: Claude Code could not be asked"
   ok "signed in"
 fi
-
-title "hands' Claude Code plugin"
-# This step comes after the sign-in steps, so declining the plugin leaves all earlier steps complete.
-note "The plugin lets every Claude Code session tell hands what it is doing."
-person install-plugin "hands' Claude Code plugin is not installed, so no session joins hands" \
-  "hands' Claude Code plugin is not installed, so no session joins hands: Claude Code could not be asked"
-ok "installed"
 
 title "The talk key"
 # The Input Monitoring permission for the app this installer runs in, which only the user can give. `hands grant`

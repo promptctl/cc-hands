@@ -3,8 +3,8 @@
     hands check     # one line a step; exits 0 only when every step is done
 
 The steps, in the order they are said: what the one install command puts in, which is Claude Code, PortAudio, which the
-microphone opens through, and the installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
-the plugin that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; the Input
+microphone opens through, and the installed `hands` on PATH; the claude shim that runs sessions under fritter;
+the plugin, this hands' own, that joins sessions to hands; Claude Code's own first run and login, so a session it starts takes what is typed; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
 and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -28,8 +29,8 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
 from hands.daemon.backend import backend as resolve
 from hands.daemon.config import load
-from hands.sessions import firstrun, heartbeat, liveness, wrapper
-from hands.sessions.hookconfig import MARKETPLACE, MARKETPLACE_NAME, PLUGIN_ID
+from hands.sessions import firstrun, heartbeat, liveness, marketplace as plugins, wrapper
+from hands.sessions.hookconfig import MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.startsession import as_from_a_terminal
@@ -55,6 +56,15 @@ class Unknown:
 
 Finding = Ready | Missing | Unknown
 
+
+@dataclass(frozen=True)
+class Elsewhere:
+    said: str  # where a marketplace of the name hands writes in its home is added from instead
+
+
+# Whether Claude Code has the marketplace hands writes in its home: Ready, Missing, or one of its name from elsewhere.
+Marketplace = Finding | Elsewhere
+
 # The tmux pane whose keys reach each of a list of processes, as `hands.sessions.tmux.keyboards` reads it.
 Keyboards = Callable[[Sequence[int]], list[Keyboard]]
 
@@ -72,7 +82,18 @@ def check(home: Home, environment: Mapping[str, str], granted: bool, reached: Fi
     reads the tmux pane in front of each running session."""
     path = environment.get("PATH", "")
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), first_run(home, environment), reached, hears(granted, running), running, sessions(home, path, keyboards)]
+    return [
+        claude(path),
+        portaudio(),
+        installed(path),
+        shim(home, path),
+        plugin(path, plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
+        first_run(home, environment),
+        reached,
+        hears(granted, running),
+        running,
+        sessions(home, path, keyboards),
+    ]
 
 
 def claude(path: str) -> Finding:
@@ -94,13 +115,12 @@ def portaudio() -> Finding:
 
 
 def installed(path: str) -> Finding:
-    """Whether `hands` on this PATH, which Claude Code runs for the plugin's hooks and skills, is this hands."""
+    """Whether `hands` on this PATH, which a terminal runs, is this hands."""
     this = f"hands {version('hands')}"
     found = shutil.which("hands", path=path)
     if found is None:
         return Missing(
-            "this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks: "
-            f"the install command puts it there: {INSTALL}"
+            f"this PATH has no `hands`, so a terminal cannot run it: the install command puts it there: {INSTALL}"
         )
     try:
         said = subprocess.run([found, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=VERSION_TIMEOUT_SECONDS)
@@ -108,11 +128,10 @@ def installed(path: str) -> Finding:
         return Unknown(f"cannot ask {found} which hands it is: {error}")
     if said.returncode != 0:
         return Unknown(f"`{found} --version` failed ({said.returncode}), so which hands it is is unknown: {said.stderr.strip()}")
-    # [LAW:one-source-of-truth] the plugin's hooks are whichever hands Claude Code finds, so one that is not this hands
-    # is said here, where this hands' own lines would otherwise vouch for it.
+    # A `hands` that is not this one is said here, where this hands' own lines would otherwise vouch for it.
     if said.stdout.strip() != this:
-        return Missing(f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}, so sessions run its hooks: put this one first on PATH, or install it again")
-    return Ready(f"`hands` on this PATH is {found}, {this}: Claude Code runs it for the plugin in every session")
+        return Missing(f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}: put this one first on PATH, or install it again")
+    return Ready(f"`hands` on this PATH is {found}, {this}")
 
 
 def configured(home: Home, environment: Mapping[str, str]) -> Finding:
@@ -149,23 +168,28 @@ def daemon(home: Home, now: datetime) -> Finding:
             return Missing(f"{said}: open hands.app, or `hands run` in a terminal that has the Input Monitoring grant")
 
 
-def plugin(path: str) -> Finding:
-    """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
+# What brings the plugin to this hands' render, said by a check of it; the install itself, which has just tried, says
+# something else.
+INSTALL_PLUGIN = "`hands install-plugin`, then /reload-plugins in each running session, which joins hands at its next prompt"
+
+
+def plugin(path: str, version: str, mended: str) -> Finding:
+    """Whether Claude Code, as `claude` on this PATH runs it, has this hands' plugin, `version`, installed and enabled;
+    `mended` says, of one that is not, what makes it so."""
     match listing(path, ("plugin",), f"whether the plugin {PLUGIN_ID} is installed"):
         case Unknown() as unknown:
             return unknown
         case str() as listed:
-            return plugin_listed(listed)
+            return plugin_listed(listed, version, mended)
 
 
-def marketplace(path: str) -> Finding:
-    """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands' plugin is installed from, from
-    whichever source the person added it: this repository on GitHub, or a checkout of it."""
+def marketplace(path: str, root: Path) -> Marketplace:
+    """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands writes at `root`."""
     match listing(path, ("plugin", "marketplace"), f"whether the marketplace {MARKETPLACE_NAME} is added"):
         case Unknown() as unknown:
             return unknown
         case str() as listed:
-            return marketplace_listed(listed)
+            return marketplace_listed(listed, root)
 
 
 def listing(path: str, command: tuple[str, ...], unknown: str) -> str | Unknown:
@@ -190,34 +214,42 @@ def listing(path: str, command: tuple[str, ...], unknown: str) -> str | Unknown:
     return listed.stdout
 
 
-def marketplace_listed(raw: str) -> Finding:
-    """What `claude plugin marketplace list --json` says of the marketplace hands' plugin is installed from."""
+def marketplace_listed(raw: str, root: Path) -> Marketplace:
+    """What `claude plugin marketplace list --json` says of the marketplace hands writes at `root`."""
     try:
-        names = {entry.text("name") for entry in Payload.parse_list(raw.encode(), "each marketplace")}
+        named = [entry for entry in Payload.parse_list(raw.encode(), "each marketplace") if entry.text("name") == MARKETPLACE_NAME]
+        # A marketplace from a directory names it as `path`; one from anywhere else names no path. Only whether it is this
+        # directory is asked, since every other shape of it is replaced the same way.
+        sources = [(entry.fields.get("source"), entry.fields.get("path")) for entry in named]
     except Rejected as error:
         return Unknown(f"`claude plugin marketplace list --json` printed what hands cannot read: {error}")
-    if MARKETPLACE_NAME in names:
-        return Ready(f"the marketplace {MARKETPLACE_NAME} is added")
-    return Missing(f"the marketplace {MARKETPLACE_NAME} is not added: `claude plugin marketplace add {MARKETPLACE}`")
+    match sources:
+        case []:
+            return Missing(f"the marketplace {MARKETPLACE_NAME} is not added")
+        case [("directory", str() as added)] if os.path.realpath(added) == os.path.realpath(root):
+            return Ready(f"the marketplace {MARKETPLACE_NAME} is added from {root}")
+        case _:
+            return Elsewhere(f"the marketplace {MARKETPLACE_NAME} is added from {sources}, not from {root}")
 
 
-def plugin_listed(raw: str) -> Finding:
-    """What `claude plugin list --json` says of hands' plugin."""
+def plugin_listed(raw: str, version: str, mended: str) -> Finding:
+    """What `claude plugin list --json` says of hands' plugin, against `version`, the one this hands renders; `mended`
+    says, of one that is not it, what makes it so."""
     try:
         # Only a user-scope install joins every session; a project or local one joins the sessions of one directory,
         # and is listed as enabled or not by the directory the listing was asked from.
         hands = [entry for entry in Payload.parse_list(raw.encode(), "each plugin") if entry.fields.get("id") == PLUGIN_ID]
-        everywhere = {entry.flag("enabled") for entry in hands if entry.text("scope") == "user"}
+        everywhere = [entry for entry in hands if entry.text("scope") == "user"]
+        enabled = {str(entry.fields.get("version")) for entry in everywhere if entry.flag("enabled")}
     except Rejected as error:
         return Unknown(f"`claude plugin list --json` printed what hands cannot read: {error}")
-    if True in everywhere:
-        return Ready(f"the plugin {PLUGIN_ID} is installed and enabled for every session: a session started since, or reloaded with /reload-plugins, joins hands")
+    if version in enabled:
+        return Ready(f"the plugin {PLUGIN_ID} {version} is installed and enabled for every session: a session started since, or reloaded with /reload-plugins, joins hands at its next prompt")
+    if enabled:
+        return Missing(f"the plugin {PLUGIN_ID} installed is {', '.join(sorted(enabled))}, not this hands' {version}, so sessions run another hands' hooks: {mended}")
     if everywhere:
-        return Missing(f"the plugin {PLUGIN_ID} is disabled, so no session joins hands: `hands install-plugin`, then /reload-plugins in each running session")
-    return Missing(
-        f"the plugin {PLUGIN_ID} is not installed for every session, so only the sessions of a project it is installed in "
-        f"join hands: `hands install-plugin`, then /reload-plugins in each running session"
-    )
+        return Missing(f"the plugin {PLUGIN_ID} is disabled, so no session joins hands: {mended}")
+    return Missing(f"the plugin {PLUGIN_ID} is not installed for every session, so only the sessions of a project it is installed in join hands: {mended}")
 
 
 @dataclass(frozen=True)

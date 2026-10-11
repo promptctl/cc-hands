@@ -26,15 +26,13 @@ STOP_HOLD_SECONDS = 1.5
 STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
 
 # [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it on the
-# installed hands' own interpreter, which `hands plugin` writes (hands.sessions.marketplace).
+# installed hands' own interpreter, which `hands install-plugin` writes (hands.sessions.marketplace).
 SHIM_MODULE = "hands.sessions.shim"
 LAUNCHER = "hooks/python"
 # Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
 HOOKS_FILE = "hooks/hooks.json"
-# The marketplace's name in .claude-plugin/marketplace.json, and where Claude Code adds it from: this repository, on
-# GitHub.
+# The name of the marketplace hands writes in its home, which Claude Code installs hands' plugin from.
 MARKETPLACE_NAME = "cc-hands"
-MARKETPLACE = "promptctl/cc-hands"
 # The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name.
 PLUGIN_ID = f"hands@{MARKETPLACE_NAME}"
 

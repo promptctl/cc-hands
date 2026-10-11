@@ -27,7 +27,8 @@ from hands.daemon import readiness
 from hands.daemon.cli import main
 from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
-from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions import marketplace as plugins
+from hands.sessions.hookconfig import MARKETPLACE_NAME, PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
@@ -76,62 +77,71 @@ def claude_listing(root: Path, plugins: object) -> str:
     return f"{root / 'real'}:/usr/bin:/bin"
 
 
-def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
-    return {"id": id, "version": "f24447053e9c", "scope": scope, "enabled": enabled}
+# The version of the plugin this hands renders, which `hands check` holds the installed one to.
+VERSION = plugins.plugin(sys.executable).version
+
+
+def listed(id: str, enabled: bool, scope: str = "user", version: str = VERSION) -> dict[str, object]:
+    return {"id": id, "version": version, "scope": scope, "enabled": enabled}
 
 
 # The plugin
 
 
 def test_an_enabled_plugin_is_ready(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
+    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
 
 
 def test_a_plugin_enabled_at_any_scope_is_ready() -> None:
-    assert isinstance(readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False), listed(PLUGIN_ID, True)])), Ready)
+    assert isinstance(readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False), listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN), Ready)
+
+
+def test_another_hands_plugin_enabled_is_missing_naming_both_versions() -> None:
+    found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, True, version="0123456789abcdef")]), VERSION, readiness.INSTALL_PLUGIN)
+    assert isinstance(found, Missing) and "0123456789abcdef" in found.said and VERSION in found.said and "`hands install-plugin`" in found.said
 
 
 def test_a_disabled_plugin_is_missing_and_says_how_to_install_it() -> None:
-    found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False)]))
+    found = readiness.plugin_listed(json.dumps([listed(PLUGIN_ID, False)]), VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", True)]))
+    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", True)]), VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_an_install_for_one_project_is_not_one_for_every_session() -> None:
     project = {**listed(PLUGIN_ID, True, "local"), "projectPath": "/code/cc-hands"}
-    found = readiness.plugin_listed(json.dumps([project]))
+    found = readiness.plugin_listed(json.dumps([project]), VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Missing) and "`hands install-plugin`" in found.said
 
 
 def test_another_plugin_listed_unreadably_says_nothing_of_hands() -> None:
-    assert isinstance(readiness.plugin_listed(json.dumps([{"broken": True}, listed(PLUGIN_ID, True)])), Ready)
+    assert isinstance(readiness.plugin_listed(json.dumps([{"broken": True}, listed(PLUGIN_ID, True)]), VERSION, readiness.INSTALL_PLUGIN), Ready)
 
 
 @pytest.mark.parametrize(
     "printed", ["not json", '{"plugins": []}', '[{"id": "hands@cc-hands", "scope": "user"}]'], ids=["text", "object", "no-enabled"]
 )
 def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> None:
-    assert isinstance(readiness.plugin_listed(printed), Unknown)
+    assert isinstance(readiness.plugin_listed(printed, VERSION, readiness.INSTALL_PLUGIN), Unknown)
 
 
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(f"{root / 'real'}:/usr/bin:/bin")
+    found = readiness.plugin(f"{root / 'real'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN)
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
 def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Unknown)
+    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN), Unknown)
 
 
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin"), Unknown)
+    assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN), Unknown)
 
 
 def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
@@ -139,7 +149,29 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
     executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
     path = claude_listing(root, [listed(PLUGIN_ID, True)])
-    assert isinstance(readiness.plugin(f"{root / 'bin'}:{path}"), Ready)
+    assert isinstance(readiness.plugin(f"{root / 'bin'}:{path}", VERSION, readiness.INSTALL_PLUGIN), Ready)
+
+
+# The marketplace
+
+
+def test_the_home_s_marketplace_added_from_its_directory_is_ready(tmp_path: Path) -> None:
+    printed = json.dumps([{"name": "other", "source": "github", "repo": "x/y"}, {"name": MARKETPLACE_NAME, "source": "directory", "path": str(tmp_path)}])
+    assert isinstance(readiness.marketplace_listed(printed, tmp_path), Ready)
+
+
+def test_no_marketplace_of_its_name_is_missing(tmp_path: Path) -> None:
+    assert isinstance(readiness.marketplace_listed(json.dumps([{"name": "other", "source": "github", "repo": "x/y"}]), tmp_path), Missing)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [{"source": "github", "repo": "promptctl/cc-hands"}, {"source": "directory", "path": "/code/cc-hands"}, {"source": {"kind": "unread"}}, {}],
+    ids=["github", "another-directory", "a-source-hands-cannot-read", "no-source"],
+)
+def test_a_marketplace_of_its_name_from_anywhere_else_is_elsewhere(tmp_path: Path, source: dict[str, str]) -> None:
+    found = readiness.marketplace_listed(json.dumps([{"name": MARKETPLACE_NAME, **source}]), tmp_path)
+    assert isinstance(found, readiness.Elsewhere) and str(tmp_path) in found.said
 
 
 # The shim
@@ -755,7 +787,7 @@ def test_this_hands_on_path_is_ready(root: Path) -> None:
 
 def test_no_hands_on_path_is_missing_and_says_the_install_command_puts_it_there(root: Path) -> None:
     found = readiness.installed(f"{root / 'empty'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "`hands plugin`" in found.said and readiness.INSTALL in found.said
+    assert isinstance(found, Missing) and "a terminal cannot run it" in found.said and readiness.INSTALL in found.said
 
 
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:

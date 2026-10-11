@@ -177,8 +177,8 @@ tickets depend only on the reducer, so work can start as soon as that ticket clo
   transport error is spoken through the remaining device or shown on screen, and the
   transport is rebuilt on the default device. Done when verified by unplugging the headset
   mid-turn.
-- **Hooks as a plugin.** The repository is a Claude Code marketplace. Its plugin is
-  written by the installed hands (`hands plugin`), its hooks run under that
+- **Hooks as a plugin.** The installed hands writes its plugin into a marketplace in its
+  home and installs it (`hands install-plugin`), asking nothing. Its hooks run under that
   installation's own Python, and its `hooks/hooks.json` is generated from
   `hookconfig`. Installing, disabling, or uninstalling the plugin turns the hooks on
   and off. If a shim cannot reach the daemon, it exits 0 without output when the

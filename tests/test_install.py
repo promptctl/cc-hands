@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from hands.daemon import readiness
-from hands.sessions.hookconfig import MARKETPLACE
 
 REPO = Path(__file__).resolve().parent.parent
 INSTALL = REPO / "install.sh"
@@ -61,7 +60,8 @@ case "$1 $2" in
 esac
 """
 # The stub hands that uv installs. install-fritter writes a claude shim in ~/.hands/bin. Each step succeeds unless a marker
-# file in $STUBS makes it fail: an unfinished first run or login, a declined plugin, a permission not given, and so on.
+# file in $STUBS makes it fail: an unfinished first run or login, a plugin that cannot be installed, a permission not
+# given, and so on.
 # `hands run` records which claude its PATH finds, then exits with 0 (as when the user presses q), or with 3 if hands is
 # already running.
 HANDS = r"""#!/bin/bash
@@ -84,8 +84,8 @@ case "$1" in
     [ ! -e "$STUBS/login-broken" ] || { echo "hands login: could not write settings" >&2; exit 1; }
     [ ! -e "$STUBS/login-unaskable" ] || exit 2 ;;
   install-plugin)
-    [ ! -e "$STUBS/plugin-declined" ] || exit 1
-    [ ! -e "$STUBS/claude-unaskable" ] || exit 2 ;;
+    # Like the real command, it reads nothing: it runs the same with or without a terminal.
+    [ ! -e "$STUBS/plugin-uninstallable" ] || { echo "hands install-plugin: \`claude plugin marketplace add\` failed (4)" >&2; exit 1; } ;;
   grant)
     [ ! -e "$STUBS/grant-not-given" ] || exit 1
     [ ! -e "$STUBS/grant-over-ssh" ] || exit 2
@@ -200,7 +200,8 @@ def test_a_bare_mac_gets_claude_code_portaudio_uv_and_the_newest_hands(sandbox: 
     assert "brew install portaudio" in calls and "brew install uv" in calls
     release = "https://github.com/promptctl/cc-hands/releases/download/v9.9.9"
     assert f"uv tool install --reinstall --python 3.12 --constraints {release}/constraints.txt {release}/hands-9.9.9-py3-none-macosx_12_0_arm64.whl" in calls
-    assert calls.index("hands install-fritter") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands install-plugin") < calls.index("hands grant") < calls.index("hands run")
+    # Every step that needs no one runs before the first that waits on the person.
+    assert calls.index("hands install-fritter") < calls.index("hands install-plugin") < calls.index("hands first-run") < calls.index("hands login") < calls.index("hands grant") < calls.index("hands run")
     # After every step is done, hands runs in this terminal with a new terminal's PATH, where claude is hands' shim.
     assert f"hands run finds claude {sandbox.home / '.hands/bin/claude'}" in calls
     # A new terminal finds each tool without the user editing a profile, and its claude is hands' shim.
@@ -325,21 +326,22 @@ def test_a_homebrew_installer_that_cannot_be_fetched_stops_the_run_there(sandbox
     assert not any(call.startswith("brew ") for call in sandbox.calls())
 
 
-def test_declining_the_plugin_fails_saying_to_run_it_again_with_every_step_before_it_done(sandbox: Sandbox) -> None:
-    (sandbox.root / "stubs" / "plugin-declined").touch()
+def test_a_plugin_that_cannot_be_installed_stops_the_run_before_anything_is_asked_saying_why(sandbox: Sandbox) -> None:
+    (sandbox.root / "stubs" / "plugin-uninstallable").touch()
     ran = sandbox.run()
-    assert ran.returncode == 1 and "plugin is not installed" in ran.stderr and "Run the install command again to continue from here" in ran.stderr
+    assert ran.returncode == 1 and "Installing hands' Claude Code plugin failed" in ran.stderr and "marketplace add` failed (4)" in ran.stderr
+    assert "hands first-run" not in sandbox.calls()
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
-    (sandbox.root / "stubs" / "plugin-declined").unlink()
+    (sandbox.root / "stubs" / "plugin-uninstallable").unlink()
     assert sandbox.run().returncode == 0
 
 
-def test_a_first_run_left_unfinished_with_no_terminal_stops_the_run_before_the_plugin(sandbox: Sandbox) -> None:
+def test_a_first_run_left_unfinished_with_no_terminal_stops_the_run_before_the_brain(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "first-run-unfinished").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "Claude Code's first run is not finished" in ran.stderr and "could not be asked" in ran.stderr
     # Checked once with no terminal; with no user to ask, it is not run a second time.
-    assert sandbox.calls().count("hands first-run") == 1 and "hands install-plugin" not in sandbox.calls()
+    assert sandbox.calls().count("hands first-run") == 1 and "hands login" not in sandbox.calls()
     (sandbox.root / "stubs" / "first-run-unfinished").unlink()
     assert sandbox.run().returncode == 0
 
@@ -349,24 +351,18 @@ def test_a_brain_check_that_fails_for_another_reason_stops_without_asking(sandbo
     said = sandbox.run_at_a_terminal(until="exit code 1")
     assert "hands login failed with exit code 1" in said and "could not write settings" in said
     assert "Your browser opens" not in said
-    assert sandbox.calls().count("hands login") == 1 and "hands install-plugin" not in sandbox.calls()
+    assert sandbox.calls().count("hands login") == 1 and "hands grant" not in sandbox.calls()
 
 
 def test_a_brain_login_claude_code_could_not_be_asked_for_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "login-unaskable").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "the brain is not signed in" in ran.stderr and "could not be asked" in ran.stderr and "continue from here" not in ran.stderr
-    assert "hands install-plugin" not in sandbox.calls()
+    assert "hands grant" not in sandbox.calls()
 
 
 def test_a_first_run_claude_code_could_not_be_asked_for_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
     (sandbox.root / "stubs" / "first-run-unaskable").touch()
-    ran = sandbox.run()
-    assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "continue from here" not in ran.stderr
-
-
-def test_a_claude_that_cannot_be_asked_fails_without_saying_to_run_it_again(sandbox: Sandbox) -> None:
-    (sandbox.root / "stubs" / "claude-unaskable").touch()
     ran = sandbox.run()
     assert ran.returncode == 1 and "Claude Code could not be asked" in ran.stderr and "continue from here" not in ran.stderr
 
@@ -411,8 +407,9 @@ def test_a_shim_behind_the_native_claude_on_the_login_path_is_put_first(sandbox:
     assert sandbox.login_finds("claude") == str(sandbox.home / ".hands/bin/claude")
 
 
-def test_the_releases_it_installs_and_the_marketplace_hands_adds_are_one_repository() -> None:
-    assert f"REPO={MARKETPLACE}\n" in INSTALL.read_text()
+def test_the_releases_it_installs_come_from_the_repository_whose_install_command_hands_check_names() -> None:
+    [repository] = re.findall(r"raw\.githubusercontent\.com/([^/]+/[^/]+)/", readiness.INSTALL)
+    assert f"REPO={repository}\n" in INSTALL.read_text()
 
 
 def test_a_grant_not_given_in_time_stops_the_run_before_hands_runs_saying_to_run_it_again(sandbox: Sandbox) -> None:
@@ -487,12 +484,12 @@ def test_a_step_already_done_is_ticked_off_without_a_pause(sandbox: Sandbox) -> 
     assert "already signed in and set up" in said and "type /exit" not in said
 
 
-def test_a_login_shell_that_cannot_be_looked_up_falls_back_to_the_shell_it_was_run_from(sandbox: Sandbox) -> None:
-    # Simulates a network account that the local directory does not contain.
+def test_a_login_shell_that_cannot_be_looked_up_stops_the_run_before_any_profile_is_written(sandbox: Sandbox) -> None:
+    # The shell it was run from is not the account's, so it never stands in for it.
     (sandbox.root / "stubs" / "dscl-fails").touch()
     ran = sandbox.run(shell="/bin/bash", running_from="/bin/zsh")
-    assert ran.returncode == 0, ran.stderr
-    assert (sandbox.home / ".zprofile").exists() and not (sandbox.home / ".bash_profile").exists()
+    assert ran.returncode == 1 and "macOS could not say which shell your account's terminals start" in ran.stderr
+    assert sandbox.calls() == [] and not (sandbox.home / ".zprofile").exists() and not (sandbox.home / ".bash_profile").exists()
 
 
 def test_the_profile_message_names_only_what_was_added(sandbox: Sandbox) -> None:

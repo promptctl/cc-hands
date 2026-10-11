@@ -22,7 +22,6 @@ complete yourself. Each one is explained before it is requested:
   them, then type `/exit`.
 - A browser sign-in for the brain, the separate copy of Claude Code that hands uses, with
   your Claude plan.
-- Typing `y` when Claude Code asks whether to run `hands plugin`.
 - The Input Monitoring permission for your terminal app, in System Settings, so hands can
   detect Right Shift in every app. If macOS offers to quit the app, choose Later.
 

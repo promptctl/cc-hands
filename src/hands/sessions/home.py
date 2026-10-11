@@ -97,8 +97,8 @@ class Home:
 
     @property
     def plugins(self) -> Path:
-        """hands' Claude Code plugin, one directory for each plugin rendered, named by its content, written by `hands plugin`
-        alone (hands.sessions.marketplace)."""
+        """The marketplace Claude Code installs hands' plugin from: its manifest, and one directory for each plugin rendered,
+        named by its content, written by `hands install-plugin` alone (hands.sessions.marketplace)."""
         return self.root / "plugins"
 
     @property

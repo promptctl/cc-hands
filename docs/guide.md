@@ -229,28 +229,24 @@ its Realtime socket, so hands keeps its own Whisper.
 ## Installing the hooks
 
 hands receives events from a session through Claude Code hooks, which come from a plugin.
-This repository is a marketplace whose only entry is that plugin. Installing it installs
-the hooks in every session, without manually merging anything into your settings. The
-plugin itself comes from the hands you installed: the entry has Claude Code run
-`hands plugin`, which writes the plugin, with hooks that run on that hands' own Python,
-and prints its location. Claude Code shows you that command and asks you to accept it
-during installation.
+`hands install-plugin` writes that plugin, with hooks that run on the installed hands' own
+Python, into a marketplace in hands' home, and installs it for every session. It asks
+nothing, and you never merge anything into your settings by hand.
 
 ```
-hands install-plugin                              # the single install command runs this; accept `hands plugin`; enables hooks in every new session
+hands install-plugin                              # the single install command runs this; installs or updates the hooks in every new session
 claude plugin disable hands@cc-hands              # disables hooks; the plugin stays installed
 claude plugin enable hands@cc-hands               # re-enables hooks
 claude plugin uninstall hands@cc-hands            # removes hooks
 claude plugin marketplace remove cc-hands         # also removes the marketplace
 ```
 
-The same commands are available as `/plugin ...` inside a session. Claude Code runs
-`hands plugin` again once in every session, shortly after it starts. As a result, after
-hands is upgraded, the next session uses the new version's hooks and skills without any
-plugin command. A session that is already running picks up the change on
-`/reload-plugins`. `hands` must be on the `PATH` that Claude Code runs with. For a
-checkout, that must be a `hands` that runs `uv run --project <checkout> hands`. A
-checkout's hooks run the checkout's own `src`, through its venv.
+The same commands are available as `/plugin ...` inside a session. The install command
+runs `hands install-plugin` again on every run, so an upgrade moves the plugin onto the
+new version; `hands check` says when the installed plugin is not the running hands' own.
+A session that is already running picks up an install on `/reload-plugins`, and joins
+hands at its next prompt. A checkout's `hands install-plugin` writes a plugin whose hooks
+run the checkout's own `src`, through its venv.
 
 The plugin also contains two skills. `/hands:restart` restarts a running hands from your
 current session, so that it runs the code, the brain's prompt, and the brain's setup
@@ -283,7 +279,7 @@ own voice. Tell it which one to use, and it uses that voice from its next respon
 choice is stored in `~/.hands/voice`, so it persists across restarts.
 
 The shim locates hands' home directory the same way the CLI does: `HANDS_HOME`, which must
-be an absolute path, or `~/.hands`. `hands plugin` writes the plugin there, in
+be an absolute path, or `~/.hands`. `hands install-plugin` writes the plugin there, in
 `plugins/`, with one directory for each interpreter and each change to the plugin's files.
 
 ## Wrapping every session

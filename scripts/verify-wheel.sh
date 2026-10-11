@@ -1,7 +1,7 @@
 #!/bin/sh
 # verify-wheel.sh WHEEL CONSTRAINTS VERSION: install the wheel as a stranger would, within the locked versions
 # CONSTRAINTS names, with no Go and a fresh uv tool directory, and check that the hands it gives prints VERSION, the fritter inside its package runs a program, and install-fritter puts
-# that fritter and its claude in the stranger's hands home, and hands plugin renders a plugin whose launcher runs
+# that fritter and its claude in the stranger's hands home, and the plugin hands renders has a launcher that runs
 # hands. The stranger has Homebrew's portaudio, which PyAudio builds against.
 set -eu
 [ $# -eq 3 ] || { echo "verify-wheel: usage: verify-wheel.sh WHEEL CONSTRAINTS VERSION (given: $*)" >&2; exit 2; }
@@ -39,11 +39,13 @@ set -e
 # A later PATH= in env's arguments wins over stranger's own.
 stranger PATH="$fresh/home/.hands/bin:$fresh/bin:/usr/bin:/bin" hands install-fritter >/dev/null
 cmp -s "$fritter" "$fresh/home/.hands/bin/fritter" || { echo "verify-wheel: install-fritter did not copy the packaged fritter to the home's bin" >&2; exit 1; }
-# The plugin the marketplace entry installs, as Claude Code gets it: hands plugin prints its directory, which holds the
-# manifest and hooks, and its launcher runs the stranger's hands on the shim the hooks name.
-plugin=$(stranger hands plugin)
+# The plugin hands install-plugin installs, rendered as it renders it into the stranger's hands home: its directory holds
+# the manifest and hooks, and its launcher runs the stranger's hands on the shim the hooks name. Installing it needs
+# Claude Code, which the stranger does not have.
+plugin=$(stranger "$fresh/tools/hands/bin/python" -c 'import os, sys; from hands.sessions.home import default_home; from hands.sessions.marketplace import render; print(render(default_home(os.environ), sys.executable).plugin)')
 for file in .claude-plugin/plugin.json hooks/hooks.json; do
-  [ -f "$plugin/$file" ] || { echo "verify-wheel: the plugin hands plugin printed, $plugin, has no $file" >&2; exit 1; }
+  [ -f "$plugin/$file" ] || { echo "verify-wheel: the plugin hands rendered, $plugin, has no $file" >&2; exit 1; }
 done
+[ -f "$(dirname "$plugin")/.claude-plugin/marketplace.json" ] || { echo "verify-wheel: hands rendered no marketplace beside its plugin $plugin" >&2; exit 1; }
 stranger "$plugin/hooks/python" -c 'import hands.sessions.shim' || { echo "verify-wheel: the plugin's launcher at $plugin/hooks/python cannot import the shim" >&2; exit 1; }
-echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, install-fritter installs it, and hands plugin renders a plugin whose launcher runs it"
+echo "verify-wheel: $(basename "$wheel") installs without go, prints hands $expected, its fritter runs, install-fritter installs it, and the plugin hands renders has a launcher that runs it"
