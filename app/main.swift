@@ -455,14 +455,11 @@ func how(_ ended: Process) -> String {
     ended.terminationReason == .exit ? "exited \(ended.terminationStatus)" : "was ended by signal \(ended.terminationStatus)"
 }
 
-// [LAW:single-enforcer] how every window the person must answer is put before them. Above every app, not in front of
-// them: macOS grants the activation asked for here when the person opened the app, and refuses it when the app was
-// started behind the one they are using (a test run, a script) or when the window comes while they work elsewhere
-// (System Settings during setup, another app when hands fails), and the window stays in sight either way. Forcing it
-// with ignoringOtherApps would take the keyboard from the app they are using.
+// [LAW:single-enforcer] how every window the person must answer is put before them: above every app, never in front of
+// them. hands never asks macOS to make it the active app, so no launch (a test run, a script, a failure while the person
+// works elsewhere) takes the keyboard from the app they are using; they give it to hands by clicking its window.
 func inSight(_ window: NSWindow) {
     window.level = .floating
-    NSApp.activate()
 }
 
 func fail(_ message: String) {

@@ -3,11 +3,11 @@
 // permission is granted, so a launch where they all are shows no window.
 import AppKit
 
-// [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
-// from macOS once a second.
 // System Settings, where the person turns on each permission's switch.
 let SETTINGS = "com.apple.systempreferences"
 
+// [LAW:one-source-of-truth] the step shown is never stored: it is the first permission macOS does not yet grant, read
+// from macOS once a second.
 final class Setup: NSObject, NSWindowDelegate {
     // What answers `--permissions`: this app's own executable, or a stand-in a test names.
     let asker: URL
@@ -117,7 +117,8 @@ final class Setup: NSObject, NSWindowDelegate {
         window.setContentSize(window.contentView!.fittingSize)
         window.center()
         inSight(window)
-        window.makeKeyAndOrderFront(nil)
+        // Ordered in without being made key: hands stays inactive until the person clicks the window.
+        window.orderFrontRegardless()
     }
 
     @objc func request() {
