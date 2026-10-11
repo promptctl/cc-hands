@@ -1,20 +1,5 @@
 import HandsLogic
 
-// Recordings of what macOS answers, copied from the macOS 26 SDK's headers (Xcode 26).
-// AVFoundation.framework/Headers/AVCaptureDevice.h, `typedef NS_ENUM(NSInteger, AVAuthorizationStatus)`.
-let AUTHORIZATION_STATUSES: [(name: String, value: Int)] = [
-    ("AVAuthorizationStatusNotDetermined", 0),
-    ("AVAuthorizationStatusRestricted", 1),
-    ("AVAuthorizationStatusDenied", 2),
-    ("AVAuthorizationStatusAuthorized", 3),
-]
-// IOKit.framework/Headers/hidsystem/IOHIDLib.h, `typedef enum { ... } IOHIDAccessType`, numbered from 0.
-let HID_ACCESS_TYPES: [(name: String, value: UInt32)] = [
-    ("kIOHIDAccessTypeGranted", 0),
-    ("kIOHIDAccessTypeDenied", 1),
-    ("kIOHIDAccessTypeUnknown", 2),
-]
-
 // What `tccutil reset` does, as the fake is told to have it go.
 enum Reset: Sendable {
     case succeeds

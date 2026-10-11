@@ -28,9 +28,11 @@ struct Mac: Privacy {
     }
 
     func reset(_ permission: Permission) throws -> Exit {
+        // tccutil given no bundle resets the permission for every app on the Mac, so a reset without hands' stops here.
+        guard let bundle = Bundle.main.bundleIdentifier else { throw Unbundled() }
         let reset = Process()
         reset.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        reset.arguments = ["reset", permission.service, Bundle.main.bundleIdentifier!]
+        reset.arguments = ["reset", permission.service, bundle]
         let errors = Pipe()
         reset.standardOutput = FileHandle.nullDevice
         reset.standardError = errors
@@ -39,6 +41,10 @@ struct Mac: Privacy {
         reset.waitUntilExit()
         return Exit(status: reset.terminationStatus, errors: String(decoding: said, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
     }
+}
+
+struct Unbundled: Error, CustomStringConvertible {
+    var description: String { "this process is not running from hands.app, so it has no bundle identifier to reset" }
 }
 
 // The app that ran this process, hands.app.

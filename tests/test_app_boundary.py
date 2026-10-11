@@ -1,6 +1,8 @@
 """hands.app's logic library decides and never acts: it imports nothing, and only each party's adapter reaches it."""
 
+import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +15,7 @@ ADAPTERS = {"AVFoundation": "privacy.swift", "IOKit": "privacy.swift"}
 
 def imported(source: str) -> set[str]:
     """The modules a Swift source imports, `IOKit.hid` as IOKit."""
-    return set(re.findall(r"^[ \t]*(?:@\w+[ \t]+)?import[ \t]+(?:\w+[ \t]+)?(\w+)", source, re.MULTILINE))
+    return set(re.findall(r"^[ \t]*(?:(?:@\w+|open|public|package|internal|fileprivate|private)[ \t]+)*import[ \t]+(?:\w+[ \t]+)?(\w+)", source, re.MULTILINE))
 
 
 def test_the_library_imports_nothing() -> None:
@@ -35,5 +37,21 @@ def test_a_party_is_reached_only_through_its_adapter() -> None:
 
 
 def test_the_check_reads_every_form_of_import() -> None:
-    source = "import AppKit\nimport IOKit.hid\n@preconcurrency import AVFoundation\n  import struct Foundation.URL\n// import Nothing\n"
-    assert imported(source) == {"AppKit", "IOKit", "AVFoundation", "Foundation"}
+    source = (
+        "import AppKit\nimport IOKit.hid\n@preconcurrency import AVFoundation\n  import struct Foundation.URL\n"
+        "internal import Darwin\npublic import CoreAudio\n@preconcurrency @testable import Security\n// import Nothing\n"
+    )
+    assert imported(source) == {"AppKit", "IOKit", "AVFoundation", "Foundation", "Darwin", "CoreAudio", "Security"}
+
+
+def test_the_library_is_tested_for_the_oldest_macos_the_app_runs_on() -> None:
+    # [LAW:one-source-of-truth] Info.plist names the oldest macOS; Package.swift's copy, which `swift test` builds for, is held to it.
+    oldest = subprocess.run(
+        ["plutil", "-extract", "LSMinimumSystemVersion", "raw", str(APP / "Info.plist")], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    package = json.loads(
+        subprocess.run(
+            ["swift", "package", "dump-package", "--package-path", str(APP / "HandsLogic")], capture_output=True, text=True, check=True
+        ).stdout
+    )
+    assert [(platform["platformName"], platform["version"]) for platform in package["platforms"]] == [("macos", oldest)]

@@ -9,6 +9,7 @@ target=arm64-apple-macos$(plutil -extract LSMinimumSystemVersion raw "$root/app/
 library=$(mktemp -d)
 trap 'rm -rf "$library"' EXIT
 # [LAW:one-way-deps] the library is a module of its own, so the AppKit layer reaches it only through what it makes public.
-swiftc -target "$target" -O -parse-as-library -module-name HandsLogic -emit-library -static -emit-module \
+# Swift 6, the language mode Package.swift's tools version gives `swift test`, so the tested library is the shipped one.
+swiftc -target "$target" -swift-version 6 -O -parse-as-library -module-name HandsLogic -emit-library -static -emit-module \
     -emit-module-path "$library/HandsLogic.swiftmodule" -o "$library/libHandsLogic.a" "$root"/app/HandsLogic/Sources/HandsLogic/*.swift
 swiftc -target "$target" -I "$library" -L "$library" -lHandsLogic "$@" "$root"/app/*.swift

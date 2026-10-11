@@ -1,19 +1,32 @@
+import AVFoundation
 import HandsLogic
+import IOKit.hid
 import Testing
 
-@Test func everyRecordedAuthorizationStatusReadsAsItsAccess() throws {
-    let read = try AUTHORIZATION_STATUSES.map { ($0.name, try Access(authorizationStatus: $0.value)) }
-    #expect(read.map(\.1) == [.undecided, .restricted, .denied, .granted], "\(read)")
+// [LAW:one-source-of-truth] macOS's answers are the SDK's own constants, never copies of their numbers. Only the
+// constants: asking macOS for a status here would read this Mac's privacy settings.
+let AUTHORIZATION_STATUSES: [(status: AVAuthorizationStatus, access: Access)] = [
+    (.notDetermined, .undecided), (.restricted, .restricted), (.denied, .denied), (.authorized, .granted),
+]
+let HID_ACCESS_TYPES: [(type: IOHIDAccessType, access: Access)] = [
+    (kIOHIDAccessTypeGranted, .granted), (kIOHIDAccessTypeDenied, .denied), (kIOHIDAccessTypeUnknown, .undecided),
+]
+
+@Test func everyAuthorizationStatusInTheSDKReadsAsItsAccess() throws {
+    for (status, access) in AUTHORIZATION_STATUSES {
+        #expect(try Access(authorizationStatus: status.rawValue) == access, "\(status)")
+    }
 }
 
-@Test func everyRecordedHIDAccessTypeReadsAsItsAccess() throws {
-    let read = try HID_ACCESS_TYPES.map { ($0.name, try Access(hidAccessType: $0.value)) }
-    #expect(read.map(\.1) == [.granted, .denied, .undecided], "\(read)")
+@Test func everyHIDAccessTypeInTheSDKReadsAsItsAccess() throws {
+    for (type, access) in HID_ACCESS_TYPES {
+        #expect(try Access(hidAccessType: type.rawValue) == access, "\(type)")
+    }
 }
 
-@Test func aValueNoRecordingHasIsRefusedNotReadAsAnAccess() {
-    #expect(throws: Unrecorded.self) { try Access(authorizationStatus: AUTHORIZATION_STATUSES.count) }
-    #expect(throws: Unrecorded.self) { try Access(hidAccessType: UInt32(HID_ACCESS_TYPES.count)) }
+@Test func aValueTheSDKDoesNotHaveIsRefusedNotReadAsAnAccess() {
+    #expect(throws: Unrecorded.self) { try Access(authorizationStatus: AUTHORIZATION_STATUSES.map(\.status.rawValue).max()! + 1) }
+    #expect(throws: Unrecorded.self) { try Access(hidAccessType: HID_ACCESS_TYPES.map(\.type.rawValue).max()! + 1) }
 }
 
 // One request: what macOS says of the permission, and how a reset would go, against what hands asks of macOS and how
