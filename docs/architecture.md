@@ -1152,7 +1152,7 @@ working session to end every turn with a concise overview that can be read aloud
 stopped before it did anything is passed on like any other turn, and its record notes that the user
 interrupted it. Each summary and its delivery method are recorded as facts on the turn's utterance.
 If a transcript cannot be read, hands speaks "cc-hands finished a turn, and I could not read it."
-without using the model and without adding it to the context, and logs a `Failure` line.
+without using the model and without recording it as a reply, and logs a `Failure` line.
 
 For the brain, a narration waits in a dedicated `BrainStage` lane, never in Pipecat's context, and the
 user's turn has priority over it. A narration that waited while the brain was answering is sent only
@@ -1179,8 +1179,8 @@ acknowledges it, regardless of how many calls the work requires. hands does not 
 the user has already heard something from it: a word, a permission question, or their own barge-in.
 The acknowledgement is a short fixed phrase ("One moment.", "On it.", ...), chosen in rotation from
 `ACKNOWLEDGEMENTS` so that two consecutive turns do not get the same phrase. It is sent to the turn's
-speaker as a separate sentence, in the same way as a permission question, and is not added to the
-context, because the brain did not say it. hands never acknowledges a call that returns immediately, a
+speaker as a separate sentence, in the same way as a permission question, and is not recorded as a
+reply, because the brain did not say it. hands never acknowledges a call that returns immediately, a
 turn that states what it will do before it makes a call, or a turn that hands narrates. The turn's
 event records the phrase (`acknowledged`) and how long after the turn left its lane the phrase was sent
 to the speaker (`acknowledged_ms`). These are recorded in the same way as the turn's own words: a
@@ -1502,7 +1502,7 @@ from the beginning. "Skip that" and "say that again" map to `skip()` and `repeat
 "more on that" maps to `expand()` on the turn that the segment belongs to.
 
 Pipecat's output transport reports text as its audio plays. On an interruption, only the
-text that was played is added to the context. pocket-tts does not report word timings, so
+text that was played is recorded as the reply. pocket-tts does not report word timings, so
 the smallest unit of position is a sentence. In the current implementation
 (`hands.core.playback`, `hands.voice.player`), a reading is the sequence of sentences sent
 to the speaker since the speaker was last silent. The sentences can be the model's reply
@@ -1940,7 +1940,7 @@ cut can occur while the turn's words, and the note that accompanies them, are st
 being sent to the model, so those messages are uninterruptible. An interruption stops
 hands, never the user. The user aggregator does not accept any of them until the
 assistant aggregator, at the end of the pipeline, reports that the interrupted reply has
-been written to the context as cut off (`CutWritten`). As a result, the context always
+been written as cut off (`CutWritten`). As a result, the audit log always
 lists that reply before the words that interrupted it, no matter how soon after the cut
 those words arrive. Each turn is recorded as a `UserTurn` line in the audit log. The
 line records how the turn's edge made it cut and how long after the turn opened the cut

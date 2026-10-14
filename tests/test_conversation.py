@@ -10,6 +10,8 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMMessagesAppendFrame,
+    LLMMessagesUpdateFrame,
     LLMTextFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
@@ -131,6 +133,9 @@ async def test_every_reply_and_line_is_recorded_and_none_is_kept_in_the_context(
     async with conversing() as conversation:
         for n in range(50):
             await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame(f"Reply {n}."), LLMFullResponseEndFrame(), TTSSpeakFrame(f"Line {n}."))
+        await conversation.said(
+            LLMMessagesAppendFrame([{"role": "assistant", "content": "appended"}]), LLMMessagesUpdateFrame([{"role": "assistant", "content": "replaced"}])
+        )
 
         assert await conversation.replies(100) == [
             reply for n in range(50) for reply in (Replied(f"Reply {n}.", interrupted=False), Replied(f"Line {n}.", interrupted=False))

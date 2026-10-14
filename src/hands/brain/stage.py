@@ -525,7 +525,7 @@ class BrainStage(FrameProcessor):
             child("tool.call", ran.span, ran.at, _ms((ended if ran.answered is None else ran.answered) - ran.ran), outcome, call=call, tool=ran.tool)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
-        """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
+        """What hands had for the brain to tell, said as written since the brain did not: a system fact, not recorded as a reply."""
         for line in unsaid:
             await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
 
@@ -578,7 +578,7 @@ class BrainStage(FrameProcessor):
                     pass
                 case _Acknowledgement(line=line):
                     turn.acknowledged = (line, self._now())
-                    # Kept out of the context: the brain never said it.
+                    # Not recorded as a reply: the brain never said it.
                     await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
                     await self._reply(turn, True)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.

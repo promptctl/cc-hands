@@ -80,7 +80,14 @@ class _Unkept(LLMContext):
     """The assistant side's context, which keeps none of what is said: the brain keeps its own history and is never handed
     a reply back, and the audit log's record of each one is the event the aggregator raises, built from what it heard."""
 
+    # Pipecat's context (1.10.0) is written only through these three: a transform replaces, and an image or audio is added.
     def add_message(self, message: LLMContextMessage) -> None:
+        pass
+
+    def add_messages(self, messages: list[LLMContextMessage]) -> None:
+        pass
+
+    def set_messages(self, messages: list[LLMContextMessage]) -> None:
         pass
 
 
