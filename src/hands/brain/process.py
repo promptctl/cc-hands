@@ -777,14 +777,16 @@ class Brain:
                 return
             async with self._input:
                 if self._turn is turn:
+                    # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
+                    # hands-brain-d8g.aur): what the turn holds is refused before it, so no answer of the user's lands after.
+                    self._settle(Deny(BROKEN))
                     await self._clear(turn)
         finally:
             # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
             # exit window ends it; `_broke` says what broke it. The turn ends with what broke it however its stop went,
             # even unstopped: nothing else is left to end it. What it holds is refused first, so no dialog of it is left
-            # open for the next turn's Return: Escape refuses a permission held at its dialog and leaves its hook
-            # unanswered for good (2.1.288, spike hands-brain-d8g.aur). Unanswered, the turn is still the one in flight,
-            # so what is held is its own and no later turn's.
+            # open for the next turn's Return. Unanswered, the turn is still the one in flight, so what is held is its own
+            # and no later turn's.
             if not turn.answered.done():
                 self._settle(Deny(BROKEN))
                 self._over(turn, broken)

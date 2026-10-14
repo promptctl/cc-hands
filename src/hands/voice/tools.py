@@ -1037,7 +1037,7 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
             return {"error": str(error)}
         return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
 
-    # Completes through a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
+    # Its readback is said after a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
     return [tool(model_in_use), tool(use_model, then="silence", completes=True)]
 
 
@@ -1188,7 +1188,7 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
 
-    # A barge-in never stops a start part way: the session would be running, and the user never told.
+    # Its readback is said after a barge-in: the session would be running, and the user never told.
     return tool(start_session, completes=True)
 
 
@@ -1221,7 +1221,7 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
         """
         return {"sessions": list(await asyncio.gather(*(closed(SessionId(session), asked) for session in sessions)))}
 
-    # A barge-in never stops a close part way: the sessions would be ending, and the user never told.
+    # Its readback is said after a barge-in: the sessions would be ending, and the user never told.
     return tool(close_session, completes=True)
 
 
@@ -1336,7 +1336,7 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
 
-    # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
+    # Their readbacks are said after a barge-in: the draft would change, or be sent, without the user told.
     return [
         tool(stage_draft, then="silence", completes=True),
         tool(amend_draft, then="silence", completes=True),
@@ -1408,7 +1408,7 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, lambda id: DriveSend(id, _prompt_text(text, "prompt")), drive, _for_the_model(drive_readback))
 
-    # A barge-in must not cancel a send part way: a prompt half typed is one the session reads wrong.
+    # Their readbacks are said after a barge-in: what was typed into the session would go unheard.
     return [
         tool(drive_session, completes=True),
         tool(stop_driving, completes=True),
@@ -1464,7 +1464,7 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
-    # A barge-in must not cancel either part way: it would be typed without its readback heard.
+    # Their readbacks are said after a barge-in: what was typed would go unheard.
     return [tool(body, completes=True) for body in (send_command, interrupt_session)]
 
 
@@ -1506,7 +1506,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _decide(sessions, request, lambda: parse_plan_decision(decision, message))
 
-    # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
+    # Their readbacks are said after a barge-in: the user would never hear whether the answer went through.
     return [tool(body, completes=True) for body in (answer_permission, answer_question, answer_plan)]
 
 

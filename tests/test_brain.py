@@ -952,6 +952,40 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
     assert not (tmp_path / "notes.txt").exists()
 
 
+async def test_a_permission_held_when_its_turn_breaks_is_refused_before_the_escape_so_no_later_answer_lands(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    typist = brain._typist  # pyright: ignore[reportPrivateUsage]
+    # Whether what the turn held was refused at each Escape: a yes said after it would land on a dialog it refused.
+    refused: list[bool] = []
+
+    class Watched:
+        def type(self, text: object) -> None:
+            typist.type(text)  # pyright: ignore[reportArgumentType]
+
+        def press(self, key: object) -> None:
+            if key == "escape":
+                refused.append(asked[0].decision.done())
+            typist.press(key)  # pyright: ignore[reportArgumentType]
+
+    said, sink = failures()
+    try:
+        answered = asyncio.ensure_future(brain.ask("write", asked.append))
+        await until(lambda: bool(asked))
+        brain._typist = Watched()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        brain._broke(brain._turn, RuntimeError("no voice"))  # pyright: ignore[reportPrivateUsage]
+        with pytest.raises(RuntimeError, match="no voice"):
+            await asyncio.wait_for(answered, 10)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["the brain's own work failed: RuntimeError('no voice')"]
+    assert refused == [True]
+    [permission] = events(recorded, "brain.permission")
+    assert permission.facts["decision"] == Deny(BROKEN)
+
+
 async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(launch(tmp_path), lambda _entry: None)
     pressed: list[object] = []

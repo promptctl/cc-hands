@@ -201,8 +201,9 @@ In addition, hands gives the brain its own skills, shipped with the code they su
 `hands:start` defines how it starts a new session when you request one, using hands' `start_session` tool.
 `hands:close` defines how it closes the sessions you are finished with, by name or all completed sessions, using `close_session`.
 The brain is interactive Claude Code running under hands' own fritter, never `claude -p`.
-hands types each turn into its input, stops a turn with Escape, and types nothing else
-into it. The brain's hooks report when a turn starts and when it ends.
+hands types each turn into its input and types nothing else into it, except Escape,
+which it presses only to stop a turn that hands' own work broke, or a prompt that
+belongs to no turn. The brain's hooks report when a turn starts and when it ends.
 Background requests from hands, such as summaries and the sentence that replaces an old
 tool result, are sent to a second interactive Claude Code instance started for each
 question, with `/btw` and the question as its opening prompt
@@ -213,8 +214,8 @@ never from its screen. Each turn's `voice.turn` wide event lists the exchanges i
 came from. A barge-in stops what is being said and leaves the brain running: the tools
 under way finish, and for a tool whose effect must land, its readback, or the reason it
 failed, is spoken. After a barge-in, and after `stay_silent`, hands answers the brain's
-next request itself, so the model is not asked to continue. A turn that the brain ends in error is reported as a
-model failure.
+next request itself, so the model is not asked to continue. A turn that the brain ends
+in error is reported as a model failure.
 The run's audit log records which backend, model, and account it connected to. The gate is
 push-to-talk: the key serves as the voice activity detector and the microphone mute, so
 the key defines the turn boundary and the pipeline can never transcribe its own output.
