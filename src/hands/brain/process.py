@@ -513,7 +513,11 @@ def holding(claude_code: claudecode.ClaudeCode, config_dir: Path, base_url: str,
     """The account `config_dir` is logged in as, or None when it holds no login; raises NotLoggedIn when `claude auth
     status` says what it holds in a way hands cannot read, or holds one whose requests do not reach hands' proxy, none of
     which a login mends, and claudecode.Unreachable when it cannot be asked."""
-    asked = claude_code.auth_status(claudecode.Instance(brain_claude(inherited), environment(config_dir, base_url, inherited)))
+    try:
+        asked = claude_code.auth_status(claudecode.Instance(brain_claude(inherited), environment(config_dir, base_url, inherited)))
+    except claudecode.Unreachable as error:
+        # `hands check` and `hands run` ask the person's Claude Code too: the message says this one was the brain's.
+        raise claudecode.Unreachable(f"the brain's {error}", error.why) from error
     try:
         status = Payload.parse(asked.stdout)
         if not status.flag("loggedIn"):

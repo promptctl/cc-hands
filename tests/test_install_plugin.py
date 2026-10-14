@@ -140,6 +140,17 @@ def test_a_command_that_hangs_is_stopped_and_said(tmp_path: Path, monkeypatch: p
     assert stopped.value.why == "timeout"
 
 
+def test_a_claude_that_does_not_answer_is_stopped_and_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `auth status` and the listings, which `hands check` and `hands run` wait on: the same real adapter, a second's limit.
+    hangs = tmp_path / "claude"
+    hangs.write_text("#!/bin/sh\nexec sleep 30\n")
+    hangs.chmod(hangs.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(claudecode, "ANSWER_SECONDS", 1.0)
+    with pytest.raises(Unreachable, match="`claude auth status` did not answer in 1s") as stopped:
+        Installed().auth_status(Instance(hangs, {}))
+    assert stopped.value.why == "timeout"
+
+
 def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_back_here(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
     fake = Fake(stale=True)
     person(fake).marketplace, person(fake).plugin = home.plugins, Held("0123456789abcdef")

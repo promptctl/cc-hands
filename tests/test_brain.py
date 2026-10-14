@@ -26,6 +26,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
 from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, onboarded, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.sessions import firstrun
+from hands.sessions.claudecode import Answer, Instance
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Drive, Permission
@@ -1327,7 +1328,22 @@ def test_hands_login_on_a_brain_whose_status_cannot_be_asked_makes_no_login_over
     onboard(fake, tmp_path / "brain")
     assert hands_login(tmp_path, fake) == 2
     assert made(fake) == []
-    assert capsys.readouterr().err == "hands login: `claude auth status` could not be run: no such program\n"
+    assert capsys.readouterr().err == "hands login: the brain's `claude auth status` could not be run: no such program\n"
+
+
+def test_hands_login_on_a_brain_whose_status_cannot_be_read_makes_no_login_over_the_one_it_may_hold(terminal: None, tmp_path: Path, found_claude: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # No real Claude Code has been seen to answer `auth status` with anything but its JSON; this is hands' reading of one
+    # that does, whatever says it: no proof of no login, so no login is made over one it may hold.
+    class Bannered(Fake):
+        def auth_status(self, claude: Instance) -> Answer:
+            super().auth_status(claude)
+            return Answer(0, b"Claude Code is updating\n", b"")
+
+    fake = Bannered()
+    onboard(fake, tmp_path / "brain")
+    assert hands_login(tmp_path, fake) == 2
+    assert made(fake) == []
+    assert capsys.readouterr().err.startswith("hands login: `claude auth status` for the brain answered b'Claude Code is updating\\n' b'', not its status")
 
 
 def test_hands_login_on_an_onboarded_brain_whose_directory_is_untrusted_trusts_it_and_only_logs_it_in(terminal: None, tmp_path: Path, found_claude: Path, capsys: pytest.CaptureFixture[str]) -> None:
