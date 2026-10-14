@@ -31,8 +31,8 @@ class Tool:
     # hands back an error, which the model is asked to answer: a refused call did nothing, and only the model can retry it.
     # A result {"says": text} is said by hands, as written, whichever the model does.
     then: Literal["reply", "silence"]
-    # True when a call's effect lands for the user: after a barge-in, hands says what it handed back, since the model is
-    # not asked to go on.
+    # True when a call's effect lands for the user: once the model is not asked to go on, after a barge-in or a call that
+    # ends the reply in silence, hands says what the call handed back.
     reads_back: bool
 
     @property

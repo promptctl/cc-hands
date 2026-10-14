@@ -120,7 +120,7 @@ async def test_a_draft_for_no_session_or_with_none_staged_is_refused_to_the_mode
     assert await call([amend], "amend_draft", session=id, text="run the tests", resolutions=[]) == {"error": "There is no draft for cc-hands."}
 
 
-async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
+async def test_the_draft_tools_say_their_arguments_and_are_read_back(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
     tools = draft_tools(sessions)
     assert [tool.name for tool in tools] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
@@ -400,7 +400,7 @@ async def test_command_arguments_that_do_not_parse_are_refused_out_loud(command:
     assert typed == []
 
 
-async def test_the_keyboard_tools_say_their_arguments_and_complete_through_a_barge_in(tmp_path: Path) -> None:
+async def test_the_keyboard_tools_say_their_arguments_and_are_read_back(tmp_path: Path) -> None:
     sessions, _ = await joined(tmp_path)
     tools = keyboard_tools(sessions)
     assert [tool.name for tool in tools] == ["send_command", "interrupt_session"]
