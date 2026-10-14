@@ -80,20 +80,22 @@ class _Unkept(LLMContext):
     """The assistant side's context, which keeps none of what is said: the brain keeps its own history and is never handed
     a reply back, and the audit log's record of each one is the event the aggregator raises, built from what it heard."""
 
-    # Pipecat's context (1.10.0) is written only through these three: a transform replaces, and an image or audio is added.
-    def add_message(self, message: LLMContextMessage) -> None:
-        pass
+    # [LAW:types-are-the-program] the store itself is what keeps nothing, not the writes Pipecat makes to it today: each read
+    # is a new empty list, so whatever is written into one, by whichever path, is gone with it.
+    # Pyright refuses a property where Pipecat declares an attribute, though this one reads and takes the attribute's type.
+    @property
+    def _messages(self) -> list[LLMContextMessage]:
+        return []
 
-    def add_messages(self, messages: list[LLMContextMessage]) -> None:
-        pass
-
-    def set_messages(self, messages: list[LLMContextMessage]) -> None:
+    @_messages.setter
+    def _messages(self, _messages: list[LLMContextMessage]) -> None:  # pyright: ignore[reportIncompatibleVariableOverride]
         pass
 
 
 def turns(context: LLMContext, user_params: LLMUserAggregatorParams) -> tuple[LLMUserAggregator, AssistantTurns]:
     """The two sides of the conversation, wired as Pipecat's `LLMContextAggregatorPair` wires its own (1.10.0), which builds
-    no assistant side but Pipecat's: the user's words go into `context`, and what is said goes into none."""
+    no assistant side but Pipecat's, save that they share no context: the user's words go into `context`, and what is said
+    goes into none."""
     user = LLMUserAggregator(context, params=user_params)
     return user, AssistantTurns(_Unkept(), _paired_user_aggregator=user)
 

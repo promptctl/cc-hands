@@ -30,7 +30,7 @@ from pipecat.frames.frames import (
     UserStoppedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
+from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
@@ -166,8 +166,6 @@ class Rig:
     received: list[None] = field(default_factory=list[None])
     # Each mark the latency observer told of the turns, as the phone's page would be told.
     told: list[Mark] = field(default_factory=list[Mark])
-    # The context both sides of the conversation write.
-    context: LLMContext = field(default_factory=LLMContext)
     # Whose voice each hold with words in it is told to be, oldest first; the user's hand, once none are left.
     speakers: list[Voice | Exception] = field(default_factory=list[Voice | Exception])
     # The samples each was told from.
@@ -275,7 +273,7 @@ async def rigged(
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context, speakers=speakers, told_samples=told_samples)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, speakers=speakers, told_samples=told_samples)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:

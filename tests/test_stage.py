@@ -762,17 +762,17 @@ async def test_a_main_turn_no_turn_asked_of_is_final_so_a_spent_limit_is_never_c
     assert rig.spans[0].parent_id is None
 
 
-async def test_the_brain_hears_what_the_context_gained_and_never_its_own_words_again(rig: Rig) -> None:
+async def test_the_brain_hears_what_the_context_gained_as_one_message(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "[hands] hands has just started."}, {"role": "user", "content": "anything new?"})
     rig.brain.end()
     await rig.until(lambda: "LLMFullResponseEndFrame" in rig.out.shape())
-    await rig.say({"role": "assistant", "content": "Nothing new."}, {"role": "user", "content": "[hands] a session is waiting."})
+    await rig.say({"role": "user", "content": "[hands] a session is waiting."})
     assert rig.brain.asked == [heard("[hands] hands has just started.\n\nanything new?"), heard("[hands] a session is waiting.")]
 
 
 async def test_the_context_holds_only_what_the_brain_has_not_heard_however_many_turns_pass(rig: Rig) -> None:
     for turn in range(200):
-        await rig.say({"role": "assistant", "content": f"reply {turn - 1}"}, {"role": "user", "content": f"turn {turn}"})
+        await rig.say({"role": "user", "content": f"turn {turn}"})
         assert rig.context.get_messages() == []
         rig.brain.end()
     assert rig.brain.asked == [heard(f"turn {turn}") for turn in range(200)]

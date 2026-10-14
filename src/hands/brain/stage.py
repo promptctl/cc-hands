@@ -34,7 +34,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage, LLMStandardMessage
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
@@ -597,7 +597,7 @@ class BrainStage(FrameProcessor):
         # Copied, since the list handed back is the context's own, which emptying it empties too.
         fresh = list(context.get_messages())
         context.set_messages([])
-        return "\n\n".join(_user_text(message) for message in fresh if not isinstance(message, LLMSpecificMessage) and message.get("role") == "user")
+        return "\n\n".join(_user_text(message) for message in fresh)
 
     def _barge_in(self) -> None:
         """Stops the turn in flight being spoken."""
@@ -714,12 +714,14 @@ def _ms(seconds: Seconds) -> float:
     return round(seconds * 1000, 3)
 
 
-def _user_text(message: LLMStandardMessage) -> str:
-    content = message.get("content")
-    if not isinstance(content, str):
-        # [LAW:no-silent-failure] hands' aggregator and notes write plain text; anything else is a change to hear about.
-        raise TypeError(f"a user message in the context is not plain text: {message!r}")
-    return content
+def _user_text(message: LLMContextMessage) -> str:
+    match message:
+        case {"role": "user", "content": str(content)}:
+            return content
+        case _:
+            # [LAW:no-silent-failure] only the user aggregator writes this context, and it and hands' notes write plain user
+            # text; anything else is a change to hear about.
+            raise TypeError(f"a message in the context is not the user's plain text: {message!r}")
 
 
 @dataclass(frozen=True)
