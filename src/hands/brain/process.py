@@ -1,9 +1,9 @@
 """The brain's process: one long-lived, slim Claude Code on its own login, behind hands' proxy, reaching hands over MCP.
 
 It is Claude Code as anyone runs it: interactive, on a terminal hands holds, under fritter, and asked nothing a person
-at its keyboard could not ask. A turn is typed into its input and sent with Return, and an interrupt is Escape. Nothing
-else is typed into it: its input is the user's, and what hands asks in the background is asked of a Claude Code of its
-own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
+at its keyboard could not ask. A turn is typed into its input and sent with Return, and Escape stops a prompt that is no
+turn's, or a turn hands' own work broke. Nothing else is typed into it: its input is the user's, and what hands asks in
+the background is asked of a Claude Code of its own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
@@ -95,7 +95,6 @@ BROKEN = "hands failed while it settled this permission request, so it is refuse
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
 UNANSWERED = "No answer came from the user in time, so it did not run. Tell them aloud that it did not run and what that leaves undone."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
-STOPPED = "The user stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
 
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
@@ -545,8 +544,7 @@ def holding(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Ac
 
 @dataclass(frozen=True)
 class BrainAnswered:
-    """The end of a brain turn: its Stop hook, its StopFailure hook with what failed it, or the Escape hands pressed to
-    stop it. Its words are on the wire."""
+    """The end of a brain turn: its Stop hook, or its StopFailure hook with what failed it. Its words are on the wire."""
 
     prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
     error: str | None
@@ -640,8 +638,7 @@ class Brain:
         self._turn: _Turn | None = None
         # The permissions held at their hooks now: one for each call of a reply that asks. Nothing is typed into the brain
         # while one is held but the Escape that stops its turn: what is typed goes to the dialog Claude Code draws, whose
-        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended, and the stage
-        # presses no Escape while the user is being asked.
+        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended.
         self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
         # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop or the Escape that
@@ -697,7 +694,7 @@ class Brain:
         logger.opt(exception=error).error(f"the brain's own work failed: {error!r}")
         if turn is not None and turn.broken is None:
             turn.broken = error
-            self._keep(self._stop(turn), turn)
+            self._keep(self._stop(turn, error), turn)
 
     async def _send(self, turn: _Turn) -> None:
         # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
@@ -750,9 +747,6 @@ class Brain:
         no turn's it stopped are its `others`. Escape posts no hook for the prompt it stops, so they are no longer running."""
         stopped = tuple(self._unowned)
         await self._type(lambda typist: typist.press("escape"))
-        # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
-        # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
-        self._settle(Deny(STOPPED))
         # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
         # prompt (2.1.289: its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
         # it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes,
@@ -769,52 +763,33 @@ class Brain:
         if stopped:
             logger.warning(f"the brain stopped prompts {list(stopped)}, which were no turn's")
 
-    def interrupt(self) -> None:
-        """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
-        and no hook says a turn was stopped, so the turn ends where it is pressed."""
-        turn = self._turn
-        if turn is not None:
-            self._keep(self._stop(turn), turn)
-
-    async def _stop(self, turn: _Turn) -> None:
+    async def _stop(self, turn: _Turn, broken: BaseException) -> None:
+        """Stops a turn the brain's own work broke as Escape stops it, and ends it with what broke it."""
         try:
-            await self._escape(turn)
-        except Exception as error:
-            # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
-            # exit window ends it. The turn ends with what broke it, and `_broke` says it.
-            if turn.broken is None:
-                turn.broken = error
-            raise
-        finally:
-            # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it,
-            # and what it holds is refused first, so no dialog of it is left open for the next turn's Return. Unanswered,
-            # it is still the turn in flight, so what is held is its own and no later turn's.
-            if turn.broken is not None and not turn.answered.done():
-                self._settle(Deny(BROKEN))
-                self._over(turn, turn.broken)
-
-    async def _escape(self, turn: _Turn) -> None:
-        # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
-        # nothing of the turn's runs for it to stop.
-        await asyncio.wait({turn.taken, turn.tried}, return_when=asyncio.FIRST_COMPLETED)
-        if self._turn is not turn:
-            return
-        if not turn.taken.done():
-            # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
-            logger.warning(f"the brain was not stopped: its turn was not taken, typed {turn.typings} time(s)")
-            return
-        try:
+            # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
+            # nothing of the turn's runs for it to stop.
+            await asyncio.wait({turn.taken, turn.tried}, return_when=asyncio.FIRST_COMPLETED)
+            if self._turn is not turn:
+                return
+            if not turn.taken.done():
+                # [LAW:no-silent-failure] what Claude Code takes of it later runs as no turn's, until the next turn stops it.
+                logger.warning(f"the brain was not stopped: its turn was not taken, typed {turn.typings} time(s)")
+                return
             async with self._input:
-                if self._turn is not turn:
-                    return
-                await self._clear(turn)
-        except BrainGone as error:
-            self._over(turn, error)
-            return
-        if turn.answered.done():
-            # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
-            return
-        self._over(turn, BrainAnswered(turn.prompts[-1], None))
+                if self._turn is turn:
+                    # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
+                    # hands-brain-d8g.aur): what the turn holds is refused before it, so no answer of the user's lands after.
+                    self._settle(Deny(BROKEN))
+                    await self._clear(turn)
+        finally:
+            # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
+            # exit window ends it; `_broke` says what broke it. The turn ends with what broke it however its stop went,
+            # even unstopped: nothing else is left to end it. What it holds is refused first, here too for a stop that broke
+            # before its Escape, so no dialog of it is left open for the next turn's Return. Unanswered, the turn is still
+            # the one in flight, so what is held is its own and no later turn's.
+            if not turn.answered.done():
+                self._settle(Deny(BROKEN))
+                self._over(turn, broken)
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""

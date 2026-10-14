@@ -1172,9 +1172,7 @@ it routes the exchange. An exchange that belongs to no unit of work, such as a w
 exchange through the tap or a brain exchange outside a turn, is recorded as a `proxy.exchange` span at
 the root of its own trace, with its session, kind, and path. A turn that hands stopped partway through
 still emits its event, marked as cancelled, with the work it had completed.
-The event also records the text typed into the brain (`asked`). If the user barged in, it also records
-the calls that were running at that point (`running`) and whether the brain was instructed to stop
-immediately (`stopped`).
+The event also records the text typed into the brain (`asked`).
 
 If a user's turn is still running tool calls `ACKNOWLEDGE_SECONDS` (2 s) after its first call, hands
 acknowledges it, regardless of how many calls the work requires. hands does not acknowledge the turn if

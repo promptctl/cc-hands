@@ -271,7 +271,7 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
             return {"error": str(error)}
         return {"readback": "No session is focused now." if to is None else f"Now on {spoken_name(sessions, to)}."}
 
-    return tool(focus_session, completes=True)
+    return tool(focus_session, reads_back=True)
 
 
 def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool:
@@ -878,7 +878,7 @@ def attention_tool(home: Home) -> Tool:
             return {"error": str(error)}
         return {"readback": settings.described(to)}
 
-    return tool(attention, completes=True)
+    return tool(attention, reads_back=True)
 
 
 def modality_tool(switch: Callable[[Modality], None]) -> Tool:
@@ -895,7 +895,7 @@ def modality_tool(switch: Callable[[Modality], None]) -> Tool:
         switch(modality)
         return {"modality": modality, "readback": _modality_readback(modality)}
 
-    return tool(set_modality, completes=True)
+    return tool(set_modality, reads_back=True)
 
 
 def _modality_readback(modality: Modality) -> str:
@@ -935,7 +935,7 @@ def trigger_tools(triggers: Triggers, models: Path, wake: Word) -> list[Tool]:
         # a no-op, and a first switch that fetched read apart.
         return {"trigger": trigger, "was": was, "fetched": list(fetched), "readback": f"{'Already on' if was == trigger else 'Okay'}. {described(trigger, wake)}"}
 
-    return [tool(trigger_in_use), tool(set_trigger, completes=True)]
+    return [tool(trigger_in_use), tool(set_trigger, reads_back=True)]
 
 
 def voice_tools(voices: Voices) -> list[Tool]:
@@ -990,7 +990,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
             return {"error": str(error)}
         return {"speaking_in": voice, "readback": f"This is {spoken(voice)}, and I'll speak in this voice from now on."}
 
-    return [tool(voices_on_offer), tool(hear_voices), tool(use_voice, completes=True)]
+    return [tool(voices_on_offer), tool(hear_voices), tool(use_voice, reads_back=True)]
 
 
 class OwnModel(Protocol):
@@ -1037,8 +1037,8 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
             return {"error": str(error)}
         return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
 
-    # Completes through a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
-    return [tool(model_in_use), tool(use_model, then="silence", completes=True)]
+    # Its readback is said after a barge-in: the barge-in is what `heard` reports, and the model is told the switch did not happen.
+    return [tool(model_in_use), tool(use_model, then="silence", reads_back=True)]
 
 
 def usage_tool(usage: Usage) -> Tool:
@@ -1139,12 +1139,12 @@ def spotify_tools(player: spotify.Player, catalogue: spotify.Catalogue) -> list[
 
     return [
         tool(spotify_now_playing),
-        tool(spotify_play, completes=True),
-        tool(spotify_pause, completes=True),
-        tool(spotify_skip, completes=True),
-        tool(spotify_volume, completes=True),
-        tool(spotify_shuffle, completes=True),
-        tool(spotify_repeat, completes=True),
+        tool(spotify_play, reads_back=True),
+        tool(spotify_pause, reads_back=True),
+        tool(spotify_skip, reads_back=True),
+        tool(spotify_volume, reads_back=True),
+        tool(spotify_shuffle, reads_back=True),
+        tool(spotify_repeat, reads_back=True),
         tool(spotify_search),
     ]
 
@@ -1188,8 +1188,8 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
 
-    # A barge-in never stops a start part way: the session would be running, and the user never told.
-    return tool(start_session, completes=True)
+    # Its readback is said after a barge-in: the session would be running, and the user never told.
+    return tool(start_session, reads_back=True)
 
 
 def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
@@ -1221,8 +1221,8 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
         """
         return {"sessions": list(await asyncio.gather(*(closed(SessionId(session), asked) for session in sessions)))}
 
-    # A barge-in never stops a close part way: the sessions would be ending, and the user never told.
-    return tool(close_session, completes=True)
+    # Its readback is said after a barge-in: the sessions would be ending, and the user never told.
+    return tool(close_session, reads_back=True)
 
 
 def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
@@ -1254,7 +1254,7 @@ def set_overlay_tool(sessions: Sessions, overlays: Overlays) -> Tool:
         # says what will happen to the session's next turn.
         return {"readback": _overlay_readback(spoken_name(sessions, id), await set_to(lambda: settings.attention(overlays.home)), overlay, sessions.driven(id))}
 
-    return tool(set_overlay, completes=True)
+    return tool(set_overlay, reads_back=True)
 
 
 def _overlay_readback(name: str, attention: Attention, overlay: Overlay, drive: Drive | None) -> str:
@@ -1336,12 +1336,12 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, SendDraft, sessions.draft, _for_the_model(readback))
 
-    # A barge-in must not cancel a draft call part way: the draft would change, or be sent, without its readback heard.
+    # Their readbacks are said after a barge-in: the draft would change, or be sent, without the user told.
     return [
-        tool(stage_draft, then="silence", completes=True),
-        tool(amend_draft, then="silence", completes=True),
-        tool(discard_draft, completes=True),
-        tool(send_draft, completes=True),
+        tool(stage_draft, then="silence", reads_back=True),
+        tool(amend_draft, then="silence", reads_back=True),
+        tool(discard_draft, reads_back=True),
+        tool(send_draft, reads_back=True),
     ]
 
 
@@ -1408,11 +1408,11 @@ def drive_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, lambda id: DriveSend(id, _prompt_text(text, "prompt")), drive, _for_the_model(drive_readback))
 
-    # A barge-in must not cancel a send part way: a prompt half typed is one the session reads wrong.
+    # Their readbacks are said after a barge-in: what was typed into the session would go unheard.
     return [
-        tool(drive_session, completes=True),
-        tool(stop_driving, completes=True),
-        tool(drive_send, completes=True),
+        tool(drive_session, reads_back=True),
+        tool(stop_driving, reads_back=True),
+        tool(drive_send, reads_back=True),
     ]
 
 
@@ -1464,8 +1464,8 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
-    # A barge-in must not cancel either part way: it would be typed without its readback heard.
-    return [tool(body, completes=True) for body in (send_command, interrupt_session)]
+    # Their readbacks are said after a barge-in: what was typed would go unheard.
+    return [tool(body, reads_back=True) for body in (send_command, interrupt_session)]
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
@@ -1506,8 +1506,8 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
         """
         return await _decide(sessions, request, lambda: parse_plan_decision(decision, message))
 
-    # A barge-in must not cancel an answer part way: the user would never hear whether it went through.
-    return [tool(body, completes=True) for body in (answer_permission, answer_question, answer_plan)]
+    # Their readbacks are said after a barge-in: the user would never hear whether the answer went through.
+    return [tool(body, reads_back=True) for body in (answer_permission, answer_question, answer_plan)]
 
 
 async def _decide(sessions: Sessions, request: str, decision: Callable[[], Decision]) -> Result:

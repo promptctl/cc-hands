@@ -31,15 +31,16 @@ class Tool:
     # hands back an error, which the model is asked to answer: a refused call did nothing, and only the model can retry it.
     # A result {"says": text} is said by hands, as written, whichever the model does.
     then: Literal["reply", "silence"]
-    # True when a barge-in must not stop a call part way: its effect would land without its readback heard.
-    completes: bool
+    # True when a call's effect lands for the user: once the model is not asked to go on, after a barge-in or a call that
+    # ends the reply in silence, hands says what the call handed back.
+    reads_back: bool
 
     @property
     def input_schema(self) -> JsonSchema:
         return {"type": "object", "properties": dict(self.properties), "required": list(self.required)}
 
 
-def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: bool = False) -> Tool:
+def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", reads_back: bool = False) -> Tool:
     """The body as a tool, its schema read once from its signature and docstring: the name, the text, and each argument's type and line."""
     # [LAW:parse-dont-validate] a signature with a type no schema says is refused here, as the daemon builds its tools.
     docstring = docstring_parser.parse(inspect.getdoc(body) or "")
@@ -48,7 +49,7 @@ def tool(body: Body, *, then: Literal["reply", "silence"] = "reply", completes: 
     parameters = inspect.signature(body).parameters.values()
     properties = {parameter.name: {**_schema(hints[parameter.name]), "description": lines.get(parameter.name, "")} for parameter in parameters}
     required = tuple(parameter.name for parameter in parameters if parameter.default is inspect.Parameter.empty)
-    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, properties), then, completes)
+    return Tool(body.__name__, (docstring.description or "").strip(), properties, required, _closed(body, properties), then, reads_back)
 
 
 def _closed(body: Body, properties: Mapping[str, JsonSchema]) -> Body:
