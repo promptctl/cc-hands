@@ -593,11 +593,10 @@ class BrainStage(FrameProcessor):
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
         # [LAW:one-source-of-truth] the brain keeps its own history, so the context is only what it has yet to hear: taken
-        # out as it is read.
-        # Copied, since the list handed back is the context's own, which emptying it empties too.
-        fresh = list(context.get_messages())
+        # out once it is read, so a message that cannot be read leaves every one of them there.
+        news = "\n\n".join(_user_text(message) for message in context.get_messages())
         context.set_messages([])
-        return "\n\n".join(_user_text(message) for message in fresh)
+        return news
 
     def _barge_in(self) -> None:
         """Stops the turn in flight being spoken."""

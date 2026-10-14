@@ -778,6 +778,15 @@ async def test_the_context_holds_only_what_the_brain_has_not_heard_however_many_
     assert rig.brain.asked == [heard(f"turn {turn}") for turn in range(200)]
 
 
+async def test_a_message_that_is_not_the_users_plain_text_is_refused_and_takes_none_of_the_context_with_it(rig: Rig) -> None:
+    rig.context.add_messages([{"role": "user", "content": "push it"}, {"role": "assistant", "content": "Pushed."}])
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(rig.errors[0].exception, TypeError)
+    assert rig.context.get_messages() == [{"role": "user", "content": "push it"}, {"role": "assistant", "content": "Pushed."}]
+    assert rig.brain.asked == []
+
+
 async def test_a_turn_is_written_only_once_the_one_before_it_has_ended(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "first"})
     await rig.interrupt()
