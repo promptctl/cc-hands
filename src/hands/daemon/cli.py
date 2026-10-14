@@ -780,9 +780,7 @@ def install_plugin(claude_code: claudecode.ClaudeCode, home: Home, record: audit
     # [LAW:dataflow-not-control-flow] the same commands run on every install, a first or an upgrade: the marketplace is
     # brought to the home's, then the plugin installed, which enables one that is disabled, then updated, which moves an
     # installed one onto this render. Only how the marketplace is brought there depends on how it was found.
-    path = os.environ.get("PATH", "")
-    # The claude a session would run, as readiness asks it: the shim runs the real one, since nothing here is a session.
-    claude = claudecode.Instance("claude", {**os.environ, "PATH": path})
+    claude = readiness.on_path(os.environ.get("PATH", ""))
     with wide.unit("plugin.install", record):
         try:
             config = readiness.config_dir(os.environ, Path.cwd())
@@ -795,7 +793,7 @@ def install_plugin(claude_code: claudecode.ClaudeCode, home: Home, record: audit
             return not_installed(f"Claude Code here runs under the brain's config, {config}, which none of the person's sessions run under: run `hands install-plugin` in a terminal", 2)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, version=rendered.version, written=rendered.written)
-        found = readiness.marketplace(claude_code, path, home.plugins)
+        found = readiness.marketplace(claude_code, claude, home.plugins)
         wide.annotate(marketplace=type(found).__name__.lower())
         add = ("marketplace_add", f"claude plugin marketplace add {home.plugins}", lambda: claude_code.add_marketplace(claude, home.plugins))
         match found:
@@ -816,13 +814,13 @@ def install_plugin(claude_code: claudecode.ClaudeCode, home: Home, record: audit
             try:
                 exited = run()
             except claudecode.Unreachable as error:
-                wide.annotate(**{f"{step}_exit": "unreachable"})
+                wide.annotate(**{f"{step}_exit": error.why})
                 return not_installed(str(error), 1)
             wide.annotate(**{f"{step}_exit": exited})
             if exited != 0:
                 return not_installed(f"`{said}` failed ({exited})", 1)
         # Every command above exited 0, so running them again would only do it again.
-        after = readiness.plugin(claude_code, path, rendered.version, "Claude Code's `claude plugin install` and `update` exited 0 without making it so")
+        after = readiness.plugin(claude_code, claude, rendered.version, "Claude Code's `claude plugin install` and `update` exited 0 without making it so")
         wide.annotate(after=type(after).__name__.lower())
         match after:
             case readiness.Ready(said=said):
@@ -861,7 +859,10 @@ def first_run(claude_code: claudecode.ClaudeCode, home: Home, terminal: bool, to
                     # Claude Code with no terminal to read answers a prompt instead of asking, and its login waits on a code.
                     return not_first_run("Claude Code asks its first-run questions and its login at a terminal, and this command's input is not one", 2)
                 case readiness.FirstRun(claude=claude, unanswered=firstrun.Unanswered() as asked):
-                    home.smoke.mkdir(parents=True, exist_ok=True)
+                    try:
+                        home.smoke.mkdir(parents=True, exist_ok=True)
+                    except OSError as error:
+                        return not_first_run(f"cannot make {home.smoke}, where Claude Code would be asked: {error}", 2)
                     told(f"Claude Code now starts in {home.smoke}, where `hands smoke` starts its session, and asks what it asks only once: {asked.listed}. Answer each, then type /exit")
                     ran = claude_code.first_run(claudecode.Instance(claude, environment, home.smoke), None)
                     wide.annotate(first_run_exit=ran)

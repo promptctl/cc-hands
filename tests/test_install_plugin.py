@@ -38,7 +38,7 @@ def install(home: Home, fake: Fake) -> int:
 
 
 def person(fake: Fake) -> Config:
-    return fake.configs.setdefault(config_dir(os.environ), Config())
+    return fake.configs.setdefault(config_dir(Instance("claude", os.environ)), Config())
 
 
 def events(home: Home) -> list[dict[str, Any]]:
@@ -113,12 +113,20 @@ def test_a_command_that_fails_stops_the_install_naming_it(home: Home, capsys: py
     assert (event["outcome"], event["facts"]) == ("failed", {**rendered(home), "written": True, "marketplace": "missing", "marketplace_add_exit": 1})
 
 
+def test_every_command_is_asked_of_the_claude_a_session_on_this_path_runs(home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Off a terminal the shim on the PATH runs the real claude, so what is checked and installed is what sessions run.
+    monkeypatch.setenv("PATH", "/sessions/bin:/usr/bin:/bin")
+    fake = Fake()
+    assert install(home, fake) == 0
+    assert {(run.claude.executable, run.claude.environment["PATH"]) for run in fake.runs} == {("claude", "/sessions/bin:/usr/bin:/bin")}
+
+
 def test_a_command_that_cannot_be_run_stops_the_install_saying_why(home: Home, capsys: pytest.CaptureFixture[str]) -> None:
     fake = Fake(unrunnable={f"plugin update {PLUGIN_ID}"})
     assert install(home, fake) == 1
     assert f"hands install-plugin: `claude plugin update {PLUGIN_ID}` could not be run" in capsys.readouterr().err
     [event] = events(home)
-    assert (event["outcome"], event["facts"]["update_exit"]) == ("failed", "unreachable")
+    assert (event["outcome"], event["facts"]["update_exit"]) == ("failed", "unstartable")
 
 
 def test_a_command_that_hangs_is_stopped_and_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,8 +135,9 @@ def test_a_command_that_hangs_is_stopped_and_said(tmp_path: Path, monkeypatch: p
     hangs.write_text("#!/bin/sh\nexec sleep 30\n")
     hangs.chmod(hangs.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setattr(claudecode, "PLUGIN_COMMAND_SECONDS", 1.0)
-    with pytest.raises(Unreachable, match=f"`claude plugin update --scope user {PLUGIN_ID}` did not finish in 1s"):
+    with pytest.raises(Unreachable, match=f"`claude plugin update --scope user {PLUGIN_ID}` did not finish in 1s") as stopped:
         Installed().update_plugin(Instance(hangs, {}), PLUGIN_ID)
+    assert stopped.value.why == "timeout"
 
 
 def test_a_plugin_claude_code_did_not_move_is_said_without_sending_the_person_back_here(home: Home, capsys: pytest.CaptureFixture[str]) -> None:

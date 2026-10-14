@@ -77,12 +77,12 @@ def listed(id: str, enabled: bool, scope: str = "user", version: str = VERSION) 
 
 def plugged(fake: Fake, plugin: Held | None) -> Fake:
     """`fake` with hands' plugin held as `plugin`, for the Claude Code a check runs here."""
-    fake.configs[config_dir(os.environ)] = Config(plugin=plugin)
+    fake.configs[config_dir(readiness.on_path("/usr/bin:/bin"))] = Config(plugin=plugin)
     return fake
 
 
 def plugin(fake: Fake) -> readiness.Finding:
-    return readiness.plugin(fake, "/usr/bin:/bin", VERSION, readiness.INSTALL_PLUGIN)
+    return readiness.plugin(fake, readiness.on_path("/usr/bin:/bin"), VERSION, readiness.INSTALL_PLUGIN)
 
 
 # The plugin
@@ -131,7 +131,7 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: bytes) -> N
 
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why() -> None:
     # No real Claude Code has been seen to fail its listing; this is hands' reading of an exit that is not 0, whatever says it.
-    found = readiness.listing(lambda _claude: Answer(3, b"", b"not logged in\n"), "/usr/bin:/bin", "plugin", "whether the plugin is installed")
+    found = readiness.listing(lambda: Answer(3, b"", b"not logged in\n"), "plugin", "whether the plugin is installed")
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
@@ -145,12 +145,12 @@ def test_a_claude_that_cannot_be_asked_is_unknown() -> None:
 
 def test_the_home_s_marketplace_added_from_its_directory_is_ready(tmp_path: Path) -> None:
     fake = Fake()
-    fake.configs[config_dir(os.environ)] = Config(marketplace=tmp_path)
-    assert isinstance(readiness.marketplace(fake, "/usr/bin:/bin", tmp_path), Ready)
+    fake.configs[config_dir(readiness.on_path("/usr/bin:/bin"))] = Config(marketplace=tmp_path)
+    assert isinstance(readiness.marketplace(fake, readiness.on_path("/usr/bin:/bin"), tmp_path), Ready)
 
 
 def test_no_marketplace_of_its_name_is_missing(tmp_path: Path) -> None:
-    assert isinstance(readiness.marketplace(Fake(), "/usr/bin:/bin", tmp_path), Missing)
+    assert isinstance(readiness.marketplace(Fake(), readiness.on_path("/usr/bin:/bin"), tmp_path), Missing)
 
 
 def test_another_marketplace_beside_the_home_s_says_nothing_of_it(tmp_path: Path) -> None:
@@ -162,8 +162,8 @@ def test_another_marketplace_beside_the_home_s_says_nothing_of_it(tmp_path: Path
 def test_the_marketplace_hands_installed_from_before_is_elsewhere(tmp_path: Path) -> None:
     # As hands installed its plugin before it wrote a marketplace in its home: from GitHub.
     fake = Fake()
-    fake.configs[config_dir(os.environ)] = Config(marketplace="github")
-    found = readiness.marketplace(fake, "/usr/bin:/bin", tmp_path)
+    fake.configs[config_dir(readiness.on_path("/usr/bin:/bin"))] = Config(marketplace="github")
+    found = readiness.marketplace(fake, readiness.on_path("/usr/bin:/bin"), tmp_path)
     assert isinstance(found, readiness.Elsewhere) and str(tmp_path) in found.said
 
 
@@ -903,7 +903,6 @@ def answered(root: Path, home: Home, fake: Fake, monkeypatch: pytest.MonkeyPatch
     config = root / "config"
     fake.files[config / ".claude.json"] = json.dumps({"hasCompletedOnboarding": True, "projects": {str(home.smoke.resolve()): {"hasTrustDialogAccepted": trusted}}}).encode()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
 
 def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:

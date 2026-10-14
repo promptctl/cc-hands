@@ -43,8 +43,7 @@ def claude_code(request: pytest.FixtureRequest) -> ClaudeCode:
 
 def unused(tmp_path: Path, **environment: str) -> Instance:
     """A Claude Code under a config directory no Claude Code has used, with no key unless one is named."""
-    kept = {name: value for name, value in os.environ.items() if name != "ANTHROPIC_API_KEY"}
-    return Instance(REAL or "claude", {**kept, "CLAUDE_CONFIG_DIR": str(tmp_path / "config"), **environment}, tmp_path)
+    return Instance(REAL or "claude", {**os.environ, "CLAUDE_CONFIG_DIR": str(tmp_path / "config"), **environment}, tmp_path)
 
 
 def test_a_config_no_claude_code_has_used_holds_no_login(claude_code: ClaudeCode, tmp_path: Path) -> None:

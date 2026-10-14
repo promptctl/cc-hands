@@ -85,7 +85,7 @@ def check(claude_code: claudecode.ClaudeCode, home: Home, environment: Mapping[s
         portaudio(),
         installed(path),
         shim(home, path),
-        plugin(claude_code, path, plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
+        plugin(claude_code, on_path(path), plugins.plugin(sys.executable).version, INSTALL_PLUGIN),
         first_run(claude_code, home, environment),
         reached,
         hears(granted, running),
@@ -171,31 +171,37 @@ def daemon(home: Home, now: datetime) -> Finding:
 INSTALL_PLUGIN = "`hands install-plugin`, then /reload-plugins in each running session, which joins hands at its next prompt"
 
 
-def plugin(claude_code: claudecode.ClaudeCode, path: str, version: str, mended: str) -> Finding:
-    """Whether Claude Code, as `claude` on this PATH runs it, has this hands' plugin, `version`, installed and enabled;
-    `mended` says, of one that is not, what makes it so."""
-    match listing(claude_code.plugins, path, "plugin", f"whether the plugin {PLUGIN_ID} is installed"):
+def on_path(path: str) -> claudecode.Instance:
+    """The `claude` a session started on this PATH runs, asked as hands asks it: not a session to the shim, since
+    nothing here is a terminal, so the shim runs the real claude."""
+    # [LAW:one-source-of-truth] what hands checks of the plugin and what it installs it into are the one Claude Code.
+    return claudecode.Instance("claude", {**os.environ, "PATH": path})
+
+
+def plugin(claude_code: claudecode.ClaudeCode, claude: claudecode.Instance, version: str, mended: str) -> Finding:
+    """Whether Claude Code, as `claude` runs, has this hands' plugin, `version`, installed and enabled; `mended` says, of
+    one that is not, what makes it so."""
+    match listing(lambda: claude_code.plugins(claude), "plugin", f"whether the plugin {PLUGIN_ID} is installed"):
         case Unknown() as unknown:
             return unknown
         case bytes() as listed:
             return plugin_listed(listed, version, mended)
 
 
-def marketplace(claude_code: claudecode.ClaudeCode, path: str, root: Path) -> Marketplace:
-    """Whether Claude Code, as `claude` on this PATH runs it, has the marketplace hands writes at `root`."""
-    match listing(claude_code.marketplaces, path, "plugin marketplace", f"whether the marketplace {MARKETPLACE_NAME} is added"):
+def marketplace(claude_code: claudecode.ClaudeCode, claude: claudecode.Instance, root: Path) -> Marketplace:
+    """Whether Claude Code, as `claude` runs, has the marketplace hands writes at `root`."""
+    match listing(lambda: claude_code.marketplaces(claude), "plugin marketplace", f"whether the marketplace {MARKETPLACE_NAME} is added"):
         case Unknown() as unknown:
             return unknown
         case bytes() as listed:
             return marketplace_listed(listed, root)
 
 
-def listing(listed: Callable[[claudecode.Instance], claudecode.Answer], path: str, said: str, unknown: str) -> bytes | Unknown:
-    """What `claude <said> list --json`, which `listed` asks, prints, as `claude` on this PATH runs it."""
+def listing(listed: Callable[[], claudecode.Answer], said: str, unknown: str) -> bytes | Unknown:
+    """What `claude <said> list --json`, which `listed` asks, prints."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
-    # Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
     try:
-        answer = listed(claudecode.Instance("claude", {**os.environ, "PATH": path}))
+        answer = listed()
     except claudecode.Unreachable as error:
         return Unknown(f"cannot ask `claude {said} list` {unknown}: {error}")
     if answer.exit != 0:

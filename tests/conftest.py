@@ -20,6 +20,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
+from hands.brain.process import FOREIGN_LOGINS
 from hands.sessions.audit import ByHand, Entry, SettingsEdited, Speaker
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
@@ -52,6 +53,15 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"segments": []}
 
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No login reaches a test from the shell that runs it: Claude Code, real or the fake, takes each of these from its
+    environment over the one its config holds, so a test that inherited one would see whoever ran it logged in."""
+    # [LAW:single-enforcer] the one place a test's environment is cleared of logins; a test that wants one sets it.
+    for name in FOREIGN_LOGINS:
+        monkeypatch.delenv(name, raising=False)
 
 
 async def unprimed() -> None:

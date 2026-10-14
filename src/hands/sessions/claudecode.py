@@ -47,7 +47,11 @@ class Answer:
 
 
 class Unreachable(Exception):
-    """`claude` could not be run, or did not answer in time; the message says which."""
+    """`claude` could not be run, or did not answer in time: `why` says which, and the message what was run."""
+
+    def __init__(self, said: str, why: Literal["unstartable", "timeout"]) -> None:
+        super().__init__(said)
+        self.why: Literal["unstartable", "timeout"] = why
 
 
 class ClaudeCode(Protocol):
@@ -179,9 +183,9 @@ def _asked(claude: Instance, *arguments: str) -> Answer:
         # A timed-out child is killed and reaped by run itself.
         ran = subprocess.run(_argv(claude, arguments), env=dict(claude.environment), cwd=claude.cwd, stdin=subprocess.DEVNULL, capture_output=True, timeout=ANSWER_SECONDS)
     except subprocess.TimeoutExpired:
-        raise Unreachable(f"`claude {said}` did not answer in {ANSWER_SECONDS:.0f}s") from None
+        raise Unreachable(f"`claude {said}` did not answer in {ANSWER_SECONDS:.0f}s", "timeout") from None
     except OSError as error:
-        raise Unreachable(f"`claude {said}` could not be run: {error}") from error
+        raise Unreachable(f"`claude {said}` could not be run: {error}", "unstartable") from error
     return Answer(ran.returncode, ran.stdout, ran.stderr)
 
 
@@ -192,9 +196,9 @@ def _unattended(claude: Instance, *arguments: str) -> int:
         # [LAW:no-silent-failure] the installer shows only a spinner while this runs, so one that hangs is stopped and said.
         return subprocess.run(_argv(claude, arguments), env=dict(claude.environment), cwd=claude.cwd, stdin=subprocess.DEVNULL, timeout=PLUGIN_COMMAND_SECONDS).returncode
     except subprocess.TimeoutExpired:
-        raise Unreachable(f"`claude {said}` did not finish in {PLUGIN_COMMAND_SECONDS:g}s") from None
+        raise Unreachable(f"`claude {said}` did not finish in {PLUGIN_COMMAND_SECONDS:g}s", "timeout") from None
     except OSError as error:
-        raise Unreachable(f"`claude {said}` could not be run: {error}") from error
+        raise Unreachable(f"`claude {said}` could not be run: {error}", "unstartable") from error
 
 
 def _attended(claude: Instance, *arguments: str) -> int:
@@ -202,4 +206,4 @@ def _attended(claude: Instance, *arguments: str) -> int:
     try:
         return subprocess.run(_argv(claude, arguments), env=dict(claude.environment), cwd=claude.cwd).returncode
     except OSError as error:
-        raise Unreachable(f"`claude {' '.join(arguments)}` could not be started: {error}") from error
+        raise Unreachable(f"`claude {' '.join(arguments)}` could not be started: {error}", "unstartable") from error

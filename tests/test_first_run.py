@@ -27,14 +27,13 @@ KEY = "sk-ant-api03-0123456789abcdefghijklmn"
 @pytest.fixture
 def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A PATH with a `claude` to find, and the person's Claude Code under a config directory of the test's own."""
-    root = tmp_path.resolve()
+    root = tmp_path
     found = root / "bin" / "claude"
     found.parent.mkdir()
     found.write_text("#!/bin/sh\n")
     found.chmod(0o755)
     monkeypatch.setenv("PATH", f"{root / 'bin'}:/usr/bin:/bin")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(root / "config"))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     return root
 
 
@@ -147,6 +146,15 @@ def test_a_claude_code_that_cannot_be_started_exits_2(root: Path, capsys: pytest
     fake = Fake(unrunnable={"first run"})
     assert first_run(root, fake) == 2
     assert "hands first-run: Claude Code could not be started to ask: `claude first run` could not be run" in capsys.readouterr().err
+
+
+def test_a_smoke_folder_that_cannot_be_made_exits_2_and_starts_no_claude_code(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home(root).smoke.parent.mkdir(parents=True, exist_ok=True)
+    home(root).smoke.write_text("a file where the folder would be")
+    fake = Fake()
+    assert first_run(root, fake) == 2
+    assert f"hands first-run: cannot make {home(root).smoke}, where Claude Code would be asked" in capsys.readouterr().err
+    assert not [run for run in fake.runs if run.asked.startswith("first run")]
 
 
 @pytest.mark.parametrize("onboarded", [False, True], ids=["first-run", "login-only"])

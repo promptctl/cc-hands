@@ -7,6 +7,7 @@ asked and what the person was shown land in `transcript`, in order, beside what 
 """
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,7 +101,7 @@ class Fake:
     runs: list["Ran"] = field(default_factory=list["Ran"])
 
     def config(self, claude: Instance) -> Config:
-        return self.configs.setdefault(config_dir(claude.environment), Config())
+        return self.configs.setdefault(config_dir(claude), Config())
 
     def told(self, said: str) -> None:
         """What hands tells the person, at the terminal Claude Code is about to ask at."""
@@ -108,13 +109,13 @@ class Fake:
 
     def _ran(self, name: str, claude: Instance) -> None:
         if name in self.unrunnable:
-            raise Unreachable(f"`claude {name}` could not be run: no such program")
+            raise Unreachable(f"`claude {name}` could not be run: no such program", "unstartable")
         self.transcript.append(name if claude.cwd is None else f"{name} in {claude.cwd}")
         self.runs.append(Ran(name, claude, frozenset(self.files)))
 
     def _credentials(self, claude: Instance) -> Mapping[str, str]:
         """The credentials in the environment Claude Code runs with: its own, with settings.json's env over it."""
-        raw = self.read(config_dir(claude.environment) / "settings.json")
+        raw = self.read(config_dir(claude) / "settings.json")
         written = {} if raw is None else cast(dict[str, dict[str, str]], json.loads(raw)).get("env", {})
         merged = {**claude.environment, **written}
         return {name: merged[name] for name in (TOKEN, firstrun.API_KEY) if merged.get(name)}
@@ -229,10 +230,10 @@ class Fake:
         self._ran("first run" if settings is None else f"first run --settings {json.dumps(settings)}", claude)
         cwd = (claude.cwd or Path.cwd()).resolve()
         held = self.config(claude)
-        state = firstrun.state_of(claude.environment, config_dir(claude.environment))
+        state = firstrun.state_of(claude.environment, config_dir(claude))
         raw = self.read(state)
         answers = firstrun.recorded_in(raw, state)
-        key = firstrun.api_key(self, config_dir(claude.environment) / "settings.json", claude.environment)
+        key = firstrun.api_key(self, config_dir(claude) / "settings.json", claude.environment)
         onboarded = isinstance(answers, firstrun.Recorded) and answers.finished
         trusted = isinstance(answers, firstrun.Recorded) and any(str(place) in answers.trusted for place in (cwd, *cwd.parents))
         key_open = key is not None and (not isinstance(answers, firstrun.Recorded) or key.value[-20:] not in answers.approved | answers.rejected)
@@ -292,10 +293,11 @@ class Ran:
     files: frozenset[Path]
 
 
-def config_dir(environment: Mapping[str, str]) -> Path:
-    """The config directory a Claude Code with this environment runs under."""
-    named = environment.get("CLAUDE_CONFIG_DIR")
-    return Path(named) if named else Path(environment.get("HOME") or Path.home()) / ".claude"
+def config_dir(claude: Instance) -> Path:
+    """The config directory `claude` runs under: the directory itself, by whatever path or link its environment names it,
+    from the directory it runs in, as the files there are the same files by any of their names."""
+    named = claude.environment.get("CLAUDE_CONFIG_DIR") or Path(claude.environment.get("HOME") or Path.home()) / ".claude"
+    return Path(os.path.realpath((claude.cwd or Path.cwd()) / named))
 
 
 def onboard(fake: Fake, brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false}', trusted: bool = True, login: Login | None = "claude.ai") -> None:
