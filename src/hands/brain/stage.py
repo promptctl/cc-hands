@@ -34,7 +34,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage, LLMStandardMessage
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
@@ -282,8 +282,6 @@ class BrainStage(FrameProcessor):
         self._pause = pause
         self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._tools = {wire_name(tool): tool for tool in tools}
-        # How many of the context's messages the brain has been handed: the rest are new to it.
-        self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it, and the next is written only
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
@@ -527,7 +525,7 @@ class BrainStage(FrameProcessor):
             child("tool.call", ran.span, ran.at, _ms((ended if ran.answered is None else ran.answered) - ran.ran), outcome, call=call, tool=ran.tool)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
-        """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
+        """What hands had for the brain to tell, said as written since the brain did not: a system fact, not recorded as a reply."""
         for line in unsaid:
             await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
 
@@ -580,7 +578,7 @@ class BrainStage(FrameProcessor):
                     pass
                 case _Acknowledgement(line=line):
                     turn.acknowledged = (line, self._now())
-                    # Kept out of the context: the brain never said it.
+                    # Not recorded as a reply: the brain never said it.
                     await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
                     await self._reply(turn, True)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
@@ -594,12 +592,12 @@ class BrainStage(FrameProcessor):
 
     def _news(self, context: LLMContext) -> str:
         """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
-        messages = context.get_messages()
-        fresh = messages[self._told :]
-        self._told = len(messages)
-        # [LAW:one-source-of-truth] the brain keeps its own history, so what it said itself, which the assistant
-        # aggregator writes back into this context, is never handed to it again.
-        return "\n\n".join(_user_text(message) for message in fresh if not isinstance(message, LLMSpecificMessage) and message.get("role") == "user")
+        # [LAW:one-source-of-truth] the brain keeps its own history, so the context is only what it has yet to hear: taken
+        # out before it is read, so a message that cannot be read fails its own turn loudly and is not there for the next.
+        # Copied, since the list handed back is the context's own, which emptying it empties too.
+        fresh = list(context.get_messages())
+        context.set_messages([])
+        return "\n\n".join(_user_text(message) for message in fresh)
 
     def _barge_in(self) -> None:
         """Stops the turn in flight being spoken."""
@@ -716,12 +714,14 @@ def _ms(seconds: Seconds) -> float:
     return round(seconds * 1000, 3)
 
 
-def _user_text(message: LLMStandardMessage) -> str:
-    content = message.get("content")
-    if not isinstance(content, str):
-        # [LAW:no-silent-failure] hands' aggregator and notes write plain text; anything else is a change to hear about.
-        raise TypeError(f"a user message in the context is not plain text: {message!r}")
-    return content
+def _user_text(message: LLMContextMessage) -> str:
+    match message:
+        case {"role": "user", "content": str(content)}:
+            return content
+        case _:
+            # [LAW:no-silent-failure] only the user aggregator writes this context, and it and hands' notes write plain user
+            # text; anything else is a change to hear about.
+            raise TypeError(f"a message in the context is not the user's plain text: {message!r}")
 
 
 @dataclass(frozen=True)

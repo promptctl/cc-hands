@@ -30,7 +30,7 @@ from pipecat.frames.frames import (
     UserStoppedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
+from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
@@ -38,12 +38,12 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import by_hand, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import ByHand, CutOff, Entry, HoldHeard, Levels, Other, TurnStart, Unsaid, Untellable, UserTurn, Voiced
+from hands.sessions.audit import ByHand, CutOff, Entry, HoldHeard, Levels, Other, Replied, Transcribed, TurnStart, Unsaid, Untellable, UserTurn, Voiced
 from hands.sessions.audit import Speaker as Voice
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
-from hands.voice.conversation import cue_receipt
+from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
@@ -88,8 +88,6 @@ class Recorded(FrameProcessor):
         self.released = 0
         # The user's turn and what hands said around it, in the order the model's stage would take them.
         self.order: list[str] = []
-        # Every message in the model's context as the last frame of it passed: appends that land together share one.
-        self.context: list[str] = []
         # What hands handed the brain to say in its own words, in order.
         self.told: list[str] = []
 
@@ -97,7 +95,6 @@ class Recorded(FrameProcessor):
         await super().process_frame(frame, direction)
         match frame:
             case LLMContextFrame(context=context):
-                self.context = [str(message.get("content")) for message in context.get_messages() if not isinstance(message, LLMSpecificMessage)]
                 said = context.get_messages()[-1]
                 # The aggregator writes the user's turn as a plain message, never a provider's own.
                 assert not isinstance(said, LLMSpecificMessage)
@@ -169,8 +166,6 @@ class Rig:
     received: list[None] = field(default_factory=list[None])
     # Each mark the latency observer told of the turns, as the phone's page would be told.
     told: list[Mark] = field(default_factory=list[Mark])
-    # The context both sides of the conversation write.
-    context: LLMContext = field(default_factory=LLMContext)
     # Whose voice each hold with words in it is told to be, oldest first; the user's hand, once none are left.
     speakers: list[Voice | Exception] = field(default_factory=list[Voice | Exception])
     # The samples each was told from.
@@ -273,11 +268,12 @@ async def rigged(
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
+    record_turns(voice.user_turns, voice.assistant_turns, recorded.append)
     told: list[Mark] = []
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, context=voice.user_turns.context, speakers=speakers, told_samples=told_samples)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, speakers=speakers, told_samples=told_samples)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -653,7 +649,7 @@ async def test_a_held_key_pressed_in_a_turn_the_voice_opened_cuts_at_once(rig: R
 
 
 @pytest.mark.parametrize(("by", "held"), [("held key", ["down", "down", "up"]), ("engaged conversation", OPENED_BY_THE_VOICE)])
-async def test_the_reply_a_turn_cut_off_is_in_the_context_ahead_of_the_words_that_cut_it(
+async def test_the_reply_a_turn_cut_off_is_recorded_ahead_of_the_words_that_cut_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge, held: list[Captured]
 ) -> None:
     # The pipeline's stages between the user's turn and the assistant aggregator, which writes the reply as cut off.
@@ -663,10 +659,13 @@ async def test_the_reply_a_turn_cut_off_is_in_the_context_ahead_of_the_words_tha
         await rig.until(lambda: "The parser is fixed." in rig.out.order)
         await rig.hold(held, by=by)
         await rig.until(lambda: rig.out.released == 1)
-        # A turn the voice opened cuts as its words arrive, a few stages ahead of them; the context still reads in order.
+        # A turn the voice opened cuts as its words arrive, a few stages ahead of them; the audit log still reads in order.
         await rig.texts.put("wait, not yet")
         await rig.until(lambda: rig.out.sent == ["wait, not yet"])
-        assert rig.out.context == ["The parser is fixed.", "wait, not yet"]
+        assert [entry for entry in rig.recorded if isinstance(entry, Replied | Transcribed)] == [
+            Replied("The parser is fixed.", interrupted=True),
+            Transcribed("wait, not yet"),
+        ]
 
 
 @pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])

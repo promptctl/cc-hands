@@ -762,12 +762,29 @@ async def test_a_main_turn_no_turn_asked_of_is_final_so_a_spent_limit_is_never_c
     assert rig.spans[0].parent_id is None
 
 
-async def test_the_brain_hears_what_the_context_gained_and_never_its_own_words_again(rig: Rig) -> None:
+async def test_the_brain_hears_what_the_context_gained_as_one_message(rig: Rig) -> None:
     await rig.say({"role": "user", "content": "[hands] hands has just started."}, {"role": "user", "content": "anything new?"})
     rig.brain.end()
     await rig.until(lambda: "LLMFullResponseEndFrame" in rig.out.shape())
-    await rig.say({"role": "assistant", "content": "Nothing new."}, {"role": "user", "content": "[hands] a session is waiting."})
+    await rig.say({"role": "user", "content": "[hands] a session is waiting."})
     assert rig.brain.asked == [heard("[hands] hands has just started.\n\nanything new?"), heard("[hands] a session is waiting.")]
+
+
+async def test_the_context_holds_only_what_the_brain_has_not_heard_however_many_turns_pass(rig: Rig) -> None:
+    for turn in range(200):
+        await rig.say({"role": "user", "content": f"turn {turn}"})
+        assert rig.context.get_messages() == []
+        rig.brain.end()
+    assert rig.brain.asked == [heard(f"turn {turn}") for turn in range(200)]
+
+
+async def test_a_message_that_is_not_the_users_plain_text_fails_its_turn_loudly_and_the_next_turn_is_heard(rig: Rig) -> None:
+    rig.context.add_messages([{"role": "user", "content": "push it"}, {"role": "assistant", "content": "Pushed."}])
+    await rig.worker.queue_frame(LLMContextFrame(rig.context))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(rig.errors[0].exception, TypeError)
+    await rig.say({"role": "user", "content": "and the backlog?"})
+    assert rig.brain.asked == [heard("and the backlog?")]
 
 
 async def test_a_turn_is_written_only_once_the_one_before_it_has_ended(rig: Rig) -> None:
@@ -1497,7 +1514,7 @@ async def test_a_permission_held_for_a_turn_the_stage_no_longer_asks_is_refused(
 
 
 def acknowledgements(rig: Rig) -> list[str]:
-    """What hands said of the turns as its own lines: never the brain's words, and kept out of the context."""
+    """What hands said of the turns as its own lines: never the brain's words, and not recorded as replies."""
     return [frame.text for frame in rig.out.frames if isinstance(frame, TTSSpeakFrame) and not frame.append_to_context]
 
 
