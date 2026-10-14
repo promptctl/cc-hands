@@ -279,4 +279,4 @@ async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the
 
 
 def test_use_model_runs_on_through_a_barge_in_so_the_model_is_told_it_did_not_switch() -> None:
-    assert _tools(FakeOwn(), Player(lambda _entry: None))["use_model"].completes
+    assert _tools(FakeOwn(), Player(lambda _entry: None))["use_model"].reads_back

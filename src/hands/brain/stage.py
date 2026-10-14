@@ -654,7 +654,7 @@ class BrainStage(FrameProcessor):
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((Tail(self._tail()),), refusal="final", span=within(turn.span))
-        turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.completes and (said := _owed(text, result)) is not None)
+        turn.readbacks.extend(said for tool, text, result in answers if tool is not None and tool.reads_back and (said := _owed(text, result)) is not None)
         return Hold(INTERRUPTED if turn.interrupted else SILENT, within(turn.span))
 
     async def _acknowledge(self, turn: _Turn) -> None:

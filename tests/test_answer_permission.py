@@ -508,7 +508,7 @@ async def test_an_answer_that_does_not_parse_is_refused_out_loud(sessions: Sessi
 def test_the_tools_say_their_arguments_and_complete_through_a_barge_in(sessions: Sessions) -> None:
     tools = permission_tools(sessions)
     assert [(tool.name, tool.required) for tool in tools] == [("answer_permission", ("request", "decision")), ("answer_question", ("request", "answers")), ("answer_plan", ("request", "decision"))]
-    assert all(tool.completes for tool in tools)
+    assert all(tool.reads_back for tool in tools)
 
 
 async def test_the_relay_hands_a_request_to_the_model_and_an_announcement_to_the_speaker(home: Home, sessions: Sessions, clock: Clock) -> None:

@@ -112,8 +112,8 @@ async def read_session(session: str) -> Result:
 
 
 TOOLS: Sequence[Tool] = (
-    tool(stage_draft, completes=True),
-    tool(amend_draft, then="silence", completes=True),
+    tool(stage_draft, reads_back=True),
+    tool(amend_draft, then="silence", reads_back=True),
     tool(stay_silent, then="silence"),
     tool(read_session),
 )

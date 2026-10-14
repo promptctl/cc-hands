@@ -126,7 +126,7 @@ async def test_the_draft_tools_say_their_arguments_and_complete_through_a_barge_
     assert [tool.name for tool in tools] == ["stage_draft", "amend_draft", "discard_draft", "send_draft"]
     assert tools[0].required == ("session", "text", "resolutions")
     assert tools[0].properties["resolutions"]["items"] == {"type": "object", "properties": {"heard": {"type": "string"}, "meant": {"type": "string"}}, "required": ["heard", "meant"]}
-    assert all(tool.completes for tool in tools)
+    assert all(tool.reads_back for tool in tools)
     assert [tool.then for tool in tools] == ["silence", "silence", "reply", "reply"]
 
 
@@ -405,7 +405,7 @@ async def test_the_keyboard_tools_say_their_arguments_and_complete_through_a_bar
     tools = keyboard_tools(sessions)
     assert [tool.name for tool in tools] == ["send_command", "interrupt_session"]
     assert tools[0].required == ("session", "command")
-    assert all(tool.completes for tool in tools)
+    assert all(tool.reads_back for tool in tools)
 
 
 async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path) -> None:

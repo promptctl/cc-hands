@@ -784,9 +784,9 @@ class Brain:
         finally:
             # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
             # exit window ends it; `_broke` says what broke it. The turn ends with what broke it however its stop went,
-            # even unstopped: nothing else is left to end it. What it holds is refused first, so no dialog of it is left
-            # open for the next turn's Return. Unanswered, the turn is still the one in flight, so what is held is its own
-            # and no later turn's.
+            # even unstopped: nothing else is left to end it. What it holds is refused first, here too for a stop that broke
+            # before its Escape, so no dialog of it is left open for the next turn's Return. Unanswered, the turn is still
+            # the one in flight, so what is held is its own and no later turn's.
             if not turn.answered.done():
                 self._settle(Deny(BROKEN))
                 self._over(turn, broken)
