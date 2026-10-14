@@ -210,10 +210,10 @@ question, with `/btw` and the question as its opening prompt
 recorded as a `brain.aside` wide event. The brain is the pipeline's LLM stage
 (`src/hands/brain/stage.py`). The speech is generated from its requests on the wire,
 never from its screen. Each turn's `voice.turn` wide event lists the exchanges its words
-came from. A barge-in stops the brain, except while a tool whose effect must complete is
-running. That tool finishes, and its readback, or the reason it failed, is spoken. After
-that, and after `stay_silent`, hands answers the brain's next request itself, so the
-model is not asked to continue. A turn that the brain ends in error is reported as a
+came from. A barge-in stops what is being said and leaves the brain running: the tools
+under way finish, and for a tool whose effect must land, its readback, or the reason it
+failed, is spoken. After a barge-in, and after `stay_silent`, hands answers the brain's
+next request itself, so the model is not asked to continue. A turn that the brain ends in error is reported as a
 model failure.
 The run's audit log records which backend, model, and account it connected to. The gate is
 push-to-talk: the key serves as the voice activity detector and the microphone mute, so
