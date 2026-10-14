@@ -166,7 +166,7 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     recorded: list[Entry] = []
     channel = SystemChannel(tts, notify, recorded.append)
     await channel.say(ModelUnreachable())
-    # Kept out of the model's context: there it would read as the model's own reply.
+    # Not recorded as a reply: the model never gave it.
     assert [(type(frame), getattr(frame, "text", None), getattr(frame, "append_to_context", None)) for frame in tts.frames] == [
         (TTSSpeakFrame, "The language model is unreachable.", False)
     ]
