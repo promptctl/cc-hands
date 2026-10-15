@@ -74,7 +74,7 @@ def run(recorded: list[Entry]) -> WideEvent:
 async def test_an_audited_tool_keeps_its_schema() -> None:
     plain = tool(echo)
     wrapped = audited(plain, lambda _: None)
-    assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.completes) == (plain.name, plain.description, plain.input_schema, plain.completes)
+    assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.then) == (plain.name, plain.description, plain.input_schema, plain.then)
 
 
 async def test_a_call_that_returns_is_one_event_with_what_it_was_given_and_handed_back() -> None:

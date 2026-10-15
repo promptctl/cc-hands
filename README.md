@@ -243,15 +243,15 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:start` is how it starts a new session when you ask for one, with hands' `start_session` tool.
 `hands:close` is how it closes the sessions you are finished with, by name or the ones that are done, with `close_session`.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
-and stops a turn with Escape, and types nothing else into it; its hooks say when a turn was taken and when it ended.
+and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, its summaries and the sentence an old tool result goes as,
 is asked of a second interactive Claude Code started for each question, with `/btw` and the question as its opening
 prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each is a `brain.aside` wide event. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
 it says is spoken from its requests on the wire, never from its screen; each turn's `voice.turn` wide event names the
-exchanges its words came from. A barge-in stops it, except while a tool whose effect must land is running,
-which finishes and has its readback, or why it failed, spoken; after that, and after `stay_silent`, hands
-answers the brain's next request itself, so the model is not asked to go on. A turn the brain ends in error is
-said as a failure of the model.
+exchanges its words came from. A barge-in stops what is said of the turn and nothing of the brain's: the turn runs to
+its own end unheard, and your next words reach the brain with a note of what you did not hear of it, so the brain judges
+whether to go back to it. After `stay_silent`, hands answers the brain's next request itself, so the model is not asked
+to go on. A turn the brain ends in error is said as a failure of the model.
 The run's audit log says which backend, model, and account it reached. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
