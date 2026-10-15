@@ -1,5 +1,11 @@
 # AGENTS
 
+## HARD RULES
+
+- NO WORK PROCEEDS WITHOUT A LIT TICKET.  ALL TICKETS MUST BE IN AN EPIC
+- NO WORK PROCEEDS WHEN THERE ARE FAILING TESTS.   Create a ticket and fix the tests first.
+- No work proceeds except on a fresh work tree.  the work tree is cleaned up when the ticket is finished.
+
 <!-- BEGIN LIT INTEGRATION -->
 ## lit Agent-Native Workflow
 
