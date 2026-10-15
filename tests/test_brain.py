@@ -24,7 +24,7 @@ from loguru import logger
 from hands.core.front import FrontUnread, InFront
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOPPED, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, onboarded, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, onboarded, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.sessions import firstrun
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
@@ -417,21 +417,6 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
     assert permission.parent_id == launched.span_id
 
 
-async def test_a_turn_stopped_while_it_holds_a_permission_refuses_it(tmp_path: Path, fake_claude: Path) -> None:
-    recorded: list[Entry] = []
-    held: list[Asked] = []
-    brain = await start(launch(tmp_path), recorded.append)
-    try:
-        turn = asyncio.create_task(brain.ask("write", held.append))
-        await until(lambda: len(held) == 1)
-        brain.interrupt()
-        assert await asyncio.wait_for(turn, 10) == BrainAnswered("p1", None)
-    finally:
-        await brain.stop()
-    assert permissions(recorded) == [("p1", "Write", Deny(STOPPED))]
-    assert not (tmp_path / "notes.txt").exists()
-
-
 async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
     hooks: asyncio.Queue[_Posted] = asyncio.Queue()  # pyright: ignore[reportPrivateUsage]
     listener, url = await _listen(hooks)  # pyright: ignore[reportPrivateUsage]
@@ -497,37 +482,23 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     ]
 
 
-async def test_an_interrupt_is_escape_and_ends_the_turn_in_flight_and_the_next_turn_is_its_own(tmp_path: Path, fake_claude: Path) -> None:
-    recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
-    try:
-        # With no turn in flight there is nothing to stop, and no Escape is pressed.
-        brain.interrupt()
-        waiting = asyncio.create_task(brain.ask("wait", unasked))
-        # As soon as it is typed, before Claude Code has said it took it: the Escape waits for that.
-        await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
-        brain.interrupt()
-        # Pressed once the turn is taken, not once it ends: the turn waiting on the Escape never ends without it.
-        assert await asyncio.wait_for(waiting, 5) == BrainAnswered("p1", None)
-        assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
-    finally:
-        await brain.stop()
-    # The Escape puts the stopped prompt back in the input, and Ctrl-C clears it before the next is typed.
-    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
-
-
-async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path) -> None:
-    # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes.
+async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. A turn taken as other
+    # words is stopped before it is typed again, and the turn after it stops the second taking before it is typed: two
+    # stops a take's wait apart, closer than that window.
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     brain = await start(launch(tmp_path), lambda _entry: None)
     pressed: list[float] = []
     try:
-        for stops in (1, 2):
-            waiting = asyncio.create_task(brain.ask("wait", unasked))
-            await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == stops)
-            brain.interrupt()
-            await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == stops)
-            pressed.append(asyncio.get_running_loop().time())
-            assert await asyncio.wait_for(waiting, 5) == BrainAnswered(f"p{stops}", None)
+        asking = asyncio.ensure_future(brain.ask("garbled", unasked))
+        await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == 1)
+        pressed.append(asyncio.get_running_loop().time())
+        with pytest.raises(Untaken):
+            await asyncio.wait_for(asking, 10)
+        asking = asyncio.ensure_future(brain.ask("and now?", unasked))
+        await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == 2)
+        pressed.append(asyncio.get_running_loop().time())
+        await asyncio.wait_for(asking, 10)
     finally:
         await brain.stop()
     assert pressed[1] - pressed[0] > 0.8
@@ -887,23 +858,6 @@ async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_i
     assert answered.facts == {"prompts": ("p2", "p3"), "typings": 2, "offered": (), "others": ("p1",)}
 
 
-async def test_an_interrupt_while_a_turn_waits_behind_a_late_prompt_stops_it_once_it_is_typed_again(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
-    brain = await start(launch(tmp_path), lambda _entry: None)
-    try:
-        with pytest.raises(Untaken):
-            await brain.ask("later", unasked)
-        asked = asyncio.ensure_future(brain.ask("wait", unasked))
-        # Within its first wait, while the late prompt runs ahead of it.
-        await asyncio.sleep(0.1)
-        brain.interrupt()
-        assert await asyncio.wait_for(asked, 10) == BrainAnswered("p2", None)
-    finally:
-        await brain.stop()
-
-
 async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1006,19 +960,21 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
             pressed.append(key)
             raise OSError("jammed")
 
+    def asks(_held: Asked) -> None:
+        # The turn breaks once it is taken, and the keys that would stop it are jammed.
+        brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        raise RuntimeError("no voice")
+
     said, sink = failures()
     try:
-        waiting = asyncio.create_task(brain.ask("wait", unasked))
-        await until(lambda: [" wait"] == [line[1] for line in typed(tmp_path) if line[0] == "prompt"])
-        brain._typist = Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        brain.interrupt()
-        with pytest.raises(OSError, match="jammed"):
-            await asyncio.wait_for(waiting, 5)
+        with pytest.raises(RuntimeError, match="no voice"):
+            await asyncio.wait_for(brain.ask("write", asks), 5)
+        await until(lambda: len(said) == 2)
     finally:
         logger.remove(sink)
         await brain.stop()
     # A second stop would press Escape again, and its Ctrl-C would land inside Claude Code's exit window.
-    assert (pressed, said) == (["escape"], ["the brain's own work failed: OSError('jammed')"])
+    assert (pressed, said) == (["escape"], ["the brain's own work failed: RuntimeError('no voice')", "the brain's own work failed: OSError('jammed')"])
 
 
 async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hooks_after_it_are_still_heard() -> None:

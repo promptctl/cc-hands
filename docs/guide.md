@@ -201,8 +201,8 @@ In addition, hands gives the brain its own skills, shipped with the code they su
 `hands:start` defines how it starts a new session when you request one, using hands' `start_session` tool.
 `hands:close` defines how it closes the sessions you are finished with, by name or all completed sessions, using `close_session`.
 The brain is interactive Claude Code running under hands' own fritter, never `claude -p`.
-hands types each turn into its input, stops a turn with Escape, and types nothing else
-into it. The brain's hooks report when a turn starts and when it ends.
+hands types each turn into its input and types nothing else into it, except Escape to stop
+a prompt that belongs to no turn, or a turn that hands' own work broke. The brain's hooks report when a turn starts and when it ends.
 Background requests from hands, such as summaries and the sentence that replaces an old
 tool result, are sent to a second interactive Claude Code instance started for each
 question, with `/btw` and the question as its opening prompt
@@ -210,10 +210,10 @@ question, with `/btw` and the question as its opening prompt
 recorded as a `brain.aside` wide event. The brain is the pipeline's LLM stage
 (`src/hands/brain/stage.py`). The speech is generated from its requests on the wire,
 never from its screen. Each turn's `voice.turn` wide event lists the exchanges its words
-came from. A barge-in stops the brain, except while a tool whose effect must complete is
-running. That tool finishes, and its readback, or the reason it failed, is spoken. After
-that, and after `stay_silent`, hands answers the brain's next request itself, so the
-model is not asked to continue. A turn that the brain ends in error is reported as a
+came from. A barge-in stops hands' speech and nothing else: the brain's turn runs to its
+end, what it says after the barge-in is spoken, and what the user said is the next turn. A
+permission question the barge-in cut off is asked again. After `stay_silent`, hands answers
+the brain's next request itself, so the model is not asked to continue. A turn that the brain ends in error is reported as a
 model failure.
 The run's audit log records which backend, model, and account it connected to. The gate is
 push-to-talk: the key serves as the voice activity detector and the microphone mute, so

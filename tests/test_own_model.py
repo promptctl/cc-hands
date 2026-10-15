@@ -276,7 +276,3 @@ async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the
         ("ok", {"said": "Switching to claude-opus-5-5. I'll be back in a few seconds.", "running_on": "claude-sonnet-5-5", "switching_to": "claude-opus-5-5"}),
         ("failed", {"error": "The user spoke over hands saying it would switch to claude-opus-5-5, so it did not switch. Ask whether they still want it."}),
     ]
-
-
-def test_use_model_runs_on_through_a_barge_in_so_the_model_is_told_it_did_not_switch() -> None:
-    assert _tools(FakeOwn(), Player(lambda _entry: None))["use_model"].completes

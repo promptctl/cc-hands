@@ -429,7 +429,7 @@ utterance is delimited by an `Uttering` frame, which a barge-in drops together w
 words that follow it, and an `Uttered` frame, which is kept through a barge-in. Every
 utterance that is passed on therefore reaches the output transport closed, in order with
 its audio. The brain's stage sends these frames around what it takes from hands' lane.
-After a barge-in that the turn continues through, it starts the rest of the turn's speech
+A turn continues through every barge-in, and the stage starts the rest of the turn's speech
 with an uninterruptible `Resumed`. It fails each utterance of an announcement that the
 brain failed. The brain turn that announces an utterance is a child of that utterance in
 its trace.
@@ -1172,9 +1172,9 @@ it routes the exchange. An exchange that belongs to no unit of work, such as a w
 exchange through the tap or a brain exchange outside a turn, is recorded as a `proxy.exchange` span at
 the root of its own trace, with its session, kind, and path. A turn that hands stopped partway through
 still emits its event, marked as cancelled, with the work it had completed.
-The event also records the text typed into the brain (`asked`). If the user barged in, it also records
-the calls that were running at that point (`running`) and whether the brain was instructed to stop
-immediately (`stopped`).
+The event also records the text typed into the brain (`asked`), whether the user barged in during the
+turn (`interrupted`), and how many times a permission question was said (`questions`), which counts
+each question again when a barge-in cut it off.
 
 If a user's turn is still running tool calls `ACKNOWLEDGE_SECONDS` (2 s) after its first call, hands
 acknowledges it, regardless of how many calls the work requires. hands does not acknowledge the turn if
@@ -1723,7 +1723,7 @@ the user's focus unchanged, and `ToAsk` (a driven turn that asks the user a ques
 moves the focus and instructs the brain to stop and ask the user. The asker of the
 `voice.turn` event carries this value. The brain responds with `drive_send`, which types
 the next prompt through the same Type effect as a draft, or with `stop_driving`. When the
-brain's turn ends, whether it was answered, failed, or interrupted by a barge-in, the
+brain's turn ends, whether it was answered or failed, the
 stage returns the drive (`HandedBack`). If the drive is unchanged from when it was handed
 over, it ends and hands announces this, so no drive remains active without the brain
 acting on it. A send that fails to type is not counted, and a turn that cannot be read
