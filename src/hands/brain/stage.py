@@ -180,7 +180,7 @@ class _Turn:
     exchanges: list[str] = field(default_factory=list[str])
     # Each call the turn's replies made, by id, timed as heard.
     tools: dict[str, _Call] = field(default_factory=dict[str, _Call])
-    # When the first word of the turn's reply was heard on the wire; None while none has been.
+    # When the first word of the turn's reply said to the user was heard on the wire; None while none has been.
     first_word: Seconds | None = None
     # A reply of the turn's own carried words or a call: a turn none of whose replies did said nothing to the user.
     replied: bool = False
@@ -460,7 +460,7 @@ class BrainStage(FrameProcessor):
                 # Said to nobody: what the speaker was cut off in, the brain's words it was never handed, and the readbacks.
                 # The brain judges whether to go back to any of it.
                 over = _spoken_over(await turn.cut, "".join(_left(said)), turn.readbacks)
-                annotate(spoken_over=over)
+            annotate(spoken_over=over)
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
@@ -474,14 +474,15 @@ class BrainStage(FrameProcessor):
             fail(failed)
             # A turn the brain never took did not tell it what the user heard: the turn after it does. One it spoke in took
             # that, and was cut where the user stopped hearing it.
-            self._broken_off = _notes(_broken_off("".join(spoken)) if spoken else note, over)
+            # [LAW:one-source-of-truth] what the user heard of a turn they spoke over is the speaker's to say, not the words it was handed.
+            self._broken_off = over or (_broken_off("".join(spoken)) if spoken else note)
             await self._unsaid(unsaid)
             await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failed
         elif failure is not None:
             # [LAW:no-silent-failure] said as an error from the model's stage, which the system channel words. No category:
             # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
-            self._broken_off = _notes(failure.note, over)
+            self._broken_off = over or failure.note
             fail(failure.error)
             await self._unsaid(unsaid)
             await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -673,7 +674,8 @@ class BrainStage(FrameProcessor):
                 turn.reply += text
                 turn.ahead, turn.between = "", "\n\n"
                 turn.replied = turn.replied or bool(text.strip())
-                if text.strip() and turn.first_word is None:
+                # The first word the user waited for: none heard after they spoke over the turn is said to them.
+                if text.strip() and turn.first_word is None and not turn.interrupted:
                     turn.first_word = now
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 turn.opening[index] = (call, name)
@@ -732,7 +734,7 @@ def _spoken_over(cut: Bookmark, words: str, readbacks: Sequence[str]) -> str:
     unheard = " ".join(part for part in (*cut.sentences[cut.at :], words.strip(), *readbacks) if part)
     last = f' They last heard "{cut.sentences[cut.at - 1]}".' if cut.at else ""
     rest = f' They did not hear: "{unheard}".' if unheard else ""
-    return f"[hands] The user spoke over your last turn, and nothing more of it was said aloud.{last}{rest}"
+    return f"[hands] The user spoke over you, and nothing more was said aloud.{last}{rest}"
 
 
 def _left(said: asyncio.Queue[str | Asked | _Acknowledgement | None]) -> list[str]:

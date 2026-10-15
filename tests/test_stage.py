@@ -631,6 +631,8 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
+    # Not spoken over: nothing went unheard.
+    assert (turn.facts["interrupted"], turn.facts["spoken_over"]) == (False, "")
     [call] = [event for event in events if event is not turn]
     assert (call.event, call.duration_ms, call.outcome, call.facts) == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
     # The call's run is the child of the very span the call is emitted as, and the turn's end forgets it.
@@ -826,13 +828,42 @@ async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs
     rig.brain.end()
     # Then it is the next turn: the user's words, told what they did not hear of the turn they spoke over.
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    over = '[hands] The user spoke over your last turn, and nothing more of it was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed. Then it cleared. Staged.".'
+    over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed. Then it cleared. Staged.".'
     assert rig.brain.asked == [heard("tell me everything"), f"{over}\n\n{heard('and the logs?')}"]
     # Nothing of the turn was said after the barge-in.
     assert rig.out.said() == ["First, it rained. Then it snowed. "]
     [turn] = turns(rig.recorded)
     assert (turn.facts["exchanges"], turn.facts["interrupted"], turn.facts["spoken_over"]) == ((exchange, after), True, over)
     rig.brain.end()
+
+
+async def test_a_turn_spoken_over_that_then_fails_tells_the_next_only_what_the_user_heard(rig: Rig) -> None:
+    await rig.say("tell me everything")
+    exchange, _ = rig.request()
+    rig.stream(exchange, "First, it rained. Then it snowed. ")
+    await rig.until(lambda: rig.out.said() == ["First, it rained. Then it snowed. "])
+    rig.out.playing = Bookmark(("First, it rained.", "Then it snowed."), 1)
+    await rig.interrupt()
+    await rig.worker.queue_frame(UserWords("and the logs?"))
+    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    # Not also that the user heard all the speaker was handed: the speaker says what they heard.
+    over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed.".'
+    assert rig.brain.asked[1] == f"{over}\n\n{heard('and the logs?')}"
+    rig.brain.end()
+
+
+async def test_a_word_the_brain_streams_after_the_user_spoke_over_its_turn_is_no_wait_of_theirs(rig: Rig) -> None:
+    await rig.say("what is api doing?")
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    await rig.interrupt()
+    after, _ = rig.request(answering("mcp__hands__read_session", {"readback": "api is idle"}))
+    rig.stream(after, "It is idle.")
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["interrupted"], turn.facts["waited_ms"]) == (True, None)
 
 
 async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_as_written(rig: Rig) -> None:
@@ -858,7 +889,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
     rig.brain.end()
     # The draft changed, and the brain, told the user never heard how, judges whether to say it.
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    assert rig.brain.asked[1] == f'[hands] The user spoke over your last turn, and nothing more of it was said aloud. They did not hear: "amended for api: add tests too".\n\n{heard("wait, no")}'
+    assert rig.brain.asked[1] == f'[hands] The user spoke over you, and nothing more was said aloud. They did not hear: "amended for api: add tests too".\n\n{heard("wait, no")}'
     assert "amended for api: add tests too" not in rig.out.said()
     rig.brain.end()
 
@@ -1400,7 +1431,7 @@ async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_
     await rig.worker.queue_frame(UserWords("yeah"))
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    over = f"[hands] The user spoke over your last turn, and nothing more of it was said aloud. They did not hear: \"I'll clear out the build directory. {question}\"."
+    over = f"[hands] The user spoke over you, and nothing more was said aloud. They did not hear: \"I'll clear out the build directory. {question}\"."
     assert rig.brain.asked == [heard("clear out the build directory"), f"{over}\n\n{heard('yeah')}"]
     rig.brain.end()
 

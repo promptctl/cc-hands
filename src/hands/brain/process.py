@@ -93,7 +93,7 @@ BROKEN = "hands failed while it settled this permission request, so it is refuse
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
 UNANSWERED = "No answer came from the user in time, so it did not run. Tell them aloud that it did not run and what that leaves undone."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
-STOPPED = "The user stopped this turn, so it did not run."
+STOPPED = "hands stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
 
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
