@@ -1,9 +1,9 @@
 """The brain's process: one long-lived, slim Claude Code on its own login, behind hands' proxy, reaching hands over MCP.
 
 It is Claude Code as anyone runs it: interactive, on a terminal hands holds, under fritter, and asked nothing a person
-at its keyboard could not ask. A turn is typed into its input and sent with Return, and an interrupt is Escape. Nothing
-else is typed into it: its input is the user's, and what hands asks in the background is asked of a Claude Code of its
-own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
+at its keyboard could not ask. A turn is typed into its input and sent with Return, and Escape stops a prompt that is no
+turn's, or a turn hands' own work broke. Nothing else is typed into it: its input is the user's, and what hands asks in
+the background is asked of a Claude Code of its own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
@@ -92,7 +92,6 @@ UNREAD = "hands could not read this permission request, so it is refused."
 BROKEN = "hands failed while it settled this permission request, so it is refused."
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
 UNANSWERED = "No answer came from the user in time, so it did not run. Tell them aloud that it did not run and what that leaves undone."
-SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
 STOPPED = "The user stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
 
@@ -567,8 +566,7 @@ class Brain:
         self._turn: _Turn | None = None
         # The permissions held at their hooks now: one for each call of a reply that asks. Nothing is typed into the brain
         # while one is held but the Escape that stops its turn: what is typed goes to the dialog Claude Code draws, whose
-        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended, and the stage
-        # presses no Escape while the user is being asked.
+        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended.
         self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
         # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop or the Escape that
@@ -695,13 +693,6 @@ class Brain:
         turn.others += tuple(prompt for prompt in stopped if prompt not in turn.others)
         if stopped:
             logger.warning(f"the brain stopped prompts {list(stopped)}, which were no turn's")
-
-    def interrupt(self) -> None:
-        """Stop the turn in flight with Escape, as at the keyboard. Returns at once: the Escape is the brain's to press,
-        and no hook says a turn was stopped, so the turn ends where it is pressed."""
-        turn = self._turn
-        if turn is not None:
-            self._keep(self._stop(turn), turn)
 
     async def _stop(self, turn: _Turn) -> None:
         try:
