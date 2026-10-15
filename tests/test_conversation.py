@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+import pytest
 from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
@@ -135,3 +136,11 @@ async def test_over_many_replies_the_assistant_side_keeps_none_of_them() -> None
 
         assert len(await conversation.replies(40)) == 40
         assert conversation.assistant.messages == []
+
+
+async def test_a_turn_ended_not_to_be_asked_is_an_error_not_words_asked() -> None:
+    """Pipecat ends a turn so only to confirm a speculative inference, which hands never runs: asking its words anyway
+    would hand the brain them twice."""
+    user, _ = turns(LLMUserAggregatorParams())
+    with pytest.raises(ValueError, match="speculative"):
+        await user._push_aggregation(run_llm=False)  # pyright: ignore[reportPrivateUsage]  (Pipecat's seam UserTurns overrides)

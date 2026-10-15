@@ -1685,8 +1685,8 @@ reading held no words for Whisper. Such a turn cuts nothing, so nothing has to b
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
-A cut can land while the turn's words, and the note beside them, are still on
-their way to the model, so those are uninterruptible: an interruption stops hands, never
+A cut can land while the turn's words are still on
+their way to the model, so they are uninterruptible: an interruption stops hands, never
 the user. And the user aggregator takes none of them in until the assistant aggregator,
 at the end of the pipeline, says the reply the cut stopped is written as
 cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
