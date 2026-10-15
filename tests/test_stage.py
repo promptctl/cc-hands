@@ -18,6 +18,7 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -25,6 +26,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import running
@@ -930,15 +932,12 @@ async def test_what_the_user_said_while_a_turn_ran_is_asked_once_it_ends_through
     assert rig.brain.asked == [heard("first"), heard("second")]
 
 
-async def test_notes_that_came_in_one_ask_are_not_asked_again_empty(rig: Rig) -> None:
-    await rig.say("first")
-    for note in ("[hands] api finished.", "[hands] web finished."):
-        await rig.worker.queue_frame(UserWords(note))
-    rig.brain.end()
-    await rig.until(lambda: len(rig.brain.asked) == 2)
-    rig.brain.end()
-    await asyncio.sleep(0.1)
-    assert rig.brain.asked == [heard("first"), heard("[hands] api finished.\n\n[hands] web finished.")]
+async def test_a_message_list_reaching_the_stage_is_an_error_not_a_turn(rig: Rig) -> None:
+    """A turn Pipecat ended other than through UserTurns carries its words in a list hands keeps none of: they were lost."""
+    await rig.worker.queue_frame(LLMContextFrame(LLMContext([{"role": "user", "content": "lost"}])))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(rig.errors[0].exception, TypeError) and rig.errors[0].processor is rig.stage
+    assert rig.brain.asked == []
 
 
 async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:

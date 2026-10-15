@@ -70,6 +70,10 @@ class UserTurns(LLMUserAggregator):
     """
 
     async def _push_aggregation(self, *, run_llm: bool = True) -> str:
+        if not run_llm:
+            # [LAW:no-silent-failure] only a turn confirming a speculative inference is not to be asked (1.10.0), and hands
+            # runs none: asked anyway, its words would reach the brain twice.
+            raise ValueError("a turn ended confirming a speculative inference, which hands never runs")
         if not self._aggregation:
             return ""
         words = self.aggregation_string()

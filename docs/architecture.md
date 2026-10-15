@@ -1054,10 +1054,9 @@ turn with a concise, speakable overview. A turn the user stopped before it did a
 on like any other, its record adding that the user interrupted it. Each summary, and how it was
 delivered, are facts on the turn's utterance.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
-read it." without the model and out of the context, and logged as a `Failure` line.
+read it." without the model and out of the replies the audit log records, and logged as a `Failure` line.
 
-For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipecat's
-context, and the user's turn goes ahead of it: a narration that waited while the brain
+For the brain, a narration waits in a lane of `BrainStage`'s own, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
@@ -1078,7 +1077,7 @@ A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question, or
 their own barge-in. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
 a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
-question does, and is kept out of the context, since the brain never said it. A call that comes straight back, a turn
+question does, and is kept out of the replies the audit log records, since the brain never said it. A call that comes straight back, a turn
 that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
 line (`acknowledged`) and how long after the turn left its lane it was handed to the speaker (`acknowledged_ms`), as
 the turn's own words are told: a line the user spoke over before it came to be said is not told.
@@ -1982,8 +1981,8 @@ thing that failed `[LAW:no-silent-failure]`:
 1. **Speech.** The system channel says "the language model is unreachable", "speech
    recognition failed for that turn", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
-   template and queues it at the TTS processor, past the LLM and out of its context,
-   so the model never reads a system line as a reply it gave. The worker's
+   template and queues it at the TTS processor, past the LLM and out of the replies
+   the audit log records, so no system line reads as a reply the model gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the
    API's message, never spoken from it), or "failed: <category>", Whisper's become "speech recognition failed for that turn",

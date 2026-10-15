@@ -198,7 +198,7 @@ class SystemChannel:
             return
         if self._tts.is_usable:
             # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
-            # kept out of the model's context too, where it would read as a reply the model gave.
+            # kept out of the replies the audit log records too, where it would read as a reply the model gave.
             await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
             self._record(Announced(text, "speech"))
         elif await self._notify(f"hands cannot speak, so: {text}"):

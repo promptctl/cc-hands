@@ -8,8 +8,8 @@ heard as cut off. A turn the user's hand opened cuts as it opens; one the voice 
 it, Pipecat's transcription start: the first it hears in a hold still open (`InterimWords`), or the hold's own words as it
 closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
 be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
-land while the turn's own words and their note are on their way, so those are uninterruptible
-(`hands.voice.turnstop.Words`, `hands.voice.beside.Note`): an interruption stops hands, never the user. And it lands just
+land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
+(`hands.voice.turnstop.Words`, `hands.voice.conversation.UserWords`): an interruption stops hands, never the user. And it lands just
 ahead of them, so the user aggregator takes none of them in until the reply the cut stopped is written as cut off
 (`CutWritten`): the audit log reads the reply, then the words that cut it off.
 """

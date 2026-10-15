@@ -1,7 +1,7 @@
 """The brain as the pipeline's LLM stage: the user's turn goes to the brain's stdin, and its words come off the wire.
 
-Pipecat is otherwise untouched: what reaches this stage is the words of each turn the user aggregator ends, and what leaves it are
-the frames an LLM service pushes, which TTS already consumes. What the brain says is read from its requests on the
+What reaches this stage is the words of each turn the user aggregator ends (`hands.voice.conversation`), and what leaves
+it are the frames an LLM service pushes, which TTS already consumes. What the brain says is read from its requests on the
 wire as the proxy hears them, never from its stdout [the design's rule: primary facts from the wire]: text deltas of a
 main turn under the brain's own session, and of no other request.
 
@@ -27,6 +27,7 @@ from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -344,6 +345,10 @@ class BrainStage(FrameProcessor):
                         await self.push_frame(LLMFullResponseStartFrame())
                     # It cut off none of what the turn is still to say of the sessions.
                     await self.push_frame(Resumed(turn.utterances))
+            case LLMContextFrame():
+                # [LAW:no-silent-failure] a call to run inference over a message list hands keeps none of: some Pipecat path
+                # ended a turn without `UserTurns`, whose words would otherwise pass on unasked.
+                raise TypeError(f"{frame} reached the brain's stage: a turn ended somewhere other than UserTurns, and its words were lost")
             case _:
                 await self.push_frame(frame, direction)
 
@@ -508,7 +513,7 @@ class BrainStage(FrameProcessor):
             child("tool.call", ran.span, ran.at, _ms((ended if ran.answered is None else ran.answered) - ran.ran), outcome, call=call, tool=ran.tool)
 
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
-        """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the context."""
+        """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the replies the audit log records."""
         for line in unsaid:
             await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
 
@@ -561,7 +566,7 @@ class BrainStage(FrameProcessor):
                     pass
                 case _Acknowledgement(line=line):
                     turn.acknowledged = (line, self._now())
-                    # Kept out of the context: the brain never said it.
+                    # Kept out of the replies the audit log records: the brain never said it.
                     await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
                     await self._reply(turn, True)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
