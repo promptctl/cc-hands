@@ -65,8 +65,8 @@ class Missed:
 def missed(directory: Path, opening: datetime | LastSpoke) -> Missed:
     """What happened since `opening`, or since the user's words before the ones being answered.
 
-    The words being answered are already the newest Transcribed line: the user's turn is written as it enters the
-    model's context, before any tool it calls runs, so the user was last heard at the one before it.
+    The words being answered are already the newest Transcribed line: the user's turn is written as its words go to the
+    model, before any tool it calls runs, so the user was last heard at the one before it.
     """
     since = None if isinstance(opening, LastSpoke) else opening
     heard = 0

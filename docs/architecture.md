@@ -1054,10 +1054,9 @@ turn with a concise, speakable overview. A turn the user stopped before it did a
 on like any other, its record adding that the user interrupted it. Each summary, and how it was
 delivered, are facts on the turn's utterance.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
-read it." without the model and out of the context, and logged as a `Failure` line.
+read it." without the model and out of the replies the audit log records, and logged as a `Failure` line.
 
-For the brain, a narration waits in a lane of `BrainStage`'s own, never in Pipecat's
-context, and the user's turn goes ahead of it: a narration that waited while the brain
+For the brain, a narration waits in a lane of `BrainStage`'s own, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
@@ -1078,7 +1077,7 @@ A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question, or
 their own barge-in. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
 a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
-question does, and is kept out of the context, since the brain never said it. A call that comes straight back, a turn
+question does, and is kept out of the replies the audit log records, since the brain never said it. A call that comes straight back, a turn
 that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
 line (`acknowledged`) and how long after the turn left its lane it was handed to the speaker (`acknowledged_ms`), as
 the turn's own words are told: a line the user spoke over before it came to be said is not told.
@@ -1187,11 +1186,9 @@ its block and leaves nothing behind for the next one. Carrying the open fence in
 tried and reverted: Pipecat never tells a text filter that a reply ended, and a reply that ended inside
 a fence left every later utterance replaced by a block announcement.
 
-The filtered text is also what the intermediary remembers, because Pipecat builds the frame it appends
-to the assistant context out of what a filter returned. That is intended: the context is kept so
-the model can answer about what the user heard, and before this filter it held what was sent to
-the speaker, which was never the same string. The cost is that the model cannot read an exact path or
-sha back out of its own memory, and it has the session tools for facts. A draft readback crosses the
+The filtered text is also the reply the audit log records, because Pipecat's assistant aggregator
+builds the reply it ends out of what a filter returned: what the user heard, never what was sent to
+the speaker. A draft readback crosses the
 same seam and does not want a summary's liberties — it is read out so the user can check what will be
 sent — which is tracked separately rather than solved by giving the function a mode.
 
@@ -1364,7 +1361,7 @@ its start. "Skip that" and "say that again" are `skip()` and `repeat()`. "That p
 the segment playing, or the last one played, and "more on that" is `expand()` on the turn it belongs to.
 
 Pipecat's output transport reports text as its audio plays, and on an interruption only
-the text that played reaches the context. pocket-tts reports no word timings, so the
+the text that played reaches the reply the audit log records. pocket-tts reports no word timings, so the
 finest position is a sentence. As built (`hands.core.playback`, `hands.voice.player`), a
 reading is the run of sentences handed to the speaker since it last fell quiet, whether
 the model's reply or lines said as written. An observer reads it off two processors'
@@ -1688,12 +1685,12 @@ reading held no words for Whisper. Such a turn cuts nothing, so nothing has to b
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
-A cut can land while the turn's words, and the note beside them, are still on
-their way to the model, so those are uninterruptible: an interruption stops hands, never
+A cut can land while the turn's words are still on
+their way to the model, so they are uninterruptible: an interruption stops hands, never
 the user. And the user aggregator takes none of them in until the assistant aggregator,
-at the end of the pipeline, says the reply the cut stopped is written to the context as
-cut off (`CutWritten`), so the context reads that reply ahead of the words that cut it
-off, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
+at the end of the pipeline, says the reply the cut stopped is written as
+cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
+off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
 long after it opened it did, or that it never did. A turn ends once Whisper is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
@@ -1860,8 +1857,8 @@ a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk
 key's edges are cued as the key moves, whether or not anything downstream takes the
-turn. Two more cues are for silence: a high rising pair when a turn's words are written
-to the model's context, which a hold that heard nothing or was dropped never reaches,
+turn. Two more cues are for silence: a high rising pair when a turn's words go
+to the brain, which a hold that heard nothing or was dropped never reaches,
 and one steady tone when hands acts: at each call of one of its tools but `stay_silent`,
 and at each burst of progress that is heard, so never another session's, a muted one's,
 or any while hands is quiet. They are owed into one queue and played once nobody is
@@ -1984,8 +1981,8 @@ thing that failed `[LAW:no-silent-failure]`:
 1. **Speech.** The system channel says "the language model is unreachable", "speech
    recognition failed for that turn", "the session cc-hands is gone". These are
    `Speak` effects and need no model. `hands.voice.system` renders each fact from a
-   template and queues it at the TTS processor, past the LLM and out of its context,
-   so the model never reads a system line as a reply it gave. The worker's
+   template and queues it at the TTS processor, past the LLM and out of the replies
+   the audit log records, so no system line reads as a reply the model gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
    become "unreachable", "usage limit reached, until <when it lifts>" (read from the
    API's message, never spoken from it), or "failed: <category>", Whisper's become "speech recognition failed for that turn",
@@ -2076,9 +2073,9 @@ thing that failed `[LAW:no-silent-failure]`:
    `Unregistered` among them), and the effects counted by kind; applied inside a hook
    post, it is that post's child, and a unit an effect opens is its own. One wrapper makes every tool call a
    `tool.run` wide event with its arguments and the result the model was handed, and,
-   called in a voice turn, the child of that turn's `tool.call` span; the context
+   called in a voice turn, the child of that turn's `tool.call` span; the conversation's
    aggregators write each user turn as `Transcribed` and each reply as `Replied`
-   (a line hands says as written and keeps in the context is a `Replied` of its own
+   (a line hands says as written and counts as a reply is a `Replied` of its own
    once it is said, and part of the model's where it is said inside the model's turn,
    which runs through its calls to the reply that answers them:
    `hands.voice.conversation.AssistantTurns`);
@@ -2185,13 +2182,13 @@ the homelab's.
 
 ## Endurance
 
-The intermediary talks with you for hours, and its own context is the one thing in
-the system that grows. Two mechanisms bound it, and both were written at the same
-time as the thing they bound (failure mode 5).
-
-Pipecat's context summariser, configured with `LLMAutoContextSummarizationConfig`,
-compacts the conversation when it crosses a token threshold, keeping the recent
-turns verbatim. That is the eviction story. And because every narration, every tool
+The intermediary talks with you for hours, and the brain's own context is the one thing in
+the system that grows. hands keeps no copy of the conversation beside it: Pipecat's aggregators
+are built for a model service that re-reads a whole message list every turn, and the brain is
+none, so the list they write to keeps nothing (`hands.voice.conversation.Unkept`) and the
+brain's stage is handed only the words of each turn as it ends (`UserWords`). The brain's
+context is bounded by its history kept small on the way out and by its compaction
+(`hands.brain.context`, above). And because every narration, every tool
 call, and every user transcript is also a line in the audit log, nothing that was
 evicted is lost: `catch_up(minutes)` replays what was said while you were away, and
 the brain recalls the rest with its own Bash and its `hands:recall` skill, running

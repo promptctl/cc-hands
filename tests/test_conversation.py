@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+import pytest
 from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
@@ -14,7 +15,6 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSSpeakFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSSettings
@@ -23,7 +23,7 @@ from pipecat.transcriptions.language import Language
 
 from conftest import Running, running
 from hands.sessions.audit import Entry, Replied
-from hands.voice.conversation import record_turns, turns
+from hands.voice.conversation import AssistantTurns, record_turns, turns
 from hands.voice.player import Mark, Marks
 from hands.voice.spoken import FenceAggregator
 
@@ -42,10 +42,10 @@ class Speaker(TTSService):
 
 @dataclass
 class Conversation:
-    """The model's context and the audit log's replies, behind Pipecat's own speaker and hands' assistant side."""
+    """The audit log's replies, behind Pipecat's own speaker and hands' assistant side."""
 
     pipeline: Running
-    context: LLMContext
+    assistant: AssistantTurns
     recorded: list[Entry] = field(default_factory=list[Entry])
     written: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -66,21 +66,12 @@ class Conversation:
             await asyncio.wait_for(self.written.wait(), 2.0)
         return self.recorded
 
-    def ends_on(self) -> str:
-        """Whose message the context ends on: what a request made from it now would end on."""
-        match self.context.get_messages()[-1]:
-            case {"role": str() as role}:
-                return role
-            case other:
-                raise AssertionError(f"the context ends on a message with no role: {other!r}")
-
 
 @asynccontextmanager
 async def conversing() -> AsyncGenerator[Conversation]:
-    context = LLMContext()
-    user, assistant = turns(context, LLMUserAggregatorParams())
+    user, assistant = turns(LLMUserAggregatorParams())
     async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), Speaker(), assistant, Marks()]) as pipeline:
-        conversation = Conversation(pipeline, context)
+        conversation = Conversation(pipeline, assistant)
 
         def record(entry: Entry) -> None:
             conversation.recorded.append(entry)
@@ -135,3 +126,21 @@ async def test_a_reply_started_again_after_a_barge_in_it_goes_on_through_is_writ
         await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame("It opened pull request 68. "), LLMTextFrame("Nothing else changed."), LLMFullResponseEndFrame())
 
         assert (await conversation.replies(2))[-1] == Replied("It opened pull request 68. Nothing else changed.", interrupted=False)
+
+async def test_over_many_replies_the_assistant_side_keeps_none_of_them() -> None:
+    """hands-brain-80y: every line hands spoke was appended to a message list nothing read, for as long as the daemon ran.
+    The brain keeps its own transcript; the audit log is hands' record."""
+    async with conversing() as conversation:
+        for n in range(20):
+            await conversation.said(LLMFullResponseStartFrame(), LLMTextFrame(f"Reply {n}."), LLMFullResponseEndFrame(), TTSSpeakFrame(f"Line {n}."))
+
+        assert len(await conversation.replies(40)) == 40
+        assert conversation.assistant.messages == []
+
+
+async def test_a_turn_ended_not_to_be_asked_is_an_error_not_words_asked() -> None:
+    """Pipecat ends a turn so only to confirm a speculative inference, which hands never runs: asking its words anyway
+    would hand the brain them twice."""
+    user, _ = turns(LLMUserAggregatorParams())
+    with pytest.raises(ValueError, match="speculative"):
+        await user._push_aggregation(run_llm=False)  # pyright: ignore[reportPrivateUsage]  (Pipecat's seam UserTurns overrides)
