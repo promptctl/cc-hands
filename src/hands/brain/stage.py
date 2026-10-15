@@ -457,9 +457,9 @@ class BrainStage(FrameProcessor):
                     # Said by hands, as each call handed it to say.
                     await self.push_frame(TTSSpeakFrame(readback))
             else:
-                # Said to nobody: what the speaker was cut off in, the brain's words it was never handed, and the readbacks.
-                # The brain judges whether to go back to any of it.
-                over = _spoken_over(await turn.cut, "".join(_left(said)), turn.readbacks)
+                # Said to nobody: the turn's words past what the speaker played, and the readbacks. The brain judges whether
+                # to go back to any of it.
+                over = _spoken_over(await turn.cut, "".join((*spoken, *_left(said))), turn.readbacks)
             annotate(spoken_over=over)
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
@@ -731,7 +731,16 @@ def _spoken_over(cut: Bookmark, words: str, readbacks: Sequence[str]) -> str:
     """The note that tells the brain the user spoke over its last turn: the last sentence they heard, if the reading cut
     off holds one, and what they never heard, which is the rest of that reading, the turn's words the speaker was never
     handed, and the readbacks of its calls."""
-    unheard = " ".join(part for part in (*cut.sentences[cut.at :], words.strip(), *readbacks) if part)
+    # [LAW:one-source-of-truth] the turn's words are all it said; the speaker only marks how far into them was heard. Each
+    # sentence of them it was handed is a piece of them, in order, so one still on its way to it is unheard with the rest.
+    rest_of_reading: list[str] = []
+    into = 0
+    for at, sentence in enumerate(cut.sentences):
+        if (found := words.find(sentence.strip(), into)) >= 0:
+            into = found + len(sentence.strip())
+        if at >= cut.at:
+            rest_of_reading.append(sentence)
+    unheard = " ".join(part for part in (*rest_of_reading, " ".join(words[into:].split()), *readbacks) if part)
     last = f' They last heard "{cut.sentences[cut.at - 1]}".' if cut.at else ""
     rest = f' They did not hear: "{unheard}".' if unheard else ""
     return f"[hands] The user spoke over you, and nothing more was said aloud.{last}{rest}"

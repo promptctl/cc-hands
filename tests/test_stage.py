@@ -837,6 +837,23 @@ async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs
     rig.brain.end()
 
 
+async def test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole(rig: Rig) -> None:
+    await rig.say("what did you do?")
+    exchange, _ = rig.request()
+    rig.stream(exchange, "First, it rained. I closed the ")
+    await rig.until(lambda: rig.out.said() == ["First, it rained. I closed the "])
+    # The speaker played the first sentence; the start of the second never reached it.
+    rig.out.playing = Bookmark(("First, it rained.",), 1)
+    await rig.interrupt()
+    await rig.worker.queue_frame(UserWords("and then?"))
+    rig.stream(exchange, "session.")
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "I closed the session.".'
+    assert rig.brain.asked[1] == f"{over}\n\n{heard('and then?')}"
+    rig.brain.end()
+
+
 async def test_a_turn_spoken_over_that_then_fails_tells_the_next_only_what_the_user_heard(rig: Rig) -> None:
     await rig.say("tell me everything")
     exchange, _ = rig.request()
