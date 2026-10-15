@@ -109,6 +109,9 @@ Asker = UserAsked | HandsAsked
 
 # What the brain is recorded as saying for a request hands held. Never spoken: a held request joins no turn.
 SILENT = "(stayed silent)"
+# What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
+# the spoken-over note says what was heard, so this says only the failure.
+FAILED_AFTER = "[hands] Your last turn then failed. Say nothing about this unless the user asks."
 
 # How long the tool work of the user's turn runs, from its first call, with nothing of the turn heard yet, before hands
 # acknowledges the turn: past a call that comes straight back with its answer said soon after, so only long work is.
@@ -425,7 +428,8 @@ class BrainStage(FrameProcessor):
         self, text: str, asker: Asker, unsaid: Sequence[str], utterances: tuple[Utterance, ...], arrived: Seconds, released: Seconds | None, taken: Seconds
     ) -> str | None:
         note, self._broken_off = self._broken_off, ""
-        text = _notes(note, text)
+        # After the words, so a turn of the user's never opens with [hands], which marks a message as hands' own.
+        text = _notes(text, note)
         # What is typed into the brain for the turn, as it is typed.
         annotate(asked=text)
         said: asyncio.Queue[str | Asked | _Acknowledgement | None] = asyncio.Queue()
@@ -475,14 +479,14 @@ class BrainStage(FrameProcessor):
             # A turn the brain never took did not tell it what the user heard: the turn after it does. One it spoke in took
             # that, and was cut where the user stopped hearing it.
             # [LAW:one-source-of-truth] what the user heard of a turn they spoke over is the speaker's to say, not the words it was handed.
-            self._broken_off = over or (_broken_off("".join(spoken)) if spoken else note)
+            self._broken_off = _notes(over, FAILED_AFTER) if over else (_broken_off("".join(spoken)) if spoken else note)
             await self._unsaid(unsaid)
             await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failed
         elif failure is not None:
             # [LAW:no-silent-failure] said as an error from the model's stage, which the system channel words. No category:
             # Pipecat takes an invalid request or a refused login as permanent and stops the stage, and the brain goes on.
-            self._broken_off = over or failure.note
+            self._broken_off = _notes(over, FAILED_AFTER) if over else failure.note
             fail(failure.error)
             await self._unsaid(unsaid)
             await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -636,7 +640,8 @@ class BrainStage(FrameProcessor):
             # [LAW:no-ambient-temporal-coupling] the reply it asks again for is all heard by now: the proxy tells each byte
             # before Claude Code reads it, and Claude Code asks again only once it has read the break.
             if not streams(sent.body):
-                turn.broken.append(Broken(sent.exchange, turn.reply))
+                # Heard by nobody once the user spoke over the turn: nothing of it is said from there on.
+                turn.broken.append(Broken(sent.exchange, "" if turn.interrupted else turn.reply))
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.

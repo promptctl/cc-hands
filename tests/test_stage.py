@@ -37,7 +37,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.session import Permission
 from hands.brain.mcp import CallSpans
-from hands.brain.stage import SILENT, BrainStage, HandsAsked, UserAsked, Broken
+from hands.brain.stage import FAILED_AFTER, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -829,7 +829,7 @@ async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs
     # Then it is the next turn: the user's words, told what they did not hear of the turn they spoke over.
     await rig.until(lambda: len(rig.brain.asked) == 2)
     over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed. Then it cleared. Staged.".'
-    assert rig.brain.asked == [heard("tell me everything"), f"{over}\n\n{heard('and the logs?')}"]
+    assert rig.brain.asked == [heard("tell me everything"), f"{heard('and the logs?')}\n\n{over}"]
     # Nothing of the turn was said after the barge-in.
     assert rig.out.said() == ["First, it rained. Then it snowed. "]
     [turn] = turns(rig.recorded)
@@ -850,11 +850,11 @@ async def test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "I closed the session.".'
-    assert rig.brain.asked[1] == f"{over}\n\n{heard('and then?')}"
+    assert rig.brain.asked[1] == f"{heard('and then?')}\n\n{over}"
     rig.brain.end()
 
 
-async def test_a_turn_spoken_over_that_then_fails_tells_the_next_only_what_the_user_heard(rig: Rig) -> None:
+async def test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed(rig: Rig) -> None:
     await rig.say("tell me everything")
     exchange, _ = rig.request()
     rig.stream(exchange, "First, it rained. Then it snowed. ")
@@ -866,7 +866,26 @@ async def test_a_turn_spoken_over_that_then_fails_tells_the_next_only_what_the_u
     await rig.until(lambda: len(rig.brain.asked) == 2)
     # Not also that the user heard all the speaker was handed: the speaker says what they heard.
     over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed.".'
-    assert rig.brain.asked[1] == f"{over}\n\n{heard('and the logs?')}"
+    assert rig.brain.asked[1] == f"{heard('and the logs?')}\n\n{over}\n\n{FAILED_AFTER}"
+    rig.brain.end()
+
+
+async def test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody(rig: Rig) -> None:
+    await rig.say("tell me everything")
+    exchange, _ = rig.request()
+    rig.stream(exchange, "First, it rained. ")
+    await rig.until(lambda: rig.out.said() == ["First, it rained. "])
+    rig.out.playing = Bookmark(("First, it rained.",), 1)
+    await rig.interrupt()
+    await rig.worker.queue_frame(UserWords("and the logs?"))
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    _, retry = broken_then_asked_again(rig, ("Then it ",), "Then it snowed.")
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, ""),)
+    # Only the spoken-over note: no account of the broken reply as heard, which nobody heard.
+    [words, over] = rig.brain.asked[1].rsplit("\n\n", 1)
+    assert words == heard("and the logs?") and over.startswith('[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.".')
     rig.brain.end()
 
 
@@ -906,7 +925,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
     rig.brain.end()
     # The draft changed, and the brain, told the user never heard how, judges whether to say it.
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    assert rig.brain.asked[1] == f'[hands] The user spoke over you, and nothing more was said aloud. They did not hear: "amended for api: add tests too".\n\n{heard("wait, no")}'
+    assert rig.brain.asked[1] == f'{heard("wait, no")}\n\n[hands] The user spoke over you, and nothing more was said aloud. They did not hear: "amended for api: add tests too".'
     assert "amended for api: add tests too" not in rig.out.said()
     rig.brain.end()
 
@@ -1079,10 +1098,9 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     rig.brain.end()
     await rig.say("thanks")
     assert rig.brain.asked[1:] == [
-        heard(
-            '[hands] Your last turn was broken off. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
-            "Say nothing about this unless the user asks.\n\nwhat were you saying?"
-        ),
+        f"{heard('what were you saying?')}\n\n"
+        '[hands] Your last turn was broken off. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
+        "Say nothing about this unless the user asks.",
         heard("thanks"),
     ]
 
@@ -1138,7 +1156,7 @@ async def test_a_reply_asked_again_that_opens_otherwise_is_said_whole_and_the_br
     await rig.say("thanks")
     note = '[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "Lighthouses stand on rocky". Say nothing about this unless the user asks.'
     # Told once: the turn after it broke nothing.
-    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?"), heard("thanks")]
+    assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}", heard("thanks")]
 
 
 async def test_a_reply_broken_before_it_said_a_word_is_asked_again_with_nothing_to_tell(rig: Rig) -> None:
@@ -1165,7 +1183,7 @@ async def test_a_turn_that_fails_after_a_reply_was_asked_again_tells_the_brain_a
     # The turn's failure says all of it, the broken reply's words with the rest: one note, not one more for the break.
     spoken = "Lighthouses stand on rocky\n\nMost lighthouses stand on rocky coasts."
     note = f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.'
-    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?")]
+    assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}"]
     rig.brain.end()
 
 
@@ -1180,7 +1198,7 @@ async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_
     await rig.until(lambda: len(rig.errors) == 2)
     await rig.say("again")
     note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
-    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?"), heard(f"{note}\n\nagain")]
+    assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}", f"{heard('again')}\n\n{note}"]
     rig.brain.end()
 
 
@@ -1193,7 +1211,7 @@ async def test_a_turn_that_breaks_after_the_brain_spoke_tells_the_next_where_the
     await rig.until(lambda: len(rig.errors) == 1)
     await rig.say("what were you saying?")
     note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
-    assert rig.brain.asked[1:] == [heard(f"{note}\n\nwhat were you saying?")]
+    assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}"]
     rig.brain.end()
 
 
@@ -1449,7 +1467,7 @@ async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     over = f"[hands] The user spoke over you, and nothing more was said aloud. They did not hear: \"I'll clear out the build directory. {question}\"."
-    assert rig.brain.asked == [heard("clear out the build directory"), f"{over}\n\n{heard('yeah')}"]
+    assert rig.brain.asked == [heard("clear out the build directory"), f"{heard('yeah')}\n\n{over}"]
     rig.brain.end()
 
 

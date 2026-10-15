@@ -198,7 +198,7 @@ async def mind(
             raise CannotStart(str(error)) from error
         try:
             # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
-            # its own: nothing but the user's turns and their stops is ever typed into the brain.
+            # its own: nothing but the user's turns is ever typed into the brain.
             asides = Asides(station, record)
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, cut_off)
             keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
