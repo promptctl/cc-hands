@@ -19,12 +19,9 @@ in this filter instead, it was tried and reverted: Pipecat never tells a text fi
 so a reply that ended inside a fence left every later utterance replaced by a block announcement
 [LAW:no-ambient-temporal-coupling]. The aggregator's lifetime is the reply's, by Pipecat's own frames.
 
-The filtered text is also what the intermediary remembers: Pipecat builds the frame it appends to the
-assistant context from the text a filter returned. The context is kept so the model can answer about
-*what the user heard*. Until this filter
-existed it held what was sent to the speaker instead, which was never the same string. What it costs is
-that the model cannot read an exact path or sha back out of its own memory; it has the session tools for
-facts, and what it said is now what was heard.
+The filtered text is also the reply the audit log records: Pipecat's assistant aggregator builds the reply
+it ends from the text a filter returned, so the log holds *what the user heard*, never what was sent to the
+speaker.
 
 One path that crosses this seam wants every character heard: a draft readback (`voice/readback.py`), read
 out so the user can check what will be typed. It does not get a mode here [LAW:no-mode-explosion]. The

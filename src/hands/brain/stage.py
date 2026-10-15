@@ -1,6 +1,6 @@
 """The brain as the pipeline's LLM stage: the user's turn goes to the brain's stdin, and its words come off the wire.
 
-Pipecat is otherwise untouched: what reaches this stage is the context the user aggregator built, and what leaves it are
+Pipecat is otherwise untouched: what reaches this stage is the words of each turn the user aggregator ends, and what leaves it are
 the frames an LLM service pushes, which TTS already consumes. What the brain says is read from its requests on the
 wire as the proxy hears them, never from its stdout [the design's rule: primary facts from the wire]: text deltas of a
 main turn under the brain's own session, and of no other request.
@@ -27,14 +27,12 @@ from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     InterruptionFrame,
-    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSSpeakFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage, LLMStandardMessage
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
@@ -70,6 +68,7 @@ from hands.core.wire import (
 from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, child, continuing, count, fail, here, root, unit, within
+from hands.voice.conversation import UserWords
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
@@ -247,7 +246,7 @@ class _Turn:
 
 
 class BrainStage(FrameProcessor):
-    """The LLM stage under the brain: a context in, the brain's words out as LLM text frames, and a barge-in passed on."""
+    """The LLM stage under the brain: the user's words in, the brain's words out as LLM text frames, and a barge-in passed on."""
 
     def __init__(
         self,
@@ -283,19 +282,17 @@ class BrainStage(FrameProcessor):
         self._pause = pause
         self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._tools = {wire_name(tool): tool for tool in tools}
-        # How many of the context's messages the brain has been handed: the rest are new to it.
-        self._told = 0
         # [LAW:no-ambient-temporal-coupling] the turn is the brain's, from its write to its result line, not the pipeline's:
         # it runs beside the frames passing through, a barge-in ends what is said of it, and the next is written only
         # once the brain has ended it. What waits is in two lanes, the user's and hands', and the user's goes first.
         # Each thing waiting is kept with when it arrived, and the user's words with when they let go of the key on them,
         # if they did, and the read of the screen begun as they arrived. Hands' lane holds what it says as written beside
         # what it hands the brain, so a session's story is heard in the order it happened.
-        self._contexts: deque[tuple[str, Seconds, Seconds | None, asyncio.Task[UserAsked]]] = deque()
+        self._words: deque[tuple[str, Seconds, Seconds | None, asyncio.Task[UserAsked]]] = deque()
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
         # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
         # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
-        # the turn's one context follows the last release of the holds it took in. Kept with the edge that opened that
+        # the turn's words follow the last release of the holds it took in. Kept with the edge that opened that
         # hold, read from the gate as it is let go of, before any later hold can open.
         self._released: tuple[Seconds, Edge] | None = None
         self._waiting = asyncio.Event()
@@ -307,16 +304,12 @@ class BrainStage(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
-            case LLMContextFrame(context=context) if self._turn is not None and (asked := self._turn.asking()) is not None:
+            case UserWords(words=words) if self._turn is not None and (asked := self._turn.asking()) is not None:
                 # What the user says while the brain asks them is their answer, not a turn of their own: the brain is held
                 # mid-turn, and hears it as its tool's run or refusal.
                 self._released = None
-                if words := self._news(context):
-                    asked.settle(heard(words))
-            case LLMContextFrame(context=context):
-                # [LAW:no-ambient-temporal-coupling] read as it arrives, so an answer given later takes only its own words,
-                # never words of the user's still waiting to be asked. A context frame is a call to answer, not a message:
-                # one that gained the brain nothing asks nothing.
+                asked.settle(heard(words))
+            case UserWords(words=words):
                 # [LAW:no-ambient-temporal-coupling] the screen is read from as the words arrive, not as their turn is
                 # taken: the user may look elsewhere, or switch to audio-only, while it waits.
                 released, self._released = self._released, None
@@ -325,9 +318,8 @@ class BrainStage(FrameProcessor):
                         let_go, opened = None, self._opened()
                     case (let_go, opened):
                         pass
-                if news := self._news(context):
-                    self._contexts.append((news, self._now(), let_go, asyncio.ensure_future(self._read_front(self._modality(), opened))))
-                    self._waiting.set()
+                self._words.append((words, self._now(), let_go, asyncio.ensure_future(self._read_front(self._modality(), opened))))
+                self._waiting.set()
             case HoldDiscarded():
                 await self.push_frame(frame, direction)
             case VADUserStoppedSpeakingFrame():
@@ -397,18 +389,18 @@ class BrainStage(FrameProcessor):
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all
         that waits of them asked as one turn, with when the last of them arrived and when the user let go of the key on it,
         since the user waits from the last words they said."""
-        while not (self._contexts or self._hands):
+        while not (self._words or self._hands):
             self._waiting.clear()
             await self._waiting.wait()
-        if not self._contexts:
+        if not self._words:
             told, arrived = self._hands.popleft()
             return told, arrived, None
-        *earlier, (_, arrived, released, reading) = self._contexts
+        *earlier, (_, arrived, released, reading) = self._words
         # Asked as one turn, read against the screen as the last of them arrived.
         for _, _, _, superseded in earlier:
             superseded.cancel()
-        news = "\n\n".join(text for text, _, _, _ in self._contexts)
-        self._contexts.clear()
+        news = "\n\n".join(text for text, _, _, _ in self._words)
+        self._words.clear()
         return (news, reading), arrived, released
 
     async def _ask(
@@ -581,15 +573,6 @@ class BrainStage(FrameProcessor):
         await self._reply(turn, False)
         await self.push_frame(line)
 
-    def _news(self, context: LLMContext) -> str:
-        """What the context gained since the brain last heard it, as one message: the user's words and hands' notes."""
-        messages = context.get_messages()
-        fresh = messages[self._told :]
-        self._told = len(messages)
-        # [LAW:one-source-of-truth] the brain keeps its own history, so what it said itself, which the assistant
-        # aggregator writes back into this context, is never handed to it again.
-        return "\n\n".join(_user_text(message) for message in fresh if not isinstance(message, LLMSpecificMessage) and message.get("role") == "user")
-
     def _barge_in(self) -> bool:
         """Stops the turn in flight being spoken; True when the brain is to be told to stop it too."""
         turn = self._turn
@@ -714,14 +697,6 @@ class BrainStage(FrameProcessor):
 
 def _ms(seconds: Seconds) -> float:
     return round(seconds * 1000, 3)
-
-
-def _user_text(message: LLMStandardMessage) -> str:
-    content = message.get("content")
-    if not isinstance(content, str):
-        # [LAW:no-silent-failure] hands' aggregator and notes write plain text; anything else is a change to hear about.
-        raise TypeError(f"a user message in the context is not plain text: {message!r}")
-    return content
 
 
 @dataclass(frozen=True)

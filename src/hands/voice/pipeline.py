@@ -14,13 +14,8 @@ from dataclasses import dataclass
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
-from pipecat.processors.aggregators.llm_response_universal import (
-    LLMAssistantAggregator,
-    LLMUserAggregator,
-    LLMUserAggregatorParams,
-)
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -65,8 +60,8 @@ class Voice:
     stt: Whisper
     llm: FrameProcessor
     tts: PocketTTSService
-    user_turns: LLMUserAggregator
-    assistant_turns: LLMAssistantAggregator
+    user_turns: conversation.UserTurns
+    assistant_turns: conversation.AssistantTurns
 
 
 def build_voice(
@@ -88,10 +83,8 @@ def build_voice(
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.
-    # It also decides what the intermediary remembers, because the frame appended to the assistant context
-    # is built from what a filter returned. Intended: the context is kept so the model can answer about
-    # what the user heard, and before this filter it held what was sent to the speaker,
-    # which was never the same string. See voice/spoken.py, which also records what it costs.
+    # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
+    # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
     tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
@@ -102,10 +95,7 @@ def build_voice(
         start=[start],
         stop=[KeyTurnStop()],
     )
-    # The brain's stage decides each reply itself, its tools answered by hands' MCP server, so the context carries none.
-    context = LLMContext()
     user_aggregator, assistant_aggregator = conversation.turns(
-        context,
         # [LAW:single-enforcer] the key's holds alone end a user turn. Pipecat's aggregator also ends one itself after
         # this long with no speech and no transcript, which a slow or queued transcription outlasts: the turn would end
         # empty and the hold's words go out with the next one. Whisper resolves every hold it opens, heard or not or
@@ -115,7 +105,7 @@ def build_voice(
     interrupting(start, user_aggregator)
 
     # The floor ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
-    # context or the model's stage takes it, and follows the user's words when given back.
+    # user aggregator or the model's stage takes it, and follows the user's words when given back.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
     output = transport.output()
