@@ -21,6 +21,7 @@ import pytest
 from loguru import logger
 
 from hands.core.front import FrontUnread, InFront
+from hands.core.playback import Bookmark
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
 from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
@@ -55,6 +56,11 @@ from hands.sessions.wide import Fact, WideEvent, begun, continuing, here, root, 
 from hands.voice.tool import Result, tool
 from hands.voice.tools import Called, audited
 from hands.voice import voices
+
+
+def never_cut() -> asyncio.Future[Bookmark]:
+    """The speaker's reading at a barge-in, which a test with no speaker never has."""
+    return asyncio.get_running_loop().create_future()
 
 
 async def echo(text: str, times: int = 1) -> Result:
@@ -1364,7 +1370,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         return FrontUnread("not read in this test")
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
-    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
+    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ, never_cut) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         # The brain is behind the proxy, so it is given its usage read off the wire.
@@ -1380,7 +1386,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
-    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ) as minded:
+    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands recall", recorded.append, os.environ, never_cut) as minded:
         # Its usage is heard under the session it resumed, not one begun for it.
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
@@ -1400,7 +1406,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
         return FrontUnread("not read in this test")
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ)
+        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, os.environ, never_cut)
 
     launched: list[Launch] = []
 
@@ -1426,7 +1432,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match="^no claude on PATH"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, {"PATH": str(tmp_path)}):
+        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, {"PATH": str(tmp_path)}, never_cut):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
@@ -1449,7 +1455,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, dict(os.environ)):
+        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, dict(os.environ), never_cut):
             pass
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"

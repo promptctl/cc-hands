@@ -392,8 +392,8 @@ are read off the output transport by the `Audible` observer: what says an uttera
 between an `Uttering` frame, dropped by a barge-in with the words it leads, and an `Uttered`
 frame, kept through one, so every utterance handed on reaches the output transport closed, in
 order with its audio. The brain's stage sends them around what it takes from hands' lane, leads
-what its turn still has to say with an uninterruptible `Resumed` after each barge-in, which the turn
-goes on through, and fails each utterance of a telling the brain failed; the brain's turn telling an
+what its turn still has to say with an uninterruptible `Resumed` after a barge-in the turn goes
+on through, and fails each utterance of a telling the brain failed; the brain's turn telling an
 utterance is its child, in its trace.
 `Story` carries finished turns and sessions gone in one ordered
 queue, because an end spoken at once was heard before the last turn it ended. Every
@@ -1070,8 +1070,11 @@ too; a side question's own request is under its `brain.aside`. The router decide
 and an exchange made for no unit of work, a wrapped session's through the tap or the brain's outside a turn, is a
 `proxy.exchange` span at the root of a trace of its own, saying its session, kind and path. A turn hands stopped mid-way
 still emits its event, cancelled, with what it had done.
-The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`),
-and how often a permission question was said (`questions`), again for each a barge-in cut off.
+The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), and
+the note that tells the brain, with the user's next words, what of the turn they did not hear (`spoken_over`). A barge-in
+presses no key and holds no request: the turn runs to its own end, said to nobody. The note quotes the last sentence the
+speaker played to its end, then the rest of the reading it was cut off in (`Player.cut_off`), the turn's words the
+speaker was never handed, and its calls' readbacks.
 
 A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question, or

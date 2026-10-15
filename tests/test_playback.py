@@ -239,3 +239,21 @@ async def test_a_barge_in_on_a_quiet_speaker_is_a_line_that_cut_nothing_off() ->
         await run.worker.queue_frame(InterruptionFrame())
         await heard.until(1, InterruptionFrame)
     assert recorded == [CutOff(None, 0)]
+
+
+async def test_a_cut_off_asked_for_ahead_of_a_barge_in_says_how_far_the_reading_played_when_it_reached_the_speaker() -> None:
+    player = Player(lambda _: None)
+    async with stood(player) as (run, heard):
+        for frame in (spoken("The parser is fixed."), spoken("Its tests pass."), ended("The parser is fixed.")):
+            await run.worker.queue_frame(frame)
+        await heard.until(1, TTSTextFrame)
+        reading = player.cut_off()
+        await run.worker.queue_frame(InterruptionFrame())
+        assert await asyncio.wait_for(reading, 2.0) == Bookmark(("The parser is fixed.", "Its tests pass."), 1)
+        # Each asked for is settled by the next barge-in alone: one played to its end cut nothing off.
+        for frame in (spoken("Done."), ended("Done.")):
+            await run.worker.queue_frame(frame)
+        await heard.until(2, TTSTextFrame)
+        reading = player.cut_off()
+        await run.worker.queue_frame(InterruptionFrame())
+        assert await asyncio.wait_for(reading, 2.0) == Bookmark(("Done.",), 1)

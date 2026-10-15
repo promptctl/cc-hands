@@ -23,7 +23,7 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import LastOne, NothingCut, NothingSaid, Played, Playback, Replay
+from hands.core.playback import Bookmark, LastOne, NothingCut, NothingSaid, Played, Playback, Replay
 from hands.sessions.audit import CutOff, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
@@ -45,6 +45,8 @@ class Player:
         # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the mark behind it: settled by the output
         # passing the mark on, or by the next barge-in, whichever the output pushes first.
         self._hearing: dict[asyncio.Future[bool], Mark] = {}
+        # [LAW:no-shared-mutable-globals] each `cut_off` waiting on the next barge-in to reach the output, which settles it.
+        self._cutting: list[asyncio.Future[Bookmark]] = []
 
     @property
     def waiting(self) -> int:
@@ -80,11 +82,22 @@ class Player:
                 for hearing in self._hearing:
                     _settle(hearing, False)
                 was = self._playback
+                cutting, self._cutting = self._cutting, []
+                for cut in cutting:
+                    if not cut.done():
+                        cut.set_result(Bookmark((*was.reading, *was.coming), was.played))
                 self._playback = playback.cut(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
                 self._record(CutOff(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
             case _:
                 pass
+
+    def cut_off(self) -> asyncio.Future[Bookmark]:
+        """The reading on the speaker when the next barge-in reaches it, and how many of its sentences had played to their
+        end: all of them when it was cut off in none. Asked for before that barge-in is passed down, so it is the one."""
+        cut = asyncio.get_running_loop().create_future()
+        self._cutting.append(cut)
+        return cut
 
     async def act(self, act: Act) -> tuple[str, ...]:
         """Moves playback by `act`, and says what it says, which is always something: a reading said again, or why not.
