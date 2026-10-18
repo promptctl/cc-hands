@@ -59,7 +59,7 @@ by (`brain/stage.py:81–88`), has `session` and `ask` and no interrupt, and the
 | a brain permission question: playing, queued behind another, or raised after the cut | settled `Deny(SPOKEN_OVER)`; never said again | the denial text as the tool result; it may re-ask next turn (unverified by test) | `brain/stage.py:539–541`, `606–607`; `brain/process.py:95`; `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`, `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`, `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said` |
 | the refusal lines hands owed the user (`unacknowledged`) | cleared | the refusals it received | `brain/stage.py:609`; unverified by test |
 | the acknowledgement | not said | nothing | `brain/stage.py:239–241`, `651–657`; `test_a_turn_the_user_spoke_over_while_its_call_runs_is_not_acknowledged` |
-| a session telling | not played; quoted in the note; its utterance's fate is `cut` | the note; hands does not re-tell it | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
+| a session telling | not played; quoted in the note; its utterance's fate is `cut` | the note; hands does not re-tell it (unverified by test) | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
 | a session's permission, question or plan | untouched; it waits on its own deadline | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:13–17`; unverified by test |
 | a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
 
@@ -209,7 +209,7 @@ The brain's history is Claude Code's transcript for its conversation,
    criterion, and the evidence pointer.
 6. Change. Per the rule below; the PR updates this document's tables and scenario rows with the
    flow.
-7. Re-run. The change is scored by a run before it merges.
+7. Re-run. The change is scored by a run.
 
 ## Changing the flow
 
@@ -219,4 +219,4 @@ The user, 2026-10-17:
 > intentionally, rather than typing to patch a symptom.
 
 A change to the flow updates the decision tables and the scenario rows in this document in the same
-PR, and is scored by a run before it merges.
+PR, and is scored by a run.
