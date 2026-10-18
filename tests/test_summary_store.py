@@ -419,12 +419,16 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
         command = f"cd {shlex.quote(str(empty['directory']))} && lit {shlex.join(arguments)}"
         return subprocess.run(["/bin/sh", "-c", command], cwd=brain, check=True, capture_output=True, text=True).stdout.split()[0]
 
-    mic, parser, docs = (lit("new", "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))
+    # Every ticket but an epic lives inside one, so the epic is the backlog's one item and the tickets its children.
+    epic = lit("new", "--type", "epic", "--title", "Voice", "--topic", "voice")
+    mic, parser, docs = (lit("new", "--parent", epic, "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))
     lit("rank", docs, "--above", mic)
     lit("comment", "add", parser, "--body", "Seen again on CI.")
     lit("close", mic, "--resolution", "obsolete", "--reason", "The mic test is gone.")
     read = dict(await bodies["read_backlog"](session="s1"))
-    assert [item["title"] for item in read["items"]] == ["Write the docs", "Fix the parser"]
+    assert [item["title"] for item in read["items"]] == ["Voice"]
+    children = dict(await bodies["read_ticket"](session="s1", ticket=epic))["open_children"]
+    assert [child["title"] for child in children] == ["Write the docs", "Fix the parser"]
     commented = dict(await bodies["read_ticket"](session="s1", ticket=parser, full=True))
     assert [comment["body"] for comment in commented["comments"]] == ["Seen again on CI."]
     assert dict(await bodies["read_ticket"](session="s1", ticket=mic))["status"] == "closed"
