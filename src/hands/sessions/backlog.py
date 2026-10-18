@@ -144,7 +144,9 @@ def parse_export(raw: bytes) -> Backlog:
         if id in parent:
             children[parent[id]] = (*children.get(parent[id], ()), id)
     comments: dict[str, tuple[Comment, ...]] = {}
-    for comment in sorted((Payload.of(entry, "a comment") for entry in export.items("comments")), key=lambda comment: comment.text("created_at")):
+    # A comment on a ticket that is none here is read by nothing, and kept by nothing.
+    kept = (comment for comment in (Payload.of(entry, "a comment") for entry in export.items("comments")) if comment.text("issue_id") in tickets)
+    for comment in sorted(kept, key=lambda comment: comment.text("created_at")):
         issue = comment.text("issue_id")
         comments[issue] = (*comments.get(issue, ()), Comment(comment.text("created_by"), comment.text("created_at"), comment.text("body")))
     return Backlog(tickets, children, parent, comments)

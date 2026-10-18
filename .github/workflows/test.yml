@@ -48,6 +48,8 @@ jobs:
           tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
           curl -fsSL -o "$RUNNER_TEMP/lit-install.sh" https://raw.githubusercontent.com/promptctl/links-issue-tracker/$tag/scripts/install.sh
           bash "$RUNNER_TEMP/lit-install.sh" --from-release "$tag"
+          # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
+          "$GOBIN/lit" version
           echo "$GOBIN" >> "$GITHUB_PATH"
       # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
       - name: make check

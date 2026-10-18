@@ -49,11 +49,11 @@ ISSUES = [
     ticket("e2.a", "08", "Landed", "Shipped.", status="closed"),
 ]
 RELATIONS = [child("e1", "e1.a"), child("e1", "e1.b"), child("e1", "e1.c"), child("e2", "e2.a")]
-COMMENTS = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created_at": "2026-09-29T10:00:00Z", "created_by": "claude"}]
+COMMENTS: list[dict[str, object]] = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created_at": "2026-09-29T10:00:00Z", "created_by": "claude"}]
 
 
-def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS) -> bytes:
-    return json.dumps({"version": 4, "workspace_id": "w", "issues": issues, "relations": relations, "comments": COMMENTS, "labels": [], "events": [], "purges": []}).encode()
+def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS, comments: list[dict[str, object]] = COMMENTS) -> bytes:
+    return json.dumps({"version": 4, "workspace_id": "w", "issues": issues, "relations": relations, "comments": comments, "labels": [], "events": [], "purges": []}).encode()
 
 
 # --- keys: what changes a sentence, and what does not
@@ -168,9 +168,11 @@ def test_a_ticket_lit_deleted_or_archived_is_not_in_the_backlog() -> None:
     # A deleted epic over a deleted child still in progress, and an archived loose ticket: lit lists none of them.
     gone = [{**ticket("e3", "08", "Dropped", status=None, kind="epic"), "deleted_at": "2026-10-18T00:00:00Z"}, {**ticket("e3.a", "09", "Half done", status="in_progress"), "deleted_at": "2026-10-18T00:00:00Z"}]
     shelved = {**ticket("t3", "10", "Shelved"), "archived_at": "2026-10-18T00:00:00Z"}
-    backlog = parse_export(export(issues=[*ISSUES, *gone, shelved], relations=[*RELATIONS, child("e3", "e3.a")]))
+    said = {**COMMENTS[0], "id": "c2", "issue_id": "e3.a", "body": "Nearly there."}
+    backlog = parse_export(export(issues=[*ISSUES, *gone, shelved], relations=[*RELATIONS, child("e3", "e3.a")], comments=[*COMMENTS, said]))
     assert not {"e3", "e3.a", "t3"} & backlog.tickets.keys()
     assert backlog.roots() == ("e1", "t1")
+    assert "e3.a" not in backlog.comments
 
 
 @pytest.mark.parametrize(
