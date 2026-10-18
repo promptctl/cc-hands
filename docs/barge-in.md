@@ -1,9 +1,13 @@
 # Barge-in
 
 A barge-in is the user speaking while the brain's turn is in flight: a reply being read, a call
-running in silence, a permission question half-said. This document is that flow as two decision
-tables and six scenarios, a rubric of five criteria, and the run that scores a build against them
-and turns each failed cell into a ticket. It is re-checked on every change to the flow.
+running in silence, a permission question half-said. This document is that flow as a decision tree
+and the two decision tables behind it, six scenarios each drawn as a sequence diagram, a rubric of
+five criteria, and the run that scores a build against them and turns each failed cell into a
+ticket. It is re-checked on every change to the flow. Hands' own words for the flow are mapped to
+the standard voice-interface terms first, so an engineer or designer new to hands can read the tree
+and the scenarios before the code. The diagrams are Mermaid, which GitHub renders in place: a
+flowchart for the tree, UML sequence diagrams for the scenarios.
 
 ## The goal
 
@@ -23,6 +27,52 @@ The user, 2026-10-17:
 > something is interrupted it shouldn't disappear without the brain's input, that is a form of
 > amnesia and leads to incoherency and degenerate intelligence.
 
+## In standard terms
+
+Hands' words for the flow are below, each beside its standard voice-interface term. The cut rule is
+the barge-in rule of [VoiceXML 2.0](https://www.w3.org/TR/voicexml20/), the W3C standard for voice
+dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
+
+| Here | In standard terms |
+|---|---|
+| the hold | the listening window: the time the microphone is the user's, opened by push-to-talk, a wake word, or an engaged conversation (open mic) |
+| the edge that opened the hold | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
+| the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
+| a hold the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
+| a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound; but hands' detector is fed silence while hands speaks, so it cuts only a turn working in silence, never a reading |
+| a hold engaged conversation opened cuts once Whisper pushes words | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
+| the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
+| a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
+| the note | context carry-over: what the next turn is told about the one cut off |
+| `resume`, `skip`, `repeat` | playback controls over what was cut off |
+
+## The decision tree
+
+Diamonds decide; rounded boxes end a path and name the scenario below that exercises it. The two
+tables under the tree carry the reason for each branch and the code and test that hold it.
+
+```mermaid
+flowchart TD
+    speak(["The user speaks"]) --> opened{"What opened the listening window?"}
+    opened -- "push-to-talk, the phone's button" --> now["Cut as the window opens"]
+    opened -- "wake word, which is not heard while hands speaks" --> now
+    opened -- "engaged conversation" --> whisper{"Does Whisper push words for it?"}
+    whisper -- "yes" --> words["Cut once the words arrive"]
+    whisper -- "no, a cough or the reply's own echo" --> nocut(["No cut: the reply plays on as if nothing had opened"])
+    now --> inflight{"Is a brain turn in flight?"}
+    words --> inflight
+    inflight -- "no" --> nextturn(["Not a barge-in: the words are the next turn"])
+    inflight -- "yes" --> again{"Was it already cut?"}
+    again -- "yes" --> once(["Nothing more: once is enough"])
+    again -- "no" --> left{"Has any of its requests left for the model?"}
+    left -- "no" --> queue(["Not a barge-in: this turn plays whole, the words queue as the next turn (S6)"])
+    left -- "yes" --> heard{"Is the user answering a permission question they heard to its end?"}
+    heard -- "yes" --> answer(["Not a barge-in: the words answer it (S4)"])
+    heard -- "no" --> barge[["Barge-in (S1, S2, S3, S5)"]]
+    barge --> fates["Speech stops at once, and the acknowledgement is not said<br/>The words and readbacks not played go into the note<br/>A brain permission the turn holds is refused: SPOKEN_OVER<br/>A session telling is cut, and the session's request is untouched<br/>The brain is told nothing, and its turn runs to its own end"]
+    fates --> note(["The next turn: the user's words, then the note"])
+```
+
 ## Two decisions
 
 **1. The cut.** The edge that opened the hold decides when the turn cuts (`voice/turnstart.py:1–15`;
@@ -31,7 +81,7 @@ the mechanism, `docs/architecture.md:1672–1696`). The cut is Pipecat's `Interr
 | The hold was opened by | It cuts |
 |---|---|
 | the user's hand: the held key, the phone's button | as it opens |
-| the wake word | as it opens |
+| the wake word | as it opens; the detector is fed silence while hands speaks (`voice/wake.py:6`, `136–140`), so it opens no hold on a reading, only on a turn working in silence |
 | engaged conversation | once Whisper pushes words for it |
 | a hold that holds no words | nothing, so nothing has to be undone |
 
@@ -107,6 +157,26 @@ The brain's history is Claude Code's transcript for its conversation,
 
 ### S1 — A correction while hands is mid-reply
 
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    U->>H: "which file holds the config?"
+    H->>B: turn 1: the words
+    B-->>H: the reply, streaming
+    H->>U: says "It is in settings.py."
+    H->>U: says "The loader…"
+    U->>H: presses: "no, the other one"
+    Note over H: cut: speech stops at once
+    B-->>H: the rest of the reply, said to nobody
+    Note over B: turn 1 runs to its own end, told nothing
+    H->>B: turn 2: "no, the other one", then the note
+    Note over H,B: the note: they last heard "It is in settings.py.",<br/>they did not hear "The loader…" and the rest
+    B-->>H: the reply to the correction
+    H->>U: says it
+```
+
 - You: hands is reading its answer; you press and say "no, the other one".
 - You hear: speech stops at once; silence while the brain's turn runs to its end; then its answer
   to "no, the other one".
@@ -121,6 +191,25 @@ The brain's history is Claude Code's transcript for its conversation,
 
 ### S2 — Added information while the brain works silently
 
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    U->>H: "rename the module"
+    H->>B: turn 1: the words
+    B-->>H: calls run, nothing to say yet
+    Note over H: silence, and no "One moment." yet
+    U->>H: "and check the logs too"
+    Note over H: cut: nothing was playing, and the acknowledgement is never said
+    B-->>H: the reply, said to nobody
+    Note over B: turn 1 runs to its own end
+    H->>B: turn 2: "and check the logs too", then the note
+    Note over H,B: the whole reply is in the note as unheard,<br/>with no last-heard sentence (unverified by test)
+    B-->>H: one reply to both
+    H->>U: says it
+```
+
 - You: calls are running and nothing has been heard; you say "and check the logs too".
 - You hear: nothing, and no "One moment.", until the next turn answers.
 - The brain's history holds: the turn's reply, generated and never played (unverified by test).
@@ -131,6 +220,25 @@ The brain's history is Claude Code's transcript for its conversation,
   "They last heard".
 
 ### S3 — "No" over a permission question still playing
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    U->>H: "write up the notes"
+    H->>B: turn 1: the words
+    B-->>H: asks permission: Write notes.txt
+    H->>U: says "May I use Write on notes.txt…"
+    U->>H: cuts in: "no, do it in /tmp instead"
+    Note over H: cut: the question stops, and no refusal is said
+    H-->>B: tool result: SPOKEN_OVER, "The user spoke over this turn before they could be asked, so it did not run."
+    B-->>H: the rest of the turn, said to nobody
+    Note over B: turn 1 runs to its own end
+    H->>B: turn 2: "no, do it in /tmp instead", then the note
+    B-->>H: the reply, and it may ask again for /tmp (unverified by test)
+    H->>U: says it
+```
 
 - You: "May I use Write on notes.txt…" is playing; you cut in "no, do it in /tmp instead".
 - You hear: the question stops; silence; then the brain's answer.
@@ -145,6 +253,26 @@ The brain's history is Claude Code's transcript for its conversation,
 
 ### S4 — An answer after the question finished playing (not a barge-in)
 
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    B-->>H: asks permission: Write notes.txt
+    H->>U: says "May I use Write on notes.txt?" to its end
+    Note over H: the question is open and was heard: the user's next words answer it
+    alt a plain "yes"
+        U->>H: "yes"
+        H-->>B: tool result: allow
+    else anything else
+        U->>H: "do it in /tmp instead"
+        H-->>B: tool result: refused, with the user's words
+    end
+    Note over H: not a barge-in: no turn is cut, and no note is written
+    B-->>H: the turn goes on
+    H->>U: says the rest
+```
+
 - You: the question has played to its end; you say "yes", or "do it in /tmp instead".
 - You hear: hands goes on. A plain yes allows it; anything else refuses it and hands the brain your
   words.
@@ -156,6 +284,26 @@ The brain's history is Claude Code's transcript for its conversation,
 - Live check: `interrupted` false; the turn's `refused` and `refusals`.
 
 ### S5 — A barge-in during a session telling
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    participant S as Session api
+    S->>H: asks to run a command, with its own deadline
+    H->>B: a turn: tell the user
+    B-->>H: the telling: "api is asking to run…"
+    H->>U: says "api is asking to run…"
+    U->>H: cuts in
+    Note over H: cut: the telling stops, and its utterance's fate is cut
+    Note over S: untouched: it waits on its own deadline
+    Note over B: the turn runs to its own end
+    H->>B: the next turn: the user's words, then the note
+    Note over H,B: nothing re-tells the telling on its own (unverified by test)
+    B-->>H: answer_permission, when the user says so
+    H->>S: the answer
+```
 
 - You: hands is saying "api is asking to run …" or "api finished a turn, …"; you cut in.
 - You hear: the telling stops.
@@ -171,6 +319,23 @@ The brain's history is Claude Code's transcript for its conversation,
 
 ### S6 — Words before the brain has started answering (not a barge-in)
 
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant H as hands
+    participant B as Brain
+    U->>H: "list the open sessions"
+    H->>B: turn 1: the words
+    Note over B: no request has left for the model yet
+    U->>H: "oh, and in the api session"
+    Note over H: not a barge-in: nothing is being answered yet, so the words queue as turn 2
+    B-->>H: the reply
+    H->>U: says it whole
+    H->>B: turn 2: "oh, and in the api session", with no note
+    B-->>H: the reply
+    H->>U: says it
+```
+
 - You: you asked something and, before the brain's first request leaves, add "oh, and in the api
   session".
 - You hear: this turn's reply plays whole when it comes; your addition is answered as the next turn.
@@ -183,13 +348,13 @@ The brain's history is Claude Code's transcript for its conversation,
 
 ## The rubric
 
-| | Criterion | Passes when | Read from |
-|---|---|---|---|
-| C1 | Hands stopped at once | nothing of the turn played after your first word | your ear; the cut turn's `interrupted` true, and its `spoken_over` quoting as last heard the sentence you actually heard last |
-| C2 | Nothing is lost | everything the brain said or did after the cut is in `spoken_over`, every word past the last-heard sentence and every readback, and the brain's transcript holds no rejected or interrupted result and your prompt intact | `text` against `spoken_over`; the brain's transcript file |
-| C3 | The correction landed | the next turn's `asked` is your words followed by the note, and its `text` acts on your words | the next turn's `asked`, `text` |
-| C4 | The brain stayed coherent | it does not re-say what you heard, does not say you stopped or rejected anything, and does not carry on with what you said no to; what it tells you you missed comes from the note | the next turn's `text` read against `spoken_over` and the instruction at `voice/intermediary_instruction.py:124` |
-| C5 | The correction was not slow | measured and recorded | the next turn's `queued_ms` and `waited_ms` |
+| | Criterion | In standard terms | Passes when | Read from |
+|---|---|---|---|---|
+| C1 | Hands stopped at once | barge-in latency | nothing of the turn played after your first word | your ear; the cut turn's `interrupted` true, and its `spoken_over` quoting as last heard the sentence you actually heard last |
+| C2 | Nothing is lost | context retention | everything the brain said or did after the cut is in `spoken_over`, every word past the last-heard sentence and every readback, and the brain's transcript holds no rejected or interrupted result and your prompt intact | `text` against `spoken_over`; the brain's transcript file |
+| C3 | The correction landed | task success | the next turn's `asked` is your words followed by the note, and its `text` acts on your words | the next turn's `asked`, `text` |
+| C4 | The brain stayed coherent | conversational repair | it does not re-say what you heard, does not say you stopped or rejected anything, and does not carry on with what you said no to; what it tells you you missed comes from the note | the next turn's `text` read against `spoken_over` and the instruction at `voice/intermediary_instruction.py:124` |
+| C5 | The correction was not slow | response latency | measured and recorded | the next turn's `queued_ms` and `waited_ms` |
 
 ## A run
 
@@ -207,8 +372,8 @@ The brain's history is Claude Code's transcript for its conversation,
    the rows.
 5. File. Each failed cell becomes a ticket at the top of that epic, carrying the scenario, the
    criterion, and the evidence pointer.
-6. Change. Per the rule below; the PR updates this document's tables and scenario rows with the
-   flow.
+6. Change. Per the rule below; the PR updates this document's tree, tables, scenario rows and
+   diagrams with the flow.
 7. Re-run. The change is scored by a run.
 
 ## Changing the flow
@@ -218,5 +383,5 @@ The user, 2026-10-17:
 > Any change to this mechanism should evaluate the entire process/flow as a whole and make changes
 > intentionally, rather than typing to patch a symptom.
 
-A change to the flow updates the decision tables and the scenario rows in this document in the same
-PR, and is scored by a run.
+A change to the flow updates the decision tree, the decision tables, and the scenario rows and
+their diagrams in this document in the same PR, and is scored by a run.
