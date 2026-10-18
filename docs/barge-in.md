@@ -69,7 +69,7 @@ flowchart TD
     left -- "yes" --> heard{"Is the user answering a permission question they heard to its end?"}
     heard -- "yes" --> answer(["Not a barge-in: the words answer it (S4)"])
     heard -- "no" --> barge[["Barge-in (S1, S2, S3, S5)"]]
-    barge --> fates["Speech stops at once, and the acknowledgement is not said<br/>The words and readbacks not played go into the note<br/>A brain permission the turn holds is refused: SPOKEN_OVER<br/>A session telling is cut, and the session's request is untouched<br/>The brain is told nothing, and its turn runs to its own end"]
+    barge --> fates["Speech stops at once, and what went unsaid goes into the note (each thing cut off and its fate: the table below the two decisions)"]
     fates --> note(["The next turn: the user's words, then the note"])
 ```
 
