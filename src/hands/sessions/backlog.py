@@ -18,8 +18,9 @@ from hands.sessions.payload import Payload, Rejected
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
 EXPORT_TIMEOUT_SECONDS = 30.0
 
-# The export shape this parser was written against; another is refused rather than half read.
-EXPORT_VERSION = 2
+# The export shape this parser was written against; another is refused rather than half read. Since 2, lit renamed
+# the blocked-by edge (3) and added the purge records (4), neither of which is read here.
+EXPORT_VERSION = 4
 
 Status = Literal["open", "in_progress", "closed"]
 

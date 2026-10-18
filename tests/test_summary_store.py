@@ -53,7 +53,7 @@ COMMENTS = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created
 
 
 def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS) -> bytes:
-    return json.dumps({"version": 2, "workspace_id": "w", "issues": issues, "relations": relations, "comments": COMMENTS, "labels": [], "events": []}).encode()
+    return json.dumps({"version": 4, "workspace_id": "w", "issues": issues, "relations": relations, "comments": COMMENTS, "labels": [], "events": [], "purges": []}).encode()
 
 
 # --- keys: what changes a sentence, and what does not
