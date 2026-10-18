@@ -5,6 +5,7 @@ It is read fresh at every call and kept nowhere [LAW:one-source-of-truth]: lit i
 """
 
 import asyncio
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,22 +39,11 @@ class Untracked:
     project: Path
 
 
-# The exit lit refuses with, and the two reasons it gives for having no workspace here: ErrWorkspaceNotInitialized
-# (internal/store/workspace_initialized.go) where `lit init` never ran, and its outside_git_workspace refusal outside
-# any git repository. Its reason is the line after the prefix; the line after that is its remediation.
-REFUSED = 3
-NO_WORKSPACE = (
-    f"error (code={REFUSED}): repository not initialized with lit",
-    f"error (code={REFUSED}): links requires running inside a git repository",
-)
-REMEDIATION = "remediation: "
-
-
-def _no_workspace(returncode: int, err: str) -> bool:
-    """Whether lit refused only because it has no workspace here: the whole of what it said is that reason and its
-    remediation, so a failure joined onto the reason is never mistaken for it."""
-    reason, *rest = err.strip().splitlines() or [""]
-    return returncode == REFUSED and reason.startswith(NO_WORKSPACE) and all(line.startswith(REMEDIATION) for line in rest)
+# A failed lit command's first stderr line names its reason as a token beside the exit code, lit's published contract
+# (links docs/cli-reference.md) for telling apart the failures one code covers. Two reasons say it has no workspace
+# here: `lit init` never ran in this repository, or this is no git repository.
+ERROR_LINE = re.compile(r"error \(code=\d+, reason=(?P<reason>\w+)\): ")
+NO_WORKSPACE = ("workspace_not_initialized", "outside_git_workspace")
 
 
 @dataclass(frozen=True)
@@ -128,9 +118,7 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
         raise Unread(f"cannot run lit in {project}: {error}") from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
-        # [LAW:parse-dont-validate] exception: lit exits 3 for this and for every other refusal alike, and prints its
-        # reason only as English, so the sentence is what tells them apart until lit says it as data (links-error-output-ckk7).
-        if _no_workspace(ran.returncode, err):
+        if (line := ERROR_LINE.match(err)) and line["reason"] in NO_WORKSPACE:
             return Untracked(project)
         raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[-300:]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.

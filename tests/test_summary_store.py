@@ -282,7 +282,7 @@ def fake_lit(script: str) -> None:
 
 
 NEVER_INITIALIZED = (
-    "echo \"error (code=3): repository not initialized with lit — run 'lit init' first\" >&2\n"
+    "echo \"error (code=3, reason=workspace_not_initialized): repository not initialized with lit — run 'lit init' first\" >&2\n"
     "echo 'remediation: Do not retry unchanged — this repository has no lit workspace.' >&2\n"
     "exit 3\n"
 )
@@ -299,9 +299,9 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
 
 
-async def test_a_failure_lit_joins_onto_its_no_workspace_refusal_is_unread_never_untracked(project: Path) -> None:
-    fake_lit(NEVER_INITIALIZED.replace("exit 3", "echo 'release workspace lock: permission denied' >&2\nexit 3"))
-    with pytest.raises(Unread, match="release workspace lock"):
+async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
+    fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
+    with pytest.raises(Unread, match="workspace_busy"):
         await read_backlog(project)
 
 
