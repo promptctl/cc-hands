@@ -219,6 +219,13 @@ sequenceDiagram
 - Live check: the cut turn's `acknowledged` null and `interrupted` true; its `spoken_over` with no
   "They last heard".
 
+The user, 2026-10-18, on this scenario: "speaking while the brain works silently should not count
+as a barge-in. Hands should say something back to me within about a second, the standard for a
+conversational bot, instead of staying silent until the turn ends." "And I need a way to say that I
+do want it to cancel the tool run." The change is `promptctl-barge-in-duao.51y` and
+`promptctl-barge-in-duao.zn3`, at the top of the epic; until they land, this scenario describes
+master.
+
 ### S3 — "No" over a permission question still playing
 
 ```mermaid
