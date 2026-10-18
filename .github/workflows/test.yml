@@ -33,6 +33,24 @@ jobs:
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
+      # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
+      # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
+      # gh names that release under the job's token, and the installer comes from the same tag as the archive it
+      # installs: the installer's own --latest-release asks api.github.com
+      # unauthenticated, which answers a runner's shared address with a 403 once the hour's quota is spent.
+      # [LAW:no-silent-failure] the installer runs from a file: piped into bash, a failed download is an empty script
+      # that exits 0, and the suite then skips every lit test without a word.
+      - name: Install lit
+        env:
+          GOBIN: ${{ runner.temp }}/lit
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(gh release view --repo promptctl/links-issue-tracker --json tagName --jq .tagName)"
+          curl -fsSL -o "$RUNNER_TEMP/lit-install.sh" https://raw.githubusercontent.com/promptctl/links-issue-tracker/$tag/scripts/install.sh
+          bash "$RUNNER_TEMP/lit-install.sh" --from-release "$tag"
+          # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
+          "$GOBIN/lit" version
+          echo "$GOBIN" >> "$GITHUB_PATH"
       # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
       - name: make check
         run: make check

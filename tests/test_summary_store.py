@@ -49,11 +49,11 @@ ISSUES = [
     ticket("e2.a", "08", "Landed", "Shipped.", status="closed"),
 ]
 RELATIONS = [child("e1", "e1.a"), child("e1", "e1.b"), child("e1", "e1.c"), child("e2", "e2.a")]
-COMMENTS = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created_at": "2026-09-29T10:00:00Z", "created_by": "claude"}]
+COMMENTS: list[dict[str, object]] = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created_at": "2026-09-29T10:00:00Z", "created_by": "claude"}]
 
 
-def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS) -> bytes:
-    return json.dumps({"version": 2, "workspace_id": "w", "issues": issues, "relations": relations, "comments": COMMENTS, "labels": [], "events": []}).encode()
+def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS, comments: list[dict[str, object]] = COMMENTS) -> bytes:
+    return json.dumps({"version": 4, "workspace_id": "w", "issues": issues, "relations": relations, "comments": comments, "labels": [], "events": [], "purges": []}).encode()
 
 
 # --- keys: what changes a sentence, and what does not
@@ -162,6 +162,17 @@ def test_a_follow_up_filed_under_a_closed_ticket_stands_as_a_root() -> None:
 def test_a_child_whose_parent_the_export_left_out_stands_as_a_root() -> None:
     backlog = parse_export(export(relations=[*RELATIONS, child("gone", "t1")]))
     assert "t1" in backlog.roots()
+
+
+def test_a_ticket_lit_deleted_or_archived_is_not_in_the_backlog() -> None:
+    # A deleted epic over a deleted child still in progress, and an archived loose ticket: lit lists none of them.
+    gone = [{**ticket("e3", "08", "Dropped", status=None, kind="epic"), "deleted_at": "2026-10-18T00:00:00Z"}, {**ticket("e3.a", "09", "Half done", status="in_progress"), "deleted_at": "2026-10-18T00:00:00Z"}]
+    shelved = {**ticket("t3", "10", "Shelved"), "archived_at": "2026-10-18T00:00:00Z"}
+    said = {**COMMENTS[0], "id": "c2", "issue_id": "e3.a", "body": "Nearly there."}
+    backlog = parse_export(export(issues=[*ISSUES, *gone, shelved], relations=[*RELATIONS, child("e3", "e3.a")], comments=[*COMMENTS, said]))
+    assert not {"e3", "e3.a", "t3"} & backlog.tickets.keys()
+    assert backlog.roots() == ("e1", "t1")
+    assert "e3.a" not in backlog.comments
 
 
 @pytest.mark.parametrize(
@@ -282,7 +293,7 @@ def fake_lit(script: str) -> None:
 
 
 NEVER_INITIALIZED = (
-    "echo \"error (code=3): repository not initialized with lit — run 'lit init' first\" >&2\n"
+    "echo \"error (code=3, reason=workspace_not_initialized): repository not initialized with lit — run 'lit init' first\" >&2\n"
     "echo 'remediation: Do not retry unchanged — this repository has no lit workspace.' >&2\n"
     "exit 3\n"
 )
@@ -299,9 +310,9 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
 
 
-async def test_a_failure_lit_joins_onto_its_no_workspace_refusal_is_unread_never_untracked(project: Path) -> None:
-    fake_lit(NEVER_INITIALIZED.replace("exit 3", "echo 'release workspace lock: permission denied' >&2\nexit 3"))
-    with pytest.raises(Unread, match="release workspace lock"):
+async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
+    fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
+    with pytest.raises(Unread, match="workspace_busy"):
         await read_backlog(project)
 
 
@@ -419,12 +430,16 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
         command = f"cd {shlex.quote(str(empty['directory']))} && lit {shlex.join(arguments)}"
         return subprocess.run(["/bin/sh", "-c", command], cwd=brain, check=True, capture_output=True, text=True).stdout.split()[0]
 
-    mic, parser, docs = (lit("new", "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))
+    # Every ticket but an epic lives inside one, so the epic is the backlog's one item and the tickets its children.
+    epic = lit("new", "--type", "epic", "--title", "Voice", "--topic", "voice")
+    mic, parser, docs = (lit("new", "--parent", epic, "--title", title, "--topic", "voice") for title in ("Fix the flaky mic test", "Fix the parser", "Write the docs"))
     lit("rank", docs, "--above", mic)
     lit("comment", "add", parser, "--body", "Seen again on CI.")
     lit("close", mic, "--resolution", "obsolete", "--reason", "The mic test is gone.")
     read = dict(await bodies["read_backlog"](session="s1"))
-    assert [item["title"] for item in read["items"]] == ["Write the docs", "Fix the parser"]
+    assert [item["title"] for item in read["items"]] == ["Voice"]
+    children = dict(await bodies["read_ticket"](session="s1", ticket=epic))["open_children"]
+    assert [child["title"] for child in children] == ["Write the docs", "Fix the parser"]
     commented = dict(await bodies["read_ticket"](session="s1", ticket=parser, full=True))
     assert [comment["body"] for comment in commented["comments"]] == ["Seen again on CI."]
     assert dict(await bodies["read_ticket"](session="s1", ticket=mic))["status"] == "closed"

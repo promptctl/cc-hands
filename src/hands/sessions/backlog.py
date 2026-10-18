@@ -5,6 +5,7 @@ It is read fresh at every call and kept nowhere [LAW:one-source-of-truth]: lit i
 """
 
 import asyncio
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,8 +18,9 @@ from hands.sessions.payload import Payload, Rejected
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
 EXPORT_TIMEOUT_SECONDS = 30.0
 
-# The export shape this parser was written against; another is refused rather than half read.
-EXPORT_VERSION = 2
+# The export shape this parser was written against; another is refused rather than half read. Since 2, lit renamed
+# the blocked-by edge (3) and added the purge records (4), neither of which is read here.
+EXPORT_VERSION = 4
 
 Status = Literal["open", "in_progress", "closed"]
 
@@ -38,22 +40,11 @@ class Untracked:
     project: Path
 
 
-# The exit lit refuses with, and the two reasons it gives for having no workspace here: ErrWorkspaceNotInitialized
-# (internal/store/workspace_initialized.go) where `lit init` never ran, and its outside_git_workspace refusal outside
-# any git repository. Its reason is the line after the prefix; the line after that is its remediation.
-REFUSED = 3
-NO_WORKSPACE = (
-    f"error (code={REFUSED}): repository not initialized with lit",
-    f"error (code={REFUSED}): links requires running inside a git repository",
-)
-REMEDIATION = "remediation: "
-
-
-def _no_workspace(returncode: int, err: str) -> bool:
-    """Whether lit refused only because it has no workspace here: the whole of what it said is that reason and its
-    remediation, so a failure joined onto the reason is never mistaken for it."""
-    reason, *rest = err.strip().splitlines() or [""]
-    return returncode == REFUSED and reason.startswith(NO_WORKSPACE) and all(line.startswith(REMEDIATION) for line in rest)
+# A failed lit command's first stderr line names its reason as a token beside the exit code, lit's published contract
+# (links docs/cli-reference.md) for telling apart the failures one code covers. Two reasons say it has no workspace
+# here: `lit init` never ran in this repository, or this is no git repository.
+ERROR_LINE = re.compile(r"error \(code=\d+, reason=(?P<reason>\w+)\): ")
+NO_WORKSPACE = ("workspace_not_initialized", "outside_git_workspace")
 
 
 @dataclass(frozen=True)
@@ -128,11 +119,10 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
         raise Unread(f"cannot run lit in {project}: {error}") from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
-        # [LAW:parse-dont-validate] exception: lit exits 3 for this and for every other refusal alike, and prints its
-        # reason only as English, so the sentence is what tells them apart until lit says it as data (links-error-output-ckk7).
-        if _no_workspace(ran.returncode, err):
+        if (line := ERROR_LINE.match(err)) and line["reason"] in NO_WORKSPACE:
             return Untracked(project)
-        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[-300:]}")
+        # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
+        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[:300]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
     return await asyncio.to_thread(parse_export, ran.out)
 
@@ -142,11 +132,11 @@ def parse_export(raw: bytes) -> Backlog:
     export = Payload.parse(raw)
     if (version := export.integer("version")) != EXPORT_VERSION:
         raise Rejected(f"lit export is version {version}, and hands reads version {EXPORT_VERSION}")
-    issues = sorted((Payload.of(entry, "an issue") for entry in export.items("issues")), key=lambda issue: issue.text("rank"))
+    issues = sorted((issue for issue in (Payload.of(entry, "an issue") for entry in export.items("issues")) if _listed(issue)), key=lambda issue: issue.text("rank"))
     tickets = {issue.text("id"): _ticket(issue) for issue in issues}
     parent: dict[str, str] = {}
     for relation in (Payload.of(entry, "a relation") for entry in export.items("relations")):
-        # A parent the export leaves out (deleted, or archived) is no parent here: its child stands as a root rather than vanishing.
+        # A parent that is no ticket here (deleted, archived, or purged) is no parent here: its child stands as a root rather than vanishing.
         if relation.text("type") == "parent-child" and relation.text("src_id") in tickets and relation.text("dst_id") in tickets:
             parent[relation.text("src_id")] = relation.text("dst_id")
     children: dict[str, tuple[str, ...]] = {}
@@ -154,10 +144,17 @@ def parse_export(raw: bytes) -> Backlog:
         if id in parent:
             children[parent[id]] = (*children.get(parent[id], ()), id)
     comments: dict[str, tuple[Comment, ...]] = {}
-    for comment in sorted((Payload.of(entry, "a comment") for entry in export.items("comments")), key=lambda comment: comment.text("created_at")):
+    # A comment on a ticket that is none here is read by nothing, and kept by nothing.
+    kept = (comment for comment in (Payload.of(entry, "a comment") for entry in export.items("comments")) if comment.text("issue_id") in tickets)
+    for comment in sorted(kept, key=lambda comment: comment.text("created_at")):
         issue = comment.text("issue_id")
         comments[issue] = (*comments.get(issue, ()), Comment(comment.text("created_by"), comment.text("created_at"), comment.text("body")))
     return Backlog(tickets, children, parent, comments)
+
+
+def _listed(issue: Payload) -> bool:
+    """Whether lit lists the ticket: one it deleted or archived is in the export under a timestamp, and in no listing."""
+    return issue.optional_text("deleted_at") is None and issue.optional_text("archived_at") is None
 
 
 def _ticket(issue: Payload) -> Ticket:
