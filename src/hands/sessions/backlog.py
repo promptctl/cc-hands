@@ -121,7 +121,8 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
         err = ran.err.decode(errors="replace")
         if (line := ERROR_LINE.match(err)) and line["reason"] in NO_WORKSPACE:
             return Untracked(project)
-        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[-300:]}")
+        # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
+        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[:300]}")
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
     return await asyncio.to_thread(parse_export, ran.out)
 
@@ -131,11 +132,11 @@ def parse_export(raw: bytes) -> Backlog:
     export = Payload.parse(raw)
     if (version := export.integer("version")) != EXPORT_VERSION:
         raise Rejected(f"lit export is version {version}, and hands reads version {EXPORT_VERSION}")
-    issues = sorted((Payload.of(entry, "an issue") for entry in export.items("issues")), key=lambda issue: issue.text("rank"))
+    issues = sorted((issue for issue in (Payload.of(entry, "an issue") for entry in export.items("issues")) if _listed(issue)), key=lambda issue: issue.text("rank"))
     tickets = {issue.text("id"): _ticket(issue) for issue in issues}
     parent: dict[str, str] = {}
     for relation in (Payload.of(entry, "a relation") for entry in export.items("relations")):
-        # A parent the export leaves out (deleted, or archived) is no parent here: its child stands as a root rather than vanishing.
+        # A parent that is no ticket here (deleted, archived, or purged) is no parent here: its child stands as a root rather than vanishing.
         if relation.text("type") == "parent-child" and relation.text("src_id") in tickets and relation.text("dst_id") in tickets:
             parent[relation.text("src_id")] = relation.text("dst_id")
     children: dict[str, tuple[str, ...]] = {}
@@ -147,6 +148,11 @@ def parse_export(raw: bytes) -> Backlog:
         issue = comment.text("issue_id")
         comments[issue] = (*comments.get(issue, ()), Comment(comment.text("created_by"), comment.text("created_at"), comment.text("body")))
     return Backlog(tickets, children, parent, comments)
+
+
+def _listed(issue: Payload) -> bool:
+    """Whether lit lists the ticket: one it deleted or archived is in the export under a timestamp, and in no listing."""
+    return issue.optional_text("deleted_at") is None and issue.optional_text("archived_at") is None
 
 
 def _ticket(issue: Payload) -> Ticket:

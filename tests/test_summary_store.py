@@ -164,6 +164,15 @@ def test_a_child_whose_parent_the_export_left_out_stands_as_a_root() -> None:
     assert "t1" in backlog.roots()
 
 
+def test_a_ticket_lit_deleted_or_archived_is_not_in_the_backlog() -> None:
+    # A deleted epic over a deleted child still in progress, and an archived loose ticket: lit lists none of them.
+    gone = [{**ticket("e3", "08", "Dropped", status=None, kind="epic"), "deleted_at": "2026-10-18T00:00:00Z"}, {**ticket("e3.a", "09", "Half done", status="in_progress"), "deleted_at": "2026-10-18T00:00:00Z"}]
+    shelved = {**ticket("t3", "10", "Shelved"), "archived_at": "2026-10-18T00:00:00Z"}
+    backlog = parse_export(export(issues=[*ISSUES, *gone, shelved], relations=[*RELATIONS, child("e3", "e3.a")]))
+    assert not {"e3", "e3.a", "t3"} & backlog.tickets.keys()
+    assert backlog.roots() == ("e1", "t1")
+
+
 @pytest.mark.parametrize(
     "raw, why",
     [
