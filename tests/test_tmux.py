@@ -167,9 +167,9 @@ def test_a_server_whose_socket_is_outside_the_socket_directory_is_found_by_the_t
     # Neither in the directory tmux puts sockets in, nor under its $TMUX_TMPDIR: only $TMUX in the pane names it.
     elsewhere = Path(tempfile.mkdtemp(prefix="hands-elsewhere-", dir="/tmp"))
     socket = elsewhere / "mine"
-    # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
-    program = stand_in(elsewhere / "stand-in")
     try:
+        # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
+        program = stand_in(elsewhere / "stand-in")
         started = subprocess.run([str(TMUX), "-f", "/dev/null", "-S", str(socket), "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", str(program)], capture_output=True, text=True, check=True)
         pane, pid = started.stdout.split()
         work, worker = run_in("default", "work")
@@ -188,9 +188,9 @@ def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_a
     # A socket's path has room for 104 bytes; tmux reaches this one only by its relative name.
     deep = elsewhere / ("d" * 120)
     deep.mkdir()
-    # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
-    program = stand_in(elsewhere / "stand-in")
     try:
+        # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
+        program = stand_in(elsewhere / "stand-in")
         started = [subprocess.run([str(TMUX), "-f", "/dev/null", "-S", "mine", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", str(program)], cwd=at, capture_output=True, text=True, check=True).stdout.split() for at in (elsewhere, deep)]
         [(pane, pid), (_, far)] = started
         assert in_pane(int(pid)) == Pane(Path(os.path.realpath(elsewhere)) / "mine", pane, "aside", 0)
@@ -206,14 +206,14 @@ def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_a
 
 
 def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
-    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
-    held = subprocess.Popen(["/bin/cat"], env={"TMUX": "mine,1,0"}, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it. $TMUX is read from
+    # a program built for the test, since macOS shows no one /bin/cat's.
+    held = subprocess.Popen([stand_in(tmp_path / "stand-in")], env={"TMUX": "mine,1,0"})
     try:
         table = {held.pid: Process(held.pid, 1, os.geteuid(), 1, None), 1: Process(1, 0, 0, None, None)}
         assert tmux.sockets({"TMUX_TMPDIR": str(tmp_path)}, [held.pid], table) == []
     finally:
-        assert held.stdin is not None
-        held.stdin.close()
+        held.kill()
         held.wait()
 
 
