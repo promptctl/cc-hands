@@ -17,26 +17,29 @@ def git(cwd: Path, env: dict[str, str], *args: str) -> str:
     return subprocess.run(("git", *args), cwd=cwd, env=env, capture_output=True, text=True, check=True).stdout.strip()
 
 
-@pytest.fixture
-def scratch(tmp_path: Path) -> dict[str, str]:
+@pytest.fixture(scope="session")
+def scratch(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     """An environment in which git reads this repository's objects and writes new ones to a scratch directory, so a
-    test commits on top of the real line without adding a thing to the repository."""
+    test commits on top of the real line without adding a thing to the repository, and in which git reads no
+    configuration but the repository's, so the developer's signing or hooks never touch a test's commits."""
     objects = subprocess.run(
         ("git", "rev-parse", "--path-format=absolute", "--git-path", "objects"), cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.strip()
-    (tmp_path / "objects").mkdir()
     env = os.environ | {
-        "GIT_OBJECT_DIRECTORY": str(tmp_path / "objects"),
+        "GIT_OBJECT_DIRECTORY": str(tmp_path_factory.mktemp("objects")),
         "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "t@example.com",
         "GIT_COMMITTER_NAME": "Test",
         "GIT_COMMITTER_EMAIL": "t@example.com",
     }
     # No branch need hold the line once its branches are deleted, so a whole clone may lack its first commit; it is
-    # fetched as the script would fetch it, into the scratch directory.
+    # fetched as the script would fetch it, into the scratch directory, and with no FETCH_HEAD naming an object the
+    # repository does not hold once the scratch directory is gone.
     if subprocess.run(("git", "cat-file", "-e", f"{FIRST}^{{commit}}"), cwd=ROOT, env=env, capture_output=True).returncode != 0:
-        git(ROOT, env, "fetch", "--quiet", "--no-tags", "origin", FIRST)
+        git(ROOT, env, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", FIRST)
     return env
 
 
