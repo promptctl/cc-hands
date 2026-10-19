@@ -31,6 +31,7 @@ from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
+from hands.voice import summarising
 
 
 if TYPE_CHECKING:
@@ -89,13 +90,14 @@ def to_terminal(stream: TextIO) -> tuple[int, int]:
     return lines, traces
 
 
-def said_failed(record: audit.Record) -> audit.Record:
+def told_on_terminal(record: audit.Record) -> audit.Record:
     """`record`, and each unit of work it records that said it failed, rather than raised, also said on the terminal, by
-    its name and its error.
+    its name and its error; and each pass over a tracked backlog told there, by what it summarised.
 
     [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
     than logs, still reaches the terminal its run is read on, as a logged error does. A unit that failed by raising has a
     trace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
+    A backlog pass's line is read off its event alone, so the two can never disagree.
     """
 
     def both(entry: audit.Entry) -> None:
@@ -104,6 +106,12 @@ def said_failed(record: audit.Record) -> audit.Record:
             case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
                 # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
                 audit.said(f"{event} failed" if error is None else f"{event} failed: {error}")
+            case _:
+                pass
+        match entry:
+            # A pass cut short by a stopping daemon has no line: it did not finish what its counts would tell.
+            case wide.WideEvent(event="summary.backlog", outcome="ok" | "failed", facts={"tracked": True}):
+                audit.told(summarising.told(entry))
             case _:
                 pass
 
@@ -444,7 +452,7 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, lambda: datetime.now(UTC))
     with exporting(settings.config.collector, exports.record) as exported:
-        record = said_failed(exported)
+        record = told_on_terminal(exported)
         ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
 

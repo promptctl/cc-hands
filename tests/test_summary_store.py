@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from loguru import logger
 
 from hands.core.events import Joined
 from hands.core.sentences import Due, Thing, answered, digest, page, reckon
@@ -21,7 +20,7 @@ from hands.sessions.backlog import BACKLOG, Unread, Untracked, parse_export, rea
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
-from hands.voice.summarising import summarise_backlog
+from hands.voice.summarising import summarise_backlog, told
 from hands.voice.summary import SummaryFailed
 from hands.voice.sentences import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
@@ -242,7 +241,10 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
     [record] = records
     assert isinstance(record, WideEvent) and (record.event, record.outcome, record.facts["project"], record.facts["tracked"]) == ("summary.backlog", "ok", project, True)
-    assert record.counts == {"things": 5, "known": 0, "said": 5, "unsaid": 0, "rounds": 3, "calls": 4, "failed_calls": 0, "stray": 0}
+    assert record.counts == {
+        "things": 5, "known": 0, "said": 5, "unsaid": 0, "rounds": 3, "calls": 4, "failed_calls": 0, "stray": 0,
+        "items": 4, "items_said": 4, "items_known": 0, "items_unsaid": 0,
+    }
     assert (record.facts["left_out"], record.facts["errors"]) == ((), ())
 
 
@@ -288,49 +290,57 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     assert record.counts["stray"] == 3
 
 
-async def test_each_pass_says_on_the_terminal_how_many_work_items_it_summarised_or_that_none_were_left(project: Path, tmp_path: Path) -> None:
+async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_alone(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    logged: list[str] = []
-    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO", filter="hands.voice.summarising")
-    try:
-        # The two tickets, the loose ticket, and the epic: four work items; the backlog's own sentence is none of them.
-        await summarise_backlog(project, store, Summariser(), lambda _entry: None)
-        await summarise_backlog(project, store, Summariser(), lambda _entry: None)
-        edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
-        (project / "export.json").write_bytes(export(issues=edited))
-        await summarise_backlog(project, store, Summariser(first=100), lambda _entry: None)
+    records: list[Entry] = []
+    # The two tickets, the loose ticket, and the epic: four work items; the backlog's own sentence is none of them.
+    await summarise_backlog(project, store, Summariser(), records.append)
+    await summarise_backlog(project, store, Summariser(), records.append)
+    edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
+    (project / "export.json").write_bytes(export(issues=edited))
+    await summarise_backlog(project, store, Summariser(first=100), records.append)
 
-        async def forgets_t1(page: str) -> str:
-            return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
+    async def forgets_t1(page: str) -> str:
+        return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
 
-        await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, lambda _entry: None)
+    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, records.append)
 
-        # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
-        async def steady(page: str) -> str:
-            return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page))
+    # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
+    async def steady(page: str) -> str:
+        return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page))
 
-        (project / "export.json").write_bytes(export())
-        steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
-        await summarise_backlog(project, steadied, steady, lambda _entry: None)
-        (project / "export.json").write_bytes(export(issues=edited))
-        await summarise_backlog(project, steadied, steady, lambda _entry: None)
+    (project / "export.json").write_bytes(export())
+    steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
+    await summarise_backlog(project, steadied, steady, records.append)
+    (project / "export.json").write_bytes(export(issues=edited))
+    await summarise_backlog(project, steadied, steady, records.append)
 
-        # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
-        async def fails(page: str) -> str:
-            raise SummaryFailed("boom")
+    # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
+    async def fails(page: str) -> str:
+        raise SummaryFailed("boom")
 
-        (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed"} if issue["id"] == "t1" else issue for issue in edited]))
-        await summarise_backlog(project, steadied, fails, lambda _entry: None)
-    finally:
-        logger.remove(sink)
-    assert logged == [
+    (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed"} if issue["id"] == "t1" else issue for issue in edited]))
+    await summarise_backlog(project, steadied, fails, records.append)
+    passes = [record for record in records if isinstance(record, WideEvent)]
+    assert [
+        (record.outcome, record.facts["overview"], *(record.counts[name] for name in ("items", "items_said", "items_known", "items_unsaid"))) for record in passes
+    ] == [
+        ("ok", "said", 4, 4, 0, 0),
+        ("ok", "known", 4, 0, 4, 0),
+        ("ok", "said", 4, 2, 2, 0),
+        ("ok", "unsaid", 4, 3, 0, 1),
+        ("ok", "said", 4, 4, 0, 0),
+        ("ok", "known", 4, 1, 3, 0),
+        ("failed", "unsaid", 3, 0, 3, 0),
+    ]
+    assert [told(record) for record in passes] == [
         f"summarised 4 work items and the backlog's overview for {project}",
         f"the backlog of {project} is already fully summarised: 4 work items",
         f"summarised 2 work items and the backlog's overview for {project}, 2 already were",
-        f"summarised 3 work items for {project}; 1 still unsaid",
+        f"summarised 3 work items for {project}; 1 work item and the backlog's overview still unsaid",
         f"summarised 4 work items and the backlog's overview for {project}",
-        f"summarised 1 work items for {project}, 3 already were",
-        f"summarised 0 work items for {project}, 3 already were",
+        f"summarised 1 work item for {project}, 3 already were",
+        f"summarised 0 work items for {project}, 3 already were; the backlog's overview still unsaid",
     ]
 
 
@@ -340,7 +350,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
-    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
+    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
 def fake_lit(script: str) -> None:
@@ -363,7 +373,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     [record] = records
     assert summarise.pages == []
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
-    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
+    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
 async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
@@ -411,7 +421,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
     assert summarise.pages == []
     # [LAW:nothing-unseen] ran and did nothing: every count written, as zero.
     assert isinstance(record, WideEvent) and record.outcome == "ok"
-    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray"), 0)
+    assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
 # --- the tools

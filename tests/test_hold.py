@@ -236,7 +236,7 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
     from hands.sessions import wide
 
     recorded: list[audit.Entry] = []
-    record = cli.said_failed(recorded.append)
+    record = cli.told_on_terminal(recorded.append)
     terminal = io.StringIO()
     shown = cli.to_terminal(terminal)
     failures = logger.add(audit.failures_to(record), level="ERROR", filter="hands")
@@ -263,6 +263,45 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
         ("naming.pass", "failed"), ("summary.pass", "ok"), ("tool.call", "failed"), ("brain.turn", "ok"), ("applied", "failed"), ("hook", "failed"),
     ]
     assert len(recorded) == 6
+
+
+def test_a_pass_over_a_tracked_backlog_is_told_on_the_terminal_from_its_event_and_no_other_pass_is() -> None:
+    import io
+
+    from loguru import logger
+
+    from hands.sessions import wide
+
+    def backlog_pass(record: audit.Record, tracked: bool, failing: bool = False) -> None:
+        with wide.unit("summary.backlog", record, counts=("rounds", "items", "items_said", "items_known", "items_unsaid")):
+            wide.annotate(project="/code/p", tracked=tracked)
+            if tracked:
+                wide.annotate(overview="said")
+                wide.count(rounds=1, items=3, items_said=2, items_known=1)
+            if failing:
+                wide.fail("the summariser failed on 1 things: boom")
+
+    record = cli.told_on_terminal(lambda _entry: None)
+    terminal = io.StringIO()
+    shown = cli.to_terminal(terminal)
+    try:
+        backlog_pass(record, tracked=True)
+        backlog_pass(record, tracked=False)
+        backlog_pass(record, tracked=True, failing=True)
+        # One cut short as the daemon stops did not finish what its counts would tell.
+        with pytest.raises(asyncio.CancelledError):
+            with wide.unit("summary.backlog", record, counts=("rounds",)):
+                wide.annotate(project="/code/p", tracked=True)
+                raise asyncio.CancelledError
+    finally:
+        for sink in shown:
+            logger.remove(sink)
+    said = [line.split(" - ", 1)[1] for line in terminal.getvalue().splitlines()]
+    assert said == [
+        "summarised 2 work items and the backlog's overview for /code/p, 1 already were",
+        "summary.backlog failed: the summariser failed on 1 things: boom",
+        "summarised 2 work items and the backlog's overview for /code/p, 1 already were",
+    ]
 
 
 def test_an_exception_reaches_the_terminal_with_its_controls_as_escapes_and_its_diagnosis_kept() -> None:

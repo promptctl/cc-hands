@@ -7,18 +7,17 @@ found, asked, said, and failed on.
 """
 
 import itertools
-from collections.abc import Generator, Sequence
+from collections.abc import Collection, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from loguru import logger
+from typing import Literal
 
 from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import BACKLOG, Unread, Untracked, read_backlog
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import Fact, annotate, count, fail, unit
+from hands.sessions.wide import Fact, WideEvent, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
 from hands.voice.summary import Summariser, SummaryFailed
 
@@ -52,6 +51,10 @@ class _Missed:
 
 # What every pass counts of the calls it makes, after the counts of its own.
 CALL_COUNTS = ("said", "calls", "failed_calls", "stray")
+# What a backlog pass counts of its work items alone, the tickets and epics, leaving out the backlog's own sentence.
+ITEM_COUNTS = ("items", "items_said", "items_known", "items_unsaid")
+# Where the backlog's own sentence stands once a pass ends.
+Overview = Literal["said", "known", "unsaid", "none"]
 
 
 @contextmanager
@@ -106,8 +109,9 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
     # [LAW:nothing-unseen] `unsaid` is what is still without a sentence when the pass ends: what the summariser failed
     # on or left out, and the parents above them. `left_out` names what a reply gave no sentence for, and `stray`
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
-    # failed.
-    with _pass("summary.backlog", record, ("things", "known", "unsaid", "rounds"), project=project) as missed:
+    # failed. The `items` counts are the same of the work items alone, the tickets and epics, and `overview` is the
+    # backlog's own sentence: what the terminal is told of the pass.
+    with _pass("summary.backlog", record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
             backlog = await read_backlog(project)
         except (Unread, Rejected) as error:
@@ -136,9 +140,10 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
             made.extend(said)
             reckoning = store.reckon(thing)
         count(unsaid=len(reckoning.due) + reckoning.waiting)
-        # [LAW:nothing-unseen] what the pass did is said on the terminal, once for the pass, never once for each item.
         items = _work_items(thing)
-        logger.info(_told(project, bool(first.due), len(items & reckoning.said.keys() - set(made)), made, len(items - reckoning.said.keys())))
+        said_items = items & reckoning.said.keys()
+        count(items=len(items), items_said=len(items & set(made)), items_known=len(said_items - set(made)), items_unsaid=len(items - said_items))
+        annotate(overview=_overview(items, made, reckoning.said.keys()))
 
 
 def _work_items(backlog: Thing) -> frozenset[str]:
@@ -146,16 +151,32 @@ def _work_items(backlog: Thing) -> frozenset[str]:
     return frozenset(id for part in backlog.parts for id in (part.id, *_work_items(part)))
 
 
-def _told(project: Path, asked: bool, known: int, made: Sequence[str], unsaid: int) -> str:
-    """What one pass over `project`'s backlog did, as a line: the work items its replies summarised, and the backlog's own
-    sentence if they did; those with a sentence it did not make, a parent whose parts came back word for word among them;
-    and those still unsaid. When it had nothing to ask, that the backlog was fully summarised before it began."""
-    if not asked:
-        return f"the backlog of {project} is already fully summarised: {known} work items"
+def _overview(items: frozenset[str], made: Sequence[str], said: Collection[str]) -> Overview:
+    """Where the backlog's own sentence stands after a pass: made by it, kept from before, still unsaid, or none at all,
+    for a backlog with nothing in it."""
+    if not items:
+        return "none"
+    if BACKLOG in made:
+        return "said"
+    return "known" if BACKLOG in said else "unsaid"
+
+
+def told(event: WideEvent) -> str:
+    """The terminal's line for a pass over a tracked backlog, read off its event alone: the work items its replies
+    summarised, and the backlog's overview if they did; those with a sentence it did not make; and what is still unsaid.
+    A pass that had nothing to ask says the backlog was already fully summarised."""
+    project, counts, overview = event.facts["project"], event.counts, event.facts["overview"]
+    if not counts["rounds"]:
+        return f"the backlog of {project} is already fully summarised: {_work(counts['items_known'])}"
+    unsaid = [*([_work(counts["items_unsaid"])] if counts["items_unsaid"] else []), *(["the backlog's overview"] if overview == "unsaid" else [])]
     return "".join((
-        f"summarised {sum(id != BACKLOG for id in made)} work items",
-        " and the backlog's overview" if BACKLOG in made else "",
+        f"summarised {_work(counts['items_said'])}",
+        " and the backlog's overview" if overview == "said" else "",
         f" for {project}",
-        f", {known} already were" if known else "",
-        f"; {unsaid} still unsaid" if unsaid else "",
+        f", {counts['items_known']} already were" if counts["items_known"] else "",
+        f"; {' and '.join(unsaid)} still unsaid" if unsaid else "",
     ))
+
+
+def _work(items: int) -> str:
+    return f"{items} work item" if items == 1 else f"{items} work items"
