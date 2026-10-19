@@ -548,7 +548,7 @@ def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(c
     assert cli.door(home, run_start, None) == config.load(home)
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
-    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [(copy, "absent")]
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [(copy, "not-a-shim")]
 
 
 def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_door_naming_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

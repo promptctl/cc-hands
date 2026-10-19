@@ -354,7 +354,7 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
                 rebuilt = f"{error}, then "
             raise CannotStart(f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: {rebuilt}run `hands install-fritter`, then run hands again.")
         case None:
-            run_start.heard(shim="absent")
+            run_start.heard(shim="not-a-shim")
         case wrapper.Shim():
             run_start.heard(shim="current")
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
