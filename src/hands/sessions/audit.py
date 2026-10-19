@@ -468,6 +468,11 @@ def said(error: str) -> None:
     logger.opt(depth=1).bind(**{_AUDITED: True}).error(error)
 
 
+def told(line: str) -> None:
+    """Say on the terminal a line drawn from an event the audit log already holds: logged, and never written again."""
+    logger.opt(depth=1).bind(**{_AUDITED: True}).info(line)
+
+
 def failures_to(record: Record) -> "Callable[[Message], None]":
     """A loguru sink that writes every error it is given as a Failure line, but one that says a line already written."""
 
