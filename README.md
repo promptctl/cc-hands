@@ -79,7 +79,7 @@ is not, what does it; it exits 0 only when every step is done.
 
    ```
    hands run
-   hands check        # in another terminal: every line ok
+   hands check        # in another terminal: every line ✓
    ```
 
 9. The smoke test, in another terminal while hands runs. It calls hands as the phone's
@@ -380,6 +380,7 @@ uv run hands run                        # on the brain and the model ~/.hands/co
 uv run hands run --model claude-opus-5-5  # on that model in place of the one config.toml names, until it quits
 uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
+uv run hands check -v                   # the same, each step said in full, every running session among them
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
@@ -391,7 +392,8 @@ make check                              # pytest, pyright, and fritter's Go test
 ```
 
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)
-and says it is done or what does it: the native `claude` on this `PATH`; PortAudio;
+and gives it one line: ✓ done, ✗ missing with the command that fixes it, or ? when it
+could not be looked at. `hands check -v` says each in full beneath its line. The steps: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
 brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
