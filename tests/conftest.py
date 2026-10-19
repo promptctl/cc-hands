@@ -60,6 +60,30 @@ async def unprimed() -> None:
     """Whisper's prompt where no test is about its vocabulary: none, so it transcribes unprimed."""
 
 
+# Stays until it is killed. Given --moves, a directory and a descriptor, it first moves to the directory and writes a
+# "." to the descriptor, as a session moves into a worktree.
+STAND_IN = r"""
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    if (argc == 4 && strcmp(argv[1], "--moves") == 0 && (chdir(argv[2]) != 0 || write(atoi(argv[3]), ".", 1) != 1))
+        return 1;
+    for (;;)
+        pause();
+}
+"""
+
+
+def stand_in(at: Path) -> Path:
+    """A program built at `at` that runs as a session does until it is killed, signed as the linker signs any program
+    not Apple's, as Claude Code and Homebrew's tmux are: macOS 26 kills a copy of one of Apple's own programs as it
+    starts, and shows no other process the environment of one of them, kern.procargs2 and `ps -E` alike."""
+    subprocess.run(["cc", "-x", "c", "-o", str(at), "-"], input=STAND_IN, text=True, capture_output=True, check=True)
+    return at
+
+
 def _dead_pid() -> int:
     process = subprocess.Popen(["true"])
     process.wait()

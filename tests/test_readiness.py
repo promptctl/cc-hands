@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import pin
+from conftest import pin, stand_in
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
@@ -260,7 +260,7 @@ def installed(root: Path) -> str:
     version = root / "install" / "9.9.9"
     if not version.exists():
         version.parent.mkdir(parents=True)
-        shutil.copy("/bin/sleep", version)
+        stand_in(version)
         (root / "bin").mkdir()
         (root / "bin" / "claude").symlink_to(version)
     return f"{root / 'bin'}:/usr/bin:/bin"
@@ -414,10 +414,8 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
 def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    shell = root / "install" / "9.9.7"
-    shutil.copy("/bin/zsh", shell)
-    # The shell waits on its sleep, so it is still the process its -p was given to.
-    with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
+    printing = stand_in(root / "install" / "9.9.7")
+    with at_a_terminal(printing, root, ["-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path, untmuxed)
     assert found == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
@@ -524,28 +522,27 @@ def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_o
 def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
-    pruned = root / "install" / "9.9.8"
-    shutil.copy("/bin/sleep", pruned)
+    pruned = stand_in(root / "install" / "9.9.8")
     with at_a_terminal(pruned, root) as pid:
         pruned.unlink()
         found = readiness.sessions(home, path, untmuxed)
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
-# Moves to the directory it is given, says so on the descriptor it is given, and stays.
-MOVES = 'cd "$1" && printf . >&"$2" && read -r _'
-
-
 def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_changes_directory(root: Path) -> None:
+    (root / "bin").mkdir()
+    program = stand_in(root / "bin" / "claude")
+    worktree = root / "worktree"
+    worktree.mkdir()
     read, write = os.pipe()
     with open(read, "rb", buffering=0) as moved, open(write, "wb", buffering=0) as said:
         # As the shim starts the real `claude` under a relative PATH entry, and as a session then moves into a worktree.
-        with at_a_terminal(Path("bin/bash"), Path("/"), ("-c", MOVES, "bash", str(root), str(write)), pass_fds=(write,)) as pid:
+        with at_a_terminal(Path("bin/claude"), root, ("--moves", str(worktree), str(write)), pass_fds=(write,)) as pid:
             # Only the program can say so now: one that ends without moving is read as nothing, not waited on.
             said.close()
             assert moved.read(1) == b"."
             [process] = [process for process in terminal_processes().found if process.pid == pid]
-    assert (process.executable, process.cwd) == (Path("/bin/bash"), root)
+    assert (process.executable, process.cwd) == (program, worktree)
 
 
 def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:

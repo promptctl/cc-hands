@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import stand_in
 from hands.core.drafts import SendDraft, StageDraft
 from hands.core.effects import Command, Input, Key, Text, Type, Typed
 from hands.core.events import Joined
@@ -166,8 +167,10 @@ def test_a_server_whose_socket_is_outside_the_socket_directory_is_found_by_the_t
     # Neither in the directory tmux puts sockets in, nor under its $TMUX_TMPDIR: only $TMUX in the pane names it.
     elsewhere = Path(tempfile.mkdtemp(prefix="hands-elsewhere-", dir="/tmp"))
     socket = elsewhere / "mine"
+    # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
+    program = stand_in(elsewhere / "stand-in")
     try:
-        started = subprocess.run([str(TMUX), "-f", "/dev/null", "-S", str(socket), "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", "sleep", "120"], capture_output=True, text=True, check=True)
+        started = subprocess.run([str(TMUX), "-f", "/dev/null", "-S", str(socket), "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", str(program)], capture_output=True, text=True, check=True)
         pane, pid = started.stdout.split()
         work, worker = run_in("default", "work")
         assert in_pane(int(pid)) == Pane(socket, pane, "aside", 0)
@@ -185,8 +188,10 @@ def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_a
     # A socket's path has room for 104 bytes; tmux reaches this one only by its relative name.
     deep = elsewhere / ("d" * 120)
     deep.mkdir()
+    # $TMUX in the pane's environment is the only word of its server, and macOS shows no one /bin/sleep's.
+    program = stand_in(elsewhere / "stand-in")
     try:
-        started = [subprocess.run([str(TMUX), "-f", "/dev/null", "-S", "mine", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", "sleep", "120"], cwd=at, capture_output=True, text=True, check=True).stdout.split() for at in (elsewhere, deep)]
+        started = [subprocess.run([str(TMUX), "-f", "/dev/null", "-S", "mine", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", str(program)], cwd=at, capture_output=True, text=True, check=True).stdout.split() for at in (elsewhere, deep)]
         [(pane, pid), (_, far)] = started
         assert in_pane(int(pid)) == Pane(Path(os.path.realpath(elsewhere)) / "mine", pane, "aside", 0)
         match in_pane(int(far)):
