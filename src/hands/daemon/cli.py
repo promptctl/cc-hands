@@ -320,7 +320,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
 
 def door(home: Home, run_start: Start, model: str | None) -> Settings:
     """What a run that holds its home checks before its first heartbeat, each in a moment: the talk key's grant, the
-    home's copy of fritter, and the settings it starts on. CannotStart where any is missing or stale."""
+    home's copy of fritter and its shim, and the settings it starts on. CannotStart where any is missing or stale."""
     # Imported here, like AppKit for the indicator, so that no other command loads Quartz.
     from hands.voice import talkkey
 
@@ -342,6 +342,22 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
     run_start.heard(fritter=copy)
     if copy == "stale":
         raise CannotStart(f"{home.fritter} is not the fritter this hands carries, {wrapper.PACKAGED}, so sessions started under it may not do what this hands asks of them: run `hands install-fritter`, then run hands again.")
+    # The home's shim is the claude every session hands starts runs, and updating hands leaves it as the older hands wrote
+    # it, without what this hands writes into it, its auto-updater switched off among the rest: refused the same way.
+    # `hands install-fritter` is the fix, and a hands built without its fritter cannot run it until it is rebuilt.
+    match wrapper.shim_of(home.shim):
+        case wrapper.Stale():
+            run_start.heard(shim="stale")
+            try:
+                wrapper.packaged()
+                rebuilt = ""
+            except wrapper.Unpackaged as error:
+                rebuilt = f"{error}, then "
+            raise CannotStart(f"{home.shim} is not the shim this hands writes, so sessions started through it may not do what this hands asks of them: {rebuilt}run `hands install-fritter`, then run hands again.")
+        case None:
+            run_start.heard(shim="not-a-shim")
+        case wrapper.Shim():
+            run_start.heard(shim="current")
     # [LAW:single-enforcer] the one read of the settings a run starts on: the export edge, the run, and the watch for
     # an edit to them all take these.
     try:

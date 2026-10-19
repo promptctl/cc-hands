@@ -215,3 +215,36 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     assert facts["model"] == transcription.MODEL
     assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
+
+
+def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    # The claude on PATH here is no shim, so nothing but the smoke run itself switches its auto-updater off.
+    from hands.daemon import smoke
+
+    home = Home(tmp_path / "home")
+    now = datetime.now(UTC)
+    home.root.mkdir()
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
+    real = tmp_path / "real" / "claude"
+    real.parent.mkdir()
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    monkeypatch.setenv("PATH", str(real.parent))
+    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
+    monkeypatch.setattr(transcription, "load", lambda: None)
+
+    async def synthesized(_text: str) -> bytes:
+        return b""
+
+    started: list[dict[str, str]] = []
+
+    async def on_terminal(_argv: list[str], _cwd: Path, environment: dict[str, str]) -> None:
+        started.append(environment)
+        raise NotReached("joined", "the test's stand-in claude is not started")
+
+    monkeypatch.setattr(smoke, "_synthesized", synthesized)
+    monkeypatch.setattr(smoke, "on_terminal", on_terminal)
+    assert main(["--home", str(home.root), "smoke"]) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: the test's stand-in claude is not started"
+    [environment] = started
+    assert environment["DISABLE_AUTOUPDATER"] == "1"

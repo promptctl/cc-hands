@@ -95,6 +95,23 @@ def test_off_a_terminal_the_real_claude_runs_without_the_address_of_the_session_
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, "claude mcp serve socket=unset\n", "")
 
 
+# Says whether Claude Code's auto-updater is off for the claude it stands in for.
+UPDATER_RECORDER = '#!/bin/sh\nprintf "%s updater=%s\\n" "$(basename "$0")" "${DISABLE_AUTOUPDATER-unset}"\n'
+
+
+@pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
+def test_every_claude_the_shim_runs_has_claude_codes_auto_updater_off(root: Path, given: dict[str, str]) -> None:
+    # A session's claude inherits fritter's environment, so what fritter is started with is what the session runs with.
+    bin = root / "bin"
+    executable(bin / "fritter", UPDATER_RECORDER)
+    executable(root / "real" / "claude", UPDATER_RECORDER)
+    shim = executable(bin / "claude", shim_script(bin / "fritter", WIRE))
+    path = f"{bin}:{root / 'real'}:/usr/bin:/bin"
+    assert on_a_terminal([str(shim), "--resume", "abc"], path, given) == "fritter updater=1\n"
+    assert on_a_pipe([str(shim), "-p", "hello"], path, given).stdout == "claude updater=1\n"
+    assert on_a_terminal([str(shim), "update"], path, given) == "claude updater=1\n"
+
+
 @pytest.mark.parametrize("args", [["-dp"], ["-rp"]])
 def test_an_option_whose_value_is_p_is_a_session(root: Path, args: list[str]) -> None:
     # -d and -r take a value, so -dp is a debug filter and -rp a session to resume.

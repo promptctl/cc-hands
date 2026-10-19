@@ -341,9 +341,9 @@ on the current `PATH` is the one it wrote, and says what to add when it is not. 
 fritter it copies is the one hands' package carries, built when that package was, so no
 Go is needed to run it. Run it again after hands is upgraded, or in a checkout after
 fritter's source changes: `hands run` refuses to start on a copy that is not the one
-this hands carries, and `hands check` says when the copy, or the shim, is not the one
-this hands would install. A session started before the shim stays unreachable until it
-ends.
+this hands carries, or on a shim that is not the one it writes, and `hands check` says
+when the copy, or the shim, is not the one this hands would install. A session started
+before the shim stays unreachable until it ends.
 
 A session under fritter reaches the API through its own fritter, which is the session's
 proxy: the session still names the API it would have used, fritter answers its

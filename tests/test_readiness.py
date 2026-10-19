@@ -124,6 +124,13 @@ def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Unknown)
 
 
+def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
+    listing = json.dumps([listed(PLUGIN_ID, True)])
+    executable(root / "real" / "claude", f"#!/bin/sh\n[ \"$DISABLE_AUTOUPDATER\" = 1 ] || {{ echo \"updater=$DISABLE_AUTOUPDATER\" >&2; exit 3; }}\ncat <<'EOF'\n{listing}\nEOF\n")
+    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Ready)
+
+
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
     assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin"), Unknown)
 

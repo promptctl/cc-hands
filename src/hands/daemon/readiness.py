@@ -196,7 +196,7 @@ def plugin(path: str) -> Finding:
     try:
         listed = subprocess.run(
             ["claude", "plugin", "list", "--json"],
-            env={**os.environ, "PATH": path},
+            env={**os.environ, **wrapper.UPDATER_OFF, "PATH": path},
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
