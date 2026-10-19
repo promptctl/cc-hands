@@ -12,7 +12,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hands.core.sentences import Due, answered, page
+from loguru import logger
+
+from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import Unread, Untracked, read_backlog
 from hands.sessions.payload import Rejected
@@ -131,3 +133,24 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
                 break
             reckoning = store.reckon(thing)
         count(unsaid=len(reckoning.due) + reckoning.waiting)
+        # [LAW:nothing-unseen] what the pass did is said on the terminal, once for the pass, never once for each item.
+        items = _work_items(thing)
+        logger.info(_told(project, items, items & first.said.keys(), items & reckoning.said.keys()))
+
+
+def _work_items(backlog: Thing) -> frozenset[str]:
+    """The ids of the tickets and epics in a backlog, at every depth: the backlog's own sentence is no work item."""
+    return frozenset(id for part in backlog.parts for id in (part.id, *_work_items(part)))
+
+
+def _told(project: Path, items: frozenset[str], before: frozenset[str], after: frozenset[str]) -> str:
+    """What one pass over `project`'s backlog did, as a line: the work items it summarised, those that already were, and
+    those still unsaid; or that the backlog was fully summarised before it began."""
+    if before == items:
+        return f"the backlog of {project} is already fully summarised: {len(items)} work items"
+    unsaid = len(items - after)
+    return "".join((
+        f"summarised {len(after - before)} work items for {project}",
+        f", {len(before)} already were" if before else "",
+        f"; {unsaid} still unsaid" if unsaid else "",
+    ))
