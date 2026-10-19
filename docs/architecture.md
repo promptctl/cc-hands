@@ -2032,7 +2032,7 @@ thing that failed `[LAW:no-silent-failure]`:
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
    open, and each way it is running degraded (the microphone is open on no device; the
-   collector has not taken all of a signal's last few batches), each in its own words. `hands status` prints it, saying every degradation. The
+   collector has not taken all of a signal's last few batches), each in its own words, and the Python environment it runs from, the one a restart starts it on again, which `hands update` checks against the one it installed master into. `hands status` prints it, saying every degradation. The
    daemon running is its one writer: a run locks `~/.hands/hands.lock` before it reads the
    heartbeat or listens, so a second `hands run` on a home a daemon holds is refused there,
    says that hands is already running and the pid the lock names, and leaves the heartbeat

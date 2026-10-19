@@ -55,14 +55,14 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
     given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
-    prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands recall", None)
+    prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands", None)
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
     assert named, "the prompt names no tool at all"
     assert named <= given, f"the prompt names {sorted(named - given)}, which the daemon does not give"
 
 
 def test_the_brain_is_told_of_the_log_of_lit_and_of_its_own_setup_and_it_keeps_the_closing_words_last() -> None:
-    told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"), "'/my python' -P -m hands.daemon recall", None)
+    told = brain_instruction(Path("/my home/audit"), Path("/my home/brain"), "'/my python' -P -m hands.daemon --home '/my home'", None)
     # Working a tracker is done from a shell, and the brain works one with lit.
     assert "lit quickstart" in told
     # Asked to install a skill and told nothing of its setup, the brain made it in ~/.claude/skills, the user's own
@@ -71,12 +71,13 @@ def test_the_brain_is_told_of_the_log_of_lit_and_of_its_own_setup_and_it_keeps_t
     assert told.rindex("\n\n# ") == told.index("\n\n# Above all")
     # A home with a space in it is one argument to every command the brain is shown.
     assert f"'/my home/audit'/{SEGMENT_GLOB}" in told
-    # The brain recalls with the command line it is handed, as it is handed it.
-    assert "The recall command is: '/my python' -P -m hands.daemon recall\n" in told
+    # The brain recalls and updates hands with the command line that runs this hands, as it is handed it.
+    assert "The recall command is: '/my python' -P -m hands.daemon --home '/my home' recall\n" in told
+    assert "The update command is: '/my python' -P -m hands.daemon --home '/my home' update\n" in told
 
 
 def test_a_personality_the_user_chose_is_told_last_before_the_closing_words() -> None:
-    own, chosen = brain_instruction(Path("/a"), Path("/b"), "hands recall", None), brain_instruction(Path("/a"), Path("/b"), "hands recall", "Dry and wry.")
+    own, chosen = brain_instruction(Path("/a"), Path("/b"), "hands", None), brain_instruction(Path("/a"), Path("/b"), "hands", "Dry and wry.")
     # In hands' own personality there is no section for one; a chosen one is its own section, and the rest is as it was.
     assert "# How you come across" not in own
     before, _, after = own.rpartition("\n\n# Above all")
@@ -99,7 +100,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
         fail("lit exited 3")
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
-    shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain", "hands recall", None).splitlines() if line.startswith("- ")]
+    shown = [line[2:].partition(": ") for line in brain_instruction(path, tmp_path / "brain", "hands", None).splitlines() if line.startswith("- ")]
     commands = {label: command for label, _, command in shown if " | jq " in command}
     assert len(commands) == 4
 

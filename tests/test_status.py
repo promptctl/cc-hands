@@ -40,6 +40,7 @@ def beat(**changes: object) -> heartbeat.Status:
         "live_sessions": 2,
         "listening": False,
         "degraded": (),
+        "runs_from": Path("/hands/tools/hands"),
         **changes,
     }
     return heartbeat.Status(**fields)  # pyright: ignore[reportArgumentType]
@@ -79,6 +80,12 @@ def test_a_heartbeat_from_before_degradations_reads_its_deaf_flag_as_having_no_m
     assert heartbeat.read(tmp_path / "status.json") == beat(degraded=degraded)
 
 
+def test_a_heartbeat_from_before_runs_said_where_they_run_from_reads_as_not_saying(tmp_path: Path) -> None:
+    old = {key: value for key, value in json.loads(heartbeat.encode(beat())).items() if key != "runs_from"}
+    (tmp_path / "status.json").write_text(json.dumps(old))
+    assert heartbeat.read(tmp_path / "status.json") == beat(runs_from=None)
+
+
 def test_degradations_read_back_in_the_order_they_were_written(tmp_path: Path) -> None:
     written = beat(degraded=(SLOW, heartbeat.NO_MICROPHONE))
     heartbeat.write(tmp_path / "status.json", written)
@@ -108,6 +115,8 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
     assert first is not None and second is not None
     assert (first.pid, first.started_at, first.heartbeat, first.pipeline, first.live_sessions) == (4242, NOW, BEAT, "starting", 0)
     assert (second.pid, second.started_at, second.heartbeat, second.pipeline, second.last_audio_out) == (4242, NOW, BEAT, "running", NOW)
+    # The environment the run's Python runs from, the one it starts again on: an update checks it is the one it installed into.
+    assert first.runs_from == second.runs_from == Path(sys.prefix)
     assert (first.listening, second.listening) == (False, True)
     assert (first.degraded, second.degraded) == (DEAF, ())
     assert second.written_at >= first.written_at

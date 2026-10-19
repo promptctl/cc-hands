@@ -205,7 +205,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.root.mkdir()
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     assert main(["--home", str(home.root), "smoke"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
@@ -224,7 +224,7 @@ def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
     home.root.mkdir()
-    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, ()))
+    heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
     real = tmp_path / "real" / "claude"
     real.parent.mkdir()
     real.write_text("#!/bin/sh\n")
