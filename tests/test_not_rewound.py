@@ -1,6 +1,5 @@
 """scripts/not-rewound.sh refuses a commit built on the line master was rewound away from on 2026-10-15, read from
-this repository's own history: the line's first commit ab3ad39 (#270), its last 221b272 (#296), and 50557d9, where
-master was put back."""
+this repository's own history: the line's first commit ab3ad39 (#270), and 50557d9, where master was put back."""
 
 import os
 import subprocess
@@ -11,7 +10,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "not-rewound.sh"
 FIRST = "ab3ad395640441644c48b37dfea8884330f1ede7"
-LAST = "221b272e912309e8750df6f62c6a85a0e71de9fc"
 REWOUND_TO = "50557d9141a68a871e44917be9d4b414304bd932"
 
 
@@ -27,7 +25,7 @@ def scratch(tmp_path: Path) -> dict[str, str]:
         ("git", "rev-parse", "--path-format=absolute", "--git-path", "objects"), cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.strip()
     (tmp_path / "objects").mkdir()
-    return os.environ | {
+    env = os.environ | {
         "GIT_OBJECT_DIRECTORY": str(tmp_path / "objects"),
         "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects,
         "GIT_AUTHOR_NAME": "Test",
@@ -35,6 +33,11 @@ def scratch(tmp_path: Path) -> dict[str, str]:
         "GIT_COMMITTER_NAME": "Test",
         "GIT_COMMITTER_EMAIL": "t@example.com",
     }
+    # No branch need hold the line once its branches are deleted, so a whole clone may lack its first commit; it is
+    # fetched as the script would fetch it, into the scratch directory.
+    if subprocess.run(("git", "cat-file", "-e", f"{FIRST}^{{commit}}"), cwd=ROOT, env=env, capture_output=True).returncode != 0:
+        git(ROOT, env, "fetch", "--quiet", "--no-tags", "origin", FIRST)
+    return env
 
 
 def on_top(env: dict[str, str], *parents: str) -> str:
@@ -46,22 +49,23 @@ def checked(env: dict[str, str], commit: str, cwd: Path = ROOT) -> subprocess.Co
     return subprocess.run((str(SCRIPT), commit), cwd=cwd, env=env, capture_output=True, text=True)
 
 
-@pytest.mark.parametrize("commit", [FIRST, LAST], ids=["the line's first commit", "the line's last commit"])
-def test_a_commit_of_the_rewound_line_is_refused(scratch: dict[str, str], commit: str) -> None:
-    result = checked(scratch, commit)
+def test_the_rewound_lines_first_commit_is_refused(scratch: dict[str, str]) -> None:
+    result = checked(scratch, FIRST)
     assert result.returncode == 1
-    assert f"{commit} ({commit}) is built on the line master was rewound away from on 2026-10-15" in result.stderr
+    assert f"{FIRST} ({FIRST}) is built on the line master was rewound away from on 2026-10-15" in result.stderr
     assert "the work must be rebuilt on master" in result.stderr
 
 
 def test_new_work_on_top_of_the_rewound_line_is_refused(scratch: dict[str, str]) -> None:
-    work = on_top(scratch, LAST)
-    assert checked(scratch, work).returncode == 1
+    work = on_top(scratch, on_top(scratch, FIRST))
+    result = checked(scratch, work)
+    assert result.returncode == 1
+    assert f"{work} ({work}) is built on the line master was rewound away from on 2026-10-15" in result.stderr
 
 
 def test_the_merge_ci_tests_of_a_pr_built_on_the_rewound_line_is_refused(scratch: dict[str, str]) -> None:
     """A pull request's check runs on master merged with the PR's head; the line comes in through the second parent."""
-    merge = on_top(scratch, "v0.2.0", LAST)
+    merge = on_top(scratch, "v0.2.0", on_top(scratch, FIRST))
     assert checked(scratch, merge).returncode == 1
 
 
