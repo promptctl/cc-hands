@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from loguru import logger
 
 from hands.core.events import Joined
 from hands.core.sentences import Due, Thing, answered, digest, page, reckon
@@ -285,6 +286,52 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     assert (record.counts["rounds"], record.facts["left_out"], record.counts["failed_calls"]) == (3, ("t1", "t1", "t1"), 0)
     # A line in each reply that names nothing asked.
     assert record.counts["stray"] == 3
+
+
+async def test_each_pass_says_on_the_terminal_how_many_work_items_it_summarised_or_that_none_were_left(project: Path, tmp_path: Path) -> None:
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO", filter="hands.voice.summarising")
+    try:
+        # The two tickets, the loose ticket, and the epic: four work items; the backlog's own sentence is none of them.
+        await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+        await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+        edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
+        (project / "export.json").write_bytes(export(issues=edited))
+        await summarise_backlog(project, store, Summariser(first=100), lambda _entry: None)
+
+        async def forgets_t1(page: str) -> str:
+            return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
+
+        await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, lambda _entry: None)
+
+        # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
+        async def steady(page: str) -> str:
+            return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page))
+
+        (project / "export.json").write_bytes(export())
+        steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
+        await summarise_backlog(project, steadied, steady, lambda _entry: None)
+        (project / "export.json").write_bytes(export(issues=edited))
+        await summarise_backlog(project, steadied, steady, lambda _entry: None)
+
+        # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
+        async def fails(page: str) -> str:
+            raise SummaryFailed("boom")
+
+        (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed"} if issue["id"] == "t1" else issue for issue in edited]))
+        await summarise_backlog(project, steadied, fails, lambda _entry: None)
+    finally:
+        logger.remove(sink)
+    assert logged == [
+        f"summarised 4 work items and the backlog's overview for {project}",
+        f"the backlog of {project} is already fully summarised: 4 work items",
+        f"summarised 2 work items and the backlog's overview for {project}, 2 already were",
+        f"summarised 3 work items for {project}; 1 still unsaid",
+        f"summarised 4 work items and the backlog's overview for {project}",
+        f"summarised 1 work items for {project}, 3 already were",
+        f"summarised 0 work items for {project}, 3 already were",
+    ]
 
 
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:

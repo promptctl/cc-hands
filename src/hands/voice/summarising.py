@@ -12,9 +12,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hands.core.sentences import Due, answered, page
+from loguru import logger
+
+from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
-from hands.sessions.backlog import Unread, Untracked, read_backlog
+from hands.sessions.backlog import BACKLOG, Unread, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
@@ -65,9 +67,9 @@ def _pass(event: str, record: Record, counts: tuple[str, ...], **facts: Fact) ->
             annotate(left_out=tuple(missed.left_out), errors=tuple(missed.errors))
 
 
-async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, missed: _Missed, batch: int) -> int:
-    """Ask the summariser for a sentence for each of `due`, a batch at a time, keep what comes back, and say how many."""
-    said = 0
+async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, missed: _Missed, batch: int) -> list[str]:
+    """Ask the summariser for a sentence for each of `due`, a batch at a time, keep what comes back, and say which."""
+    said: list[str] = []
     for asked in itertools.batched(due, batch):
         count(calls=1)
         try:
@@ -81,7 +83,7 @@ async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, m
             continue
         answer = answered(reply, asked)
         store.keep(answer.said)
-        said += len(answer.said)
+        said.extend(asking.id for asking in asked if asking.digest in answer.said)
         count(said=len(answer.said), stray=len(answer.stray))
         missed.left_out.extend(answer.missing)
     return said
@@ -123,11 +125,37 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
         first = store.reckon(thing)
         count(things=len(first.said) + len(first.due) + first.waiting, known=len(first.said))
         reckoning = first
+        made: list[str] = []
         # A round says what is due; the parents it unblocks are due in the next. A round that says nothing ends the
         # pass, since another would ask the same again.
         while reckoning.due:
             count(rounds=1)
-            if not await _say(reckoning.due, store, summarise, missed, batch):
+            said = await _say(reckoning.due, store, summarise, missed, batch)
+            if not said:
                 break
+            made.extend(said)
             reckoning = store.reckon(thing)
         count(unsaid=len(reckoning.due) + reckoning.waiting)
+        # [LAW:nothing-unseen] what the pass did is said on the terminal, once for the pass, never once for each item.
+        items = _work_items(thing)
+        logger.info(_told(project, bool(first.due), len(items & reckoning.said.keys() - set(made)), made, len(items - reckoning.said.keys())))
+
+
+def _work_items(backlog: Thing) -> frozenset[str]:
+    """The ids of the tickets and epics in a backlog, at every depth: the backlog's own sentence is no work item."""
+    return frozenset(id for part in backlog.parts for id in (part.id, *_work_items(part)))
+
+
+def _told(project: Path, asked: bool, known: int, made: Sequence[str], unsaid: int) -> str:
+    """What one pass over `project`'s backlog did, as a line: the work items its replies summarised, and the backlog's own
+    sentence if they did; those with a sentence it did not make, a parent whose parts came back word for word among them;
+    and those still unsaid. When it had nothing to ask, that the backlog was fully summarised before it began."""
+    if not asked:
+        return f"the backlog of {project} is already fully summarised: {known} work items"
+    return "".join((
+        f"summarised {sum(id != BACKLOG for id in made)} work items",
+        " and the backlog's overview" if BACKLOG in made else "",
+        f" for {project}",
+        f", {known} already were" if known else "",
+        f"; {unsaid} still unsaid" if unsaid else "",
+    ))
