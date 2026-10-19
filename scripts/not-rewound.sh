@@ -11,10 +11,13 @@ FIRST=ab3ad395640441644c48b37dfea8884330f1ede7
 shallow=$(git rev-parse --is-shallow-repository) || exit 2
 [ "$shallow" = false ] || { echo "not-rewound: this clone is shallow, so it cannot tell whether $1 is on the rewound line; check out with the whole history" >&2; exit 2; }
 commit=$(git rev-parse --verify --quiet "$1^{commit}") || { echo "not-rewound: $1 is not a commit in this clone" >&2; exit 2; }
-# No branch need hold FIRST once the rewound line's branches are gone, so a whole clone may still lack it.
-git cat-file -e "$FIRST^{commit}" 2>/dev/null || git fetch --quiet --no-tags origin "$FIRST" || { echo "not-rewound: $FIRST, the rewound line's first commit, is not in this clone and could not be fetched from origin" >&2; exit 2; }
-code=0
-git merge-base --is-ancestor "$FIRST" "$commit" || code=$?
+# No branch need hold FIRST once the rewound line's branches are gone, so a whole clone may lack it; but a whole clone
+# holds every ancestor of every commit in it, so a clone without FIRST holds nothing built on it.
+code=1
+if git cat-file -e "$FIRST^{commit}" 2>/dev/null; then
+  code=0
+  git merge-base --is-ancestor "$FIRST" "$commit" || code=$?
+fi
 case $code in
   0) echo "not-rewound: $1 ($commit) is built on the line master was rewound away from on 2026-10-15, which begins at $FIRST; nothing may go on top of those commits, so the work must be rebuilt on master" >&2; exit 1 ;;
   1) echo "not-rewound: $1 ($commit) is not built on the line master was rewound away from on 2026-10-15" ;;

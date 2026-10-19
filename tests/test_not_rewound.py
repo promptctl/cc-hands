@@ -11,6 +11,15 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "not-rewound.sh"
 FIRST = "ab3ad395640441644c48b37dfea8884330f1ede7"
 REWOUND_TO = "50557d9141a68a871e44917be9d4b414304bd932"
+# git reads no configuration but a repository's own, so the developer's signing, hooks or URL rewrites never reach a test.
+ISOLATED = os.environ | {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "t@example.com",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "t@example.com",
+}
 
 
 def git(cwd: Path, env: dict[str, str], *args: str) -> str:
@@ -20,24 +29,12 @@ def git(cwd: Path, env: dict[str, str], *args: str) -> str:
 @pytest.fixture(scope="session")
 def scratch(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     """An environment in which git reads this repository's objects and writes new ones to a scratch directory, so a
-    test commits on top of the real line without adding a thing to the repository, and in which git reads no
-    configuration but the repository's, so the developer's signing or hooks never touch a test's commits."""
-    objects = subprocess.run(
-        ("git", "rev-parse", "--path-format=absolute", "--git-path", "objects"), cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    env = os.environ | {
-        "GIT_OBJECT_DIRECTORY": str(tmp_path_factory.mktemp("objects")),
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": "Test",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "Test",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-    }
-    # No branch need hold the line once its branches are deleted, so a whole clone may lack its first commit; it is
-    # fetched as the script would fetch it, into the scratch directory, and with no FETCH_HEAD naming an object the
-    # repository does not hold once the scratch directory is gone.
+    test commits on top of the real line without adding a thing to the repository."""
+    objects = git(ROOT, ISOLATED, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+    env = ISOLATED | {"GIT_OBJECT_DIRECTORY": str(tmp_path_factory.mktemp("objects")), "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects}
+    # No branch need hold the line once its branches are deleted, so a whole clone may lack its first commit, which the
+    # refusals need; it is fetched into the scratch directory, with no FETCH_HEAD naming an object the repository does
+    # not hold once the scratch directory is gone.
     if subprocess.run(("git", "cat-file", "-e", f"{FIRST}^{{commit}}"), cwd=ROOT, env=env, capture_output=True).returncode != 0:
         git(ROOT, env, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", FIRST)
     return env
@@ -86,18 +83,18 @@ def test_new_work_on_master_is_accepted(scratch: dict[str, str]) -> None:
 
 def test_a_shallow_clone_cannot_tell_and_fails(tmp_path: Path) -> None:
     clone = tmp_path / "shallow"
-    git(tmp_path, os.environ.copy(), "clone", "--quiet", "--depth", "1", "--no-checkout", ROOT.as_uri(), str(clone))
-    result = checked(os.environ.copy(), "HEAD", cwd=clone)
+    git(tmp_path, ISOLATED, "clone", "--quiet", "--depth", "1", "--no-checkout", ROOT.as_uri(), str(clone))
+    result = checked(ISOLATED, "HEAD", cwd=clone)
     assert result.returncode == 2
     assert "this clone is shallow" in result.stderr
 
 
-def test_a_clone_without_the_lines_first_commit_fails_rather_than_accepting(scratch: dict[str, str], tmp_path: Path) -> None:
-    """With no origin to fetch ab3ad39 from, the ancestry test cannot run, and the check fails instead of passing."""
+def test_a_whole_clone_without_the_lines_first_commit_holds_nothing_built_on_it(tmp_path: Path) -> None:
+    """A whole clone holds every ancestor of its commits, so without ab3ad39 the answer is known, and nothing is fetched:
+    this clone has no origin."""
     repo = tmp_path / "elsewhere"
-    env = {key: value for key, value in scratch.items() if key not in ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")}
-    git(tmp_path, env, "init", "--quiet", str(repo))
-    git(repo, env, "commit", "--quiet", "--allow-empty", "-m", "first")
-    result = checked(env, "HEAD", cwd=repo)
-    assert result.returncode == 2
-    assert f"{FIRST}, the rewound line's first commit, is not in this clone and could not be fetched from origin" in result.stderr
+    git(tmp_path, ISOLATED, "init", "--quiet", str(repo))
+    git(repo, ISOLATED, "commit", "--quiet", "--allow-empty", "-m", "first")
+    result = checked(ISOLATED, "HEAD", cwd=repo)
+    assert result.returncode == 0, result.stderr
+    assert "is not built on the line master was rewound away from on 2026-10-15" in result.stdout
