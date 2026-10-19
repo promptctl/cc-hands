@@ -22,6 +22,7 @@ from hands.core.trace import Span
 from hands.core.wire import (
     Answered,
     Answering,
+    Auxiliary,
     CountTokens,
     Exchanged,
     Garbled,
@@ -148,9 +149,9 @@ async def streamed(request: web.Request) -> web.StreamResponse:
     return response
 
 
-async def post(url: str, body: bytes = REQUEST, path: str = "/v1/messages?beta=true") -> tuple[int, dict[str, str], bytes]:
+async def post(url: str, body: bytes = REQUEST, path: str = "/v1/messages?beta=true", headers: dict[str, str] = HEADERS) -> tuple[int, dict[str, str], bytes]:
     async with aiohttp.ClientSession(auto_decompress=False) as client:
-        async with client.post(url + path, data=body, headers=HEADERS) as response:
+        async with client.post(url + path, data=body, headers=headers) as response:
             return response.status, dict(response.headers), await response.read()
 
 
@@ -177,6 +178,15 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
     assert exchange.requested_at < exchange.sent_at < exchange.reply.first_byte_at < exchange.reply.last_byte_at
     assert isinstance(exchange.reply.body, Written)
     assert exchange.reply.body.message.content == (Text("hello from the wire"),)
+
+
+async def test_an_exchange_records_the_class_claude_code_named_it_beside_the_kind_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
+    # A loop-shaped body Claude Code names auxiliary: what it was named, and what hands read it as, are both on the record.
+    _, wire = await serve(streamed)
+    await post(wire.proxy.url, headers={**HEADERS, "x-claude-code-request-class": "auxiliary"})
+    exchange = only_exchange(wire)
+    assert isinstance(wire.seen[0], Sent) and wire.seen[0].named == "auxiliary"
+    assert (exchange.named, exchange.kind) == ("auxiliary", Auxiliary("claude-opus-5-5"))
 
 
 async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
@@ -714,8 +724,8 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root())
-    observe(Sent("e1", None, MainTurn(None), None))
+    exchange = Exchanged("e1", None, MainTurn(None), None, "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root())
+    observe(Sent("e1", None, MainTurn(None), None, None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
     assert lines == [exchange]

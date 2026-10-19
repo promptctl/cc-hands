@@ -15,7 +15,7 @@ import brotli
 import zstandard
 from loguru import logger
 
-from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, assemble, classify, frames, is_stream, parse, session_of, unstreamed
+from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, assemble, classify, frames, is_stream, named_class, parse, session_of, unstreamed
 
 
 def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
@@ -31,7 +31,7 @@ def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
             f"hands cannot tell what kind of request this is, so it will not speak the reply: {kind.shape}"
             f" ({len(body)} bytes to {path}, exchange {exchange}, session {session}); the request:\n{body.decode(errors='replace')}"
         )
-    return Sent(exchange, session, kind, parsed)
+    return Sent(exchange, session, kind, named_class(headers), parsed)
 
 
 def shielded(observe: Callable[[Observed], None]) -> Callable[[Observed], None]:

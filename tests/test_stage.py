@@ -254,7 +254,7 @@ class Rig:
         and decides where it goes."""
         self.exchanges += 1
         exchange = f"x{self.exchanges}"
-        sent = Sent(exchange, session, kind, {"stream": True, **(body or {"messages": [{"role": "user", "content": "hi"}]})})
+        sent = Sent(exchange, session, kind, None, {"stream": True, **(body or {"messages": [{"role": "user", "content": "hi"}]})})
         self.stage.hear(sent)
         route = self.stage.route(sent)
         # The span apart: where the request goes is what each test asserts, and what trace it is in is a few tests' own.
@@ -1043,7 +1043,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 
 def unreached(exchange: str) -> Exchanged:
     """The proxy's record of a request it could not get to the API, told before it answers the brain 502."""
-    return Exchanged(exchange, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, root())
+    return Exchanged(exchange, BRAIN, MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("ClientConnectorError: no route", 0.0), True, root())
 
 
 @pytest.mark.parametrize(
@@ -1114,7 +1114,7 @@ def broken_then_asked_again(rig: Rig, heard: Sequence[str], retried: str) -> tup
     overloaded = {"type": "overloaded_error", "message": "Overloaded"}
     rig.stage.hear(Heard(broken, StreamError(overloaded)))
     reply = Reached(200, 0.0, 0.0, 9, Garbled(f"the API sent an error mid-stream: {json.dumps(overloaded)}"))
-    rig.stage.hear(Exchanged(broken, BRAIN, MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
+    rig.stage.hear(Exchanged(broken, BRAIN, MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
     retry, _ = rig.request({"stream": False, "messages": [{"role": "user", "content": "hi"}]})
     message: dict[str, object] = {"type": "message", "id": "msg_1", "role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": retried}], "stop_reason": "end_turn", "usage": {}}
     events = unstreamed(json.dumps(message).encode())

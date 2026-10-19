@@ -96,9 +96,11 @@ _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
 def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
     """Which kind of request this is, from its path, its parsed body, and its headers, decided before any reply exists.
 
-    Claude Code names the class itself in CLASS_HEADER; a request without it, from a Claude Code started before hands
-    turned the header on, is told by its body. Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
-    (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it shares with the loop.
+    Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
+    auxiliary is told by its body, since 2.1.289 names its forks so too; so is one without the header, from a Claude Code
+    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
+    last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last
+    point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
@@ -111,7 +113,7 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
         case "/v1/messages/count_tokens":
             return CountTokens()
         case "/v1/messages":
-            return _classify_messages(body, _header(headers, CLASS_HEADER))
+            return _classify_messages(body, named_class(headers))
         case other if "/v1/messages" in other:
             # [LAW:no-silent-failure] a path of the model's own that is neither endpoint is heard, never passed over.
             return Unknown(f"a request to {other}")
@@ -127,11 +129,11 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     request = cast(Mapping[str, object], body)
     model = str(request.get("model"))
     billing = _billing(request)
-    prompt = billing.get("cc_prompt_id")
-    # The class Claude Code named outranks every reading of the body: it is Claude Code's own (OIs in 2.1.299 lists them).
+    # A class Claude Code names that is one kind outranks every reading of the body: it is Claude Code's own (OIs in
+    # 2.1.299 lists them).
     match named:
         case "main":
-            return MainTurn(None if prompt is None else PromptId(prompt))
+            return _turn(billing)
         case "subagent" | "workflow":
             return Subagent()
         case "compaction":
@@ -139,19 +141,30 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         case "side_reply":
             return Fork()
         case "auxiliary":
-            return Auxiliary(model)
+            # Not one kind: 2.1.289's es() names every request that is neither its loop's nor a subagent's auxiliary, its
+            # side questions and prompt suggestions among them. The body tells which, all but the loop's kinds it rules out.
+            match _by_body(request, model, billing):
+                case MainTurn() | Subagent():
+                    return Auxiliary(model)
+                case kind:
+                    return kind
         case str() as other:
             return Unknown(f"a messages request to {model!r} Claude Code names {other!r}, a class hands does not know")
         case None:
-            pass
+            return _by_body(request, model, billing)
+
+
+def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, str]) -> Kind:
+    """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers."""
     messages = _list(request.get("messages"))
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
     # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
-    if any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
+    texts = asked(request)
+    if any(text.startswith(COMPACTION_OPENING) for text in texts):
         return Compaction()
-    if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
+    if any(text.startswith(SIDE_QUESTION_OPENING) for text in texts):
         return Fork()
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history (2.1.285, markers on messages 5 and 7 of 8), and offers no tools in the body (2.1.296).
@@ -161,11 +174,17 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
         return Subagent()
     if newest == last:
-        return MainTurn(None if prompt is None else PromptId(prompt))
+        return _turn(billing)
     if newest == last - 1:
         return Fork()
-    # Marked nowhere a loop or a fork marks: a call beside the loop, which every one Claude Code names auxiliary is.
+    # Marked nowhere a loop or a fork marks: a call beside the loop.
     return Auxiliary(model)
+
+
+def _turn(billing: Mapping[str, str]) -> MainTurn:
+    """The loop's own turn, named by the prompt its billing line says it answers, when it says one."""
+    prompt = billing.get("cc_prompt_id")
+    return MainTurn(None if prompt is None else PromptId(prompt))
 
 
 def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
@@ -300,6 +319,11 @@ def session_of(headers: Mapping[str, str]) -> SessionId | None:
     """
     found = _header(headers, SESSION_HEADER)
     return None if found is None else SessionId(found)
+
+
+def named_class(headers: Mapping[str, str]) -> str | None:
+    """The class Claude Code names a request in its headers; None from a Claude Code that names none."""
+    return _header(headers, CLASS_HEADER)
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -915,6 +939,8 @@ class Sent:
     exchange: str
     session: SessionId | None
     kind: Kind
+    # The class Claude Code named it in CLASS_HEADER, which `kind` was read from or, where it is not one kind, narrowed by.
+    named: str | None
     body: object
 
 
@@ -1001,6 +1027,7 @@ class Exchanged:
     exchange: str
     session: SessionId | None
     kind: Kind
+    named: str | None
     method: str
     path: str
     request_bytes: int

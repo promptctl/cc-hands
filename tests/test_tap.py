@@ -316,7 +316,7 @@ TURN = PromptId("p1")
 
 def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
-    return Exchanged("e1", SessionId("s1"), kind, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Written(message, True)), False, root())
+    return Exchanged("e1", SessionId("s1"), kind, None, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Written(message, True)), False, root())
 
 
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:
@@ -327,7 +327,7 @@ def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_it
 @pytest.mark.parametrize(
     "observed",
     [
-        Sent("e1", SessionId("s1"), MainTurn(TURN), {}),
+        Sent("e1", SessionId("s1"), MainTurn(TURN), None, {}),
         # Claude Code asks again after an end_turn with no text (2.1.285): the turn goes on.
         replied(MainTurn(TURN), "end_turn"),
         replied(MainTurn(TURN), "tool_use", Text("Reading."), ToolUse("t1", "Read", {})),
