@@ -304,13 +304,33 @@ async def test_each_pass_says_on_the_terminal_how_many_work_items_it_summarised_
             return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
 
         await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, lambda _entry: None)
+
+        # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
+        async def steady(page: str) -> str:
+            return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page))
+
+        (project / "export.json").write_bytes(export())
+        steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
+        await summarise_backlog(project, steadied, steady, lambda _entry: None)
+        (project / "export.json").write_bytes(export(issues=edited))
+        await summarise_backlog(project, steadied, steady, lambda _entry: None)
+
+        # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
+        async def fails(page: str) -> str:
+            raise SummaryFailed("boom")
+
+        (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed"} if issue["id"] == "t1" else issue for issue in edited]))
+        await summarise_backlog(project, steadied, fails, lambda _entry: None)
     finally:
         logger.remove(sink)
     assert logged == [
-        f"summarised 4 work items for {project}",
+        f"summarised 4 work items and the backlog's overview for {project}",
         f"the backlog of {project} is already fully summarised: 4 work items",
-        f"summarised 2 work items for {project}, 2 already were",
+        f"summarised 2 work items and the backlog's overview for {project}, 2 already were",
         f"summarised 3 work items for {project}; 1 still unsaid",
+        f"summarised 4 work items and the backlog's overview for {project}",
+        f"summarised 1 work items for {project}, 3 already were",
+        f"summarised 0 work items for {project}, 3 already were",
     ]
 
 
