@@ -312,8 +312,8 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
     # Each turn is its own, with the prompt Claude Code took it as.
     assert [(turn.event, turn.outcome, turn.facts) for turn in (first, second)] == [
-        ("brain.turn", "ok", {"prompts": ("p1",), "typings": 1, "offered": (), "others": ()}),
-        ("brain.turn", "ok", {"prompts": ("p2",), "typings": 1, "offered": (), "others": ()}),
+        ("brain.turn", "ok", {"prompts": ("p1",), "typings": 1, "offered": (), "others": (), "queued": False}),
+        ("brain.turn", "ok", {"prompts": ("p2",), "typings": 1, "offered": (), "others": (), "queued": False}),
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
@@ -410,7 +410,7 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
     # part of the brain's turn it was held for, timed from its post to its answer.
     [brain_turn] = events(recorded, "brain.turn")
     assert (brain_turn.trace_id, brain_turn.parent_id) == (asking.trace_id, asking.span_id)
-    assert brain_turn.facts == {"prompts": ("p1",), "typings": 1, "offered": ("Write", "mcp__hands__read_session"), "others": ()}
+    assert brain_turn.facts == {"prompts": ("p1",), "typings": 1, "offered": ("Write", "mcp__hands__read_session"), "others": (), "queued": False}
     [permission] = events(recorded, "brain.permission")
     assert (permission.trace_id, permission.parent_id) == (asking.trace_id, brain_turn.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
@@ -818,7 +818,7 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
     finally:
         await brain.stop()
     _, answered_turn = events(recorded, "brain.turn")
-    assert answered_turn.facts == {"prompts": ("p2",), "typings": 1, "offered": (), "others": ("p1",)}
+    assert answered_turn.facts == {"prompts": ("p2",), "typings": 1, "offered": (), "others": ("p1",), "queued": False}
 
 
 async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_turns_taken(
@@ -871,7 +871,7 @@ async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_i
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " later"], ["escape", ""], ["ctrl_c", " racy"], ["prompt", " racy"]]
     _, answered = events(recorded, "brain.turn")
-    assert answered.facts == {"prompts": ("p2", "p3"), "typings": 2, "offered": (), "others": ("p1",)}
+    assert answered.facts == {"prompts": ("p2", "p3"), "typings": 2, "offered": (), "others": ("p1",), "queued": False}
 
 
 async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
@@ -909,12 +909,13 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
         logger.remove(sink)
     _, second = events(recorded, "brain.turn")
     # Run once, as p2, with no Escape pressed into the brain and nothing said about it.
-    assert (answered, typed(tmp_path), second.facts["prompts"], second.facts["typings"], second.facts["others"], warned) == (
+    assert (answered, typed(tmp_path), second.facts["prompts"], second.facts["typings"], second.facts["others"], second.facts["queued"], warned) == (
         BrainAnswered("p2", None),
         [["prompt", " first"], ["prompt", " second"]],
         ("p2",),
         1,
         (),
+        True,
         [],
     )
 
@@ -1042,7 +1043,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
     turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
-    turn.taken.set_result("p1")
+    turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
