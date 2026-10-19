@@ -21,11 +21,9 @@ from aiohttp import web
 from hands.sessions.audit import Record
 from hands.sessions.backlog import Backlog, LitFailed, Move, Place, Status, Untracked, rank, read_backlog
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import annotate, count, fail, unit
-from hands.voice.phoneaddress import carries_key
+from hands.sessions.wide import annotate, count, fail
+from hands.voice.keyed import keyed
 from hands.voice.sentences import Sighted, SummaryStore, sighted
-
-UNKEYED = "this page's address is missing the phone's key; open it from the address `hands phone` prints"
 
 
 def parse_project(query: str | None) -> Path:
@@ -36,7 +34,12 @@ def parse_project(query: str | None) -> Path:
             pass
         case _:
             raise Rejected("project is the absolute path of a directory lit has a workspace in")
-    if not (resolved := Path(query).resolve()).is_dir():
+    try:
+        resolved = Path(query).resolve()
+    except (ValueError, OSError) as error:
+        # A path the system cannot even look up, such as one holding a NUL.
+        raise Rejected(f"project {query!r} is no path: {error}") from error
+    if not resolved.is_dir():
         raise Rejected(f"project {query} is no directory on this machine")
     return resolved
 
@@ -102,7 +105,8 @@ def shown(read: Sighted | Untracked) -> dict[str, object]:
             nodes = drawn(read)
             annotate(tracked=True)
             # [LAW:one-source-of-truth] counted from the nodes the page is given, so the event cannot disagree with it.
-            count(tickets=sum(1 for _ in every(nodes)), summarised=sum(node.summary is not None for node in every(nodes)))
+            for node in every(nodes):
+                count(tickets=1, summarised=int(node.summary is not None))
             return {"tracked": True, "items": [asdict(node) for node in nodes]}
 
 
@@ -115,66 +119,64 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
     """
     page = resources.files("hands.voice").joinpath("backlog.html").read_text()
 
-    async def drawn(_request: web.Request) -> web.Response:
+    async def page_served(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
+    @keyed("backlog.read", record, key, counts=("tickets", "summarised"))
     async def read(request: web.Request) -> web.Response:
-        with unit("backlog.read", record, counts=("tickets", "summarised")):
-            if not carries_key(request.headers.get("Authorization", ""), key):
-                fail("read without the phone's key")
-                return web.Response(status=401, text=UNKEYED)
-            try:
-                project = parse_project(request.query.get("project"))
-            except Rejected as error:
-                fail(str(error))
-                return web.Response(status=400, text=str(error))
-            annotate(project=project)
-            try:
-                return web.json_response(shown(await sighted(store, project)))
-            except (LitFailed, Rejected) as error:
-                fail(f"cannot read the backlog: {error}")
-                return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
+        try:
+            project = parse_project(request.query.get("project"))
+        except Rejected as error:
+            fail(str(error))
+            return web.Response(status=400, text=str(error))
+        annotate(project=project)
+        try:
+            return web.json_response(shown(await sighted(store, project)))
+        except (LitFailed, Rejected) as error:
+            fail(f"cannot read the backlog: {error}")
+            return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
 
+    @keyed("backlog.ranked", record, key, counts=("tickets", "summarised"))
     async def ranked(request: web.Request) -> web.Response:
-        with unit("backlog.ranked", record, counts=("tickets", "summarised")):
-            if not carries_key(request.headers.get("Authorization", ""), key):
-                fail("ranked without the phone's key")
-                return web.Response(status=401, text=UNKEYED)
-            try:
-                project, ticket, place = parse_asked(await request.read())
-            except Rejected as error:
-                return _refused(400, f"not moved: {error}")
-            # [LAW:nothing-unseen] whether lit ranked anything is on the event however the drop ends.
-            annotate(project=project, ticket=ticket, place=place, ranked=False)
-            try:
-                before = await read_backlog(project)
-            except (LitFailed, Rejected) as error:
-                return _refused(502, f"not moved: the backlog in {project} could not be read: {error}")
-            match before:
-                case Untracked():
-                    return _refused(404, f"not moved: lit has no workspace in {project}, so it has no backlog to rank")
-                case Backlog():
-                    pass
-            try:
-                move = before.move(ticket, place)
-            except Rejected as error:
-                return _refused(400, f"not moved: {error}")
-            try:
-                said = await rank(project, move)
-            except LitFailed as error:
+        try:
+            project, ticket, place = parse_asked(await request.read())
+        except Rejected as error:
+            return _refused(400, f"not moved: {error}")
+        # [LAW:nothing-unseen] whether lit ranked anything, "no", "yes", or "unknown", is on the event however the drop ends.
+        annotate(project=project, ticket=ticket, place=place, ranked="no")
+        try:
+            before = await read_backlog(project)
+        except (LitFailed, Rejected) as error:
+            return _refused(502, f"not moved: the backlog in {project} could not be read: {error}")
+        match before:
+            case Untracked():
+                return _refused(404, f"not moved: lit has no workspace in {project}, so it has no backlog to rank")
+            case Backlog():
+                pass
+        try:
+            move = before.move(ticket, place)
+        except Rejected as error:
+            return _refused(400, f"not moved: {error}")
+        try:
+            said = await rank(project, move)
+        except LitFailed as error:
+            if error.refused:
                 return _refused(502, f"not moved: {error}")
-            annotate(ranked=True, lit_said=said)
-            try:
-                after = await sighted(store, project)
-            except (LitFailed, Rejected) as error:
-                return _refused(502, f"lit ranked {ticket} as it was asked to go {place}, and the backlog could not be read again to show it: {error}")
-            # [LAW:no-silent-failure] the read after is the evidence: lit ranks the parent instead of a ticket another
-            # writer moved out of its frame meanwhile, and exits 0 all the same, saying what it ranked.
-            if not _landed(after, move):
-                return _refused(409, f"the backlog lit holds after the rank does not have {ticket} {place}: it changed while it was moved. lit said: {said}")
-            return web.json_response(shown(after))
+            # [LAW:no-silent-failure] lit stopped without saying why, and may have written first: neither is claimed.
+            annotate(ranked="unknown")
+            return _refused(502, f"whether lit ranked {ticket} {place} is not known: {error}")
+        annotate(ranked="yes", lit_said=said)
+        try:
+            after = await sighted(store, project)
+        except (LitFailed, Rejected) as error:
+            return _refused(502, f"lit ranked {ticket} as it was asked to go {place}, and the backlog could not be read again to show it: {error}")
+        # [LAW:no-silent-failure] the read after is the evidence: lit ranks the parent instead of a ticket another
+        # writer moved out of its frame meanwhile, and exits 0 all the same, saying what it ranked.
+        if not _landed(after, move):
+            return _refused(409, f"the backlog lit holds after the rank does not have {ticket} {place}: it changed while it was moved. lit said: {said}")
+        return web.json_response(shown(after))
 
-    return [web.get("/backlog", drawn), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked)]
+    return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked)]
 
 
 def _refused(status: int, why: str) -> web.Response:

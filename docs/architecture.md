@@ -1947,8 +1947,10 @@ were typed. A request without the key or with no words is refused, and its event
 **The backlog page is a project's lit backlog, ordered by dragging** (`hands.voice.backlogpage`).
 It is served beside the conversation page, at `/backlog?project=<directory>`, under the same key.
 Every read is `sighted` (`hands.voice.sentences`), the one read of a backlog the `read_backlog`
-tool makes too: `lit export` run fresh, each ticket's sentence from the summary store, and the
-project asked for to be said in the background. The page draws the unfinished roots in rank order,
+tool makes too: `lit export` run fresh, each ticket's sentence from the summary store, and, while
+any ticket is unsaid, the project asked for to be said in the background, once however its path is
+spelled. Every keyed route of the pages beside the phone's checks the key in one place
+(`hands.voice.keyed`). The page draws the unfinished roots in rank order,
 each over its unfinished children, with the sentence where one is said and never the description.
 lit ranks a ticket only among those inside the same parent (`Backlog.inside`: a listed or an
 archived parent; one deleted frames nothing), and a rank across parents is not refused by lit: it
@@ -1956,10 +1958,13 @@ ranks the parent instead and exits 0. So a drop is parsed against a fresh read b
 which refuses any move outside one frame; it is made with `lit rank --above` or `--below`; and the
 read after it must have the ticket directly beside its target, or the answer is a conflict saying
 the backlog changed while it was moved, with lit's own words of what it ranked; nothing is undone.
+Only lit's refusal, a non-zero exit with its reason line, proves a rank wrote nothing; a lit that did
+not answer, could not run, or ended without a reason is said to have ranked or not, unknown.
 A rank lit made whose backlog could not be read again is said as exactly that. The page keeps no order of its own: it draws what each
 answer carries, one request at a time in the order they were made. A drag holds that queue until it
 is dropped, so a read asked for meanwhile never redraws the rows it is placed among, and no drag
-begins while a request is under way. Each read is one `backlog.read` event, with how many tickets it drew and how many of
+begins while a request is under way. Anything that ends the pointer's stream without a release, a
+cancel, the capture lost, or the window losing focus, ends the drag dropping nothing. Each read is one `backlog.read` event, with how many tickets it drew and how many of
 them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
 ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 

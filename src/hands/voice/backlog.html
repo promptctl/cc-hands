@@ -223,8 +223,11 @@ function dragging(event) {
   Object.assign(drop.style, {display: "block", left: `${box.left}px`, width: `${box.width}px`, top: `${(drag.place.edge === "top" ? box.top - 5 : box.bottom + 2)}px`});
 }
 
+// A drag ends at its pointer's release, which drops it, or at anything else that ends its pointer's stream, which
+// drops nothing: a cancel, the capture lost, or the window losing focus, which carries no pointer. Every end lets go
+// of the drag's turn, so no drag can hold the page.
 function ended(event) {
-  if (drag === null || event.pointerId !== drag.pointer) return;
+  if (drag === null || (event.pointerId !== undefined && event.pointerId !== drag.pointer)) return;
   const done = drag;
   drag = null;
   drop.style.display = "none";
@@ -241,6 +244,8 @@ function ended(event) {
 document.addEventListener("pointermove", dragging);
 document.addEventListener("pointerup", ended);
 document.addEventListener("pointercancel", ended);
+document.addEventListener("lostpointercapture", ended);
+window.addEventListener("blur", ended);
 // Agents rank, file, and close tickets while the page is away: it is read again whenever it is looked at again.
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && key && project) read(); });
 

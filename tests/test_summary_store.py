@@ -1,5 +1,6 @@
 """The summary store: a sentence for any content-addressed thing, kept until the thing changes, served by read_backlog and read_ticket."""
 
+import asyncio
 import json
 import os
 import re
@@ -509,6 +510,19 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
     commented = dict(await bodies["read_ticket"](session="s1", ticket=parser, full=True))
     assert [comment["body"] for comment in commented["comments"]] == ["Seen again on CI."]
     assert dict(await bodies["read_ticket"](session="s1", ticket=mic))["status"] == "closed"
+
+
+async def test_a_project_is_wanted_once_however_its_path_is_spelled(tmp_path: Path) -> None:
+    real = tmp_path / "project"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    # A session's cwd through a link, and a page's resolved path: one project, one pass.
+    store.want(tmp_path / "link")
+    store.want(real.resolve())
+    assert await store.wanted() == Backlog(real.resolve())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(store.wanted(), 0.2)
 
 
 def test_the_store_keeps_what_it_was_told_across_opening_it_again(tmp_path: Path) -> None:

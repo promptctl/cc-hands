@@ -54,7 +54,10 @@ class SummaryStore:
         return self._sentences.known(digest)
 
     def want(self, project: Path) -> None:
-        """Ask for the backlog in `project` to be said; a project already waiting is not queued twice."""
+        """Ask for the backlog in `project` to be said; a project already waiting is not queued twice, however its path
+        is spelled."""
+        # [LAW:one-source-of-truth] one directory is one project here: a session's cwd and a page's path name it alike.
+        project = project.resolve()
         if project not in self._pending:
             self._pending.add(project)
             self._wanted.put_nowait(Backlog(project))
@@ -92,12 +95,15 @@ async def sighted(store: SummaryStore, project: Path) -> Sighted | tracker.Untra
     """The backlog in `project` read fresh with every sentence already said of it, or that lit has no workspace there;
     raises LitFailed when lit cannot say, and Rejected when what it said does not parse.
 
-    [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what changed since the last
-    pass is asked for, to be said in the background, never while the read waits.
+    [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what it finds unsaid is asked
+    for, to be said in the background, never while the read waits.
     """
     match await tracker.read_backlog(project):
         case tracker.Untracked() as untracked:
             return untracked
         case backlog:
-            store.want(project)
-            return Sighted(backlog, store.reckon(backlog.thing()).said)
+            reckoning = store.reckon(backlog.thing())
+            # A thing waiting on its parts has a part due, so nothing due is nothing to say: no pass, and no export for it.
+            if reckoning.due:
+                store.want(project)
+            return Sighted(backlog, reckoning.said)

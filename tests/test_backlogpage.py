@@ -1,5 +1,6 @@
 """The backlog page: every open ticket under its epic with hands' sentence for it, and a drop that is a `lit rank`."""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -152,6 +153,8 @@ def test_a_move_the_page_sends_is_its_project_resolved_its_ticket_and_its_place(
     assert parse_asked(body) == ((tmp_path / "project").resolve(), "a", Place("below", "b"))
     with pytest.raises(Rejected, match="no directory"):
         parse_project(str(tmp_path / "file"))
+    with pytest.raises(Rejected, match="is no path"):
+        parse_project("/a\0b")
 
 
 # --- the routes, against lit itself
@@ -225,10 +228,13 @@ async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_al
     assert shown_page.status == 200 and "drag its card up or down" in await shown_page.text()
     assert (await page.client.get("/backlog/tickets?project=/tmp")).status == 401
     assert (await page.client.post("/backlog/rank", json={})).status == 401
-    assert [event.error for event in page.events("backlog.read") + page.events("backlog.ranked")] == ["read without the phone's key", "ranked without the phone's key"]
+    assert [event.error for event in page.events("backlog.read") + page.events("backlog.ranked")] == ["asked without the phone's key"] * 2
 
 
-@pytest.mark.parametrize("query, why", [("", "absolute path"), ("?project=relative/path", "absolute path"), ("?project=/no/such/directory", "no directory")])
+@pytest.mark.parametrize(
+    "query, why",
+    [("", "absolute path"), ("?project=relative/path", "absolute path"), ("?project=/no/such/directory", "no directory"), ("?project=/a%00b", "is no path")],
+)
 async def test_a_read_that_names_no_directory_is_refused_rather_than_asking_lit(page: Page, query: str, why: str) -> None:
     response = await page.client.get(f"/backlog/tickets{query}", headers=KEYED)
     assert response.status == 400 and why in await response.text()
@@ -271,7 +277,7 @@ async def test_a_drop_ranks_the_ticket_in_lit_and_the_page_is_answered_with_lits
     status, _ = await moved(page, workspace, mic, below=parser)
     assert status == 200 and workspace.order(mic, parser, docs) == [docs, parser, mic]
     first, second = page.events("backlog.ranked")
-    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"], first.facts["ranked"]) == (docs, Place("above", mic), True)
+    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"], first.facts["ranked"]) == (docs, Place("above", mic), "yes")
     # What it showed after: the epic and its three tickets, none said yet.
     assert first.counts == {"tickets": 4, "summarised": 0}
     assert second.outcome == "ok" and second.facts["place"] == Place("below", parser)
@@ -333,7 +339,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     assert workspace.order(voice, wire) == [wire, voice]
     [event] = page.events("backlog.ranked")
     assert event.outcome == "failed" and event.error == body
-    assert event.facts["ranked"] is True and f"ranked the epic {wire} instead" in str(event.facts["lit_said"])
+    assert event.facts["ranked"] == "yes" and f"ranked the epic {wire} instead" in str(event.facts["lit_said"])
 
 
 @real_lit
@@ -345,7 +351,7 @@ async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, w
     assert status == 502 and "lit rank" in body and "workspace_busy" in body
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] is False
+    assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] == "no"
 
 
 @real_lit
@@ -365,4 +371,59 @@ async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was
     assert status == 502 and body.startswith(f"lit ranked {parser} as it was asked to go above {mic}, and the backlog could not be read again") and "workspace_busy" in body
     assert workspace.order(mic, parser) == [parser, mic]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] is True
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "yes"
+
+
+@real_lit
+async def test_a_rank_lit_stops_without_a_reason_is_said_to_be_unknown_and_never_claimed_either_way(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    # lit writes the rank, then is killed before it can say so.
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "lit").write_text(f'#!/bin/sh\nif [ "$1" = rank ]; then\n{LIT} "$@" >/dev/null\nkill -9 $$\nfi\nexec {LIT} "$@"\n')
+    (bin / "lit").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"whether lit ranked {parser} above {mic} is not known")
+    assert workspace.order(mic, parser) == [parser, mic]
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "unknown"
+
+
+@real_lit
+@pytest.mark.parametrize("export, why", [('echo "error (code=5, reason=workspace_busy): locked" >&2; exit 5', "workspace_busy"), ("echo not json", "JSON")])
+async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, export: str, why: str) -> None:
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "lit").write_text(f'#!/bin/sh\nif [ "$1" = export ]; then\n{export}\nfi\nexec {LIT} "$@"\n')
+    (bin / "lit").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
+    response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
+    body = await response.text()
+    assert response.status == 502 and body.startswith(f"the backlog in {workspace.root} could not be read") and why in body
+    [event] = page.events("backlog.read")
+    assert event.outcome == "failed" and event.error is not None and why in event.error
+
+
+@pytest.mark.parametrize("body, why", [(b"{}", "one of above or below"), (b'{"project": "/", "ticket": "a", "above": "b", "below": "c"}', "never both")])
+async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(page: Page, body: bytes, why: str) -> None:
+    response = await page.client.post("/backlog/rank", data=body, headers=KEYED)
+    text = await response.text()
+    assert response.status == 400 and text.startswith("not moved: ") and why in text
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.error == text
+
+
+@real_lit
+async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
+    epic(workspace, "Voice", "Fix the mic")
+    read = await sighted(page.store, workspace.root)
+    assert isinstance(read, Sighted)
+    assert await page.store.wanted()
+    # Every ticket said, round by round, as the summarising task says them.
+    while due := page.store.reckon(read.backlog.thing()).due:
+        page.store.keep({each.digest: f"Said of {each.id}." for each in due})
+    again = await sighted(page.store, workspace.root)
+    assert isinstance(again, Sighted) and len(again.said) == 3
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(page.store.wanted(), 0.2)

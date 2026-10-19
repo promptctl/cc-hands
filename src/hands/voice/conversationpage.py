@@ -23,8 +23,8 @@ from aiohttp import web
 from hands.sessions.audit import Record, past
 from hands.sessions.payload import Rejected
 from hands.sessions.recall import Moment, Moments, Reading
-from hands.sessions.wide import annotate, count, fail, unit
-from hands.voice.phoneaddress import carries_key
+from hands.sessions.wide import annotate, count, fail
+from hands.voice.keyed import keyed
 
 # How many of the newest moments a page is given: an hour's talk and more, never the whole log.
 NEWEST = 200
@@ -108,40 +108,34 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
+    @keyed("conversation.read", record, key, counts=("moments",))
     async def read(request: web.Request) -> web.Response:
-        with unit("conversation.read", record, counts=("moments",)):
-            if not carries_key(request.headers.get("Authorization", ""), key):
-                fail("read without the phone's key")
-                return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
-            try:
-                seen = parse_seen(request.query.get("seen"))
-            except Rejected as error:
-                fail(str(error))
-                return web.Response(status=400, text=str(error))
-            began = time.monotonic()
+        try:
+            seen = parse_seen(request.query.get("seen"))
+        except Rejected as error:
+            fail(str(error))
+            return web.Response(status=400, text=str(error))
+        began = time.monotonic()
+        changes, moments = await conversation.caught_up()
+        # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is
+        # never missed: it is answered at once with whatever has changed since.
+        while changes == seen and time.monotonic() - began < WAIT_SECONDS:
+            await asyncio.sleep(POLL_SECONDS)
             changes, moments = await conversation.caught_up()
-            # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is
-            # never missed: it is answered at once with whatever has changed since.
-            while changes == seen and time.monotonic() - began < WAIT_SECONDS:
-                await asyncio.sleep(POLL_SECONDS)
-                changes, moments = await conversation.caught_up()
-            annotate(seen=seen, changes=changes, waited_ms=round((time.monotonic() - began) * 1000, 1))
-            count(moments=len(moments))
-            return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
+        annotate(seen=seen, changes=changes, waited_ms=round((time.monotonic() - began) * 1000, 1))
+        count(moments=len(moments))
+        return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
 
+    @keyed("conversation.typed", record, key)
     async def sent(request: web.Request) -> web.Response:
-        with unit("conversation.typed", record):
-            if not carries_key(request.headers.get("Authorization", ""), key):
-                fail("typed without the phone's key")
-                return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
-            try:
-                text = parse_typed(await request.read())
-            except Rejected as error:
-                fail(str(error))
-                return web.Response(status=400, text=str(error))
-            annotate(chars=len(text))
-            await typed(text)
-            return web.Response(status=202)
+        try:
+            text = parse_typed(await request.read())
+        except Rejected as error:
+            fail(str(error))
+            return web.Response(status=400, text=str(error))
+        annotate(chars=len(text))
+        await typed(text)
+        return web.Response(status=202)
 
     return [web.get("/conversation", shown), web.get("/conversation/moments", read), web.post("/conversation/typed", sent)]
 

@@ -39,6 +39,12 @@ class LitFailed(Exception):
         super().__init__(message)
         self.reason = reason
 
+    @property
+    def refused(self) -> bool:
+        """Whether lit refused, saying why on its reason line: the one failure that proves it changed nothing. A lit that
+        did not answer, could not be run, or ended without a reason may have written before it stopped."""
+        return self.reason is not None
+
 
 @dataclass(frozen=True)
 class Untracked:
