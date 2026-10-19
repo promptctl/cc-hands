@@ -251,6 +251,7 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:chat` is how it talks with you, a small cut of `laws:chat` made for replies you hear.
 `hands:start` is how it starts a new session when you ask for one, with hands' `start_session` tool.
 `hands:close` is how it closes the sessions you are finished with, by name or the ones that are done, with `close_session`.
+`hands:update` is how it updates itself when you ask it to update, reinstall, or restart itself from master: it says it is updating, then runs `hands update`.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, its summaries and the sentence an old tool result goes as,
@@ -391,6 +392,9 @@ uv run hands status                     # up, stopped, refused to start (and why
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands check -v                   # the same, each step said in full, every running session among them
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
+hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from, then
+                                        # install-fritter and install-brain, then restart onto it as `hands restart` does and say the commit it runs;
+                                        # a step that fails stops it, naming the step, and hands is not restarted
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up

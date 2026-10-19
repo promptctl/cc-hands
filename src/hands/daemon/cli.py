@@ -8,6 +8,7 @@ import platform
 import signal
 import struct
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Coroutine, Sequence
@@ -19,10 +20,10 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.daemon import indicator, readiness
+from hands.daemon import indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
-from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Restarted, restart, said
+from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
@@ -161,6 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
+    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; a step that fails stops it, and hands is not restarted (the brain's hands:update skill runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -302,6 +304,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return render_plugin(home, record)
         case "restart":
             return asked_to_restart(home)
+        case "update":
+            return updated(home)
         case "smoke":
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
@@ -688,15 +692,50 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 
 def asked_to_restart(home: Home) -> int:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
-    outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
+    outcome = restarted(home)
     match outcome:
         case Restarted():
             out, code = sys.stdout, 0
         case NotRunning() | NotBack():
             out, code = sys.stderr, 1
+    print(said(outcome, datetime.now(UTC)), file=out)
+    return code
+
+
+def restarted(home: Home) -> Outcome:
+    """Ask the running daemon to start again, and wait for it to be back, or for it to be plain it will not be."""
+    outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
     # What the heartbeat said, and how long the restart took or was waited on.
     wide.annotate(outcome=outcome)
-    print(said(outcome, datetime.now(UTC)), file=out)
+    return outcome
+
+
+def updated(home: Home) -> int:
+    """`hands update`: install master, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
+    with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
+        installed = update.install(home, Path(sys.prefix), Path(work), update.run)
+    # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
+    match installed:
+        case update.Failed(step=step, said=why, ran=ran):
+            wide.annotate(steps=ran, failed=step)
+            print(f"hands update: {step} failed, so hands was not restarted and runs as it did: {why}", file=sys.stderr)
+            return 1
+        case update.Installed(sha=sha, ran=ran):
+            wide.annotate(steps=ran, sha=sha)
+    print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
+    update.detach()
+    outcome = restarted(home)
+    match outcome:
+        case Restarted():
+            line, out, code = f"{said(outcome, datetime.now(UTC))} It runs master at {sha}.", sys.stdout, 0
+        case NotRunning() | NotBack():
+            line, out, code = said(outcome, datetime.now(UTC)), sys.stderr, 1
+    try:
+        print(line, file=out, flush=True)
+    except BrokenPipeError:
+        # The brain read the update's output, and the restart has ended it: the line is the event's alone. Python's own
+        # flush at exit would raise again into the closed pipe.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())
     return code
 
 
