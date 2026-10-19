@@ -1,100 +1,140 @@
-"""scripts/not-rewound.sh refuses a commit built on the line master was rewound away from on 2026-10-15, read from
-this repository's own history: the line's first commit ab3ad39 (#270), and 50557d9, where master was put back."""
+"""scripts/not-rewound.sh refuses a commit built on the line master was rewound away from on 2026-10-15. Each test
+builds its own history in a scratch repository, with a first commit of its own standing in for the line's, and hands
+that commit to the script; nothing reads this repository's history or the network."""
 
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "scripts" / "not-rewound.sh"
-FIRST = "ab3ad395640441644c48b37dfea8884330f1ede7"
-REWOUND_TO = "50557d9141a68a871e44917be9d4b414304bd932"
-# git reads no configuration but a repository's own, so the developer's signing, hooks or URL rewrites never reach a test.
-ISOLATED = os.environ | {
-    "GIT_CONFIG_GLOBAL": os.devnull,
-    "GIT_CONFIG_NOSYSTEM": "1",
-    "GIT_AUTHOR_NAME": "Test",
-    "GIT_AUTHOR_EMAIL": "t@example.com",
-    "GIT_COMMITTER_NAME": "Test",
-    "GIT_COMMITTER_EMAIL": "t@example.com",
-}
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "not-rewound.sh"
+ON_THE_LINE = "is built on the line master was rewound away from on 2026-10-15"
+OFF_THE_LINE = "is not built on the line master was rewound away from on 2026-10-15"
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def git(cwd: Path, env: dict[str, str], *args: str) -> str:
-    return subprocess.run(("git", *args), cwd=cwd, env=env, capture_output=True, text=True, check=True).stdout.strip()
+def git_env() -> dict[str, str]:
+    """git with no config but the repository's own, so a signing or hook setting on the machine cannot reach a scratch
+    commit, and no GIT_ variable from outside can point it at another repository."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    return env | {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+    }
 
 
-@pytest.fixture(scope="session")
-def scratch(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
-    """An environment in which git reads this repository's objects and writes new ones to a scratch directory, so a
-    test commits on top of the real line without adding a thing to the repository."""
-    objects = git(ROOT, ISOLATED, "rev-parse", "--path-format=absolute", "--git-path", "objects")
-    env = ISOLATED | {"GIT_OBJECT_DIRECTORY": str(tmp_path_factory.mktemp("objects")), "GIT_ALTERNATE_OBJECT_DIRECTORIES": objects}
-    # No branch need hold the line once its branches are deleted, so a whole clone may lack its first commit, which the
-    # refusals need; it is fetched into the scratch directory, with no FETCH_HEAD naming an object the repository does
-    # not hold once the scratch directory is gone.
-    if subprocess.run(("git", "cat-file", "-e", f"{FIRST}^{{commit}}"), cwd=ROOT, env=env, capture_output=True).returncode != 0:
-        git(ROOT, env, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", FIRST)
-    return env
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(("git", *args), cwd=cwd, env=git_env(), capture_output=True, text=True, check=True).stdout.strip()
 
 
-def on_top(env: dict[str, str], *parents: str) -> str:
-    """A new commit whose parents are `parents`, holding the first parent's tree."""
-    return git(ROOT, env, "commit-tree", f"{parents[0]}^{{tree}}", *(arg for parent in parents for arg in ("-p", f"{parent}^{{commit}}")), "-m", "work")
+def commit(repo: Path, message: str, *parents: str) -> str:
+    """A new commit of the empty tree on `parents`; the message tells apart commits that share their parents."""
+    return git(repo, "commit-tree", EMPTY_TREE, *(arg for parent in parents for arg in ("-p", parent)), "-m", message)
 
 
-def checked(env: dict[str, str], commit: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
-    return subprocess.run((str(SCRIPT), commit), cwd=cwd, env=env, capture_output=True, text=True)
+@dataclass(frozen=True)
+class History:
+    """put_back, where master was put back; first, the rewound line's first commit, on put_back; master, master's next
+    commit after the rewind, also on put_back; rewound, work two commits on top of first. Branch `master` holds master
+    and branch `rewound` holds rewound."""
+
+    repo: Path
+    put_back: str
+    first: str
+    master: str
+    rewound: str
 
 
-def test_the_rewound_lines_first_commit_is_refused(scratch: dict[str, str]) -> None:
-    result = checked(scratch, FIRST)
+@pytest.fixture
+def history(tmp_path: Path) -> History:
+    repo = tmp_path / "repo"
+    git(tmp_path, "init", "--quiet", "--initial-branch", "master", str(repo))
+    put_back = commit(repo, "put back")
+    first = commit(repo, "first", put_back)
+    master = commit(repo, "master", put_back)
+    rewound = commit(repo, "rewound", commit(repo, "on first", first))
+    git(repo, "update-ref", "refs/heads/master", master)
+    git(repo, "update-ref", "refs/heads/rewound", rewound)
+    return History(repo, put_back, first, master, rewound)
+
+
+def checked(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run((str(SCRIPT), *args), cwd=cwd, env=git_env(), capture_output=True, text=True)
+
+
+def clone(history: History, branch: str, dest: Path, *options: str) -> Path:
+    """A clone of `branch` alone, as CI makes one, over a transport, so it holds only what that branch reaches."""
+    git(dest.parent, "clone", "--quiet", "--single-branch", "--branch", branch, *options, history.repo.as_uri(), str(dest))
+    return dest
+
+
+def test_the_rewound_lines_first_commit_is_refused(history: History) -> None:
+    result = checked(history.repo, history.first, history.first)
     assert result.returncode == 1
-    assert f"{FIRST} ({FIRST}) is built on the line master was rewound away from on 2026-10-15" in result.stderr
+    assert f"{history.first} ({history.first}) {ON_THE_LINE}, which begins at {history.first}" in result.stderr
     assert "the work must be rebuilt on master" in result.stderr
 
 
-def test_new_work_on_top_of_the_rewound_line_is_refused(scratch: dict[str, str]) -> None:
-    work = on_top(scratch, on_top(scratch, FIRST))
-    result = checked(scratch, work)
+def test_new_work_on_top_of_the_rewound_line_is_refused(history: History) -> None:
+    result = checked(history.repo, history.rewound, history.first)
     assert result.returncode == 1
-    assert f"{work} ({work}) is built on the line master was rewound away from on 2026-10-15" in result.stderr
+    assert f"{history.rewound} ({history.rewound}) {ON_THE_LINE}" in result.stderr
 
 
-def test_the_merge_ci_tests_of_a_pr_built_on_the_rewound_line_is_refused(scratch: dict[str, str]) -> None:
+def test_the_merge_ci_tests_of_a_pr_built_on_the_rewound_line_is_refused(history: History) -> None:
     """A pull request's check runs on master merged with the PR's head; the line comes in through the second parent."""
-    merge = on_top(scratch, "v0.2.0", on_top(scratch, FIRST))
-    assert checked(scratch, merge).returncode == 1
+    merge = commit(history.repo, "merge", history.master, history.rewound)
+    assert checked(history.repo, merge, history.first).returncode == 1
 
 
-@pytest.mark.parametrize("commit", [REWOUND_TO, "v0.2.0"], ids=["where master was put back", "a release"])
-def test_a_commit_off_the_rewound_line_is_accepted(scratch: dict[str, str], commit: str) -> None:
-    result = checked(scratch, commit)
+@pytest.mark.parametrize("name", ["put_back", "master"], ids=["where master was put back", "master after the rewind"])
+def test_a_commit_off_the_rewound_line_is_accepted(history: History, name: str) -> None:
+    off = getattr(history, name)
+    result = checked(history.repo, off, history.first)
     assert result.returncode == 0, result.stderr
-    assert "is not built on the line master was rewound away from on 2026-10-15" in result.stdout
+    assert f"{off} ({off}) {OFF_THE_LINE}" in result.stdout
 
 
-def test_new_work_on_master_is_accepted(scratch: dict[str, str]) -> None:
-    work = on_top(scratch, "v0.2.0")
-    assert checked(scratch, work).returncode == 0
+def test_new_work_on_master_is_accepted(history: History) -> None:
+    assert checked(history.repo, commit(history.repo, "work", history.master), history.first).returncode == 0
 
 
-def test_a_shallow_clone_cannot_tell_and_fails(tmp_path: Path) -> None:
-    clone = tmp_path / "shallow"
-    git(tmp_path, ISOLATED, "clone", "--quiet", "--depth", "1", "--no-checkout", ROOT.as_uri(), str(clone))
-    result = checked(ISOLATED, "HEAD", cwd=clone)
+def test_a_whole_clone_without_the_lines_first_commit_accepts(history: History, tmp_path: Path) -> None:
+    """Once no ref holds the line, a clone of master lacks its first commit, and that absence proves master is off it."""
+    repo = clone(history, "master", tmp_path / "master")
+    result = checked(repo, "HEAD", history.first)
+    assert result.returncode == 0, result.stderr
+    assert f"{OFF_THE_LINE}; this whole clone does not hold its first commit {history.first}" in result.stdout
+
+
+def test_a_whole_clone_of_work_on_the_line_brings_the_first_commit_and_refuses(history: History, tmp_path: Path) -> None:
+    """The same clone of a branch built on the line holds its first commit, since it is that branch's ancestor."""
+    repo = clone(history, "rewound", tmp_path / "rewound")
+    assert checked(repo, "HEAD", history.first).returncode == 1
+
+
+def test_the_real_first_commit_is_the_default_and_its_absence_accepts(history: History) -> None:
+    """With no FIRST given, the script asks about the real line's first commit, which this scratch repository lacks."""
+    result = checked(history.repo, "master")
+    assert result.returncode == 0, result.stderr
+    assert "this whole clone does not hold its first commit" in result.stdout
+
+
+def test_a_shallow_clone_cannot_tell_and_fails(history: History, tmp_path: Path) -> None:
+    """Depth 1 of a branch on the line lacks the first commit too, so absence proves nothing there and the check fails."""
+    repo = clone(history, "rewound", tmp_path / "shallow", "--depth", "1")
+    result = checked(repo, "HEAD", history.first)
     assert result.returncode == 2
     assert "this clone is shallow" in result.stderr
 
 
-def test_a_whole_clone_without_the_lines_first_commit_holds_nothing_built_on_it(tmp_path: Path) -> None:
-    """A whole clone holds every ancestor of its commits, so without ab3ad39 the answer is known, and nothing is fetched:
-    this clone has no origin."""
-    repo = tmp_path / "elsewhere"
-    git(tmp_path, ISOLATED, "init", "--quiet", str(repo))
-    git(repo, ISOLATED, "commit", "--quiet", "--allow-empty", "-m", "first")
-    result = checked(ISOLATED, "HEAD", cwd=repo)
-    assert result.returncode == 0, result.stderr
-    assert "is not built on the line master was rewound away from on 2026-10-15" in result.stdout
+def test_a_first_commit_git_cannot_look_up_fails_rather_than_accepting(history: History) -> None:
+    result = checked(history.repo, "master", "not-an-object")
+    assert result.returncode == 2
+    assert "git could not tell whether this clone holds not-an-object" in result.stderr
