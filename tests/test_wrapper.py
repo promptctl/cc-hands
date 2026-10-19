@@ -130,8 +130,8 @@ def test_every_hands_shim_is_skipped_however_path_names_it(root: Path) -> None:
     assert ran.stdout == "claude  socket=unset\n"
 
 
-def test_the_brain_finds_the_real_claude_as_the_shim_does_past_every_shim(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The brain runs under hands' own fritter, so a shim it found would wrap it in a second fritter and tap it as a session.
+def test_the_real_claude_is_found_as_the_shim_finds_it_past_every_shim(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `hands check` asks after the person's own claude, the one the shim runs: a shim it found would be taken for it.
     shim = installed_shim(root)
     other = executable(root / "other" / "claude", shim_script(root / "other" / "fritter", WIRE))
     (root / "alias").mkdir()
