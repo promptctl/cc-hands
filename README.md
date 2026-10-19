@@ -62,11 +62,13 @@ is not, what does it; it exits 0 only when every step is done.
    claude plugin install hands@cc-hands
    ```
 
-6. The brain, the Claude Code of hands' own that hands talks through, logged in on a Claude
-   plan or, with `--console`, an Anthropic Console key. It runs Claude Code's first screens in
-   the brain's own directory, `~/.hands/brain`: answer them, log in, and `/exit`.
+6. The brain, the Claude Code of hands' own that hands talks through: the one release of Claude
+   Code hands is pinned to, fetched into the brain's own directory, `~/.hands/brain` (about
+   230 MB), and logged in on a Claude plan or, with `--console`, an Anthropic Console key. The
+   login runs Claude Code's first screens there: answer them, log in, and `/exit`.
 
    ```
+   hands install-brain
    hands login
    ```
 
@@ -213,6 +215,10 @@ Claude Code of hands' own, on any login Claude Code takes from Anthropic, on Cla
 another of the four hands offers: `claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5`, or
 `claude-fable-5-1`. Its requests go through hands' proxy, and it reaches the sessions through hands' tools over MCP
 (`src/hands/brain/`). It takes no key; its login lives in `~/.hands/brain`, and it does not start without one.
+It runs one Claude Code release, the version `src/hands/brain/pinned.py` names, from hands' own copy in
+`~/.hands/brain/pinned-claude`, never the `claude` your sessions run, which your install updates; it moves only with a
+hands release that moves that pin. `hands install-brain` fetches it from Anthropic's release downloads, checked against
+the checksum hands carries for it, and the brain does not start on a copy that is missing or does not match.
 A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
 before starting hands.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
@@ -399,7 +405,7 @@ and gives it one line: ✓ done, ✗ missing with the command that fixes it, or 
 could not be looked at. `hands check -v` says each in full beneath its line. The steps: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
+brain's own Claude Code, the release hands pins, which `hands install-brain` fetches; the brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 logs each step in full as it starts, the brain as it reached it. An up daemon is not a

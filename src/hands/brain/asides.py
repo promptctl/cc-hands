@@ -162,7 +162,9 @@ class Asides:
     async def _started(self, asked: _Asked, question: str) -> ClaudeCode:
         try:
             # A Claude Code cut short as it starts is killed by spawn itself.
-            return await spawn(self._station, aside_command(brain_claude(self._station.inherited), self._station.model, asked.session, question))
+            # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
+            claude = await asyncio.to_thread(brain_claude, self._station.config_dir)
+            return await spawn(self._station, aside_command(claude, self._station.model, asked.session, question))
         except (Unstartable, OSError) as error:
             # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
             raise AsideFailed(Unanswered.UNSTARTED, f"no Claude Code to ask: {error}") from error

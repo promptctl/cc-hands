@@ -22,6 +22,7 @@ from loguru import logger
 
 from hands.core.front import FrontUnread, InFront
 from hands.core.playback import Bookmark
+from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
 from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
@@ -30,7 +31,7 @@ from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import events, onboard
+from conftest import events, located, onboard, pin, pinned_to
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
@@ -317,7 +318,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "pid": brain.pid,
+        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "pid": brain.pid,
     }
     # Held once the brain is up, for the next start to resume.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Fresh(SessionId("b2"), SessionId("b1"))
@@ -613,11 +614,12 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
         broken.setattr("hands.brain.asides.spawn", fault)
         with pytest.raises(RuntimeError, match="no thread"):
             await asides.ask(AsideKind.LINE, "broken?", WAITED)
-    # With no claude on the PATH hands was started with there is no Claude Code to ask.
-    nowhere = station(tmp_path)
-    nowhere = replace(nowhere, inherited={**nowhere.inherited, "PATH": str(tmp_path / "nowhere")})
-    with pytest.raises(AsideFailed, match="no claude on PATH"):
-        await Asides(nowhere, recorded.append).ask(AsideKind.LINE, "anyone?", WAITED)
+    # With the brain's pinned release not installed there is no Claude Code to ask.
+    uninstalled = tmp_path / "uninstalled" / "claude"
+    with monkeypatch.context() as unpinned:
+        unpinned.setattr(pinned, "claude", located(uninstalled))
+        with pytest.raises(AsideFailed, match="is not installed"):
+            await asides.ask(AsideKind.LINE, "anyone?", WAITED)
     # One event for each question, however it ended: why it has no answer, typed, beside what was seen of it.
     said = events(recorded, "brain.aside")
     assert [(event.facts["question"], event.outcome, event.facts.get("unanswered"), (event.error or "").split(";")[0].split(":\n")[0]) for event in said] == [
@@ -628,7 +630,7 @@ async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_cla
         ("late", "failed", Unanswered.TIMED_OUT, "AsideFailed: no answer within Deadline(seconds=0.3)"),
         ("stay", "cancelled", None, ""),
         ("broken?", "failed", None, "RuntimeError: no thread"),
-        ("anyone?", "failed", Unanswered.UNSTARTED, "AsideFailed: no Claude Code to ask: no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own"),
+        ("anyone?", "failed", Unanswered.UNSTARTED, f"AsideFailed: no Claude Code to ask: Claude Code {pinned.VERSION}, the brain's, is not installed at {uninstalled}: run `hands install-brain`"),
     ]
     assert all("reply" not in event.facts for event in said)
     # How long each waited its turn, the rest of its duration its Claude Code answering; none for one that never had a turn.
@@ -1057,7 +1059,7 @@ brain = await start(launch, lambda _entry: None)
 print(brain.pid, _child_of(brain.pid), flush=True)
 """
 ASIDE = """
-claude = await spawn(launch.station, [str(brain_claude(launch.station.inherited)), "--session-id", "s1"])
+claude = await spawn(launch.station, [str(brain_claude(launch.station.config_dir)), "--session-id", "s1"])
 print(claude.pid, flush=True)
 """
 
@@ -1076,7 +1078,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
             return False
         return True
 
-    script = "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, spawn, start\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, spawn, start\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
@@ -1139,7 +1141,7 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
     Python 3.12's asyncio subprocesses did: cancelled before the transport's own task first ran, they waited for an exit
     nothing would deliver."""
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
-    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", SHUT_DOWN, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
+    hands = await asyncio.create_subprocess_exec(sys.executable, "-c", pinned_to(fake_claude) + SHUT_DOWN, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
         out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path))), 60)
     except TimeoutError:
@@ -1169,6 +1171,7 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
 ) -> None:
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
     fake_claude.write_text("#!/bin/sh\necho stuck on a screen\nsleep 30\n")
+    pin(monkeypatch, fake_claude)
     with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
         await start(launch(tmp_path), lambda _entry: None)
     await until(lambda: not running(tmp_path))
@@ -1180,6 +1183,7 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
     # As Claude Code 2.1.289 does with a transcript it cannot read.
     fake_claude.write_text("#!/bin/sh\necho No conversation found with session ID: c1\n")
+    pin(monkeypatch, fake_claude)
     brain = tmp_path / "brain"
     brain.mkdir()
     (brain / "conversation").write_text("c1\n")
@@ -1445,12 +1449,12 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
         return FrontUnread("not read in this test")
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
-    with pytest.raises(CannotStart, match="^no claude on PATH"):
+    with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
         async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands recall", recorded.append, {"PATH": str(tmp_path)}, never_cut):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
-    assert launched.outcome == "failed" and launched.error == "Unstartable: no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own"
+    assert launched.outcome == "failed" and launched.error == f"Unstartable: Claude Code {pinned.VERSION}, the brain's, is not installed at {pinned.claude(tmp_path / 'brain')}: run `hands install-brain`"
     assert launched.facts["account"] == Account("claude.ai", "brain@example.com") and "pid" not in launched.facts
     assert events(recorded, "brain.run") == []
 

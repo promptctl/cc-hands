@@ -30,6 +30,7 @@ from typing import Literal
 from aiohttp import web
 from loguru import logger
 
+from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, Deny, Text
 from hands.core.session import Permission, PromptText, SessionId, pasted
@@ -43,7 +44,7 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
-from hands.sessions.wrapper import UPDATER_OFF, Unpackaged, packaged, real_claude
+from hands.sessions.wrapper import UPDATER_OFF, Unpackaged, packaged
 from hands.voice.backends import Account
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
@@ -219,7 +220,7 @@ def _holding(config_dir: Path) -> SessionId | None:
 
 
 def slim(claude: Path, model: str, conversation: Conversation) -> list[str]:
-    """A slim Claude Code's command line: the real claude, interactive, reading no settings but its config directory's."""
+    """A slim Claude Code's command line: `claude`, the brain's pinned release, interactive, reading no settings but its config directory's."""
     return [
         str(claude),
         "--model", model,
@@ -310,12 +311,13 @@ class Unstartable(Exception):
     """A Claude Code of hands' own could not be started: no claude to run, or a fritter that never opened its socket, or a brain that never turned its input on."""
 
 
-def brain_claude(inherited: Mapping[str, str]) -> Path:
-    """The Claude Code hands runs as its own: the real claude on PATH, past every hands shim, which would run it as a session."""
-    claude = real_claude(inherited.get("PATH", ""))
-    if claude is None:
-        raise Unstartable("no claude on PATH but hands' shims, so there is no Claude Code for hands to run as its own")
-    return claude
+def brain_claude(config_dir: Path) -> Path:
+    """The Claude Code hands runs as its own on `config_dir`: hands' copy of the release it is pinned to
+    (hands.brain.pinned), never the person's claude, whose release their own install moves under it."""
+    try:
+        return pinned.verified(config_dir)
+    except pinned.Unpinned as error:
+        raise Unstartable(str(error)) from None
 
 
 @dataclass(frozen=True)
@@ -396,7 +398,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
-    signed = subprocess.run([brain_claude(inherited), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
+    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
@@ -449,7 +451,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
     try:
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
-            [brain_claude(inherited), "auth", "status"],
+            [brain_claude(config_dir), "auth", "status"],
             env=environment(config_dir, base_url, inherited),
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -953,7 +955,9 @@ async def start(launch: Launch, record: Record) -> Brain:
         except Unpackaged as error:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
-        claude = brain_claude(station.inherited)
+        # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
+        claude = await asyncio.to_thread(brain_claude, station.config_dir)
+        annotate(claude=claude)
         hooks: asyncio.Queue[_Posted] = asyncio.Queue()
         listener, url = await _listen(hooks)
         # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
