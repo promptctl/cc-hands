@@ -13,7 +13,7 @@ BRAIN = SessionId("brain")
 
 
 def sent(exchange: str, kind: Kind = MainTurn(None), session: SessionId = BRAIN) -> Sent:
-    return Sent(exchange, session, kind, {})
+    return Sent(exchange, session, kind, None, {})
 
 
 def started(exchange: str, input: int, cached: int = 0, created: int = 0, model: str = "claude-opus-5-5") -> Heard:
@@ -27,7 +27,7 @@ def delta(exchange: str, output: int) -> Heard:
 
 def whole(exchange: str, kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (), "end_turn", {})
-    return Exchanged(exchange, BRAIN, kind, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root())
+    return Exchanged(exchange, BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root())
 
 
 def heard(usage: Usage, *observed: Sent | Heard | Exchanged) -> Usage:

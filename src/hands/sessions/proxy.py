@@ -127,7 +127,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         body = await request.content.read()
         requested_at = clock()
         sent = sent_of(request.headers, request.path_qs, body)
-        exchange, session, kind, parsed = sent.exchange, sent.session, sent.kind, sent.body
+        exchange, session, kind, named, parsed = sent.exchange, sent.session, sent.kind, sent.named, sent.body
         tell(sent)
         try:
             routed = route(sent)
@@ -140,7 +140,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         sent_at = clock()
 
         def exchanged(changes: tuple[Change, ...], reply: Ending, final: bool) -> Exchanged:
-            return Exchanged(exchange, session, kind, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
+            return Exchanged(exchange, session, kind, named, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
 
         changes: tuple[Change, ...] = ()
         # [LAW:single-enforcer] from here until the API's answer has a head, whatever stops the exchange ends it here.

@@ -224,7 +224,7 @@ def running(tmp: Path) -> list[str]:
 
 def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1") -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged(exchange, SessionId(session), Fork(), "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
+    return Exchanged(exchange, SessionId(session), Fork(), None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -400,7 +400,7 @@ async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: 
             turn = asyncio.create_task(brain.ask("write", held.append))
             await until(lambda: len(held) == 1)
             # The turn's request, read off the wire while the turn holds its permission.
-            brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), {"messages": [], "tools": [{"name": "Write"}, {"name": "mcp__hands__read_session"}]}))
+            brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), None, {"messages": [], "tools": [{"name": "Write"}, {"name": "mcp__hands__read_session"}]}))
             assert await asyncio.wait_for(turn, 10) == BrainAnswered("p1", None)
     finally:
         await brain.stop()
@@ -538,8 +538,8 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     assert not asked.done()
     # The question's own request is inside its unit of work; another session's goes as it was routed.
     routed = Send(span=root())
-    own = asides.adopted(Sent("x1", SessionId(first), Fork(), None), routed)
-    assert asides.adopted(Sent("x2", SessionId("elsewhere"), Fork(), None), routed) == routed
+    own = asides.adopted(Sent("x1", SessionId(first), Fork(), None, None), routed)
+    assert asides.adopted(Sent("x2", SessionId("elsewhere"), Fork(), None, None), routed) == routed
     asides.hear(answered(first, "It said four."))
     assert await asked == "It said four."
     # The command and its question whole, newline and all, with a tab as its spaces and half an emoji spelled out.
@@ -736,14 +736,14 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
         with_hands = {**body, "tools": [{"name": "Read"}, {"name": "mcp__hands__read_session"}]}
-        brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), with_hands))
-        brain.hear(Sent("x2", SessionId("b1"), MainTurn(None), with_hands))
-        brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), body))
+        brain.hear(Sent("x1", SessionId("b1"), MainTurn(None), None, with_hands))
+        brain.hear(Sent("x2", SessionId("b1"), MainTurn(None), None, with_hands))
+        brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), None, body))
         assert errors == []
-        brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), body))
+        brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), None, body))
         # Deferred, as 2.1.288 offers MCP tools under tool search: the server may be connected, and is not blamed.
         deferred = {**body, "tools": [{"name": "Read"}, {"name": "ToolSearch"}, {"name": "DeferredToolPlaceholder", "defer_loading": True}]}
-        brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), deferred))
+        brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), None, deferred))
     finally:
         logger.remove(sink)
     assert errors == [
@@ -1436,7 +1436,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     transcript(tmp_path / "brain", str(launched.facts["session"]))
     async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut) as minded:
         # Its usage is heard under the session it resumed, not one begun for it.
-        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), {}))
+        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
         assert isinstance(minded.llm, BrainStage)
         reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]

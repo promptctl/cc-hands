@@ -160,7 +160,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Uncopied("the copy broke off", 0.0),
         Unfinished("RuntimeError: the client broke", 0.0),
     ):
-        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
+        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
         ("Failure", "error"),
         ("WideEvent", "info"),

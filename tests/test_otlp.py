@@ -182,7 +182,7 @@ TURN = _event(event="voice.turn")
 
 
 def _exchanged(reply: Ending, span: Span = Span(TURN.trace_id, "1111111111111111", TURN.span_id)) -> Exchanged:
-    return Exchanged("x1", SessionId("brain"), MainTurn(None), "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
+    return Exchanged("x1", SessionId("brain"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
 
 
 def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it_and_one_made_for_none_as_a_root(collector: Collector, tmp_path: Path) -> None:

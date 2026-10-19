@@ -186,7 +186,7 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
     tell(sent)
 
     def end(reply: Reached | Unreached | Uncopied) -> None:
-        tell(Exchanged(sent.exchange, sent.session, sent.kind, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
+        tell(Exchanged(sent.exchange, sent.session, sent.kind, sent.named, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
 
     await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock, end)
 
