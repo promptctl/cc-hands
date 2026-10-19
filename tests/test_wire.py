@@ -236,6 +236,9 @@ def test_a_main_turn_quoting_the_side_question_wrapper_is_still_a_main_turn() ->
         (request(said("a"), said("b"), tools=[]), Auxiliary("claude-opus-5-5")),
         # Marked as a loop marks: still beside the loop, since Claude Code said it is not the loop's turn.
         (request(said("a"), said("b", marked=True)), Auxiliary("claude-opus-5-5")),
+        # Every other reading of the body holds as it does without the header.
+        (request(said("go on"), said(COMPACTION_OPENING + " summarise", marked=True)), Compaction()),
+        (request(), Unknown("a messages request to 'claude-opus-5-5' with no messages")),
     ],
 )
 def test_a_request_claude_code_names_auxiliary_is_a_fork_or_a_call_beside_the_loop_by_its_body(body: object, kind: object) -> None:

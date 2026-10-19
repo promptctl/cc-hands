@@ -128,11 +128,10 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     request = cast(Mapping[str, object], body)
     model = str(request.get("model"))
     billing = _billing(request)
-    prompt = billing.get("cc_prompt_id")
     # The class Claude Code named outranks every reading of the body: it is Claude Code's own (OIs in 2.1.299 lists them).
     match named:
         case "main":
-            return MainTurn(None if prompt is None else PromptId(prompt))
+            return _turn(billing)
         case "subagent" | "workflow":
             return Subagent()
         case "compaction":
@@ -140,13 +139,21 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         case "side_reply":
             return Fork()
         case "auxiliary":
-            # Not one kind: 2.1.289's es() names every request that is neither its loop's nor a subagent's auxiliary,
-            # its side questions and prompt suggestions among them, so the body tells a fork from a call beside the loop.
-            return _beside_the_loop(request, model)
+            # Not one kind: 2.1.289's es() names every request that is neither its loop's nor a subagent's auxiliary, its
+            # side questions and prompt suggestions among them. The body tells which, all but the loop's kinds it rules out.
+            match _by_body(request, model, billing):
+                case MainTurn() | Subagent():
+                    return Auxiliary(model)
+                case kind:
+                    return kind
         case str() as other:
             return Unknown(f"a messages request to {model!r} Claude Code names {other!r}, a class hands does not know")
         case None:
-            pass
+            return _by_body(request, model, billing)
+
+
+def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, str]) -> Kind:
+    """The kind a request's body reads as: by the words Claude Code opens a prompt of its own with, else by its markers."""
     messages = _list(request.get("messages"))
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
@@ -154,35 +161,27 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
     if any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
         return Compaction()
-    if _asks_aside(request):
+    if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
         return Fork()
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history (2.1.285, markers on messages 5 and 7 of 8), and offers no tools in the body (2.1.296).
-    newest = _newest_marker(messages)
+    newest = next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
     last = len(messages) - 1
     if newest == last and billing.get("cc_is_subagent") == "true":
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
         return Subagent()
     if newest == last:
-        return MainTurn(None if prompt is None else PromptId(prompt))
-    return _beside_the_loop(request, model)
+        return _turn(billing)
+    if newest == last - 1:
+        return Fork()
+    # Marked nowhere a loop or a fork marks: a call beside the loop.
+    return Auxiliary(model)
 
 
-def _beside_the_loop(request: Mapping[str, object], model: str) -> Fork | Auxiliary:
-    """A request that is no turn of the loop's: a fork of it, by its side-question wrapper or by its newest marker on the
-    message before its own, or else a call beside it, which is marked nowhere a loop or a fork marks."""
-    messages = _list(request.get("messages"))
-    return Fork() if _asks_aside(request) or _newest_marker(messages) == len(messages) - 2 else Auxiliary(model)
-
-
-def _asks_aside(request: Mapping[str, object]) -> bool:
-    """Whether a request asks a side question, by the words Claude Code wraps one in."""
-    return any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request))
-
-
-def _newest_marker(messages: Sequence[object]) -> int | None:
-    """The index of the newest message carrying a message-level cache marker; None when none does."""
-    return next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
+def _turn(billing: Mapping[str, str]) -> MainTurn:
+    """The loop's own turn, named by the prompt its billing line says it answers, when it says one."""
+    prompt = billing.get("cc_prompt_id")
+    return MainTurn(None if prompt is None else PromptId(prompt))
 
 
 def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
