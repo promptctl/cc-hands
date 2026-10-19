@@ -10,6 +10,9 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "not-rewound.sh"
+# The real line's first commit, ab3ad39, as git stores it: parent 50557d9, subject (#270). Its hash is the script's
+# default, so the default is pinned without reading this repository's history or the network.
+REAL_FIRST = Path(__file__).resolve().parent / "fixtures" / "rewound-line-first-commit"
 ON_THE_LINE = "is built on the line master was rewound away from on 2026-10-15"
 OFF_THE_LINE = "is not built on the line master was rewound away from on 2026-10-15"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -78,7 +81,7 @@ def test_the_rewound_lines_first_commit_is_refused(history: History) -> None:
     result = checked(history.repo, history.first, history.first)
     assert result.returncode == 1
     assert f"{history.first} ({history.first}) {ON_THE_LINE}, which begins at {history.first}" in result.stderr
-    assert "the work must be rebuilt on master" in result.stderr
+    assert "rebuilt on master from its own commits alone" in result.stderr
 
 
 def test_new_work_on_top_of_the_rewound_line_is_refused(history: History) -> None:
@@ -119,6 +122,17 @@ def test_a_whole_clone_of_work_on_the_line_brings_the_first_commit_and_refuses(h
     assert checked(repo, "HEAD", history.first).returncode == 1
 
 
+def test_the_default_is_the_real_lines_first_commit_and_work_on_it_is_refused(history: History) -> None:
+    """The real first commit's object goes into the scratch repository with its parent grafted away, since 50557d9 is
+    not there; a wrong default would be absent, and the script would accept."""
+    first = git(history.repo, "hash-object", "-t", "commit", "-w", str(REAL_FIRST))
+    git(history.repo, "replace", "--graft", first)
+    work = commit(history.repo, "work", first)
+    result = checked(history.repo, work)
+    assert result.returncode == 1, result.stdout
+    assert f"{work} ({work}) {ON_THE_LINE}, which begins at {first}" in result.stderr
+
+
 def test_the_real_first_commit_is_the_default_and_its_absence_accepts(history: History) -> None:
     """With no FIRST given, the script asks about the real line's first commit, which this scratch repository lacks."""
     result = checked(history.repo, "master")
@@ -134,7 +148,21 @@ def test_a_shallow_clone_cannot_tell_and_fails(history: History, tmp_path: Path)
     assert "this clone is shallow" in result.stderr
 
 
-def test_a_first_commit_git_cannot_look_up_fails_rather_than_accepting(history: History) -> None:
-    result = checked(history.repo, "master", "not-an-object")
+@pytest.mark.parametrize("first", ["not-an-object", ""], ids=["not an object", "empty"])
+def test_a_first_commit_git_cannot_look_up_fails_rather_than_accepting(history: History, first: str) -> None:
+    result = checked(history.repo, "master", first)
     assert result.returncode == 2
-    assert "git could not tell whether this clone holds not-an-object" in result.stderr
+    assert f"git could not tell whether this clone holds {first}" in result.stderr
+
+
+def test_a_commit_this_clone_does_not_hold_fails(history: History) -> None:
+    result = checked(history.repo, "no-such-ref", history.first)
+    assert result.returncode == 2
+    assert "no-such-ref is not a commit in this clone" in result.stderr
+
+
+@pytest.mark.parametrize("args", [(), ("a", "b", "c")], ids=["no commit", "too many"])
+def test_a_wrong_number_of_arguments_fails(history: History, args: tuple[str, ...]) -> None:
+    result = checked(history.repo, *args)
+    assert result.returncode == 2
+    assert "usage: not-rewound.sh COMMIT [FIRST]" in result.stderr

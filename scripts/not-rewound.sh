@@ -6,7 +6,8 @@
 # is on it, and 2 when this clone cannot tell.
 set -eu
 [ $# -eq 1 ] || [ $# -eq 2 ] || { echo "not-rewound: usage: not-rewound.sh COMMIT [FIRST] (given: $*)" >&2; exit 2; }
-FIRST=${2:-ab3ad395640441644c48b37dfea8884330f1ede7}
+# An empty FIRST is not a default; git fails to look it up below, which stays loud.
+FIRST=${2-ab3ad395640441644c48b37dfea8884330f1ede7}
 # [LAW:no-silent-failure] a shallow clone lacks the history between COMMIT and FIRST, so it cannot tell a commit on the
 # line from one off it; a git that cannot answer stops the script here with its own error.
 shallow=$(git rev-parse --is-shallow-repository)
@@ -29,7 +30,7 @@ esac
 code=0
 git merge-base --is-ancestor "$FIRST" "$commit" || code=$?
 case $code in
-  0) echo "not-rewound: $1 ($commit) is built on the line master was rewound away from on 2026-10-15, which begins at $FIRST; nothing may go on top of those commits, so the work must be rebuilt on master" >&2; exit 1 ;;
+  0) echo "not-rewound: $1 ($commit) is built on the line master was rewound away from on 2026-10-15, which begins at $FIRST; nothing may go on top of those commits, so the work must be rebuilt on master from its own commits alone, as with git rebase --onto origin/master <the rewound commit it was built on>; a plain rebase onto master would bring the rewound commits back with it" >&2; exit 1 ;;
   1) echo "not-rewound: $1 ($commit) is not built on the line master was rewound away from on 2026-10-15" ;;
   *) echo "not-rewound: git could not tell whether $FIRST is an ancestor of $1 ($commit)" >&2; exit 2 ;;
 esac

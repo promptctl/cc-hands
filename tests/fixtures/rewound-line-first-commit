@@ -1,0 +1,63 @@
+tree 94360792241c5d66521425570c29edd19fc2d07b
+parent 50557d9141a68a871e44917be9d4b414304bd932
+author Brandon Fryslie <530235+brandon-fryslie@users.noreply.github.com> 1791455034 -0600
+committer GitHub <noreply@github.com> 1791455034 -0600
+gpgsig -----BEGIN PGP SIGNATURE-----
+ 
+ wsFcBAABCAAQBQJqx286CRC1aQ7uu5UhlAAAQa4QAEEUcfCQL80jnnhRiNB6qi3/
+ tnMSBw4sM9LRkPZCD5PjXQPtO3QBfJhlOk9/DaywoAhpuc23msZnhFwND6P9Yp+b
+ 5/3Lze0StirSL9HJIb6gn+d3S4R9Fg+DDrCGQddu6NIDpZ1K9V7TMwVbun92TUrM
+ ASs0OcQGYKyuZvFitlGegdpssCdNpJGfyb3vupZuuo8GxdHLdnkhgDHfUcrUR/1Q
+ cqCb6mUOCp+c9FfsiHO3wXQGW8aTHVhDrPD0hmRqaM+5goQjJ5pz6NOPumf3gOCv
+ 0ODO5beVtZeQLB6VufUcw/1QdFzluuYLEHL6Kj05/n0rS7YtdVeNDcOMwUU8eIPT
+ BN8kZ4FjALh57vHbX+FldiAjOIBVCwaQdmt3+Rm4e4geGRG5ip/Ng4EgTkvCs3by
+ feWIAj86ODWImL5U2ShojibjSodDg8XpmvFBMnrC5z8lFIrleJc3qJxE2KG9sJxy
+ gTZhh2t5/UeCecu15NGVLHdfSDgenz/nv21JuQzsfJaeZelYQf36IRoMkRhl8zgt
+ y627XvIUS2PV+gfWHKg+EZI70XBJDuoxftR+oxz7kkHspwVpNI9HAUAWlQXFKTjy
+ j5QciUH1o//ac6PilsGvSEELWHHRU5IIAOacX0yyOKBnbq0jl9cY0b4v6xj+NreP
+ YU8v1Ci3fNi0vpvKjyVK
+ =QBKz
+ -----END PGP SIGNATURE-----
+ 
+
+app: hands.app runs hands and holds its macOS grants (hands-monetization-76j.3aj.8k1) (#270)
+
+* app: hands.app runs hands run as its child and holds hands' Microphone and Input Monitoring grants itself (hands-monetization-76j.3aj.8k1)
+
+A Swift launcher runs `hands run` from the user's login shell, so the daemon gets the
+same PATH a terminal gives it, and macOS charges every grant hands asks for to
+hands.app. The app quits the daemon with SIGTERM when it is quit, ends when the
+daemon ends, and shows the daemon's last lines when it ends in failure. Its own
+lines and the daemon's go to ~/Library/Logs/hands/hands.log.
+
+`make app` builds it signed with the Developer ID Application identity under the
+hardened runtime; `make notarized-app` notarizes, staples, and checks Gatekeeper.
+`make check` type-checks the launcher.
+
+* app: the login shell only says the environment; hands is the app's direct child, and a quit or SIGTERM always winds it down (hands-monetization-76j.3aj.8k1)
+
+An interactive shell ignores SIGTERM while it reads its rc files, so a quit sent to a shell that would later exec
+hands was lost. The shell now prints its environment (NUL-marked past rc output) and hands runs on it via env.
+SIGTERM quits the app as Quit does, through a no-op handler rather than SIG_IGN, which hands would inherit. Main-thread
+hops go through the run loop in common modes, so a quit's wait and an alert cannot starve them. The log is O_APPEND and
+begun again past 10 MB. Bundle versions are release numbers. Check and build compile for Info.plist's minimum macOS.
+Grant messages name the app hands runs in. tests/test_app.py runs the compiled launcher.
+
+* app: env writes the environment to its own file; hands check takes the grant from a running hands (hands-monetization-76j.3aj.8k1)
+
+A background job an rc file starts kept the shell's stdout pipe open, so the app waited forever, silently, before
+starting hands. env now writes to a file only it holds, and the shell's output goes to the log.
+
+hands check in a terminal could not see hands.app's Input Monitoring grant. A running hands starts only with the
+grant of the app it runs in, so a running hands is the grant step's answer.
+
+* app: a test's shell and log come from the environment; a second quit kills a hands that will not stop (hands-monetization-76j.3aj.8k1)
+
+The launcher read its test overrides from argv, where anything macOS or `open --args` passes would replace the user's
+shell; they are HANDS_APP_SHELL and HANDS_APP_LOG now. A second quit, or SIGTERM, kills a hands that ignores the
+first: a second NSApp.terminate while a reply is pending ends the app at once and orphaned it. The shell and hands
+start in the user's home with LANG set, as Terminal gives them. The environment file is removed on every path. A
+failure reads only the log's last 64 kB. notarytool's own error is shown when a submission fails. hands check claims
+of a running hands only that it started with its grant, and offers hands.app where this app has none.
+
+* readiness: the grant step has one no-grant message, the door's (hands-monetization-76j.3aj.8k1)
