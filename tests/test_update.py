@@ -2,9 +2,12 @@
 it; a step that fails stops it with hands unrestarted. The brain asks for it through its hands:update skill."""
 
 import errno
+import fnmatch
 import io
 import json
 import os
+import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -23,6 +26,7 @@ from hands.daemon.starting import invocation
 from hands.daemon.update import Done, Failed, Installed, Ran, Step
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
+from hands.voice.intermediary_instruction import brain_instruction
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -58,14 +62,14 @@ class Commands:
 
 def expected(home: Home, work: Path) -> list[tuple[tuple[str, ...], Path]]:
     """Every command of an update into `work`, in order, and the directory each runs in."""
-    clone, python = work / "cc-hands", f"{sys.version_info.major}.{sys.version_info.minor}"
+    clone = work / "cc-hands"
     return [
         (("uv", "tool", "dir"), work),
         (("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", "master", "https://github.com/promptctl/cc-hands.git", str(clone)), work),
         (("git", "rev-parse", "--verify", "HEAD^{commit}"), clone),
         (("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(work / "constraints.txt")), clone),
         # The commit itself from GitHub, not the clone, so uv's record of the tool outlives the clone.
-        (("uv", "tool", "install", "--reinstall-package", "hands", "--python", python, "--constraints", str(work / "constraints.txt"), f"hands @ git+https://github.com/promptctl/cc-hands.git@{SHA}"), work),
+        (("uv", "tool", "install", "--reinstall-package", "hands", "--python", update.made_from(), "--constraints", str(work / "constraints.txt"), f"hands @ git+https://github.com/promptctl/cc-hands.git@{SHA}"), work),
         (tuple(invocation(home, "install-fritter")), work),
         (tuple(invocation(home, "install-brain")), work),
     ]
@@ -79,7 +83,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
 
-    installed = update.install(home, Path(sys.prefix), work, commands)
+    installed = update.install(home, Path(sys.prefix), None, work, commands)
 
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
@@ -116,7 +120,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     # A step after the install leaves master installed: what hands runs now is as it was, and its next start is not.
     unfinished = failing in (Step.INSTALL_FRITTER, Step.INSTALL_BRAIN)
     if unfinished:
-        assert err.startswith(f"hands update: {failing} failed, so hands was not restarted. It runs as it did, but master at {SHA} is installed, and hands starts on it next time without what {failing} installs; `hands update` again finishes it: {why}")
+        assert err.startswith(f"hands update: {failing} failed, so hands was not restarted, but master at {SHA} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {failing} installs, beside a running hands that is not; `hands update` again finishes it: {why}")
     else:
         assert err.startswith(f"hands update: {failing} failed, so hands was not restarted and runs as it did: {why}")
     # [LAW:nothing-unseen] the event says which step failed, each step run up to it, and the commit installed, if one was.
@@ -132,12 +136,29 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
     (elsewhere / update.TOOL).mkdir(parents=True)
     commands = Commands(elsewhere)
 
-    installed = update.install(Home(tmp_path / "home"), Path(sys.prefix), tmp_path / "work", commands)
+    installed = update.install(Home(tmp_path / "home"), Path(sys.prefix), None, tmp_path / "work", commands)
 
     # Its restart would start it again on what it runs now, so nothing is fetched or installed.
     assert [argv for argv, _cwd in commands.ran] == [("uv", "tool", "dir")]
     assert isinstance(installed, Failed) and installed.step is Step.WHERE
     assert installed.said.startswith(f"this hands runs from {sys.prefix}, not from {elsewhere / update.TOOL}, the uv tool environment the update installs into")
+
+
+def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path / "home")
+    commands = Commands(tools_of_this_hands(tmp_path))
+    monkeypatch.setattr(update, "run", commands)
+    # A daemon started by a checkout's `uv run hands run`, as its heartbeat says.
+    heartbeat.write(home.status, status_from(Path("/checkout/.venv")))
+
+    assert cli.main(["--home", str(home.root), "update"]) == 1
+
+    # Its restart would start it again on the checkout, so nothing is fetched, installed, or restarted.
+    assert [argv for argv, _cwd in commands.ran] == [("uv", "tool", "dir")]
+    _out, err = capsys.readouterr()
+    assert err.startswith(f"hands update: where failed, so hands was not restarted and runs as it did: the running hands runs from /checkout/.venv, not from {tmp_path / 'tools' / update.TOOL}, ")
+    [event] = events(home)
+    assert (event["facts"]["failed"], event["facts"]["exit_code"], event["facts"]["restarts_from"]) == ("where", 1, "/checkout/.venv")
 
 
 # `hands update` run as the brain runs it, from a process group hands kills once the restart ends the brain. Its
@@ -162,7 +183,8 @@ sys.exit(cli.main(["--home", home, "update"]))
 """
 
 
-def test_an_update_restarts_hands_onto_master_and_says_the_commit_after_its_caller_is_killed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("killed", [True, False], ids=["brain", "terminal"])
+def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not_its_caller_is_killed(killed: bool, tmp_path: Path) -> None:
     home, log, said = Home(tmp_path / "home"), tmp_path / "commands", tmp_path / "said"
     daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
     # The brain: a process group of its own, as hands starts it, which the update is run from.
@@ -171,10 +193,14 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_after_its_call
         before = up(home)
         with said.open("w") as out:
             caller = subprocess.Popen([sys.executable, "-c", CALLER, str(home.root), str(tools_of_this_hands(tmp_path)), SHA, str(log)], stdout=out, stderr=subprocess.STDOUT, process_group=brain.pid)
-        # The caller has its answer at once, before the restart.
-        assert caller.wait(timeout=30) == 0
-        # The restart ends the brain, and hands kills everything in its process group.
-        os.killpg(brain.pid, signal.SIGKILL)
+        if killed:
+            # The restart ends the brain, and hands kills everything in its process group.
+            restarted_from(home, before)
+            os.killpg(brain.pid, signal.SIGKILL)
+            assert caller.wait(timeout=30) in (0, -signal.SIGKILL)
+        else:
+            # A terminal the restart does not end has the update's exit once hands is back, and both its lines.
+            assert caller.wait(timeout=60) == 0
 
         event = waited_for(home)
 
@@ -185,6 +211,10 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_after_its_call
         assert (event["outcome"], facts["command"], facts["exit_code"], facts["sha"], facts["outcome"]["type"]) == ("ok", "update", 0, SHA, "Restarted")
         # The run after the restart says it runs from the environment master went into, and the caller's output had the line.
         assert (facts["runs_master"], facts["told"]) == (True, True)
+        if not killed:
+            assert facts["exit_taken"] is True
+        # The running hands named the environment its restart starts it on, the one the update installed into.
+        assert facts["restarts_from"] == sys.prefix
         assert [step["step"] for step in facts["steps"]] == list(Step)
         assert [json.loads(line)[:3] for line in log.read_text().splitlines()] == [list(argv[:3]) for argv, _cwd in expected(home, Path("/"))]
         first, restarted = said.read_text().splitlines()
@@ -198,11 +228,40 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_after_its_call
         daemon.wait(timeout=10)
 
 
-def test_the_brain_is_given_the_update_skill_and_may_run_it_without_asking() -> None:
+# An update gone on in a process of its own that ends, as a crash or a kill ends it, before it answers its caller.
+UNANSWERED = """
+import os
+from hands.daemon import update
+
+update.detach()
+os._exit(3)
+"""
+
+
+def test_a_caller_the_update_ends_without_answering_exits_1_saying_so() -> None:
+    caller = subprocess.run([sys.executable, "-c", UNANSWERED], capture_output=True, text=True, timeout=30)
+
+    assert caller.returncode == 1
+    assert caller.stderr == "hands update: the update ended before it said how hands' restart went; `hands status` says whether hands is running\n"
+
+
+def test_a_caller_the_restart_ended_is_not_answered() -> None:
+    read, write = os.pipe()
+    os.close(read)
+    assert update.answered(write, 0) is False
+    # The answer's end is closed either way.
+    with pytest.raises(OSError):
+        os.fstat(write)
+
+
+def test_the_brain_is_given_the_update_skill_and_may_run_it_without_asking(tmp_path: Path) -> None:
     skill = (PLUGIN / "skills" / "update" / "SKILL.md").read_text()
     assert skill.startswith("---\nname: update\n")
-    # The command it runs is the one it is allowed, and the one the CLI takes.
-    assert "\nallowed-tools: Bash(hands update)\n" in skill and "run `hands update`" in skill
+    # The command it runs is the one its instructions name, hands' own interpreter and home, the one it is allowed.
+    [allowed] = re.findall(r"\nallowed-tools: Bash\((.*)\)\n", skill)
+    named = shlex.join(invocation(Home(tmp_path / "a home"), "update"))
+    assert f"The update command is: {named}" in brain_instruction(tmp_path / "audit", tmp_path / "brain", shlex.join(invocation(Home(tmp_path / "a home"))), None)
+    assert fnmatch.fnmatchcase(named, allowed) and "run the update command" in skill
 
 
 def up(home: Home, deadline: float = 10.0) -> heartbeat.Status:
@@ -213,6 +272,17 @@ def up(home: Home, deadline: float = 10.0) -> heartbeat.Status:
             return status
         time.sleep(0.02)
     raise AssertionError(f"the daemon did not say running within {deadline}s: {heartbeat.read(home.status)}")
+
+
+def restarted_from(home: Home, before: heartbeat.Status, deadline: float = 60.0) -> None:
+    """Once the run `before` was has been restarted."""
+    until = time.monotonic() + deadline
+    while time.monotonic() < until:
+        status = heartbeat.read(home.status)
+        if status is not None and status.started_at > before.started_at:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"hands was not restarted within {deadline}s")
 
 
 def waited_for(home: Home, deadline: float = 60.0) -> dict[str, Any]:
@@ -230,14 +300,13 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path))
 
-    def detach() -> None:
-        raise AssertionError("an update with no hands to restart left its caller before saying so")
-
+    answers: list[int] = []
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", detach)
+    monkeypatch.setattr(update, "detach", lambda: answering(answers))
 
     # Nothing ends the caller, so the caller hears it, and exits saying hands was not restarted.
     assert cli.main(["--home", str(home.root), "update"]) == 1
+    assert answers == [1]
 
     out, err = capsys.readouterr()
     assert out == f"installed hands, its fritter, and the brain's Claude Code from master at {SHA}; restarting hands onto it\n"
@@ -247,21 +316,27 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     assert (facts["command"], facts["exit_code"], facts["sha"], facts["outcome"]["type"]) == ("update", 1, SHA, "NotRunning")
 
 
+def answering(answers: list[int], *, taken: bool = True) -> Callable[[int], bool]:
+    """What answers a caller, keeping each exit it is given in `answers`, and saying whether the caller took it."""
+
+    def answer(code: int) -> bool:
+        answers.append(code)
+        return taken
+
+    return answer
+
+
 def status_from(runs_from: Path | None) -> heartbeat.Status:
     now = datetime.now(UTC)
     return heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), runs_from)
 
 
 def restarting_from(monkeypatch: pytest.MonkeyPatch, runs_from: Path | None) -> None:
-    """hands is running from this hands' environment, and its restart brings it back running from `runs_from`."""
-
-    def running(_home: Home, _now: datetime) -> heartbeat.Status:
-        return status_from(Path(sys.prefix))
+    """hands' restart brings it back running from `runs_from`."""
 
     def restart(*_: object) -> Outcome:
         return Restarted(status_from(runs_from), timedelta(seconds=3))
 
-    monkeypatch.setattr(cli, "running", running)
     monkeypatch.setattr(cli, "restart", restart)
 
 
@@ -270,7 +345,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     home = Home(tmp_path / "home")
     detached: list[bool] = []
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", lambda: detached.append(True))
+    monkeypatch.setattr(update, "detach", lambda: detached.append(True) or answering([]))
     # A daemon started by a checkout's `uv run hands run` starts again on the checkout, whatever the update installed.
     restarting_from(monkeypatch, runs_from)
 
@@ -307,14 +382,14 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
     home = Home(tmp_path / "home")
     gone, why = caller()
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", lambda: monkeypatch.setattr(sys, "stdout", gone))
+    monkeypatch.setattr(update, "detach", lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False))
     restarting_from(monkeypatch, Path(sys.prefix))
 
     assert cli.main(["--home", str(home.root), "update"]) == 0
 
     [event] = events(home)
     facts = event["facts"]
-    assert (event["outcome"], facts["runs_master"], facts["told"]) == ("ok", True, False)
+    assert (event["outcome"], facts["runs_master"], facts["told"], facts["exit_taken"]) == ("ok", True, False, False)
     assert why in facts["untold"]
 
 

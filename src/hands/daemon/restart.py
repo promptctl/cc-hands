@@ -53,25 +53,16 @@ class NotBack:
 Outcome = Restarted | NotRunning | NotBack
 
 
-def running(home: Home, now: datetime) -> heartbeat.Status | NotRunning:
-    """The run a restart asks, or why there is none to ask."""
-    match heartbeat.look(home.status, now):
-        # [LAW:no-ambient-temporal-coupling] only a running pipeline is asked: by then the run has long since put in
-        # its handler, which a run in its first moments has not, and the signal's default would end it.
-        case heartbeat.Up(status=status) if status.pipeline == "running":
-            return status
-        case verdict:
-            return NotRunning(verdict)
-
-
 def restart(home: Home, now: Callable[[], datetime], wait: Callable[[], None], within: timedelta = BACK_WITHIN) -> Outcome:
     """Ask the daemon to restart and wait for the run it starts again to be running."""
     asked = now()
-    match running(home, asked):
-        case heartbeat.Status() as before:
+    match heartbeat.look(home.status, asked):
+        # [LAW:no-ambient-temporal-coupling] only a running pipeline is asked: by then the run has long since put in
+        # its handler, which a run in its first moments has not, and the signal's default would end it.
+        case heartbeat.Up(status=before) if before.pipeline == "running":
             pass
-        case NotRunning() as unasked:
-            return unasked
+        case verdict:
+            return NotRunning(verdict)
     try:
         os.kill(before.pid, RESTART_SIGNAL)
     except ProcessLookupError:
