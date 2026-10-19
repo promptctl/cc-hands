@@ -99,9 +99,10 @@ def claude(path: str) -> Finding:
         case Uninstalled() as uninstalled:
             return Missing(uninstalled.step, f"no Claude Code that hands can join its sessions of: {uninstalled.detail}", uninstalled.fix)
         case executable:
-            # The native installer names the executable for its version, and Homebrew's cask the directory it is in; a
-            # version further up the path is some other thing's. A path that names none is said in full beneath the line.
-            named = next((f"Claude Code {part}" for part in reversed(executable.parts[-2:]) if _VERSION.fullmatch(part)), "Claude Code")
+            # [LAW:one-source-of-truth] its version is the part of its path that the sessions' match blanks as one. A path
+            # that names none is said in full beneath the line.
+            blanked = (part for part, kept in zip(reversed(executable.parts), reversed(_unversioned(executable)), strict=True) if kept is None)
+            named = next((f"Claude Code {part}" for part in blanked), "Claude Code")
             return Ready(named, f"Claude Code is installed: {executable}")
 
 
@@ -424,8 +425,10 @@ _VERSION = re.compile(r"\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?")
 
 
 def _unversioned(executable: Path) -> tuple[str | None, ...]:
-    """The executable's path with each part that names a version blanked: the same for every version of one install."""
-    return tuple(None if _VERSION.fullmatch(part) else part for part in executable.parts)
+    """The executable's path with the part that names its version blanked, its own name or its directory's: the same for
+    every version of one install. A version further up the path is some other thing's, and part of the install."""
+    parts = executable.parts
+    return (*parts[:-2], *(None if _VERSION.fullmatch(part) else part for part in parts[-2:]))
 
 
 def sessions_found(

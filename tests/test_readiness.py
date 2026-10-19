@@ -591,6 +591,11 @@ def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
     assert unjoined("/opt/homebrew/Caskroom/claude-code/2.1.288/claude", [old]) == [old]
 
 
+def test_a_version_named_directory_above_claude_code_is_part_of_its_install() -> None:
+    other = terminal(1, "/tools/1.4.0/bin/claude")
+    assert unjoined("/tools/1.5.0/bin/claude", [other]) == []
+
+
 def test_a_pre_release_is_a_version_of_the_same_install() -> None:
     beta = terminal(1, "/v/2.1.300-beta.1")
     assert unjoined("/v/2.1.299", [beta]) == [beta]
