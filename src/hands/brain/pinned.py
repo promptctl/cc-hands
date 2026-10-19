@@ -26,8 +26,9 @@ CHECKSUMS = {
 }
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
-# Long enough for about 230 MB on a slow connection; a stalled one fails the install rather than hang it.
-FETCH_SECONDS = 900
+# How long the fetch waits on a connection, or on the next bytes of the download, before failing the install rather than
+# hang it: a stall, never a slow link, which takes as long as 230 MB takes on it.
+STALL_SECONDS = 60
 _CHUNK = 1 << 20
 
 
@@ -67,19 +68,25 @@ def build(machine: str) -> str:
 
 
 def verified(config_dir: Path) -> Path:
-    """The brain's pinned claude, once its bytes are the pin's; raises Unpinned, naming the command that installs it,
-    when it is not there or is not the pin."""
+    """The brain's pinned claude, once its bytes are the pin's and it can be run; raises Unpinned, naming the command
+    that installs it, when it is not there, cannot be read, is not the pin, or cannot be run."""
     found = claude(config_dir)
     try:
-        held = found.stat()
         expected = CHECKSUMS[build(platform.machine())]
-    except FileNotFoundError:
-        raise Unpinned(f"Claude Code {VERSION}, the brain's, is not installed at {found}: run `{INSTALL}`") from None
     except Uninstallable as error:
         raise Unpinned(str(error)) from None
-    # [LAW:parse-dont-validate] only bytes that hash to the pin are ever run as the brain.
-    if (got := _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns))) != expected:
+    try:
+        held = found.stat()
+        got = _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns))
+    except FileNotFoundError:
+        raise Unpinned(f"Claude Code {VERSION}, the brain's, is not installed at {found}: run `{INSTALL}`") from None
+    except OSError as error:
+        raise Unpinned(f"{found} cannot be read as Claude Code {VERSION}, the brain's ({error}): run `{INSTALL}` to fetch it again") from None
+    # [LAW:parse-dont-validate] only bytes that hash to the pin, in a file this process can run, are ever the brain.
+    if got != expected:
         raise Unpinned(f"{found} hashes to {got}, not the {expected} of Claude Code {VERSION}, the brain's: run `{INSTALL}` to fetch it again")
+    if not os.access(found, os.X_OK):
+        raise Unpinned(f"{found}, Claude Code {VERSION}, the brain's, cannot be run: run `{INSTALL}` to fetch it again")
     return found
 
 
@@ -101,24 +108,39 @@ async def install(config_dir: Path) -> Installed:
         pass
     built = build(platform.machine())
     target = claude(config_dir)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise Uninstallable(f"could not make {target.parent} for Claude Code {VERSION}: {error!r}") from error
     partial = target.with_name(f"{target.name}.partial")
     url = f"{RELEASES}/{VERSION}/{built}/claude"
-    digest = hashlib.sha256()
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True) as http:
-            async with http.get(url) as response:
-                with partial.open("wb") as written:
-                    async for chunk in response.content.iter_chunked(_CHUNK):
-                        digest.update(chunk)
-                        written.write(chunk)
-    except (aiohttp.ClientError, TimeoutError, OSError) as error:
+        try:
+            digest = await _fetched(url, partial)
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise Uninstallable(f"could not fetch {url}: {error!r}") from error
+        if digest != CHECKSUMS[built]:
+            raise Uninstallable(f"{url} hashes to {digest}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
+        os.chmod(partial, 0o755)
+        # [LAW:one-source-of-truth] a file under its own name is the whole of it: a copy that is not the pin is replaced whole.
+        partial.replace(target)
+    except OSError as error:
+        raise Uninstallable(f"could not write {url} to {target}: {error!r}") from error
+    finally:
+        # Whole or not there at all: a fetch that failed, did not hash to the pin, or was interrupted leaves none of itself.
         partial.unlink(missing_ok=True)
-        raise Uninstallable(f"could not fetch {url}: {error!r}") from error
-    if (got := digest.hexdigest()) != CHECKSUMS[built]:
-        partial.unlink()
-        raise Uninstallable(f"{url} hashes to {got}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
-    os.chmod(partial, 0o755)
-    # [LAW:one-source-of-truth] a file under its own name is the whole of it: a copy that is not the pin is replaced whole.
-    partial.replace(target)
-    return Installed(verified(config_dir), fetched=True)
+    # The bytes renamed into place are the ones hashed to the pin as they were written.
+    return Installed(target, fetched=True)
+
+
+async def _fetched(url: str, partial: Path) -> str:
+    """Download `url` into `partial`, and the SHA-256 of what it wrote."""
+    digest = hashlib.sha256()
+    timeout = aiohttp.ClientTimeout(total=None, sock_connect=STALL_SECONDS, sock_read=STALL_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http:
+        async with http.get(url) as response:
+            with partial.open("wb") as written:
+                async for chunk in response.content.iter_chunked(_CHUNK):
+                    digest.update(chunk)
+                    written.write(chunk)
+    return digest.hexdigest()

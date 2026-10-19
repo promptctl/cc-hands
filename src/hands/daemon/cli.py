@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import fcntl
 import os
+import platform
 import signal
 import struct
 import sys
@@ -761,14 +762,20 @@ def install_brain(home: Home, record: audit.Record) -> int:
     # Imported here, so that no other command loads what the fetch needs.
     from hands.brain import pinned
 
-    # [LAW:nothing-unseen] an install is a unit of work: the release it pins, where it put it, and whether it fetched it.
+    # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
+    # it, and whether it fetched it.
     with wide.unit("brain.install", record):
         wide.annotate(version=pinned.VERSION)
         try:
+            wide.annotate(build=pinned.build(platform.machine()))
             installed = asyncio.run(pinned.install(home.brain))
         except pinned.Uninstallable as error:
             wide.fail(str(error))
             print(f"hands install-brain: {error}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            wide.fail("interrupted")
+            print("hands install-brain: interrupted", file=sys.stderr)
             return 1
         wide.annotate(claude=installed.path, fetched=installed.fetched)
         print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")

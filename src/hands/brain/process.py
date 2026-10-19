@@ -955,7 +955,8 @@ async def start(launch: Launch, record: Record) -> Brain:
         except Unpackaged as error:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
-        claude = brain_claude(station.config_dir)
+        # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
+        claude = await asyncio.to_thread(brain_claude, station.config_dir)
         annotate(claude=claude)
         hooks: asyncio.Queue[_Posted] = asyncio.Queue()
         listener, url = await _listen(hooks)
