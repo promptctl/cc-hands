@@ -88,13 +88,16 @@ def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Pat
 def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    code = main(["--home", str(home.root), "check"])
-    # A finding's indented lines continue the one above them.
-    printed = re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))
+    code = main(["--home", str(home.root), "check", "-v"])
+    # A finding's indented lines continue the one above them: its mark and step, then what is said of it in full.
+    printed = [block.split("\n") for block in re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))]
     [command] = events(home)
     assert command["facts"]["exit_code"] == code != 0
-    # One finding a printed line, each on the event as the line says it.
-    assert [finding["said"] for finding in command["facts"]["findings"]] == [line.split(None, 1)[1] for line in printed]
+    # One finding a printed block, each on the event as the block says it: its step, the fix of a missing one, and the rest in full.
+    findings = command["facts"]["findings"]
+    assert [finding["step"] for finding in findings] == [head.split(None, 1)[1].split("  → ")[0].rstrip() for head, *_ in printed]
+    assert [finding["fix"] for finding in findings if finding["type"] == "Missing"] == [head.split("  → ")[1] for head, *_ in printed if head.startswith("✗")]
+    assert [finding["detail"] for finding in findings] == ["\n".join(line.removeprefix("    ") for line in body) for _, *body in printed]
 
 
 def test_the_home_a_command_ran_on_is_on_its_event_wherever_it_came_from(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

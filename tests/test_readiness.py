@@ -24,7 +24,7 @@ import pytest
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
-from hands.daemon.cli import main
+from hands.daemon.cli import VERBOSE_HINT, main
 from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -172,7 +172,7 @@ def test_a_shim_whose_fritter_is_not_the_one_hands_carries_says_to_install_it_ag
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     found = readiness.shim(home, f"{home.bin}")
     assert isinstance(found, Missing)
-    assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}: run `hands install-fritter`" in found.said
+    assert f"its fritter {home.bin / 'fritter'} is not the one this hands carries, {wrapper.PACKAGED}" in found.detail and found.fix == "`hands install-fritter`"
 
 
 @pytest.mark.parametrize("installed", [True, False], ids=["shim", "none"])
@@ -183,7 +183,7 @@ def test_a_hands_built_without_its_fritter_names_the_rebuild_not_install_fritter
         executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
     found = readiness.shim(home, f"{home.bin}")
-    assert isinstance(found, Missing) and found.said.startswith(f"hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again")
+    assert isinstance(found, Missing) and found.fix.startswith(f"hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again")
 
 
 def runs_subcommands_as_sessions(text: str) -> str:
@@ -203,7 +203,7 @@ def test_a_shim_an_older_hands_wrote_says_to_install_it_again(root: Path, fritte
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, older(shim_script(home.bin / "fritter", home.wire)))
     found = readiness.shim(home, f"{home.bin}")
-    assert found == Missing(f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes: run `hands install-fritter`")
+    assert found == Missing("claude shim out of date", f"`claude` on this PATH is hands' shim, {home.shim}, but not the one this hands writes", "`hands install-fritter`")
 
 
 def test_another_homes_current_shim_is_ready_by_the_wire_it_names(root: Path, fritter: Path) -> None:
@@ -288,7 +288,7 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -309,7 +309,8 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
             sleeper.kill()
             sleeper.wait()
     assert isinstance(found, Missing)
-    assert found.said.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
+    assert found.detail.startswith("running sessions hands knows of: 3, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:")
+    assert found.step == "2 sessions unreachable"
     assert f"/code/orphaned (pid {sleepers[2].pid}) has lost its fritter, whose socket {root / 'gone.sock'} is gone" in found.said
     assert f"/code/unwrapped (pid {sleepers[1].pid}) was started outside fritter and runs in no tmux pane, so it cannot be typed into: restart it" in found.said
     assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {sleepers[0].pid}) is typed into through its fritter")
@@ -331,7 +332,7 @@ def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_in
         sleeper.kill()
         sleeper.wait()
     assert asked == [[sleeper.pid]]
-    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
+    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/unwrapped (pid {sleeper.pid}) is typed into through its tmux pane %12")
 
 
 def unwrapped(pane: Keyboard) -> readiness.Finding:
@@ -341,14 +342,17 @@ def unwrapped(pane: Keyboard) -> readiness.Finding:
 
 def test_a_session_started_outside_fritter_behind_another_program_in_its_pane_is_missing_with_the_way_back() -> None:
     assert unwrapped(Behind(PANE)) == Missing(
+        "1 session unreachable",
         "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:\n"
         "    /code/bare (pid 7) was started outside fritter, and another program has the keyboard of the tmux pane it runs in, %12 (window 3 of work), "
-        "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim"
+        "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim",
+        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim",
     )
 
 
 def test_a_session_started_outside_fritter_whose_pane_could_not_be_read_is_unknown_and_says_why() -> None:
     assert unwrapped(PaneUnread("tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds")) == Unknown(
+        "1 session unknown",
         "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: "
         "tmux at /tmp/tmux-501/default did not answer list-panes in 5 seconds"
@@ -360,12 +364,14 @@ def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_r
     bare = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000007"), 7, Path("/code/bare"), Path("/nowhere/t.jsonl"))
     found = readiness.sessions_found([lost, bare], set(), [], readiness.Unrecorded([], Counter(), []), {7: PaneUnread("tmux broke"), 8: NotInTmux()})
     assert found == Missing(
+        "1 session unreachable",
         "running sessions hands knows of: 2, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n"
         "  hands cannot reach these:\n"
         "    /code/lost (pid 8) has lost its fritter, whose socket /gone.sock is gone, so it cannot be typed into: "
         "restart it from a PATH whose `claude` is hands' shim\n"
         "  whether hands can reach these is unknown:\n"
-        "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke"
+        "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke",
+        "restart it from a PATH whose `claude` is hands' shim",
     )
 
 
@@ -374,7 +380,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root), untmuxed) == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(home, installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -405,7 +411,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     # The shell waits on its sleep, so it is still the process its -p was given to.
     with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path, untmuxed)
-    assert found == Ready("running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
+    assert found == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -472,6 +478,7 @@ def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() 
 def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
     unread = [Undescribed(29648, 1, "kern.procargs2", errno.EIO), Undescribed(29649, 1, "proc_pidfdinfo of fd 0", errno.EIO)]
     assert readiness.sessions_found([], set(), [], readiness.Unrecorded([], Counter(), unread), {}) == Unknown(
+        "unrecorded sessions unknown",
         "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: "
         "pid 29648 (kern.procargs2: Input/output error), pid 29649 (proc_pidfdinfo of fd 0: Input/output error)"
@@ -545,7 +552,7 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
             found = readiness.sessions(home, path, untmuxed)
     finally:
         listening.close()
-    assert found == Ready(f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
+    assert found == Ready("1 running session reachable", f"running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  these are typed into:\n    /code/known (pid {pid}) is typed into through its fritter")
 
 
 CONFIG = Path("/home/.claude")
@@ -582,6 +589,11 @@ def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_inst
 def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
     old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude")
     assert unjoined("/opt/homebrew/Caskroom/claude-code/2.1.288/claude", [old]) == [old]
+
+
+def test_a_version_named_directory_above_claude_code_is_part_of_its_install() -> None:
+    other = terminal(1, "/tools/1.4.0/bin/claude")
+    assert unjoined("/tools/1.5.0/bin/claude", [other]) == []
 
 
 def test_a_pre_release_is_a_version_of_the_same_install() -> None:
@@ -693,12 +705,43 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
+def test_the_sessions_line_counts_sessions_and_unreadable_files_apart_with_the_fix_for_each() -> None:
+    lost = [Membership(SessionId(f"0f1e2d3c-aaaa-bbbb-cccc-00000000000{pid}"), pid, Path(f"/code/{pid}"), Path("/nowhere/t.jsonl")) for pid in (7, 8)]
+    corrupt = liveness.Unreadable(Path("/home/memberships/broken.json"), b"{", Rejected("not JSON"))
+    found = readiness.sessions_found(lost, set(), [corrupt], readiness.Unrecorded([], Counter(), []), {7: NotInTmux(), 8: Behind(PANE)})
+    assert isinstance(found, Missing) and found.step == "2 sessions unreachable, 1 membership file unreadable"
+    assert found.fix == (
+        "for each, one of: restart it from a PATH whose `claude` is hands' shim; "
+        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim; hands run removes it"
+    )
+    alike = readiness.sessions_found(lost, set(), [], readiness.Unrecorded([], Counter(), []), {7: NotInTmux(), 8: NotInTmux()})
+    assert isinstance(alike, Missing) and alike.fix == "for each, restart it from a PATH whose `claude` is hands' shim"
+
+
+def test_sessions_that_could_not_be_looked_for_are_unknown_by_no_count() -> None:
+    found = readiness.sessions_found([], set(), [], readiness.Unfindable("cannot look at this user's processes at a terminal: refused"), {})
+    assert isinstance(found, Unknown) and found.step == "unrecorded sessions unknown"
+
+
+def test_a_claude_code_whose_path_names_no_version_is_named_without_one(root: Path) -> None:
+    executable(root / "bin" / "claude", "\x7fELF")
+    found = readiness.claude(f"{root / 'bin'}:/usr/bin:/bin")
+    assert found == Ready("Claude Code", f"Claude Code is installed: {root / 'bin' / 'claude'}")
+
+
+def test_a_version_named_directory_above_claude_code_is_not_its_version(root: Path) -> None:
+    executable(root / "tools" / "1.4.0" / "bin" / "claude", "\x7fELF")
+    assert readiness.claude(f"{root / 'tools' / '1.4.0' / 'bin'}:/usr/bin:/bin").step == "Claude Code"
+    executable(root / "Caskroom" / "claude-code" / "2.1.288" / "claude", "\x7fELF")
+    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '2.1.288'}:/usr/bin:/bin").step == "Claude Code 2.1.288"
+
+
 # Claude Code
 
 
 def test_a_native_claude_on_path_is_ready(root: Path) -> None:
     found = readiness.claude(installed(root))
-    assert found == Ready(f"Claude Code is installed: {root / 'install' / '9.9.9'}")
+    assert found == Ready("Claude Code 9.9.9", f"Claude Code is installed: {root / 'install' / '9.9.9'}")
 
 
 def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> None:
@@ -709,7 +752,7 @@ def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> Non
 def test_a_claude_that_is_a_script_is_missing_and_names_the_native_one(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\n")
     found = readiness.claude(f"{root / 'real'}:/usr/bin:/bin")
-    assert isinstance(found, Missing) and "is a script" in found.said and "https://claude.ai/install.sh" in found.said
+    assert isinstance(found, Missing) and "is a script" in found.said and found.fix.startswith("`claude install`")
 
 
 # PortAudio
@@ -771,7 +814,9 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
     reached = readiness.configured(home, {})
-    assert isinstance(reached, Missing) and str(home.config) in reached.said
+    # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
+    assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
+    assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
@@ -792,7 +837,7 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
 
 def test_the_brain_says_its_account_and_never_a_key() -> None:
     found = readiness.reaching(ClaudeCodeBackend(model="claude-sonnet-5", config_dir=Path("/h/brain"), account=Account("claude.ai", "brain@example.com")))
-    assert found == Ready("the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
+    assert found == Ready("brain logged in as brain@example.com (claude.ai)", "the brain is logged in as brain@example.com (claude.ai), and reaches claude-sonnet-5")
 
 
 # hands running
@@ -856,14 +901,19 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
 
 def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
     lines = [line for line in capsys.readouterr().out.splitlines() if not line.startswith(" ")]
-    assert len(lines) == len(STEPS)
-    return {step: line.split()[0] for step, line in zip(STEPS, lines)}
+    # A check with a step not done ends on where each step is said in full, and one with every step done does not.
+    hinted = lines[-1] == VERBOSE_HINT
+    steps = lines[:-1] if hinted else lines
+    assert len(steps) == len(STEPS)
+    found = {step: line.split()[0] for step, line in zip(STEPS, steps)}
+    assert hinted == any(mark != "✓" for mark in found.values())
+    return found
 
 
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     assert main(["--home", str(home.root), "check"]) == 0
-    assert marks(capsys) == dict.fromkeys(STEPS, "ok")
+    assert marks(capsys) == dict.fromkeys(STEPS, "✓")
 
 
 # Each undoes one step of a home set_up made.
@@ -908,7 +958,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     undo(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), step: "missing"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), step: "✗"}
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
     assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
@@ -919,7 +969,29 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
 ) -> None:
     home = set_up(root, fritter, monkeypatch, "unreadable")
     assert main(["--home", str(home.root), "check"]) == 2
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?"}
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
     assert main(["--home", str(home.root), "check"]) == 1
-    assert marks(capsys) == {**dict.fromkeys(STEPS, "ok"), "plugin": "unknown", "grant": "missing"}
+    assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
+
+
+def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_beneath_it(
+    root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
+    no_hands(root, home, monkeypatch)
+    assert main(["--home", str(home.root), "check"]) == 1
+    *terse, hint = capsys.readouterr().out.splitlines()
+    assert hint == VERBOSE_HINT
+    [line] = [each for each in terse if each.startswith("✗")]
+    named, fix = line.split("  → ")
+    assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")
+    assert not any(each.startswith(" ") for each in terse)
+    assert main(["--home", str(home.root), "check", "-v"]) == 1
+    full = capsys.readouterr().out.splitlines()
+    # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
+    assert [each for each in full if not each.startswith(" ")] == terse
+    beneath = full[full.index(line) + 1]
+    assert beneath == "    this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks"
+    events = [each for each in map(json.loads, audit.tail(home.audit, 100)[0]) if each.get("event") == "hands.command"]
+    assert [event["facts"]["arguments.verbose"] for event in events] == [False, True]
