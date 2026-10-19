@@ -24,7 +24,7 @@ from hands.core.front import FrontUnread, InFront
 from hands.core.playback import Bookmark
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -45,7 +45,6 @@ from hands.sessions.sentences import Sentences
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
-from hands.brain import process
 from hands.sessions.pseudoterminal import STOP_SECONDS
 from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
@@ -292,7 +291,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     recorder.chmod(0o755)
     inherited = {"PATH": "/usr/bin:/bin", **given}
     assert environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
-    running = await process.spawn(Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)])
+    running = await spawn(Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)])
     assert await running.exit == 0
     assert running.shown() == "updater=1"
 

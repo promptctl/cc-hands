@@ -47,10 +47,11 @@ PRINT = ("--print", "-p*", "-cp*")
 STARTS_A_COMMAND = f"[{string.ascii_lowercase}]*"
 CANNOT_BE_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
 
-# [LAW:one-source-of-truth] what every Claude Code hands starts runs with, the shim's runs and the brain's alike: Claude
+# [LAW:one-source-of-truth] what every Claude Code hands starts runs with, the shim's, the brain's, smoke's and check's alike: Claude
 # Code's background auto-updater off, so no release is installed under ~/.local/share/claude/versions and
-# ~/.local/bin/claude is never repointed by a claude hands started. `claude update` still updates (2.1.299: only
-# DISABLE_UPDATES stops that).
+# ~/.local/bin/claude is never repointed by a claude hands started. Its auto-update of marketplace plugins is the same
+# updater and stops with it; FORCE_AUTOUPDATE_PLUGINS alone would keep that on. `claude update` still updates (2.1.299:
+# only DISABLE_UPDATES stops that).
 UPDATER_OFF = {"DISABLE_AUTOUPDATER": "1"}
 
 # Why the shim runs a claude as the real claude and not as a session: not a terminal on both ends, a subcommand first,
