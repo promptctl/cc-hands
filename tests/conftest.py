@@ -64,13 +64,21 @@ async def unprimed() -> None:
 # its own leaves no process behind for good. Given --moves, a directory and a descriptor, it first moves to the
 # directory and writes a "." to the descriptor, as a session moves into a worktree; given --moves any other way, it ends.
 STAND_IN = r"""
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+/* The descriptor `given` names, or -1, which no write goes to, for anything but a whole number. */
+static int descriptor(const char *given) {
+    char *end;
+    long fd = strtol(given, &end, 10);
+    return end != given && *end == '\0' && fd >= 0 && fd <= INT_MAX ? (int)fd : -1;
+}
+
 int main(int argc, char **argv) {
     alarm(120);
-    if (argc > 1 && strcmp(argv[1], "--moves") == 0 && (argc != 4 || chdir(argv[2]) != 0 || write(atoi(argv[3]), ".", 1) != 1))
+    if (argc > 1 && strcmp(argv[1], "--moves") == 0 && (argc != 4 || chdir(argv[2]) != 0 || write(descriptor(argv[3]), ".", 1) != 1))
         return 1;
     for (;;)
         pause();
