@@ -133,6 +133,12 @@ def test_a_side_question_is_a_fork_by_its_wrapper_wherever_its_marker_lands(shap
     assert classify("/v1/messages?beta=true", SIDE_QUESTIONS[shape]) == Fork()
 
 
+@pytest.mark.parametrize("shape", SIDE_QUESTIONS)
+def test_a_side_question_is_a_fork_though_claude_code_names_it_auxiliary(shape: str) -> None:
+    # 2.1.289, the release hands pins, names a side question auxiliary: read as that, no aside is ever heard.
+    assert classify("/v1/messages?beta=true", SIDE_QUESTIONS[shape], {"x-claude-code-request-class": "auxiliary"}) == Fork()
+
+
 def test_a_side_question_quoted_in_history_does_not_make_the_next_turn_a_fork() -> None:
     body = request(said(QUESTION), reply("the read said nothing"), said("thanks", marked=True))
     assert classify("/v1/messages", body) == MainTurn(None)
