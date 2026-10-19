@@ -68,6 +68,13 @@ def test_a_copy_that_is_not_the_pinned_release_refuses_naming_its_checksum_and_t
     # Written over with the pin, it is the brain's: what was hashed before is not taken for what is there now.
     placed(copy, RELEASE)
     assert brain_claude(config_dir) == copy
+    # Nor is it when other bytes of the same length are written into the same file and its modified time is set back.
+    held = copy.stat()
+    copy.write_bytes(RELEASE.replace(b"pinned", b"PINNED"))
+    os.utime(copy, ns=(held.st_atime_ns, held.st_mtime_ns))
+    assert (copy.stat().st_ino, copy.stat().st_size, copy.stat().st_mtime_ns) == (held.st_ino, held.st_size, held.st_mtime_ns)
+    with pytest.raises(Unstartable, match="hashes to"):
+        brain_claude(config_dir)
 
 
 def test_nothing_on_path_or_in_the_persons_own_install_is_the_brains_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -131,15 +138,17 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
     built = pinned.build(platform.machine())
-    assert await pinned.install(config_dir) == pinned.Installed(config_dir / "pinned-claude" / pinned.VERSION / "claude", fetched=True)
+    target = config_dir / "pinned-claude" / pinned.VERSION / "claude"
+    assert await pinned.install(config_dir) == pinned.Installed(target, unpinned=f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`")
     assert releases == [f"/{pinned.VERSION}/{built}/claude"]
     assert brain_claude(config_dir).read_bytes() == RELEASE and os.access(brain_claude(config_dir), os.X_OK)
     # There already, it is not fetched again.
-    assert await pinned.install(config_dir) == pinned.Installed(pinned.claude(config_dir), fetched=False)
+    assert await pinned.install(config_dir) == pinned.Installed(pinned.claude(config_dir), unpinned=None)
     assert len(releases) == 1
-    # A copy that is not the pin is fetched again, whole.
+    # A copy that is not the pin is fetched again, whole, saying what the copy there hashed to.
     pinned.claude(config_dir).write_bytes(OTHER)
-    assert await pinned.install(config_dir) == pinned.Installed(pinned.claude(config_dir), fetched=True)
+    installed = await pinned.install(config_dir)
+    assert installed.fetched and installed.unpinned is not None and f"hashes to {hashlib.sha256(OTHER).hexdigest()}" in installed.unpinned
     assert pinned.claude(config_dir).read_bytes() == RELEASE and len(releases) == 2
 
 
@@ -155,8 +164,19 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
     placed(pinned.claude(config_dir), RELEASE).chmod(0o644)
-    assert await pinned.install(config_dir) == pinned.Installed(pinned.claude(config_dir), fetched=True)
+    installed = await pinned.install(config_dir)
+    assert installed.unpinned is not None and installed.unpinned.endswith("cannot be run: run `hands install-brain` to fetch it again")
     assert brain_claude(config_dir) == pinned.claude(config_dir) and len(releases) == 1
+
+
+async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
+    pin_bytes(monkeypatch, RELEASE)
+    config_dir = tmp_path / "brain"
+    first, second = await asyncio.gather(pinned.install(config_dir), pinned.install(config_dir))
+    assert first.fetched and second.fetched and len(releases) == 2
+    # Neither removed or renamed the other's download, and what is left is the pin alone.
+    assert list(pinned.claude(config_dir).parent.iterdir()) == [pinned.claude(config_dir)]
+    assert brain_claude(config_dir) == pinned.claude(config_dir)
 
 
 @pytest.fixture
@@ -200,7 +220,7 @@ async def test_an_install_cut_short_leaves_nothing(tmp_path: Path, monkeypatch: 
     installing = asyncio.create_task(pinned.install(config_dir))
     await stalling.wait()
     # The start of the release has reached the disk by the time it is cut short.
-    while not pinned.claude(config_dir).with_name("claude.partial").exists():
+    while not list(pinned.claude(config_dir).parent.glob("claude.*.partial")):
         await asyncio.sleep(0.01)
     installing.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -220,10 +240,20 @@ def test_install_brain_says_what_it_did_and_is_one_event_each_time(tmp_path: Pat
     monkeypatch.setattr(pinned, "RELEASES", "http://127.0.0.1:1")
     assert main(["--home", str(home.root), "install-brain"]) == 1
     assert capsys.readouterr().err.startswith(f"hands install-brain: could not fetch http://127.0.0.1:1/{pinned.VERSION}/{built}/claude: ")
+    # One that fetches says so, and its event why the copy there was not the pin.
+    unpinned = f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`"
+
+    async def fetched(config_dir: Path) -> pinned.Installed:
+        return pinned.Installed(placed(pinned.claude(config_dir), RELEASE), unpinned)
+
+    monkeypatch.setattr(pinned, "install", fetched)
+    assert main(["--home", str(home.root), "install-brain"]) == 0
+    assert capsys.readouterr().out == f"fetched: Claude Code {pinned.VERSION}, the brain's, at {target}\n"
     # [LAW:nothing-unseen] each install's event: the release it pins, the build of it this Mac runs, where it put it,
-    # and whether it fetched it.
+    # whether it fetched it, and why.
     events = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "brain.install"]
     assert [(event["outcome"], event["facts"]) for event in events] == [
-        ("ok", {"version": pinned.VERSION, "build": built, "claude": str(target), "fetched": False}),
+        ("ok", {"version": pinned.VERSION, "build": built, "claude": str(target), "fetched": False, "unpinned": None}),
         ("failed", {"version": pinned.VERSION, "build": built}),
+        ("ok", {"version": pinned.VERSION, "build": built, "claude": str(target), "fetched": True, "unpinned": unpinned}),
     ]

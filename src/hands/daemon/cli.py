@@ -763,7 +763,7 @@ def install_brain(home: Home, record: audit.Record) -> int:
     from hands.brain import pinned
 
     # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
-    # it, and whether it fetched it.
+    # it, whether it fetched it, and, where it did, why the copy there was not the pin.
     with wide.unit("brain.install", record):
         wide.annotate(version=pinned.VERSION)
         try:
@@ -777,7 +777,7 @@ def install_brain(home: Home, record: audit.Record) -> int:
             wide.fail("interrupted")
             print("hands install-brain: interrupted", file=sys.stderr)
             return 1
-        wide.annotate(claude=installed.path, fetched=installed.fetched)
+        wide.annotate(claude=installed.path, fetched=installed.fetched, unpinned=installed.unpinned)
         print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
         return 0
 

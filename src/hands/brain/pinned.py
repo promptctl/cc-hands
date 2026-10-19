@@ -11,6 +11,7 @@ import functools
 import hashlib
 import os
 import platform
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +45,15 @@ class Uninstallable(Exception):
 
 @dataclass(frozen=True)
 class Installed:
-    """The pinned claude, where it is, and whether this install fetched it or found it there already."""
+    """The pinned claude, where it is, and, where this install fetched it, why the copy there was not the pin: None when it
+    found the pin there already."""
 
     path: Path
-    fetched: bool
+    unpinned: str | None
+
+    @property
+    def fetched(self) -> bool:
+        return self.unpinned is not None
 
 
 def claude(config_dir: Path) -> Path:
@@ -77,7 +83,7 @@ def verified(config_dir: Path) -> Path:
         raise Unpinned(str(error)) from None
     try:
         held = found.stat()
-        got = _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns))
+        got = _sha256(found, (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns, held.st_ctime_ns))
     except FileNotFoundError:
         raise Unpinned(f"Claude Code {VERSION}, the brain's, is not installed at {found}: run `{INSTALL}`") from None
     except OSError as error:
@@ -91,9 +97,9 @@ def verified(config_dir: Path) -> Path:
 
 
 @functools.cache
-def _sha256(path: Path, identity: tuple[int, int, int, int]) -> str:
+def _sha256(path: Path, identity: tuple[int, int, int, int, int]) -> str:
     """The SHA-256 of the file at `path` while its `identity` holds: one copy is hashed once a process, not at every side
-    question, and one written over since is hashed again."""
+    question, and one written over since is hashed again, its change time moved however its modified time is set back."""
     del identity  # the cache's key alone
     with path.open("rb") as held:
         return hashlib.file_digest(held, "sha256").hexdigest()
@@ -103,17 +109,24 @@ async def install(config_dir: Path) -> Installed:
     """The pinned claude in the brain's directory: fetched and checked against its checksum unless the pin is there
     already, and whole or not there at all."""
     try:
-        return Installed(verified(config_dir), fetched=False)
-    except Unpinned:
-        pass
+        return Installed(verified(config_dir), unpinned=None)
+    except Unpinned as error:
+        # [LAW:nothing-unseen] why the copy there is fetched over: missing, unreadable, unrunnable, or bytes not the pin's.
+        unpinned = str(error)
     built = build(platform.machine())
     target = claude(config_dir)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise Uninstallable(f"could not make {target.parent} for Claude Code {VERSION}: {error!r}") from error
-    partial = target.with_name(f"{target.name}.partial")
     url = f"{RELEASES}/{VERSION}/{built}/claude"
+    try:
+        # A name of this install's own: two at once never write, rename, or remove each other's download.
+        handle, name = tempfile.mkstemp(dir=target.parent, prefix=f"{target.name}.", suffix=".partial")
+    except OSError as error:
+        raise Uninstallable(f"could not write {url} to {target}: {error!r}") from error
+    os.close(handle)
+    partial = Path(name)
     try:
         try:
             digest = await _fetched(url, partial)
@@ -130,7 +143,7 @@ async def install(config_dir: Path) -> Installed:
         # Whole or not there at all: a fetch that failed, did not hash to the pin, or was interrupted leaves none of itself.
         partial.unlink(missing_ok=True)
     # The bytes renamed into place are the ones hashed to the pin as they were written.
-    return Installed(target, fetched=True)
+    return Installed(target, unpinned)
 
 
 async def _fetched(url: str, partial: Path) -> str:

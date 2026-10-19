@@ -405,7 +405,7 @@ and gives it one line: ✓ done, ✗ missing with the command that fixes it, or 
 could not be looked at. `hands check -v` says each in full beneath its line. The steps: the native `claude` on this `PATH`; PortAudio;
 `hands` on this `PATH` being this hands, since Claude Code runs it for the plugin;
 `claude` on this `PATH` being hands' shim; the plugin, installed and enabled; the
-brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
+brain's own Claude Code, the release hands pins, which `hands install-brain` fetches; the brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
 logs each step in full as it starts, the brain as it reached it. An up daemon is not a

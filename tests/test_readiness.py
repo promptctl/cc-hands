@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import pin
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
@@ -878,7 +879,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 # hands check
 
 
-STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "backend", "grant", "running", "sessions"]
+STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "brain_claude", "backend", "grant", "running", "sessions"]
 
 
 def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
@@ -893,6 +894,7 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     shutil.copy2(fritter, home.bin / "fritter")
     executable(home.shim, shim_script(home.bin / "fritter", home.wire))
     beating(home)
+    pin(monkeypatch, executable(root / "pinned" / "claude", "#!/bin/sh\n"))
     monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
     monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
@@ -946,6 +948,10 @@ def logged_out(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(readiness, "resolve", refused)
 
 
+def unpinned(root: Path, _home: Home, _monkeypatch: pytest.MonkeyPatch) -> None:
+    (root / "pinned" / "claude").unlink()
+
+
 def ungranted(_root: Path, _home: Home, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
 
@@ -956,8 +962,8 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.parametrize(
     ("undo", "step"),
-    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
-    ids=["hands", "shim", "plugin", "backend", "grant", "running"],
+    [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (unpinned, "brain_claude"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
+    ids=["hands", "shim", "plugin", "brain_claude", "backend", "grant", "running"],
 )
 def test_a_home_missing_one_step_names_that_step_and_exits_1(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], undo: Undo, step: str

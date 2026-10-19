@@ -5,7 +5,7 @@
 
 The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
 installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
-the plugin that joins sessions to hands; the brain with its login; the Input
+the plugin that joins sessions to hands; the brain's own Claude Code, the release hands pins; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` logs each step in full as it
 starts, and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
@@ -22,6 +22,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import get_args
 
+from hands.brain import pinned
 from hands.core.effects import Fritter
 from hands.core.events import Attached
 from hands.core.reach import Unwrapped, through, writer
@@ -90,7 +91,7 @@ def check(home: Home, path: str, granted: bool, reached: Finding, running: Findi
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -140,6 +141,16 @@ def installed(path: str) -> Finding:
             "put this one first on PATH, or install it again",
         )
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs it for the plugin in every session")
+
+
+def brain_claude(home: Home) -> Finding:
+    """Whether the brain's own Claude Code, hands' copy of the release it pins, is in the brain's directory and is that release."""
+    try:
+        found = pinned.verified(home.brain)
+    except pinned.Unpinned as error:
+        # The refusal is the line's fix: it names `hands install-brain`, and what is wrong with the copy, where there is one.
+        return Missing(f"brain's Claude Code {pinned.VERSION} missing", "the brain has no Claude Code to run, so hands cannot start", str(error))
+    return Ready(f"brain's Claude Code {pinned.VERSION}", f"the brain runs Claude Code {pinned.VERSION}, hands' own copy: {found}")
 
 
 def configured(home: Home, environment: Mapping[str, str]) -> Finding:
