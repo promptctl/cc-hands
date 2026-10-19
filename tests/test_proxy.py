@@ -50,7 +50,7 @@ from hands.daemon.run import wire_to
 from hands.sessions.audit import Entry
 from hands.sessions import proxy
 from hands.sessions.proxy import Proxy, serve_proxy
-from hands.sessions.replies import spent
+from hands.sessions.replies import sent_of, spent
 from hands.sessions.wide import root
 
 REQUEST = (
@@ -719,3 +719,14 @@ def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() ->
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
     assert lines == [exchange]
+
+
+def test_a_request_hands_cannot_read_is_warned_about_with_all_it_said() -> None:
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="WARNING")
+    try:
+        body = b'{"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "what is this"}]}'
+        sent_of({"x-claude-code-request-class": "dreaming"}, "/v1/messages", body)
+    finally:
+        logger.remove(sink)
+    assert len(logged) == 1 and "'dreaming', a class hands does not know" in logged[0] and logged[0].endswith(body.decode())
