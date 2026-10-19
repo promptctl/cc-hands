@@ -199,14 +199,17 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
     return await asyncio.to_thread(parse_export, out)
 
 
-async def rank(project: Path, move: Move) -> None:
-    """Have lit in `project` make `move`; raises LitFailed when it does not."""
+async def rank(project: Path, move: Move) -> str:
+    """Have lit in `project` make `move`, and what lit said of what it ranked; raises LitFailed when it fails.
+
+    lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
+    """
     match move.place:
         case Above(target=target):
             where = ("--above", target)
         case Below(target=target):
             where = ("--below", target)
-    await _lit(project, "rank", move.ticket, *where)
+    return (await _lit(project, "rank", move.ticket, *where)).decode(errors="replace").strip()
 
 
 async def _lit(project: Path, *arguments: str) -> bytes:

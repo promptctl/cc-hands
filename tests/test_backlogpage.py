@@ -63,9 +63,9 @@ def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_s
     second, first, follow_up = items
     assert second["summary"] == "Second, said." and first["children"][0]["summary"] == "A, said."
     # A ticket with no sentence has none, rather than its description in its place.
-    assert "summary" not in first and "summary" not in first["children"][1]
+    assert first["summary"] is None and first["children"][1]["summary"] is None
     assert "The words of" not in json.dumps(page)
-    assert first["children"][1]["status"] == "in_progress" and first["kind"] == "epic"
+    assert first["children"][1]["status"] == "in_progress" and first["status"] is None
     # The frame a drop stays inside: the follow-up is drawn among the roots, and lit ranks it inside its closed parent.
     assert (second["frame"], first["children"][0]["frame"], follow_up["frame"]) == (None, "e1", "e2.b")
 
@@ -123,7 +123,7 @@ def test_a_move_has_landed_only_when_the_ticket_sits_directly_beside_its_target_
     [
         (b"not json", "JSON"),
         (b'{"project": "/p", "ticket": "a"}', "one of above or below"),
-        (b'{"project": "/p", "ticket": "a", "above": "b", "below": "c"}', "one of above or below"),
+        (b'{"project": "/p", "ticket": "a", "above": "b", "below": "c"}', "never both"),
         (b'{"project": "/p", "ticket": 3, "above": "b"}', "one of above or below"),
         (b'{"project": "p", "ticket": "a", "above": "b"}', "absolute path"),
     ],
@@ -205,7 +205,7 @@ async def moved(page: Page, workspace: Workspace, ticket: str, **place: str) -> 
 
 async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_alone(page: Page) -> None:
     shown_page = await page.client.get("/backlog")
-    assert shown_page.status == 200 and "Drag a card up or down" in await shown_page.text()
+    assert shown_page.status == 200 and "drag its card up or down" in await shown_page.text()
     assert (await page.client.get("/backlog/tickets?project=/tmp")).status == 401
     assert (await page.client.post("/backlog/rank", json={})).status == 401
     assert [event.error for event in page.events("backlog.read") + page.events("backlog.ranked")] == ["read without the phone's key", "ranked without the phone's key"]
@@ -236,7 +236,7 @@ async def test_the_read_is_lits_backlog_with_hands_sentences_and_asks_for_the_re
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
     assert response.status == 200
     [node] = (await response.json())["items"]
-    assert node["id"] == voice and "summary" not in node
+    assert node["id"] == voice and node["summary"] is None
     assert [(child["id"], child["summary"]) for child in node["children"]] == [(mic, f"Said of {mic}."), (parser, f"Said of {parser}.")]
     [event] = page.events("backlog.read")
     assert event.outcome == "ok" and event.facts["project"] == workspace.root and event.counts == {"tickets": 3, "summarised": 2}
@@ -254,7 +254,9 @@ async def test_a_drop_ranks_the_ticket_in_lit_and_the_page_is_answered_with_lits
     status, _ = await moved(page, workspace, mic, below=parser)
     assert status == 200 and workspace.order(mic, parser, docs) == [docs, parser, mic]
     first, second = page.events("backlog.ranked")
-    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"]) == (docs, Above(mic))
+    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"], first.facts["ranked"]) == (docs, Above(mic), True)
+    # What it showed after: the epic and its three tickets, none said yet.
+    assert first.counts == {"tickets": 4, "summarised": 0}
     assert second.outcome == "ok" and second.facts["place"] == Below(parser)
 
 
@@ -309,10 +311,12 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     workspace.shim(tmp_path / "bin", f"{LIT} parent set --child {parser} --parent {wire} >/dev/null")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/bin:/usr/bin")
     status, body = await moved(page, workspace, parser, above=mic)
-    assert status == 409 and f"lit did not put {parser} above {mic}" in body
+    # What lit ranked instead is said in lit's own words, to the page and on the event; nothing is undone.
+    assert status == 409 and f"lit did not put {parser} above {mic}" in body and f"ranked the epic {wire} instead" in body
     assert workspace.order(voice, wire) == [wire, voice]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "failed" and event.error is not None and "the backlog changed while it was moved" in event.error
+    assert event.outcome == "failed" and event.error == body
+    assert event.facts["ranked"] is True and f"ranked the epic {wire} instead" in str(event.facts["lit_said"])
 
 
 @real_lit
@@ -324,4 +328,24 @@ async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, w
     assert status == 502 and "lit rank" in body and "workspace_busy" in body
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
-    assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error
+    assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] is False
+
+
+@real_lit
+async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was_ranked(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    ranked = tmp_path / "ranked"
+    # lit ranks, and every export after it fails.
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "lit").write_text(
+        f'#!/bin/sh\nif [ "$1" = export ] && [ -e {ranked} ]; then\necho "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5\nfi\n'
+        f'if [ "$1" = rank ]; then touch {ranked}; fi\nexec {LIT} "$@"\n'
+    )
+    (bin / "lit").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"lit ranked {parser} as it was asked to go above {mic}, and the backlog could not be read again") and "workspace_busy" in body
+    assert workspace.order(mic, parser) == [parser, mic]
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.error == body and event.facts["ranked"] is True

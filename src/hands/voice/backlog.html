@@ -52,7 +52,7 @@
   <span id="project"></span>
   <a id="phone" href="/">Phone</a>
 </header>
-<p id="how">Every open ticket in lit's rank order, top first: each epic, with the tickets inside it beneath it. The line under a title is hands' one-sentence summary of the ticket. Drag a card up or down among the cards beside it to rank it there in lit.</p>
+<p id="how">Every open ticket in lit's rank order, top first: each epic, with the tickets inside it beneath it. The line under a title is hands' one-sentence summary of the ticket. To rank a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse.</p>
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
@@ -85,7 +85,8 @@ let waiting = 0;
 function inTurn(work) {
   waiting += 1;
   document.body.classList.add("busy");
-  queue = queue.then(work).finally(() => {
+  // A job that throws is said on the page, and the queue goes on to the next: it never stays rejected.
+  queue = queue.then(work).catch(error => say(`The page failed: ${error.message}`, true)).finally(() => {
     waiting -= 1;
     document.body.classList.toggle("busy", waiting > 0);
   });
@@ -128,7 +129,7 @@ function item(ticket) {
   }
   // hands' sentence for the ticket; one not said yet is said to be so, and the ticket's description is never shown here.
   const summary = document.createElement("div");
-  summary.className = ticket.summary === undefined ? "summary unsaid" : "summary";
+  summary.className = ticket.summary === null ? "summary unsaid" : "summary";
   summary.textContent = ticket.summary ?? "Not summarised yet.";
   card.append(grip, title, summary);
   card.addEventListener("pointerdown", event => pressed(event, row));
@@ -163,13 +164,14 @@ function moved(ticket, place) {
       say("");
       return;
     } catch (error) {
-      say(`Not moved: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
+      // hands' answer says whether lit ranked anything; one that never came cannot, and the read below shows lit's order.
+      say(error instanceof TypeError ? "hands did not answer the move; lit's order is read again below." : error.message, true);
     }
     // [LAW:no-silent-failure] a move that failed is shown, and the backlog drawn again as lit has it.
     try {
       drawn(await answered(await asked(`/backlog/tickets?project=${encodeURIComponent(project)}`)));
     } catch (error) {
-      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn is lit's order before the move: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
+      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
     }
   });
 }

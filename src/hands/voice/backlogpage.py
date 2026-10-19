@@ -11,13 +11,15 @@ page is answered with the backlog as lit holds it after. Nothing here keeps an o
 """
 
 import json
+from collections.abc import Iterator
+from dataclasses import asdict, dataclass
 from importlib import resources
 from pathlib import Path
 
 from aiohttp import web
 
 from hands.sessions.audit import Record
-from hands.sessions.backlog import Above, Backlog, Below, LitFailed, Move, Place, Untracked, rank
+from hands.sessions.backlog import Above, Backlog, Below, LitFailed, Move, Place, Status, Untracked, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail, unit
 from hands.voice.phoneaddress import carries_key
@@ -44,7 +46,7 @@ def parse_asked(body: bytes) -> tuple[Path, str, Place]:
         raise Rejected(f"a move is JSON: {error}") from error
     match sent:
         case {"above": object(), "below": object()}:
-            pass
+            raise Rejected("a move is dropped above a ticket or below one, never both")
         case {"project": str(project), "ticket": str(ticket), "above": str(target)}:
             return parse_project(project), ticket, Above(target)
         case {"project": str(project), "ticket": str(ticket), "below": str(target)}:
@@ -54,36 +56,56 @@ def parse_asked(body: bytes) -> tuple[Path, str, Place]:
     raise Rejected("a move is {project, ticket, and one of above or below: the ticket it is dropped next to}")
 
 
+@dataclass(frozen=True)
+class Node:
+    """A ticket as the page draws it: its sentence where one is said, never its description; the frame lit ranks it in,
+    which a drop stays inside; and the unfinished tickets under it."""
+
+    id: str
+    title: str
+    status: Status | None
+    frame: str | None
+    summary: str | None
+    children: tuple["Node", ...]
+
+
+def drawn(read: Sighted) -> tuple[Node, ...]:
+    """Every unfinished root in rank order, each over its unfinished children."""
+    backlog, said = read.backlog, read.said
+
+    def node(id: str) -> Node:
+        ticket = backlog.tickets[id]
+        return Node(id, ticket.title, ticket.status, backlog.inside.get(id), said.get(id), tuple(node(child) for child in backlog.open_children(id)))
+
+    return tuple(node(id) for id in backlog.roots())
+
+
+def every(nodes: tuple[Node, ...]) -> Iterator[Node]:
+    """Each node drawn, at every depth, in the order it is drawn."""
+    for node in nodes:
+        yield node
+        yield from every(node.children)
+
+
 def shown(read: Sighted | Untracked) -> dict[str, object]:
-    """The backlog as the page draws it: every unfinished root in rank order, each over its unfinished children, each
-    with its sentence where one is said, and the frame lit ranks it in, which a drop stays inside."""
+    """The backlog as the page is given it."""
     match read:
         case Untracked():
             return {"tracked": False}
-        case Sighted(backlog=backlog, said=said):
+        case Sighted():
+            return _items(drawn(read))
 
-            def node(id: str) -> dict[str, object]:
-                ticket = backlog.tickets[id]
-                return {
-                    "id": id,
-                    "title": ticket.title,
-                    "kind": ticket.kind,
-                    "status": ticket.status,
-                    "frame": backlog.inside.get(id),
-                    # hands' sentence for the ticket, and never its description: one not said yet is not here.
-                    **({"summary": said[id]} if id in said else {}),
-                    "children": [node(child) for child in backlog.open_children(id)],
-                }
 
-            return {"tracked": True, "items": [node(id) for id in backlog.roots()]}
+def _items(nodes: tuple[Node, ...]) -> dict[str, object]:
+    return {"tracked": True, "items": [asdict(node) for node in nodes]}
 
 
 def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.RouteDef]:
     """The page, the read of a project's backlog, and a drop that ranks one ticket next to another.
 
     [LAW:nothing-unseen] each read is one `backlog.read` event, how many open tickets it showed and how many of them had a
-    sentence; each drop one `backlog.ranked`, which ticket was put where and whether lit has it there after; each refused
-    or failed says why.
+    sentence; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
+    and what it showed after; each refused or failed says why.
     """
     page = resources.files("hands.voice").joinpath("backlog.html").read_text()
 
@@ -102,70 +124,72 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
                 return web.Response(status=400, text=str(error))
             annotate(project=project)
             try:
-                return web.json_response(_answered(await sighted(store, project)))
+                return web.json_response(_given(await sighted(store, project)))
             except (LitFailed, Rejected) as error:
                 fail(f"cannot read the backlog: {error}")
                 return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
 
     async def ranked(request: web.Request) -> web.Response:
-        with unit("backlog.ranked", record):
+        with unit("backlog.ranked", record, counts=("tickets", "summarised")):
             if not carries_key(request.headers.get("Authorization", ""), key):
                 fail("ranked without the phone's key")
                 return web.Response(status=401, text=UNKEYED)
             try:
                 project, ticket, place = parse_asked(await request.read())
             except Rejected as error:
-                fail(str(error))
-                return web.Response(status=400, text=str(error))
-            annotate(project=project, ticket=ticket, place=place)
+                return _refused(400, f"not moved: {error}")
+            # [LAW:nothing-unseen] whether lit ranked anything is on the event however the drop ends.
+            annotate(project=project, ticket=ticket, place=place, ranked=False)
             try:
-                before = await sighted(store, project)
+                before = await read_backlog(project)
             except (LitFailed, Rejected) as error:
-                fail(f"cannot read the backlog: {error}")
-                return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
+                return _refused(502, f"not moved: the backlog in {project} could not be read: {error}")
             match before:
                 case Untracked():
-                    fail("lit has no workspace there")
-                    return web.Response(status=404, text=f"lit has no workspace in {project}, so it has no backlog to rank")
-                case Sighted(backlog=backlog):
+                    return _refused(404, f"not moved: lit has no workspace in {project}, so it has no backlog to rank")
+                case Backlog():
                     pass
             try:
-                move = backlog.move(ticket, place)
+                move = before.move(ticket, place)
             except Rejected as error:
-                fail(str(error))
-                return web.Response(status=400, text=str(error))
+                return _refused(400, f"not moved: {error}")
             try:
-                await rank(project, move)
+                said = await rank(project, move)
+            except LitFailed as error:
+                return _refused(502, f"not moved: {error}")
+            annotate(ranked=True, lit_said=said)
+            try:
                 after = await sighted(store, project)
             except (LitFailed, Rejected) as error:
-                fail(str(error))
-                return web.Response(status=502, text=str(error))
+                return _refused(502, f"lit ranked {ticket} as it was asked to go {_where(place)}, and the backlog could not be read again to show it: {error}")
             # [LAW:no-silent-failure] the read after is the evidence: lit ranks the parent instead of a ticket another
-            # writer moved out of its frame meanwhile, and exits 0 all the same.
+            # writer moved out of its frame meanwhile, and exits 0 all the same, saying what it ranked.
             if not _landed(after, move):
-                why = f"lit did not put {ticket} {_where(place)}: the backlog changed while it was moved, so lit ranked something else"
-                fail(why)
-                return web.Response(status=409, text=why)
-            return web.json_response(shown(after))
+                return _refused(409, f"lit did not put {ticket} {_where(place)}: the backlog changed while it was moved, and lit ranked something else. lit said: {said}")
+            return web.json_response(_given(after))
 
     return [web.get("/backlog", drawn), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked)]
 
 
-def _answered(read: Sighted | Untracked) -> dict[str, object]:
-    """The read as the page is given it, with whether lit tracks the project, and how many tickets are drawn and said, on the event."""
+def _given(read: Sighted | Untracked) -> dict[str, object]:
+    """The backlog as the page is given it, with whether lit tracks the project, and how many tickets it draws and how
+    many of them are said, on the event."""
     match read:
         case Untracked():
             annotate(tracked=False)
-        case Sighted(backlog=backlog, said=said):
+            return shown(read)
+        case Sighted():
+            nodes = drawn(read)
             annotate(tracked=True)
-            drawn = [id for root in backlog.roots() for id in _under(backlog, root)]
-            count(tickets=len(drawn), summarised=sum(id in said for id in drawn))
-    return shown(read)
+            # [LAW:one-source-of-truth] counted from the nodes the page is given, so the event cannot disagree with it.
+            count(tickets=sum(1 for _ in every(nodes)), summarised=sum(node.summary is not None for node in every(nodes)))
+            return _items(nodes)
 
 
-def _under(backlog: Backlog, id: str) -> list[str]:
-    """`id` and every unfinished ticket under it, as the page draws them."""
-    return [id, *(under for child in backlog.open_children(id) for under in _under(backlog, child))]
+def _refused(status: int, why: str) -> web.Response:
+    """A drop's answer when it did not end as asked: its event fails saying why, and the page is told the same."""
+    fail(why)
+    return web.Response(status=status, text=why)
 
 
 def _landed(after: Sighted | Untracked, move: Move) -> bool:

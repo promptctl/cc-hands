@@ -1955,11 +1955,12 @@ archived parent; one deleted frames nothing), and a rank across parents is not r
 ranks the parent instead and exits 0. So a drop is parsed against a fresh read by `Backlog.move`,
 which refuses any move outside one frame; it is made with `lit rank --above` or `--below`; and the
 read after it must have the ticket directly beside its target, or the answer is a conflict, since
-the backlog changed while it was moved. The page keeps no order of its own: it draws what each
+the backlog changed while it was moved, carrying what lit said it ranked instead; nothing is undone.
+A rank lit made whose backlog could not be read again is said as exactly that. The page keeps no order of its own: it draws what each
 answer carries, one request at a time in the order they were made, and holds drags while one is
 under way. Each read is one `backlog.read` event, with how many tickets it drew and how many of
-them had a sentence; each drop one `backlog.ranked`, with the ticket and where it was put, and why
-it was refused or failed.
+them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
+ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
