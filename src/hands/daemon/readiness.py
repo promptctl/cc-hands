@@ -6,8 +6,8 @@
 The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
 installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
 the plugin that joins sessions to hands; the brain with its login; the Input
-Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` says the same lines as it starts,
-and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
+Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` logs each step in full as it
+starts, and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
 """
 
 import os
@@ -38,12 +38,16 @@ from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended,
 from hands.voice import backends
 
 
-# Each finding carries a `step`, the few words its checklist line names it by, beside what is said of it in full: the
-# line is read at a glance, and the full saying is `hands check -v`'s and `hands run`'s log's.
+# Each finding carries a `step`, the few words its checklist line names it by, beside its `detail`, what is said of it in
+# full: the line is read at a glance, and the full saying is `hands check -v`'s and `hands run`'s log's.
 @dataclass(frozen=True)
 class Ready:
     step: str
-    said: str
+    detail: str
+
+    @property
+    def said(self) -> str:
+        return self.detail
 
 
 @dataclass(frozen=True)
@@ -62,7 +66,11 @@ class Missing:
 @dataclass(frozen=True)
 class Unknown:
     step: str
-    said: str  # why the piece could not be looked at
+    detail: str  # why the piece could not be looked at
+
+    @property
+    def said(self) -> str:
+        return self.detail
 
 
 Finding = Ready | Missing | Unknown
@@ -92,8 +100,9 @@ def claude(path: str) -> Finding:
             return Missing(uninstalled.step, f"no Claude Code that hands can join its sessions of: {uninstalled.detail}", uninstalled.fix)
         case executable:
             # The native installer and Homebrew's cask both keep each version under a part of its path named for it.
-            named = next((part for part in reversed(executable.parts) if _VERSION.fullmatch(part)), str(executable))
-            return Ready(f"Claude Code {named}", f"Claude Code is installed: {executable}")
+            # A path that names none is said in full beneath the line, not on it.
+            named = next((f"Claude Code {part}" for part in reversed(executable.parts) if _VERSION.fullmatch(part)), "Claude Code")
+            return Ready(named, f"Claude Code is installed: {executable}")
 
 
 def portaudio() -> Finding:
@@ -435,26 +444,32 @@ def sessions_found(
             unjoined, beside = [_unjoined(session, keyboards[session.process.pid]) for session in sessions], f", runs of claude at a terminal that are none: {counts}"
             said = ", ".join(f"pid {each.pid} ({each.call}: {os.strerror(each.errno)})" for each in undescribed)
             unread = [Unknown(SESSIONS, f"the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: {said}")] if undescribed else []
-    lines = [
-        *(_typable(member, listening, keyboards[member.pid]) for member in running),
-        *(Missing(str(file.path), f"{file.path} names no session hands can read ({file.error})", "hands run removes it") for file in unreadable),
-        *unjoined,
-        *unread,
-    ]
+    reached = [*(_typable(member, listening, keyboards[member.pid]) for member in running), *unjoined]
+    files = [Missing(str(file.path), f"{file.path} names no session hands can read ({file.error})", "hands run removes it") for file in unreadable]
+    lines = [*reached, *files, *unread]
     # [LAW:nothing-unseen] each session is said under what it is to hands, one that is typed into with the way it is.
     headed = ((Missing, "hands cannot reach these"), (Unknown, "whether hands can reach these is unknown"), (Ready, "these are typed into"))
     grouped = [(kind, heading, [line.said for line in lines if type(line) is kind]) for kind, heading in headed]
     said = f"running sessions hands knows of: {len(running)}{beside}" + "".join(f"\n  {heading}:" + "".join(f"\n    {line}" for line in group) for _, heading, group in grouped if group)
-    unreached = [line for line in lines if isinstance(line, Missing)]
-    unknown = [line for line in lines if isinstance(line, Unknown)]
     # [LAW:no-silent-failure] the step is the worst any session is to hands: one that could not be looked for is never taken for none.
-    if unreached:
-        # Each session's own fix, said once however many share it; which session wants which is the full saying's.
-        fixes = "; ".join(dict.fromkeys(line.fix for line in unreached))
-        return Missing(f"{_counted(len(unreached), 'session')} unreachable", said, f"{fixes} (`hands check -v` lists each)")
-    if unknown:
-        return Unknown(f"{_counted(len(unknown), 'session')} unknown", said)
-    return Ready(f"{_counted(len(lines), 'running session')} reachable", said)
+    # Its line counts sessions, so a file that names none, or a look for sessions that could not be made, is counted apart.
+    unreached = [line for line in reached if isinstance(line, Missing)]
+    if unreached or files:
+        named = [*([f"{_counted(len(unreached), 'session')} unreachable"] if unreached else []), *([f"{_counted(len(files), 'membership file')} unreadable"] if files else [])]
+        return Missing(", ".join(named), said, _for_each([*unreached, *files]))
+    unsure = [line for line in reached if isinstance(line, Unknown)]
+    if unsure or unread:
+        named = [*([f"{_counted(len(unsure), 'session')} unknown"] if unsure else []), *(["unrecorded sessions unknown"] if unread else [])]
+        return Unknown(", ".join(named), said)
+    return Ready(f"{_counted(len(reached), 'running session')} reachable", said)
+
+
+def _for_each(unreached: Sequence[Missing]) -> str:
+    """The fix of each missing session or file, said once however many share it; which wants which is the full saying's."""
+    fixes = list(dict.fromkeys(line.fix for line in unreached))
+    if len(unreached) == 1:
+        return fixes[0]
+    return f"for each, {fixes[0]}" if len(fixes) == 1 else f"for each, one of: {'; '.join(fixes)}"
 
 
 def _counted(count: int, noun: str) -> str:

@@ -97,7 +97,7 @@ def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.C
     findings = command["facts"]["findings"]
     assert [finding["step"] for finding in findings] == [head.split(None, 1)[1].split("  → ")[0].rstrip() for head, *_ in printed]
     assert [finding["fix"] for finding in findings if finding["type"] == "Missing"] == [head.split("  → ")[1] for head, *_ in printed if head.startswith("✗")]
-    assert [finding.get("detail", finding.get("said")) for finding in findings] == ["\n".join(line.removeprefix("    ") for line in body) for _, *body in printed]
+    assert [finding["detail"] for finding in findings] == ["\n".join(line.removeprefix("    ") for line in body) for _, *body in printed]
 
 
 def test_the_home_a_command_ran_on_is_on_its_event_wherever_it_came_from(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

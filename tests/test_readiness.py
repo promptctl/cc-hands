@@ -24,7 +24,7 @@ import pytest
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
-from hands.daemon.cli import main
+from hands.daemon.cli import VERBOSE_HINT, main
 from hands.daemon.readiness import Missing, Ready, Unknown
 from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -346,7 +346,7 @@ def test_a_session_started_outside_fritter_behind_another_program_in_its_pane_is
         "running sessions hands knows of: 1, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  hands cannot reach these:\n"
         "    /code/bare (pid 7) was started outside fritter, and another program has the keyboard of the tmux pane it runs in, %12 (window 3 of work), "
         "so it cannot be typed into: bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim",
-        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim (`hands check -v` lists each)",
+        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim",
     )
 
 
@@ -371,7 +371,7 @@ def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_r
         "restart it from a PATH whose `claude` is hands' shim\n"
         "  whether hands can reach these is unknown:\n"
         "    /code/bare (pid 7) was started outside fritter, and which tmux pane it runs in could not be read, so whether it can be typed into is unknown: tmux broke",
-        "restart it from a PATH whose `claude` is hands' shim (`hands check -v` lists each)",
+        "restart it from a PATH whose `claude` is hands' shim",
     )
 
 
@@ -478,7 +478,7 @@ def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() 
 def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_session() -> None:
     unread = [Undescribed(29648, 1, "kern.procargs2", errno.EIO), Undescribed(29649, 1, "proc_pidfdinfo of fd 0", errno.EIO)]
     assert readiness.sessions_found([], set(), [], readiness.Unrecorded([], Counter(), unread), {}) == Unknown(
-        "1 session unknown",
+        "unrecorded sessions unknown",
         "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0\n  whether hands can reach these is unknown:\n"
         "    the kernel would not describe these processes at a terminal, so whether any is a session hands has no record of is unknown: "
         "pid 29648 (kern.procargs2: Input/output error), pid 29649 (proc_pidfdinfo of fd 0: Input/output error)"
@@ -700,6 +700,30 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
+def test_the_sessions_line_counts_sessions_and_unreadable_files_apart_with_the_fix_for_each() -> None:
+    lost = [Membership(SessionId(f"0f1e2d3c-aaaa-bbbb-cccc-00000000000{pid}"), pid, Path(f"/code/{pid}"), Path("/nowhere/t.jsonl")) for pid in (7, 8)]
+    corrupt = liveness.Unreadable(Path("/home/memberships/broken.json"), b"{", Rejected("not JSON"))
+    found = readiness.sessions_found(lost, set(), [corrupt], readiness.Unrecorded([], Counter(), []), {7: NotInTmux(), 8: Behind(PANE)})
+    assert isinstance(found, Missing) and found.step == "2 sessions unreachable, 1 membership file unreadable"
+    assert found.fix == (
+        "for each, one of: restart it from a PATH whose `claude` is hands' shim; "
+        "bring it back to the front of its pane, or restart it from a PATH whose `claude` is hands' shim; hands run removes it"
+    )
+    alike = readiness.sessions_found(lost, set(), [], readiness.Unrecorded([], Counter(), []), {7: NotInTmux(), 8: NotInTmux()})
+    assert isinstance(alike, Missing) and alike.fix == "for each, restart it from a PATH whose `claude` is hands' shim"
+
+
+def test_sessions_that_could_not_be_looked_for_are_unknown_by_no_count() -> None:
+    found = readiness.sessions_found([], set(), [], readiness.Unfindable("cannot look at this user's processes at a terminal: refused"), {})
+    assert isinstance(found, Unknown) and found.step == "unrecorded sessions unknown"
+
+
+def test_a_claude_code_whose_path_names_no_version_is_named_without_one(root: Path) -> None:
+    executable(root / "bin" / "claude", "\x7fELF")
+    found = readiness.claude(f"{root / 'bin'}:/usr/bin:/bin")
+    assert found == Ready("Claude Code", f"Claude Code is installed: {root / 'bin' / 'claude'}")
+
+
 # Claude Code
 
 
@@ -863,8 +887,13 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
 
 def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
     lines = [line for line in capsys.readouterr().out.splitlines() if not line.startswith(" ")]
-    assert len(lines) == len(STEPS)
-    return {step: line.split()[0] for step, line in zip(STEPS, lines)}
+    # A check with a step not done ends on where each step is said in full, and one with every step done does not.
+    hinted = lines[-1] == VERBOSE_HINT
+    steps = lines[:-1] if hinted else lines
+    assert len(steps) == len(STEPS)
+    found = {step: line.split()[0] for step, line in zip(STEPS, steps)}
+    assert hinted == any(mark != "✓" for mark in found.values())
+    return found
 
 
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -938,7 +967,8 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     no_hands(root, home, monkeypatch)
     assert main(["--home", str(home.root), "check"]) == 1
-    terse = capsys.readouterr().out.splitlines()
+    *terse, hint = capsys.readouterr().out.splitlines()
+    assert hint == VERBOSE_HINT
     [line] = [each for each in terse if each.startswith("✗")]
     named, fix = line.split("  → ")
     assert (named.rstrip(), fix) == ("✗ `hands` not on PATH", "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH")

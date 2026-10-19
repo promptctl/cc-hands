@@ -399,7 +399,7 @@ could not be looked at. `hands check -v` says each in full beneath its line. The
 brain's login; this terminal's Input Monitoring grant; hands running; each running session hands
 knows of that cannot be typed into, through its fritter or the tmux pane it is in front of; and each running session hands has no record of, such
 as one started before the plugin was installed; both by its directory and pid. `hands run`
-says the same lines as it starts, the brain as it reached it. An up daemon is not a
+logs each step in full as it starts, the brain as it reached it. An up daemon is not a
 working hands: `hands status` says only whether the daemon is running.
 
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &

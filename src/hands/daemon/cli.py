@@ -513,7 +513,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached: readiness.Finding = readiness.reaching(voice.llm)
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
-                reached = readiness.Missing("brain cannot reach its model", "hands cannot start on its settings", str(error))
+                reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
         survey(readiness.check(home, path, True, reached, running, keyboards))
 
     return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
@@ -639,29 +639,20 @@ def survey(findings: Sequence[readiness.Finding]) -> None:
 
 def checklist(findings: Sequence[readiness.Finding], verbose: bool) -> str:
     """`hands check`'s lines: each step marked and named, a missing one with what fixes it, aligned on the arrows; with
-    `verbose`, each said in full beneath its line."""
+    `verbose`, each said in full beneath its line, and without it, where that is said when a step is not done."""
     width = max(len(finding.step) for finding in findings)
     lines = [f"{display(finding)[0]} {finding.step:<{width}}{remedy(finding)}".rstrip() for finding in findings]
-    full = [[f"    {line}" for line in detail(finding).splitlines()] if verbose else [] for finding in findings]
-    return "\n".join(line for head, body in zip(lines, full, strict=True) for line in (head, *body))
+    full = [[f"    {line}" for line in finding.detail.splitlines()] if verbose else [] for finding in findings]
+    undone = not verbose and any(not isinstance(finding, readiness.Ready) for finding in findings)
+    return "\n".join([*(line for head, body in zip(lines, full, strict=True) for line in (head, *body)), *([VERBOSE_HINT] if undone else [])])
+
+
+VERBOSE_HINT = "`hands check -v` says each step in full"
 
 
 def remedy(finding: readiness.Finding) -> str:
-    """What follows a step's name on its line: the fix for a missing one, the way to its reason for one not looked at."""
-    match finding:
-        case readiness.Ready():
-            return ""
-        case readiness.Missing(fix=fix):
-            return f"  → {fix}"
-        case readiness.Unknown():
-            return "  → could not look: `hands check -v` says why"
-
-
-def detail(finding: readiness.Finding) -> str:
-    """A step said in full, less the fix its line already shows."""
-    match finding:
-        case readiness.Missing(detail=said) | readiness.Ready(said=said) | readiness.Unknown(said=said):
-            return said
+    """What follows a step's name on its line: the fix of a missing one."""
+    return f"  → {finding.fix}" if isinstance(finding, readiness.Missing) else ""
 
 
 def display(finding: readiness.Finding) -> tuple[str, str]:
