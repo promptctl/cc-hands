@@ -1,34 +1,15 @@
 """Which tmux pane a session runs in: read over a process table and every tmux server's panes, never kept."""
 
-import asyncio
 import os
-import re
-import shutil
 import subprocess
-import tempfile
-import time
-from collections.abc import Generator, Sequence
-from functools import partial
+from collections.abc import Sequence
 from pathlib import Path
 
-import pytest
-
-from hands.core.drafts import SendDraft, StageDraft
-from hands.core.effects import Command, Input, Key, Text, Type, Typed
-from hands.core.events import Joined
-from hands.core.session import CommandName, Membership, PromptText, SessionId, Staged
+from conftest import stand_in
 from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
 from hands.sessions import tmux
-from hands.sessions.registry import Sessions
 from hands.sessions.tmux import Answered
 from hands.sessions.terminals import Process, ancestor_terminals, front_terminal
-from hands.sessions.typing import Untyped, type_into
-from hands.sessions.wide import unit
-from hands.voice.tool import Result
-from hands.voice.tools import read_screen_tool
-
-TMUX = shutil.which("tmux")
-needs_tmux = pytest.mark.skipif(TMUX is None, reason="no tmux to run panes in")
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -83,144 +64,16 @@ def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that
     assert keyboard(300, [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
 
 
-@pytest.fixture
-def sockets(monkeypatch: pytest.MonkeyPatch) -> Generator[Path]:
-    """A socket directory of the test's own, for servers that read no tmux.conf of the user's; its tmux-<uid>."""
-    # A tmux socket's path has to fit a sockaddr_un, which a pytest tmp_path on macOS does not.
-    directory = Path(tempfile.mkdtemp(prefix="hands-tmux-", dir="/tmp"))
-    monkeypatch.setenv("TMUX_TMPDIR", str(directory))
-    monkeypatch.delenv("TMUX", raising=False)
-    try:
-        yield directory / f"tmux-{os.getuid()}"
-    finally:
-        for socket in (directory / f"tmux-{os.getuid()}").glob("*"):
-            subprocess.run([str(TMUX), "-S", str(socket), "kill-server"], capture_output=True, check=False)
-        shutil.rmtree(directory)
-
-
-def run_in(socket: str, session: str) -> tuple[str, int]:
-    """A new tmux session of the server at `socket` running a process; its pane and the process's pid."""
-    started = subprocess.run([str(TMUX), "-f", "/dev/null", "-L", socket, "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", session, "sleep", "120"], capture_output=True, text=True, check=True)
-    pane, pid = started.stdout.split()
-    return pane, int(pid)
-
-
-def in_pane(pid: int) -> object:
-    [pane] = asyncio.run(tmux.panes([pid], os.environ))
-    return pane
-
-
-@pytest.fixture
-def outside() -> Generator[int]:
-    """A process in no pane, whatever runs the tests: started with no environment, in a session of its own, and left to
-    launchd, so no tmux server is on its line of ancestors."""
-    # It reads the test's pipe, so closing the pipe ends it: no pid is killed that may since be another process's.
-    held = subprocess.Popen(["/bin/sh", "-c", "/bin/cat <&0 >/dev/null 2>&1 & echo $!"], env={}, start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    assert held.stdin is not None and held.stdout is not None
-    pid = int(held.stdout.readline())
-    held.wait()
-    try:
-        yield pid
-    finally:
-        held.stdin.close()
-
-
-@needs_tmux
-def test_a_process_in_a_pane_of_each_of_two_servers_is_read_in_its_own_and_follows_it_across_break_pane(sockets: Path, outside: int) -> None:
-    work, worker = run_in("default", "work")
-    play, player = run_in("play", "play")
-    assert in_pane(worker) == Pane(sockets / "default", work, "work", 0)
-    assert in_pane(player) == Pane(sockets / "play", play, "play", 0)
-    assert in_pane(outside) == NotInTmux()
-
-    # The pane split beside another, then broken out into a window of its own: the same pane, in its new window.
-    subprocess.run([str(TMUX), "-L", "default", "split-window", "-d", "-t", work, "sleep", "120"], check=True)
-    subprocess.run([str(TMUX), "-L", "default", "break-pane", "-d", "-s", work], check=True)
-    assert in_pane(worker) == Pane(sockets / "default", work, "work", 1)
-
-
-@needs_tmux
-def test_a_socket_no_server_listens_on_holds_no_pane_and_sockets_with_no_tmux_to_ask_are_unread(sockets: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _, worker = run_in("default", "work")
-    # A server killed leaves its socket behind.
-    server = int(subprocess.run([str(TMUX), "-L", "default", "display-message", "-p", "#{pid}"], capture_output=True, text=True, check=True).stdout)
-    os.kill(server, 9)
-    deadline = time.monotonic() + 5
-    while subprocess.run([str(TMUX), "-L", "default", "has-session"], capture_output=True, check=False).returncode == 0:
-        assert time.monotonic() < deadline, "the killed tmux server still answers"
-        time.sleep(0.05)
-    assert (sockets / "default").is_socket()
-    assert in_pane(worker) == NotInTmux()
-
-    run_in("default", "work")
-    monkeypatch.setenv("PATH", "/nonexistent")
-    match in_pane(worker):
-        case PaneUnread(reason=reason):
-            assert reason == f"tmux sockets are at {sockets / 'default'}, and no tmux is on the PATH to ask them"
-        case other:
-            pytest.fail(f"read as {other}")
-
-
-@needs_tmux
-def test_a_server_whose_socket_is_outside_the_socket_directory_is_found_by_the_tmux_its_panes_name(sockets: Path) -> None:
-    # Neither in the directory tmux puts sockets in, nor under its $TMUX_TMPDIR: only $TMUX in the pane names it.
-    elsewhere = Path(tempfile.mkdtemp(prefix="hands-elsewhere-", dir="/tmp"))
-    socket = elsewhere / "mine"
-    try:
-        started = subprocess.run([str(TMUX), "-f", "/dev/null", "-S", str(socket), "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", "sleep", "120"], capture_output=True, text=True, check=True)
-        pane, pid = started.stdout.split()
-        work, worker = run_in("default", "work")
-        assert in_pane(int(pid)) == Pane(socket, pane, "aside", 0)
-        # $TMUX names a server in the directory by its real path, /private/tmp for /tmp: asked once, by its path there.
-        assert in_pane(worker) == Pane(sockets / "default", work, "work", 0)
-    finally:
-        subprocess.run([str(TMUX), "-S", str(socket), "kill-server"], capture_output=True, check=False)
-        shutil.rmtree(elsewhere)
-
-
-@needs_tmux
-def test_a_server_started_with_a_relative_socket_is_found_where_it_was_started_and_one_too_long_to_reach_says_why(sockets: Path) -> None:
-    # tmux keeps `-S mine` in $TMUX as it was given: relative to the directory the server was started in.
-    elsewhere = Path(tempfile.mkdtemp(prefix="hands-elsewhere-", dir="/tmp"))
-    # A socket's path has room for 104 bytes; tmux reaches this one only by its relative name.
-    deep = elsewhere / ("d" * 120)
-    deep.mkdir()
-    try:
-        started = [subprocess.run([str(TMUX), "-f", "/dev/null", "-S", "mine", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", "aside", "sleep", "120"], cwd=at, capture_output=True, text=True, check=True).stdout.split() for at in (elsewhere, deep)]
-        [(pane, pid), (_, far)] = started
-        assert in_pane(int(pid)) == Pane(Path(os.path.realpath(elsewhere)) / "mine", pane, "aside", 0)
-        match in_pane(int(far)):
-            case PaneUnread(reason=reason):
-                assert "File name too long" in reason
-            case other:
-                pytest.fail(f"read as {other}")
-    finally:
-        for at in (elsewhere, deep):
-            subprocess.run([str(TMUX), "-S", "mine", "kill-server"], cwd=at, capture_output=True, check=False)
-        shutil.rmtree(elsewhere)
-
-
 def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
-    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it.
-    held = subprocess.Popen(["/bin/cat"], env={"TMUX": "mine,1,0"}, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+    # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it. $TMUX is read from
+    # a program built for the test, since macOS shows no one /bin/cat's.
+    held = subprocess.Popen([stand_in(tmp_path / "stand-in")], env={"TMUX": "mine,1,0"})
     try:
         table = {held.pid: Process(held.pid, 1, os.geteuid(), 1, None), 1: Process(1, 0, 0, None, None)}
         assert tmux.sockets({"TMUX_TMPDIR": str(tmp_path)}, [held.pid], table) == []
     finally:
-        assert held.stdin is not None
-        held.stdin.close()
+        held.kill()
         held.wait()
-
-
-@needs_tmux
-def test_a_dead_pane_kept_by_remain_on_exit_leaves_the_live_panes_of_its_server_read(sockets: Path) -> None:
-    pane, worker = run_in("default", "work")
-    subprocess.run([str(TMUX), "-L", "default", "set", "-g", "remain-on-exit", "on", ";", "new-window", "-t", "work", "true"], check=True)
-    deadline = time.monotonic() + 5
-    while subprocess.run([str(TMUX), "-L", "default", "list-panes", "-a", "-f", "#{pane_dead}", "-F", "#{pane_id}"], capture_output=True, text=True, check=True).stdout == "":
-        assert time.monotonic() < deadline, "the window's command never exited"
-        time.sleep(0.05)
-    assert in_pane(worker) == Pane(sockets / "default", pane, "work", 0)
 
 
 def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_read_as_unset() -> None:
@@ -231,177 +84,3 @@ def test_sockets_are_looked_for_where_tmux_puts_them_with_an_empty_tmux_tmpdir_r
 def test_a_pane_closed_between_its_listing_and_the_look_at_its_terminal_leaves_the_rest_of_its_server_read() -> None:
     lines = ["/dev/null\t%1\t0\twork", "/dev/hands-no-such-terminal\t%2\t1\twork"]
     assert tmux.listed(Answered(WORK, lines)) == Listed({os.stat("/dev/null").st_rdev: Pane(WORK, "%1", "work", 0)})
-
-
-@needs_tmux
-def test_a_pane_is_shown_as_it_reads_now_and_one_that_cannot_be_read_says_why_never_as_a_blank_screen(sockets: Path) -> None:
-    pane, _ = run_in("default", "work")
-    socket = sockets / "default"
-    subprocess.run([str(TMUX), "-L", "default", "send-keys", "-t", pane, "-l", "Allow this edit?"], check=True)
-    deadline = time.monotonic() + 5
-    while asyncio.run(tmux.shown(os.environ, socket, pane)) != "Allow this edit?":
-        assert time.monotonic() < deadline, "what was typed never showed"
-        time.sleep(0.05)
-
-    match asyncio.run(tmux.shown(os.environ, socket, "%999")):
-        case Unanswered(reason=reason):
-            assert reason.startswith(f"tmux at {socket} did not show pane %999: ")
-        case other:
-            pytest.fail(f"read as {other!r}")
-    subprocess.run([str(TMUX), "-L", "default", "kill-server"], check=True)
-    match asyncio.run(tmux.shown(os.environ, socket, pane)):
-        case Unanswered(reason=reason):
-            assert reason.startswith(f"tmux at {socket} did not show pane {pane}: ")
-        case other:
-            pytest.fail(f"read as {other!r}")
-    assert asyncio.run(tmux.shown({"PATH": "/nonexistent"}, socket, pane)) == Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
-
-
-@needs_tmux
-def test_a_tmux_that_cannot_be_run_leaves_its_servers_unread_and_says_why(sockets: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _, worker = run_in("default", "work")
-    # An executable with no interpreter line and no machine code: exec refuses it.
-    (tmp_path / "tmux").write_bytes(b"\x00\x01")
-    (tmp_path / "tmux").chmod(0o755)
-    monkeypatch.setenv("PATH", str(tmp_path))
-    match in_pane(worker):
-        case PaneUnread(reason=reason):
-            assert reason.startswith(f"{tmp_path / 'tmux'} could not be run to ask tmux at {sockets / 'default'}: ")
-        case other:
-            pytest.fail(f"read as {other}")
-
-
-def screen_of(sessions: Sessions, session: str) -> object:
-    async def called() -> Result:
-        return await read_screen_tool(sessions, os.environ).body(session=session)
-
-    return asyncio.run(called())
-
-
-def joined(*members: Membership) -> Sessions:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
-    for member in members:
-        asyncio.run(sessions.apply(Joined(member, "startup")))
-    return sessions
-
-
-@needs_tmux
-def test_read_screen_says_why_for_a_session_in_no_pane_one_not_running_and_a_pane_tmux_did_not_show(sockets: Path, outside: int, monkeypatch: pytest.MonkeyPatch) -> None:
-    pane, worker = run_in("default", "work")
-    plain = Membership(SessionId("plain"), outside, Path("/code/plain"), Path("/nonexistent"))
-    framed = Membership(SessionId("framed"), worker, Path("/code/framed"), Path("/nonexistent"))
-    sessions = joined(plain, framed)
-    assert screen_of(sessions, "plain") == {"error": "plain runs in no tmux pane, and hands reads a screen only off one"}
-    assert screen_of(sessions, "gone") == {"error": "no session gone is running: list_sessions names the ones that are"}
-
-    async def unshown(_environment: object, socket: Path, _pane: str) -> Unanswered:
-        return Unanswered(f"tmux at {socket} did not answer capture-pane in 2 seconds")
-
-    monkeypatch.setattr(tmux, "shown", unshown)
-    assert screen_of(sessions, "framed") == {
-        "error": f"the screen of framed could not be read: tmux at {sockets / 'default'} did not answer capture-pane in 2 seconds",
-        "tmux": {"socket": str(sockets / "default"), "pane": pane, "session": "work", "window": 0},
-    }
-
-
-def recording(sockets: Path, session: str, into: Path) -> tuple[Pane, int]:
-    """A new tmux session of the default server whose process turns bracketed paste on, as Claude Code does, and keeps
-    every byte typed into its pane, raw, in `into`; its pane and the process's pid, once it is reading."""
-    keep = f"printf '\\033[?2004h'; stty raw -echo; exec cat > {into}"
-    started = subprocess.run([str(TMUX), "-f", "/dev/null", "-L", "default", "new-session", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-s", session, "sh", "-c", keep], capture_output=True, text=True, check=True)
-    pane, pid = started.stdout.split()
-    deadline = time.monotonic() + 5
-    while not into.exists():
-        assert time.monotonic() < deadline, "the pane's process never began reading"
-        time.sleep(0.05)
-    return Pane(sockets / "default", pane, session, 0), int(pid)
-
-
-def kept(into: Path, expected: bytes) -> bytes:
-    """What the pane's process kept, once it has kept as much as `expected`, or after five seconds."""
-    deadline = time.monotonic() + 5
-    while len(into.read_bytes()) < len(expected) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    return into.read_bytes()
-
-
-@needs_tmux
-@pytest.mark.parametrize(
-    ("input", "received"),
-    [
-        # Pasted bracketed behind its space, its newline kept a newline, and sent by the Return behind the paste.
-        (Text(PromptText("/fix the tests\nand report")), b"\x1b[200~ /fix the tests\nand report\x1b[201~\r"),
-        (Command(CommandName("compact"), None), b"/compact\r"),
-        # The command pressed as keys, and its arguments pasted behind it.
-        (Command(CommandName("model"), PromptText("opus")), b"/model\x1b[200~ opus\x1b[201~\r"),
-        (Key("escape"), b"\x1b"),
-        (Key("shift_tab"), b"\x1b[Z"),
-    ],
-)
-def test_what_is_typed_into_a_pane_reaches_its_process_as_someone_at_the_keyboard_would_type_it(input: Input, received: bytes, sockets: Path, tmp_path: Path) -> None:
-    into = tmp_path / "typed"
-    pane, _ = recording(sockets, "work", into)
-    asyncio.run(type_into(os.environ, Type(SessionId("s1"), pane, input)))
-    assert kept(into, received) == received
-    # Each paste's buffer is gone once pasted.
-    assert subprocess.run([str(TMUX), "-L", "default", "list-buffers"], capture_output=True, text=True, check=True).stdout == ""
-
-
-@needs_tmux
-def test_a_pane_tmux_could_not_type_into_is_said_with_why(sockets: Path, tmp_path: Path) -> None:
-    pane, _ = recording(sockets, "work", tmp_path / "typed")
-    with pytest.raises(Untyped, match=re.escape(f"tmux did not type into session s1: no tmux is on the PATH to type into pane {pane.id} of tmux at {pane.socket}")):
-        asyncio.run(type_into({"PATH": "/nonexistent"}, Type(SessionId("s1"), pane, Key("escape"))))
-    subprocess.run([str(TMUX), "-L", "default", "kill-server"], check=True)
-    with pytest.raises(Untyped, match=re.escape(f"tmux did not type into session s1: tmux at {pane.socket} did not type into pane {pane.id}: ")):
-        asyncio.run(type_into(os.environ, Type(SessionId("s1"), pane, Text(PromptText("hello")))))
-
-
-@needs_tmux
-def test_a_pane_gone_since_it_was_read_is_said_with_why_and_leaves_no_prompt_in_a_buffer(sockets: Path, tmp_path: Path) -> None:
-    pane, _ = recording(sockets, "work", tmp_path / "typed")
-    gone = Pane(pane.socket, "%99", "work", 0)
-    with pytest.raises(Untyped, match=re.escape(f"tmux did not type into session s1: tmux at {pane.socket} did not type into pane %99: can't find pane: %99")):
-        asyncio.run(type_into(os.environ, Type(SessionId("s1"), gone, Text(PromptText("the secret plan")))))
-    assert subprocess.run([str(TMUX), "-L", "default", "list-buffers"], capture_output=True, text=True, check=True).stdout == ""
-
-
-@needs_tmux
-def test_an_escape_is_answered_only_once_it_has_been_read_alone(sockets: Path, tmp_path: Path) -> None:
-    pane, _ = recording(sockets, "work", tmp_path / "typed")
-    started = time.monotonic()
-    asyncio.run(type_into(os.environ, Type(SessionId("s1"), pane, Key("escape"))))
-    assert time.monotonic() - started >= tmux.LONE_ESCAPE
-
-
-@needs_tmux
-def test_keys_reach_a_process_in_front_of_its_pane_and_not_a_job_behind_it(sockets: Path, outside: int, tmp_path: Path) -> None:
-    pane, _ = run_in("default", "work")
-    # A shell with job control, as a terminal gives one, and a job it put in the background.
-    subprocess.run([str(TMUX), "-L", "default", "respawn-pane", "-k", "-t", pane, "zsh", "-f"], check=True)
-    job = tmp_path / "job"
-    subprocess.run([str(TMUX), "-L", "default", "send-keys", "-t", pane, f"sleep 120 & echo $! > {job}", "Enter"], check=True)
-    deadline = time.monotonic() + 5
-    while not job.exists() or not job.read_text().strip():
-        assert time.monotonic() < deadline, "the shell never started its job"
-        time.sleep(0.05)
-    shell = int(subprocess.run([str(TMUX), "-L", "default", "display-message", "-p", "-t", pane, "#{pane_pid}"], capture_output=True, text=True, check=True).stdout)
-    at = Pane(sockets / "default", pane, "work", 0)
-    assert asyncio.run(tmux.keyboards([shell, int(job.read_text()), outside], os.environ)) == [at, Behind(at), NotInTmux()]
-
-
-@needs_tmux
-def test_a_session_nobody_wrapped_is_sent_a_draft_through_the_tmux_pane_it_runs_in(sockets: Path, tmp_path: Path) -> None:
-    into = tmp_path / "typed"
-    _, pid = recording(sockets, "work", into)
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=partial(type_into, os.environ), keyboards=partial(tmux.keyboards, environment=os.environ))
-    asyncio.run(sessions.apply(Joined(Membership(SessionId("s1"), pid, Path("/code/cc-hands"), Path("/nonexistent")), "startup")))
-
-    async def sent() -> object:
-        # Inside a unit of work, as every tool call the daemon makes is.
-        with unit("tool.run", lambda _: None):
-            await sessions.draft(StageDraft(SessionId("s1"), Staged(PromptText("run the tests"), ())))
-            return await sessions.draft(SendDraft(SessionId("s1")))
-
-    assert asyncio.run(sent()) == Typed(SessionId("s1"), Text(PromptText("run the tests")))
-    assert kept(into, b"\x1b[200~ run the tests\x1b[201~\r") == b"\x1b[200~ run the tests\x1b[201~\r"

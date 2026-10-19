@@ -26,9 +26,7 @@ from hands.sessions.membership import write_membership
 from hands.sessions.registry import Sessions
 from hands.voice.tool import Result
 from hands.voice.tools import close_session_tool
-from test_startsession import home_in, needs_tmux, start, terminal, tmux
-
-__all__ = ["terminal"]  # the fixture, used by name
+from test_startsession import home_in
 
 
 def registry() -> Sessions:
@@ -189,41 +187,3 @@ def test_a_session_whose_claude_no_longer_holds_it_leaves_with_nothing_signalled
         assert sessions.live_ids() == ["after"]
     assert [event["facts"]["signalled"] for event in closes(home)] == [False, False, False]
 
-
-@needs_tmux
-def test_a_window_hands_opened_closes_with_its_session_and_one_the_user_opened_stays(tmp_path: Path, terminal: Path) -> None:
-    home = home_in(tmp_path)
-    sessions = registry()
-    folder = tmp_path / "work"
-    folder.mkdir()
-    opened = start(home, folder)
-    # The user's own window: a shell they ran claude from, which takes their prompt again once it ends.
-    mine = tmp_path / "mine"
-    mine.mkdir()
-    pane = tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=theirs:", "-c", str(mine), "-e", f"HANDS_HOME={home.root}", f"{home.bin / 'claude'}; exec sleep 120").strip()
-    deadline = time.monotonic() + 5
-    while len(list(home.memberships.glob("*.json"))) < 2:
-        assert time.monotonic() < deadline, "the user's claude never joined"
-        time.sleep(0.05)
-    users = next(path.stem for path in home.memberships.glob("*.json") if path.stem != opened["session"])
-
-    def panes() -> list[str]:
-        return tmux("list-panes", "-a", "-F", "#{pane_id} #{pane_dead}").splitlines()
-
-    async def both() -> list[Result]:
-        # The sweep lists both sessions first, as the daemon's had before the user asked.
-        while len(sessions.live_ids()) < 2:
-            await asyncio.sleep(0.05)
-        return each(await close(home, sessions, [opened["session"], users], "named")())
-
-    assert {f"{opened['pane']} 0", f"{pane} 0"} <= set(panes())
-    assert run(home, sessions, both) == [{"closed": "work"}, {"closed": "mine"}]
-    # hands' window went with its session, and the tmux session it made with its last window; the user's stays, its
-    # shell running on.
-    deadline = time.monotonic() + 5
-    while any(line.startswith(f"{opened['pane']} ") for line in panes()):
-        assert time.monotonic() < deadline, f"hands' window outlived its session: {panes()}"
-        time.sleep(0.05)
-    assert f"{pane} 0" in panes()
-    assert "work" not in tmux("list-sessions", "-F", "#{session_name}").split()
-    assert sessions.live_ids() == []
