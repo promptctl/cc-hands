@@ -288,7 +288,7 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
 
 
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
-    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
@@ -380,7 +380,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     ended = subprocess.Popen(["true"])
     ended.wait()
     joined(home, "ended", ended.pid, None)
-    assert readiness.sessions(home, installed(root), untmuxed) == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
+    assert readiness.sessions(home, installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
@@ -411,7 +411,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     # The shell waits on its sleep, so it is still the process its -p was given to.
     with at_a_terminal(shell, root, ["-c", "sleep 30; :", "-p", "hello"]), at_a_terminal(root / "install" / "9.9.9", root, piped=True):
         found = readiness.sessions(home, path, untmuxed)
-    assert found == Ready("0 running sessions reachable", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
+    assert found == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -724,6 +724,13 @@ def test_a_claude_code_whose_path_names_no_version_is_named_without_one(root: Pa
     assert found == Ready("Claude Code", f"Claude Code is installed: {root / 'bin' / 'claude'}")
 
 
+def test_a_version_named_directory_above_claude_code_is_not_its_version(root: Path) -> None:
+    executable(root / "tools" / "1.4.0" / "bin" / "claude", "\x7fELF")
+    assert readiness.claude(f"{root / 'tools' / '1.4.0' / 'bin'}:/usr/bin:/bin").step == "Claude Code"
+    executable(root / "Caskroom" / "claude-code" / "2.1.288" / "claude", "\x7fELF")
+    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '2.1.288'}:/usr/bin:/bin").step == "Claude Code 2.1.288"
+
+
 # Claude Code
 
 
@@ -802,7 +809,9 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
     reached = readiness.configured(home, {})
-    assert isinstance(reached, Missing) and str(home.config) in reached.said
+    # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
+    assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
+    assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:

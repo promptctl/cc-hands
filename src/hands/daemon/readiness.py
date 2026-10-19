@@ -99,9 +99,9 @@ def claude(path: str) -> Finding:
         case Uninstalled() as uninstalled:
             return Missing(uninstalled.step, f"no Claude Code that hands can join its sessions of: {uninstalled.detail}", uninstalled.fix)
         case executable:
-            # The native installer and Homebrew's cask both keep each version under a part of its path named for it.
-            # A path that names none is said in full beneath the line, not on it.
-            named = next((f"Claude Code {part}" for part in reversed(executable.parts) if _VERSION.fullmatch(part)), "Claude Code")
+            # The native installer names the executable for its version, and Homebrew's cask the directory it is in; a
+            # version further up the path is some other thing's. A path that names none is said in full beneath the line.
+            named = next((f"Claude Code {part}" for part in reversed(executable.parts[-2:]) if _VERSION.fullmatch(part)), "Claude Code")
             return Ready(named, f"Claude Code is installed: {executable}")
 
 
@@ -146,11 +146,14 @@ def configured(home: Home, environment: Mapping[str, str]) -> Finding:
     try:
         config = load(home).config
     except Rejected as error:
-        return Missing("settings unreadable", "hands cannot read its settings", f"correct {home.config}: {error}")
+        # The refusal names the file and what is wrong with it, so it is the detail, and the line names the file to mend.
+        return Missing("settings unreadable", f"hands cannot read its settings: {error}", f"correct {home.config}")
     try:
         reached: Finding = reaching(resolve(config.llm, home, environment))
     except Rejected as error:
-        # Each refusal names its own mend, `hands login` most often, so the refusal is the fix.
+        # The refusal is the line's fix: where there is a mend, `hands login` most often, the refusal is what names it,
+        # and the few that name none (an answer that did not come in time, a provider other than Anthropic's) say what
+        # was refused, which is the most there is to act on.
         reached = Missing("brain cannot reach its model", "hands has no model to talk with", str(error))
     except OSError as error:
         # The brain's claude could not be asked, which says nothing of whether it holds a login.
@@ -461,7 +464,7 @@ def sessions_found(
     if unsure or unread:
         named = [*([f"{_counted(len(unsure), 'session')} unknown"] if unsure else []), *(["unrecorded sessions unknown"] if unread else [])]
         return Unknown(", ".join(named), said)
-    return Ready(f"{_counted(len(reached), 'running session')} reachable", said)
+    return Ready(f"{_counted(len(reached), 'running session')} reachable" if reached else "no running sessions", said)
 
 
 def _for_each(unreached: Sequence[Missing]) -> str:
