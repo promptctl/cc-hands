@@ -1944,6 +1944,23 @@ and come back to the page through the log, as words said do. Each read is one
 moments it gave. Each send is one `conversation.typed` event, with how many characters
 were typed. A request without the key or with no words is refused, and its event says why.
 
+**The backlog page is a project's lit backlog, ordered by dragging** (`hands.voice.backlogpage`).
+It is served beside the conversation page, at `/backlog?project=<directory>`, under the same key.
+Every read is `sighted` (`hands.voice.sentences`), the one read of a backlog the `read_backlog`
+tool makes too: `lit export` run fresh, each ticket's sentence from the summary store, and the
+project asked for to be said in the background. The page draws the unfinished roots in rank order,
+each over its unfinished children, with the sentence where one is said and never the description.
+lit ranks a ticket only among those inside the same parent (`Backlog.inside`: a listed or an
+archived parent; one deleted frames nothing), and a rank across parents is not refused by lit: it
+ranks the parent instead and exits 0. So a drop is parsed against a fresh read by `Backlog.move`,
+which refuses any move outside one frame; it is made with `lit rank --above` or `--below`; and the
+read after it must have the ticket directly beside its target, or the answer is a conflict, since
+the backlog changed while it was moved. The page keeps no order of its own: it draws what each
+answer carries, one request at a time in the order they were made, and holds drags while one is
+under way. Each read is one `backlog.read` event, with how many tickets it drew and how many of
+them had a sentence; each drop one `backlog.ranked`, with the ticket and where it was put, and why
+it was refused or failed.
+
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked

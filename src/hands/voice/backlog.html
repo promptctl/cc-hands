@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>hands backlog</title>
+<style>
+  :root {
+    --bg: #f4f2ee; --fg: #1d1c1a; --muted: #6b6862; --ring: #d9d5cd; --card: #fbfaf7; --mark: #2f2d2a; --bad: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --card: #1c1b19; --mark: #e9e5de; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  header { position: sticky; top: 0; z-index: 1; background: var(--bg); display: flex; align-items: baseline; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--ring); }
+  header h1 { font-size: 17px; margin: 0; }
+  header #project { flex: 1; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header a { color: var(--muted); }
+  #how { margin: 10px 16px 0; max-width: 52rem; font-size: 13px; color: var(--muted); }
+  #state { min-height: 1.2em; margin: 8px 16px 0; font-size: 13px; color: var(--muted); white-space: pre-wrap; }
+  #state.bad { color: var(--bad); }
+  main { padding: 4px 16px 32px; max-width: 52rem; }
+  ol { list-style: none; margin: 0; padding: 0; }
+  li > ol { margin: 6px 0 0 22px; display: flex; flex-direction: column; gap: 6px; }
+  main > ol { display: flex; flex-direction: column; gap: 14px; }
+  .card { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; background: var(--card);
+    border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; cursor: grab; user-select: none; }
+  main > ol > li > .card { border-color: var(--mark); }
+  .grip { grid-row: span 2; color: var(--muted); touch-action: none; padding: 0 2px; font-size: 18px; line-height: 1.1; }
+  .title { font-weight: 600; overflow-wrap: anywhere; }
+  .title small { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 12px; }
+  .title .status { font-weight: 500; font-size: 12px; margin-left: 6px; padding: 0 6px; border: 1px solid var(--ring); border-radius: 9px; }
+  .summary { color: var(--fg); overflow-wrap: anywhere; }
+  .summary.unsaid { color: var(--muted); font-style: italic; }
+  .dragged > .card { opacity: .45; }
+  body.busy .card { cursor: progress; }
+  body.dragging, body.dragging .card { cursor: grabbing; }
+  #drop { position: fixed; height: 3px; border-radius: 2px; background: var(--mark); pointer-events: none; display: none; }
+  main:empty::before { content: "Nothing open."; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>backlog</h1>
+  <span id="project"></span>
+  <a id="phone" href="/">Phone</a>
+</header>
+<p id="how">Every open ticket in lit's rank order, top first: each epic, with the tickets inside it beneath it. The line under a title is hands' one-sentence summary of the ticket. Drag a card up or down among the cards beside it to rank it there in lit.</p>
+<p id="state" role="status"></p>
+<main id="tree" aria-label="Open tickets in rank order"></main>
+<div id="drop"></div>
+<script>
+"use strict";
+// The phone's key travels in the fragment, which the browser never sends with the page's own request.
+const key = decodeURIComponent(location.hash.slice(1));
+const project = new URLSearchParams(location.search).get("project");
+const tree = document.getElementById("tree");
+const state = document.getElementById("state");
+const drop = document.getElementById("drop");
+document.getElementById("phone").href = `/${location.hash}`;
+document.getElementById("project").textContent = project || "";
+// How far a pointer moves before a press on a card is a drag.
+const SLOP_PX = 4;
+// How close to the window's top or bottom a drag scrolls it, and how far each move does.
+const EDGE_PX = 48, SCROLL_PX = 24;
+
+function say(line, bad = false) { state.textContent = line; state.classList.toggle("bad", bad); }
+
+function asked(path, init = {}) {
+  return fetch(path, {...init, headers: {...init.headers, "Authorization": `Bearer ${key}`}});
+}
+
+// [LAW:no-ambient-temporal-coupling] the one owner of the page's requests: each waits for the one before it to be
+// answered and drawn, so what is drawn last is lit's backlog after every request made before it. Drags are held while
+// any is waiting, so no drop is made on a backlog a move under way is about to replace.
+let queue = Promise.resolve();
+let waiting = 0;
+function inTurn(work) {
+  waiting += 1;
+  document.body.classList.add("busy");
+  queue = queue.then(work).finally(() => {
+    waiting -= 1;
+    document.body.classList.toggle("busy", waiting > 0);
+  });
+  return queue;
+}
+
+// The backlog as hands answered it, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth].
+function drawn(read) {
+  if (!read.tracked) { tree.replaceChildren(); say(`lit has no workspace in ${project}.`, true); return; }
+  tree.replaceChildren(listed(read.items));
+}
+
+function listed(items) {
+  const list = document.createElement("ol");
+  list.append(...items.map(item));
+  return list;
+}
+
+function item(ticket) {
+  const row = document.createElement("li");
+  row.dataset.id = ticket.id;
+  // The parent lit ranks the ticket inside: a drop moves it among those drawn beside it in the same one.
+  row.dataset.frame = ticket.frame ?? "";
+  const card = document.createElement("div");
+  card.className = "card";
+  const grip = document.createElement("span");
+  grip.className = "grip";
+  grip.textContent = "⠿";
+  grip.setAttribute("aria-hidden", "true");
+  const title = document.createElement("div");
+  title.className = "title";
+  const id = document.createElement("small");
+  id.textContent = ticket.id;
+  title.append(ticket.title, id);
+  if (ticket.status === "in_progress") {
+    const status = document.createElement("span");
+    status.className = "status";
+    status.textContent = "in progress";
+    title.append(status);
+  }
+  // hands' sentence for the ticket; one not said yet is said to be so, and the ticket's description is never shown here.
+  const summary = document.createElement("div");
+  summary.className = ticket.summary === undefined ? "summary unsaid" : "summary";
+  summary.textContent = ticket.summary ?? "Not summarised yet.";
+  card.append(grip, title, summary);
+  card.addEventListener("pointerdown", event => pressed(event, row));
+  row.append(card);
+  if (ticket.children.length) row.append(listed(ticket.children));
+  return row;
+}
+
+// Answered with the backlog to draw, or failing with what hands said, which is shown.
+async function answered(response) {
+  if (response.status === 401) throw new Error("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.");
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+function read() {
+  return inTurn(async () => {
+    try {
+      drawn(await answered(await asked(`/backlog/tickets?project=${encodeURIComponent(project)}`)));
+      if (state.classList.contains("bad")) say("");
+    } catch (error) {
+      say(error instanceof TypeError ? "hands is out of reach." : error.message, true);
+    }
+  });
+}
+
+function moved(ticket, place) {
+  return inTurn(async () => {
+    say("Ranking…");
+    try {
+      drawn(await answered(await asked("/backlog/rank", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, ...place})})));
+      say("");
+      return;
+    } catch (error) {
+      say(`Not moved: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
+    }
+    // [LAW:no-silent-failure] a move that failed is shown, and the backlog drawn again as lit has it.
+    try {
+      drawn(await answered(await asked(`/backlog/tickets?project=${encodeURIComponent(project)}`)));
+    } catch (error) {
+      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn is lit's order before the move: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
+    }
+  });
+}
+
+// A drag: a press on a card that moves past the slop. While it lasts a line shows where the ticket would land among the
+// tickets drawn beside it in its frame; nothing moves until lit has answered the drop.
+let drag = null;
+
+function pressed(event, row) {
+  if (waiting > 0 || drag !== null || event.button !== 0) return;
+  const siblings = [...row.parentElement.children].filter(other => other.dataset.frame === row.dataset.frame);
+  if (siblings.length < 2) return;
+  drag = {row, siblings, x: event.clientX, y: event.clientY, started: false, place: null, pointer: event.pointerId, card: event.currentTarget};
+  drag.card.setPointerCapture(event.pointerId);
+}
+
+function placed(drag, y) {
+  // Dropped above the first sibling whose middle is below the pointer, or below the last.
+  const others = drag.siblings.filter(other => other !== drag.row);
+  const above = others.find(other => { const box = other.getBoundingClientRect(); return y < box.top + box.height / 2; });
+  return above ? {above: above.dataset.id, at: above, edge: "top"} : {below: others.at(-1).dataset.id, at: others.at(-1), edge: "bottom"};
+}
+
+// Whether the drop leaves the ticket where it already is.
+function still(drag) {
+  const place = drag.place;
+  const at = drag.siblings.indexOf(drag.row);
+  return place.above !== undefined ? drag.siblings[at + 1] === place.at : drag.siblings[at - 1] === place.at;
+}
+
+function dragging(event) {
+  if (drag === null || event.pointerId !== drag.pointer) return;
+  if (!drag.started) {
+    if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < SLOP_PX) return;
+    drag.started = true;
+    drag.row.classList.add("dragged");
+    document.body.classList.add("dragging");
+  }
+  if (event.clientY < EDGE_PX) window.scrollBy(0, -SCROLL_PX);
+  else if (event.clientY > window.innerHeight - EDGE_PX) window.scrollBy(0, SCROLL_PX);
+  drag.place = placed(drag, event.clientY);
+  const box = drag.place.at.getBoundingClientRect();
+  Object.assign(drop.style, {display: "block", left: `${box.left}px`, width: `${box.width}px`, top: `${(drag.place.edge === "top" ? box.top - 5 : box.bottom + 2)}px`});
+}
+
+function ended(event) {
+  if (drag === null || event.pointerId !== drag.pointer) return;
+  const done = drag;
+  drag = null;
+  drop.style.display = "none";
+  done.row.classList.remove("dragged");
+  document.body.classList.remove("dragging");
+  if (event.type === "pointerup" && done.started && done.place !== null && !still(done)) {
+    moved(done.row.dataset.id, done.place.above !== undefined ? {above: done.place.above} : {below: done.place.below});
+  }
+}
+
+document.addEventListener("pointermove", dragging);
+document.addEventListener("pointerup", ended);
+document.addEventListener("pointercancel", ended);
+// Agents rank, file, and close tickets while the page is away: it is read again whenever it is looked at again.
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && key && project) read(); });
+
+if (!key) say("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.", true);
+else if (!project) say("Name the project on this page's address: backlog?project=<the directory lit tracks it in>.", true);
+else read();
+</script>
+</body>
+</html>

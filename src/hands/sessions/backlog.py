@@ -1,13 +1,15 @@
 """A project's lit backlog, read whole from `lit export` and parsed once into the tickets, their tree, and their comments.
 
 `lit export` is lit's versioned data-export primitive, and the one command that hands over descriptions in bulk.
-It is read fresh at every call and kept nowhere [LAW:one-source-of-truth]: lit is where the backlog is.
+It is read fresh at every call and kept nowhere [LAW:one-source-of-truth]: lit is where the backlog is, and its rank
+order is changed by `lit rank` alone.
 """
 
 import asyncio
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
@@ -15,8 +17,8 @@ from hands.core.sentences import Thing
 from hands.sessions.child import run
 from hands.sessions.payload import Payload, Rejected
 
-# The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
-EXPORT_TIMEOUT_SECONDS = 30.0
+# The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
+LIT_TIMEOUT_SECONDS = 30.0
 
 # The export versions whose every field read here means what this parser reads it as; another is refused rather than
 # half read. 5 adds each ticket's plan and its law reviews to 4 (lit 0.21), and neither is read here; an issue's other
@@ -29,8 +31,13 @@ Status = Literal["open", "in_progress", "closed"]
 BACKLOG = "backlog"
 
 
-class Unread(Exception):
-    """lit could not hand over a backlog in this directory: it failed, or refused, and the message says why."""
+class LitFailed(Exception):
+    """lit did not do what it was asked in a directory: it could not run, did not answer, or failed or refused, and the
+    message says why; `reason` is the token lit's refusal names, None where lit named none."""
+
+    def __init__(self, message: str, reason: str | None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -71,13 +78,83 @@ class Comment:
 
 
 @dataclass(frozen=True)
+class Above:
+    target: str
+
+
+@dataclass(frozen=True)
+class Below:
+    target: str
+
+
+# Where a ticket is ranked: directly above or directly below another of its frame.
+Place = Above | Below
+
+
+@dataclass(frozen=True)
+class Move:
+    """A rank lit carries out as asked: a ticket put next to another ticket lit ranks it among. Made by `Backlog.move`."""
+
+    ticket: str
+    place: Place
+
+
+@dataclass(frozen=True)
 class Backlog:
     """Every ticket lit holds for one project, in rank order, with each one's children in rank order."""
 
     tickets: Mapping[str, Ticket]
-    children: Mapping[str, tuple[str, ...]]
-    parent: Mapping[str, str]
+    # [LAW:one-source-of-truth] the one parent relation lit's export gives: each ticket's parent where lit lists it or
+    # archived it. lit ranks a ticket among the others inside the same parent, an archived one included; one whose
+    # parent was deleted, or is not in the export, it ranks among the roots, and so it has none here.
+    inside: Mapping[str, str]
     comments: Mapping[str, tuple[Comment, ...]]
+
+    @cached_property
+    def parent(self) -> Mapping[str, str]:
+        """Each ticket's parent where lit lists it: the tree is made of these, and a ticket inside an archived parent is a root of it."""
+        return {child: parent for child, parent in self.inside.items() if parent in self.tickets}
+
+    @cached_property
+    def children(self) -> Mapping[str, tuple[str, ...]]:
+        """Each listed parent's children, in rank order."""
+        children: dict[str, tuple[str, ...]] = {}
+        for id in self.tickets:  # rank order, so each parent's children are too
+            if id in self.parent:
+                children[self.parent[id]] = (*children.get(self.parent[id], ()), id)
+        return children
+
+    def frame(self, id: str) -> tuple[str, ...]:
+        """Every ticket lit ranks `id` among, itself included, in rank order: those inside the same parent, or the roots."""
+        return tuple(other for other in self.tickets if self.inside.get(other) == self.inside.get(id))
+
+    def move(self, ticket: str, place: Place) -> Move:
+        """`ticket` put at `place`, as a move lit carries out as asked; raises Rejected naming why it is not one.
+
+        [LAW:single-enforcer] the one check of a move: lit refuses no rank across frames, it ranks the parent instead and
+        exits 0, so a move it would carry out otherwise is never asked of it.
+        """
+        for id in (ticket, place.target):
+            if id not in self.tickets:
+                raise Rejected(f"the backlog has no ticket {id}")
+        if ticket == place.target:
+            raise Rejected(f"{ticket} cannot be ranked next to itself")
+        if place.target not in self.frame(ticket):
+            raise Rejected(f"{ticket} and {place.target} are not inside the same parent, and lit ranks a ticket only among those inside its own")
+        return Move(ticket, place)
+
+    def landed(self, move: Move) -> bool:
+        """Whether this backlog has `move` as lit was asked to make it: the ticket directly above or below its target, in
+        the frame they share."""
+        frame = self.frame(move.ticket)
+        if move.place.target not in frame:
+            return False
+        at = frame.index(move.place.target)
+        match move.place:
+            case Above():
+                return frame[at - 1 : at] == (move.ticket,)
+            case Below():
+                return frame[at + 1 : at + 2] == (move.ticket,)
 
     def done(self, id: str) -> bool:
         """Whether a ticket is finished: closed, or for an epic, every child done."""
@@ -110,22 +187,46 @@ class Backlog:
 
 
 async def read_backlog(project: Path) -> Backlog | Untracked:
-    """The backlog lit holds for `project`, or that lit has no workspace there; raises Unread when lit cannot say, and
+    """The backlog lit holds for `project`, or that lit has no workspace there; raises LitFailed when lit cannot say, and
     Rejected when what it said does not parse."""
     try:
-        ran = await run("lit", "export", timeout=EXPORT_TIMEOUT_SECONDS, cwd=project)
+        out = await _lit(project, "export")
+    except LitFailed as failed:
+        if failed.reason in NO_WORKSPACE:
+            return Untracked(project)
+        raise
+    # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
+    return await asyncio.to_thread(parse_export, out)
+
+
+async def rank(project: Path, move: Move) -> None:
+    """Have lit in `project` make `move`; raises LitFailed when it does not."""
+    match move.place:
+        case Above(target=target):
+            where = ("--above", target)
+        case Below(target=target):
+            where = ("--below", target)
+    await _lit(project, "rank", move.ticket, *where)
+
+
+async def _lit(project: Path, *arguments: str) -> bytes:
+    """What lit run in `project` with `arguments` wrote out; raises LitFailed when it could not run, did not answer, or exited non-zero.
+
+    [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
+    """
+    command = f"lit {arguments[0]}"
+    try:
+        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project)
     except TimeoutError:
-        raise Unread(f"lit export in {project} did not answer in {EXPORT_TIMEOUT_SECONDS:.0f}s") from None
+        raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except OSError as error:
-        raise Unread(f"cannot run lit in {project}: {error}") from error
+        raise LitFailed(f"cannot run lit in {project}: {error}", None) from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
-        if (line := ERROR_LINE.match(err)) and line["reason"] in NO_WORKSPACE:
-            return Untracked(project)
+        line = ERROR_LINE.match(err)
         # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise Unread(f"lit export in {project} exited {ran.returncode}: {err.strip()[:300]}")
-    # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
-    return await asyncio.to_thread(parse_export, ran.out)
+        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else line["reason"])
+    return ran.out
 
 
 def parse_export(raw: bytes) -> Backlog:
@@ -133,24 +234,22 @@ def parse_export(raw: bytes) -> Backlog:
     export = Payload.parse(raw)
     if (version := export.integer("version")) not in EXPORT_VERSIONS:
         raise Rejected(f"lit export is version {version}, and hands reads versions {', '.join(map(str, EXPORT_VERSIONS))}")
-    issues = sorted((issue for issue in (Payload.of(entry, "an issue") for entry in export.items("issues")) if _listed(issue)), key=lambda issue: issue.text("rank"))
+    every = [Payload.of(entry, "an issue") for entry in export.items("issues")]
+    issues = sorted((issue for issue in every if _listed(issue)), key=lambda issue: issue.text("rank"))
     tickets = {issue.text("id"): _ticket(issue) for issue in issues}
-    parent: dict[str, str] = {}
+    # An archived parent still frames its children's rank; a deleted or purged one frames nothing.
+    framing = tickets.keys() | {issue.text("id") for issue in every if issue.optional_text("deleted_at") is None and issue.optional_text("archived_at") is not None}
+    inside: dict[str, str] = {}
     for relation in (Payload.of(entry, "a relation") for entry in export.items("relations")):
-        # A parent that is no ticket here (deleted, archived, or purged) is no parent here: its child stands as a root rather than vanishing.
-        if relation.text("type") == "parent-child" and relation.text("src_id") in tickets and relation.text("dst_id") in tickets:
-            parent[relation.text("src_id")] = relation.text("dst_id")
-    children: dict[str, tuple[str, ...]] = {}
-    for id in tickets:  # rank order, so each parent's children are too
-        if id in parent:
-            children[parent[id]] = (*children.get(parent[id], ()), id)
+        if relation.text("type") == "parent-child" and relation.text("src_id") in tickets and relation.text("dst_id") in framing:
+            inside[relation.text("src_id")] = relation.text("dst_id")
     comments: dict[str, tuple[Comment, ...]] = {}
     # A comment on a ticket that is none here is read by nothing, and kept by nothing.
     kept = (comment for comment in (Payload.of(entry, "a comment") for entry in export.items("comments")) if comment.text("issue_id") in tickets)
     for comment in sorted(kept, key=lambda comment: comment.text("created_at")):
         issue = comment.text("issue_id")
         comments[issue] = (*comments.get(issue, ()), Comment(comment.text("created_by"), comment.text("created_at"), comment.text("body")))
-    return Backlog(tickets, children, parent, comments)
+    return Backlog(tickets, inside, comments)
 
 
 def _listed(issue: Payload) -> bool:

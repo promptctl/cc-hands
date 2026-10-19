@@ -11,6 +11,7 @@ from pathlib import Path
 
 from hands.core.sentences import Digest, Due, Reckoning, Thing, reckon
 from hands.core.session import SessionId
+from hands.sessions import backlog as tracker
 from hands.sessions.sentences import Sentences
 from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
 
@@ -77,3 +78,26 @@ class SummaryStore:
 
     def keep(self, said: Mapping[Digest, str]) -> None:
         self._sentences.keep(said)
+
+
+@dataclass(frozen=True)
+class Sighted:
+    """A backlog read fresh, and every sentence already said of it, by id."""
+
+    backlog: tracker.Backlog
+    said: Mapping[str, str]
+
+
+async def sighted(store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
+    """The backlog in `project` read fresh with every sentence already said of it, or that lit has no workspace there;
+    raises LitFailed when lit cannot say, and Rejected when what it said does not parse.
+
+    [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what changed since the last
+    pass is asked for, to be said in the background, never while the read waits.
+    """
+    match await tracker.read_backlog(project):
+        case tracker.Untracked() as untracked:
+            return untracked
+        case backlog:
+            store.want(project)
+            return Sighted(backlog, store.reckon(backlog.thing()).said)
