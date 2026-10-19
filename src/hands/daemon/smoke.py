@@ -46,7 +46,7 @@ from hands.sessions.membership import parse_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
-from hands.sessions.wrapper import UPDATER_OFF
+from hands.sessions.wrapper import EVERY_RUN
 from hands.voice import transcription
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
@@ -332,7 +332,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    session = await on_terminal([claude], folder, {**as_from_a_terminal(environment), **UPDATER_OFF, "HANDS_HOME": str(home.root)})
+    session = await on_terminal([claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
