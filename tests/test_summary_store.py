@@ -52,8 +52,8 @@ RELATIONS = [child("e1", "e1.a"), child("e1", "e1.b"), child("e1", "e1.c"), chil
 COMMENTS: list[dict[str, object]] = [{"id": "c1", "issue_id": "t1", "body": "Seen again on CI.", "created_at": "2026-09-29T10:00:00Z", "created_by": "claude"}]
 
 
-def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS, comments: list[dict[str, object]] = COMMENTS) -> bytes:
-    return json.dumps({"version": 5, "workspace_id": "w", "issues": issues, "relations": relations, "comments": comments, "labels": [], "events": [], "purges": [], "plan_reviews": []}).encode()
+def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, object]] = RELATIONS, comments: list[dict[str, object]] = COMMENTS, version: int = 5) -> bytes:
+    return json.dumps({"version": version, "workspace_id": "w", "issues": issues, "relations": relations, "comments": comments, "labels": [], "events": [], "purges": [], "plan_reviews": []}).encode()
 
 
 # --- keys: what changes a sentence, and what does not
@@ -178,7 +178,8 @@ def test_a_ticket_lit_deleted_or_archived_is_not_in_the_backlog() -> None:
 @pytest.mark.parametrize(
     "raw, why",
     [
-        (json.dumps({"version": 3, "issues": [], "relations": [], "comments": []}).encode(), "version 3"),
+        (export(version=3), "version 3"),
+        (export(version=6), "version 6"),
         (export(issues=[ticket("t1", "01", "x", status="wontfix")]), "status"),
         (b"not json", "not JSON"),
     ],
@@ -186,6 +187,11 @@ def test_a_ticket_lit_deleted_or_archived_is_not_in_the_backlog() -> None:
 def test_an_export_hands_does_not_read_is_refused(raw: bytes, why: str) -> None:
     with pytest.raises(Rejected, match=why):
         parse_export(raw)
+
+
+def test_lit_0_20_and_0_21_exports_read_as_the_same_backlog() -> None:
+    # 0.21 writes version 5, which adds what nothing here reads; a machine still on 0.20 writes 4.
+    assert parse_export(export(version=4)) == parse_export(export(version=5))
 
 
 # --- the pass: lit read through its own command, the summariser asked, the store filled

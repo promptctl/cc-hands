@@ -18,10 +18,9 @@ from hands.sessions.payload import Payload, Rejected
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s; past this lit is stuck, not slow.
 EXPORT_TIMEOUT_SECONDS = 30.0
 
-# The export shape this parser was written against; another is refused rather than half read. Since 2, lit renamed
-# the blocked-by edge (3), added the purge records (4), and added each ticket's plan with its law reviews (5), none of
-# which is read here.
-EXPORT_VERSION = 5
+# The export versions whose every field read here means what this parser reads it as; another is refused rather than
+# half read. 5 adds each ticket's plan and its law reviews to 4 (lit 0.21), and neither is read here.
+EXPORT_VERSIONS = (4, 5)
 
 Status = Literal["open", "in_progress", "closed"]
 
@@ -131,8 +130,8 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
 def parse_export(raw: bytes) -> Backlog:
     """`lit export`'s JSON, parsed once [LAW:parse-dont-validate]: each ticket, its place in the tree, and what was said on it."""
     export = Payload.parse(raw)
-    if (version := export.integer("version")) != EXPORT_VERSION:
-        raise Rejected(f"lit export is version {version}, and hands reads version {EXPORT_VERSION}")
+    if (version := export.integer("version")) not in EXPORT_VERSIONS:
+        raise Rejected(f"lit export is version {version}, and hands reads versions {', '.join(map(str, EXPORT_VERSIONS))}")
     issues = sorted((issue for issue in (Payload.of(entry, "an issue") for entry in export.items("issues")) if _listed(issue)), key=lambda issue: issue.text("rank"))
     tickets = {issue.text("id"): _ticket(issue) for issue in issues}
     parent: dict[str, str] = {}
