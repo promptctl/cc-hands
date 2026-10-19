@@ -109,8 +109,9 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
             case _:
                 pass
         match entry:
-            # A pass cut short by a stopping daemon has no line: it did not finish what its counts would tell.
-            case wide.WideEvent(event="summary.backlog", outcome="ok" | "failed", facts={"tracked": True}):
+            # Only a pass that finished counting a tracked backlog says where its overview stands: one that raised, was
+            # cut short by a stopping daemon, or found no backlog has no line, by its shape.
+            case wide.WideEvent(event=summarising.BACKLOG_PASS, facts={"overview": str()}):
                 audit.told(summarising.told(entry))
             case _:
                 pass

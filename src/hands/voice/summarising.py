@@ -51,6 +51,8 @@ class _Missed:
 
 # What every pass counts of the calls it makes, after the counts of its own.
 CALL_COUNTS = ("said", "calls", "failed_calls", "stray")
+# [LAW:one-source-of-truth] the name a backlog pass's event goes by, which the terminal layer tells it by.
+BACKLOG_PASS = "summary.backlog"
 # What a backlog pass counts of its work items alone, the tickets and epics, leaving out the backlog's own sentence.
 ITEM_COUNTS = ("items", "items_said", "items_known", "items_unsaid")
 # Where the backlog's own sentence stands once a pass ends.
@@ -111,7 +113,7 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
     # failed. The `items` counts are the same of the work items alone, the tickets and epics, and `overview` is the
     # backlog's own sentence: what the terminal is told of the pass.
-    with _pass("summary.backlog", record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
+    with _pass(BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
             backlog = await read_backlog(project)
         except (Unread, Rejected) as error:
@@ -162,7 +164,8 @@ def _overview(items: frozenset[str], made: Sequence[str], said: Collection[str])
 
 
 def told(event: WideEvent) -> str:
-    """The terminal's line for a pass over a tracked backlog, read off its event alone: the work items its replies
+    """The terminal's line for a pass that finished counting a tracked backlog, the one shape whose event says where its
+    overview stands, read off its event alone: the work items its replies
     summarised, and the backlog's overview if they did; those with a sentence it did not make; and what is still unsaid.
     A pass that had nothing to ask says the backlog was already fully summarised."""
     project, counts, overview = event.facts["project"], event.counts, event.facts["overview"]

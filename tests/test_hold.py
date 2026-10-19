@@ -288,6 +288,11 @@ def test_a_pass_over_a_tracked_backlog_is_told_on_the_terminal_from_its_event_an
         backlog_pass(record, tracked=True)
         backlog_pass(record, tracked=False)
         backlog_pass(record, tracked=True, failing=True)
+        # One that raised before it finished counting is no line, and its error is the one that reaches its caller.
+        with pytest.raises(OSError, match="database or disk is full"):
+            with wide.unit("summary.backlog", record, counts=("rounds",)):
+                wide.annotate(project="/code/p", tracked=True)
+                raise OSError("database or disk is full")
         # One cut short as the daemon stops did not finish what its counts would tell.
         with pytest.raises(asyncio.CancelledError):
             with wide.unit("summary.backlog", record, counts=("rounds",)):
