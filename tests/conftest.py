@@ -1,8 +1,8 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
+import hashlib
 import json
-import os
 import stat
 import subprocess
 import sys
@@ -21,6 +21,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
+from hands.brain import pinned
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
@@ -141,9 +142,32 @@ def onboard(brain: Path, settings: bytes = b'{"syncClaudeAiSkills": false, "sync
     (brain / "settings.json").write_bytes(settings)
 
 
+def sha256(path: Path) -> str:
+    with path.open("rb") as held:
+        return hashlib.file_digest(held, "sha256").hexdigest()
+
+
+def located(script: Path) -> Callable[[Path], Path]:
+    """A stand-in for pinned.claude that puts the brain's pinned claude at `script`, whatever directory the brain is on."""
+    return lambda _config_dir: script
+
+
+def pin(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
+    """`script`, as its bytes are now, is the brain's pinned claude, whatever directory the brain is on: nothing on PATH
+    is ever the brain's."""
+    monkeypatch.setattr(pinned, "claude", located(script))
+    monkeypatch.setattr(pinned, "CHECKSUMS", dict.fromkeys(pinned.CHECKSUMS, sha256(script)))
+
+
+def pinned_to(script: Path) -> str:
+    """The lines a hands run in a process of its own starts with, so its brain's pinned claude is `script`, as fake_claude
+    pins it in this one."""
+    return f"from hands.brain import pinned\npinned.claude = lambda _config_dir: __import__('pathlib').Path({str(script)!r})\npinned.CHECKSUMS = dict.fromkeys(pinned.CHECKSUMS, {sha256(script)!r})\n"
+
+
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A `claude` first on PATH that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
+    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
@@ -339,7 +363,7 @@ while True:
             pending = pending[1:]
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{script.parent}{os.pathsep}{os.environ['PATH']}")
+    pin(monkeypatch, script)
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     monkeypatch.setenv("LATER_SECONDS", "1")

@@ -156,6 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("install-brain", help="fetch the Claude Code release the brain is pinned to into the brain's directory, checked against the checksum hands carries for it, unless it is there already; exits 0 only when it is there")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
@@ -294,6 +295,8 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             return login(home, arguments.method, record)
         case "install-fritter":
             return install_fritter(home, record)
+        case "install-brain":
+            return install_brain(home, record)
         case "plugin":
             return render_plugin(home, record)
         case "restart":
@@ -752,6 +755,24 @@ def install_fritter(home: Home, record: audit.Record) -> int:
             case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 print(said, file=sys.stderr)
                 return 1
+
+
+def install_brain(home: Home, record: audit.Record) -> int:
+    # Imported here, so that no other command loads what the fetch needs.
+    from hands.brain import pinned
+
+    # [LAW:nothing-unseen] an install is a unit of work: the release it pins, where it put it, and whether it fetched it.
+    with wide.unit("brain.install", record):
+        wide.annotate(version=pinned.VERSION)
+        try:
+            installed = asyncio.run(pinned.install(home.brain))
+        except pinned.Uninstallable as error:
+            wide.fail(str(error))
+            print(f"hands install-brain: {error}", file=sys.stderr)
+            return 1
+        wide.annotate(claude=installed.path, fetched=installed.fetched)
+        print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
+        return 0
 
 
 def render_plugin(home: Home, record: audit.Record) -> int:
