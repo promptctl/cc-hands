@@ -1088,7 +1088,7 @@ line (`acknowledged`) and how long after the turn left its lane it was handed to
 the turn's own words are told: a line the user spoke over before it came to be said is not told.
 
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
-up, on which account, model, and config directory, under which fritter (the one hands' package carries), and in which
+up, on which account, model, and config directory, under which fritter (the one hands' package carries), running which Claude Code (`claude`: the first on hands' PATH past its shims, as installed, so its path names the install and its version, and a failed launch is refused naming it), and in which
 conversation (`conversation`: `resumed`, or `fresh` with the one held before it that Claude Code has no transcript of, `untranscribed`), and, where it failed, the conversation it let go of (`let_go`), or
 with what failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
 (`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what it

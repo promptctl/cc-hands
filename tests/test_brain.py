@@ -303,7 +303,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "pid": brain.pid,
+        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude.resolve(), "pid": brain.pid,
     }
     # Held once the brain is up, for the next start to resume.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Fresh(SessionId("b2"), SessionId("b1"))
@@ -1158,6 +1158,25 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
         await start(launch(tmp_path), lambda _entry: None)
     await until(lambda: not running(tmp_path))
+
+
+async def test_a_brain_its_claude_code_will_not_run_is_refused_naming_the_claude_code_it_ran(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As Homebrew's Claude Code 2.1.197, first on hands' PATH past its shims, refuses an option a newer one takes: the
+    # `claude` on PATH is a link, and what it links to names the install and its version.
+    monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
+    installed = tmp_path / "Caskroom" / "claude-code" / "2.1.197" / "claude"
+    installed.parent.mkdir(parents=True)
+    installed.write_text("#!/bin/sh\necho \"error: unknown option '--system-prompt-snapshot'\" >&2\nexit 1\n")
+    installed.chmod(0o755)
+    fake_claude.unlink()
+    fake_claude.symlink_to(installed)
+    recorded: list[Entry] = []
+    with pytest.raises(Unstartable, match=rf"(?s)^the brain ran {re.escape(str(installed.resolve()))}: fritter exited \(1\).*unknown option '--system-prompt-snapshot'"):
+        await start(launch(tmp_path), recorded.append)
+    [launched] = events(recorded, "brain.launch")
+    assert (launched.outcome, launched.facts["claude"]) == ("failed", installed.resolve())
 
 
 async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_start_begins_anew(

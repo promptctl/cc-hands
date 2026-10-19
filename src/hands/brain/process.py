@@ -955,6 +955,10 @@ async def start(launch: Launch, record: Record) -> Brain:
             raise Unstartable(str(error)) from error
         annotate(fritter=fritter)
         claude = brain_claude(station.inherited)
+        # [LAW:nothing-unseen] the Claude Code the brain runs, as installed: hands' PATH chooses it, which need not be the
+        # one a shell runs as `claude`, and where an installer puts it names its version.
+        ran = claude.resolve()
+        annotate(claude=ran)
         hooks: asyncio.Queue[_Posted] = asyncio.Queue()
         listener, url = await _listen(hooks)
         # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
@@ -965,11 +969,13 @@ async def start(launch: Launch, record: Record) -> Brain:
                 running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
                 annotate(pid=running.pid)
                 typist = await _typist(running, sockets, launch.session)
-            except Unstartable:
+            except Unstartable as error:
                 # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
                 # Claude Code keeps its transcript (2.1.289 exits "No conversation found" on one it cannot read).
                 annotate(let_go=let_go(station.config_dir))
-                raise
+                # [LAW:no-silent-failure] what failed to come up is that Claude Code, under fritter: named, so what its
+                # terminal showed is read as that install's, not the one `claude` runs at a shell.
+                raise Unstartable(f"the brain ran {ran}: {error}") from error
             # Held once the brain is up in it, so the next start resumes what this one says.
             hold(station.config_dir, launch.session)
         except BaseException:
