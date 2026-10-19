@@ -96,9 +96,9 @@ _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
 def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
     """Which kind of request this is, from its path, its parsed body, and its headers, decided before any reply exists.
 
-    A side question is told by the words Claude Code wraps it in, since the class it names it by depends on the release.
-    Every other request is told by the class Claude Code names in CLASS_HEADER; a request without it, from a Claude Code
-    started before hands turned the header on, is told by its body. Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
+    Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
+    auxiliary is told by its body, since 2.1.289 names its forks so too; so is one without the header, from a Claude Code
+    started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
     (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
@@ -129,13 +129,7 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     model = str(request.get("model"))
     billing = _billing(request)
     prompt = billing.get("cc_prompt_id")
-    # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
-    # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
-    # A side question is told by the words Claude Code wraps it in, whatever class it names: 2.1.289 names only main,
-    # subagent and auxiliary, and sends a side question as auxiliary.
-    if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
-        return Fork()
-    # The class Claude Code named outranks every other reading of the body: it is Claude Code's own (OIs in 2.1.299 lists them).
+    # The class Claude Code named outranks every reading of the body: it is Claude Code's own (OIs in 2.1.299 lists them).
     match named:
         case "main":
             return MainTurn(None if prompt is None else PromptId(prompt))
@@ -146,7 +140,9 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         case "side_reply":
             return Fork()
         case "auxiliary":
-            return Auxiliary(model)
+            # Not one kind: 2.1.289's es() names every request that is neither its loop's nor a subagent's auxiliary,
+            # its side questions and prompt suggestions among them, so the body tells a fork from a call beside the loop.
+            return _beside_the_loop(request, model)
         case str() as other:
             return Unknown(f"a messages request to {model!r} Claude Code names {other!r}, a class hands does not know")
         case None:
@@ -154,21 +150,39 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     messages = _list(request.get("messages"))
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
+    # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
+    # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
     if any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
         return Compaction()
+    if _asks_aside(request):
+        return Fork()
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history (2.1.285, markers on messages 5 and 7 of 8), and offers no tools in the body (2.1.296).
-    newest = next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
+    newest = _newest_marker(messages)
     last = len(messages) - 1
     if newest == last and billing.get("cc_is_subagent") == "true":
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
         return Subagent()
     if newest == last:
         return MainTurn(None if prompt is None else PromptId(prompt))
-    if newest == last - 1:
-        return Fork()
-    # Marked nowhere a loop or a fork marks: a call beside the loop, which every one Claude Code names auxiliary is.
-    return Auxiliary(model)
+    return _beside_the_loop(request, model)
+
+
+def _beside_the_loop(request: Mapping[str, object], model: str) -> Fork | Auxiliary:
+    """A request that is no turn of the loop's: a fork of it, by its side-question wrapper or by its newest marker on the
+    message before its own, or else a call beside it, which is marked nowhere a loop or a fork marks."""
+    messages = _list(request.get("messages"))
+    return Fork() if _asks_aside(request) or _newest_marker(messages) == len(messages) - 2 else Auxiliary(model)
+
+
+def _asks_aside(request: Mapping[str, object]) -> bool:
+    """Whether a request asks a side question, by the words Claude Code wraps one in."""
+    return any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request))
+
+
+def _newest_marker(messages: Sequence[object]) -> int | None:
+    """The index of the newest message carrying a message-level cache marker; None when none does."""
+    return next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
 
 
 def _billing(request: Mapping[str, object]) -> Mapping[str, str]:

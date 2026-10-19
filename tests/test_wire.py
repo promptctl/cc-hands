@@ -217,12 +217,29 @@ def test_a_request_marked_nowhere_a_loop_or_fork_marks_is_auxiliary() -> None:
         ("workflow", Subagent()),
         ("compaction", Compaction()),
         ("side_reply", Fork()),
-        ("auxiliary", Auxiliary("claude-opus-5-5")),
     ],
 )
-def test_the_class_claude_code_names_outranks_every_reading_of_the_body(named: str, kind: object) -> None:
+def test_a_class_claude_code_names_outranks_every_reading_of_the_body(named: str, kind: object) -> None:
     # A body every marker rule reads as auxiliary: the header alone decides.
     assert classify("/v1/messages?beta=true", request(said("a"), said("b"), tools=[]), {"X-Claude-Code-Request-Class": named}) == kind
+
+
+def test_a_main_turn_quoting_the_side_question_wrapper_is_still_a_main_turn() -> None:
+    assert classify("/v1/messages", request(said(QUESTION, marked=True)), {"x-claude-code-request-class": "main"}) == MainTurn(None)
+
+
+@pytest.mark.parametrize(
+    ("body", "kind"),
+    [
+        # A prompt suggestion: a fork that skips the cache write, which 2.1.289 names auxiliary.
+        (request(said("hi"), said("ok", marked=True), said("suggest the next prompt")), Fork()),
+        (request(said("a"), said("b"), tools=[]), Auxiliary("claude-opus-5-5")),
+        # Marked as a loop marks: still beside the loop, since Claude Code said it is not the loop's turn.
+        (request(said("a"), said("b", marked=True)), Auxiliary("claude-opus-5-5")),
+    ],
+)
+def test_a_request_claude_code_names_auxiliary_is_a_fork_or_a_call_beside_the_loop_by_its_body(body: object, kind: object) -> None:
+    assert classify("/v1/messages?beta=true", body, {"x-claude-code-request-class": "auxiliary"}) == kind
 
 
 def test_a_main_turn_claude_code_names_still_names_its_turn_by_the_billing_line() -> None:
