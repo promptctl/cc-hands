@@ -51,8 +51,10 @@ CANNOT_BE_A_COMMAND = f"*[!{string.ascii_lowercase}{string.digits}-]*"
 # Code's background auto-updater off, so no release is installed under ~/.local/share/claude/versions and
 # ~/.local/bin/claude is never repointed by a claude hands started. Its auto-update of marketplace plugins is the same
 # updater and stops with it; FORCE_AUTOUPDATE_PLUGINS alone would keep that on. `claude update` still updates (2.1.299:
-# only DISABLE_UPDATES stops that).
-UPDATER_OFF = {"DISABLE_AUTOUPDATER": "1"}
+# only DISABLE_UPDATES stops that). And every request named by its class in x-claude-code-request-class, which the wire
+# reads it by: Claude Code sends that header only to a gateway it is told to send it to, or to its own API when a flag
+# of its own is on (2.1.299).
+EVERY_RUN = {"DISABLE_AUTOUPDATER": "1", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1"}
 
 # Why the shim runs a claude as the real claude and not as a session: not a terminal on both ends, a subcommand first,
 # or a print among the options before `--`, tested in that order.
@@ -199,8 +201,8 @@ def shim_script(fritter: Path, wire: Path) -> str:
     # A session reaches its API as it would without the shim, ANTHROPIC_BASE_URL unchanged, so Claude Code keeps all it
     # keeps for Anthropic's own API: fritter is its proxy instead, and opens only the connections to that API's host. What
     # the tap replaced is given back first, so a claude run from inside a session is tapped once, by its own fritter, and
-    # one that outlives the session is not left with a proxy nothing answers. Every run, a session or not, has UPDATER_OFF.
-    off = "".join(f"export {name}={shlex.quote(value)}\n" for name, value in UPDATER_OFF.items())
+    # one that outlives the session is not left with a proxy nothing answers. Every run, a session or not, has EVERY_RUN.
+    off = "".join(f"export {name}={shlex.quote(value)}\n" for name, value in EVERY_RUN.items())
     return f"""#!/bin/sh
 {MARK}
 fritter={shlex.quote(str(fritter))}

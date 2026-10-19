@@ -13,6 +13,7 @@ from hands.core.wire import (
     COMPACTION_OPENING,
     COMPACTION_REMINDER,
     Answered,
+    Auxiliary,
     BlockStarted,
     Compaction,
     CountTokens,
@@ -191,15 +192,43 @@ def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before
     assert classify("/v1/messages", request(*history[:-1], reply("ok", marked=True), said("suggest the next prompt"))) == Fork()
 
 
-def test_every_shape_no_rule_matches_is_unknown_and_says_what_it_was() -> None:
+def test_a_request_is_told_by_its_markers_whatever_tools_it_carries() -> None:
+    # A working session on 2.1.296 offers no tools in the body of the turns whose replies call them.
+    assert classify("/v1/messages", request(said("hi"), reply("ok"), said("go on", marked=True), tools=[])) == MainTurn(None)
+
+
+def test_a_request_marked_nowhere_a_loop_or_fork_marks_is_auxiliary() -> None:
+    # The permission classifier, a title, a quota probe: no marker, or one earlier than a fork's.
+    assert classify("/v1/messages", request(said("a"), said("b"), tools=[])) == Auxiliary("claude-opus-5-5")
+    assert classify("/v1/messages", request(said("a", marked=True), said("b"), said("c"))) == Auxiliary("claude-opus-5-5")
+
+
+@pytest.mark.parametrize(
+    ("named", "kind"),
+    [
+        ("main", MainTurn(None)),
+        ("subagent", Subagent()),
+        ("workflow", Subagent()),
+        ("compaction", Compaction()),
+        ("side_reply", Fork()),
+        ("auxiliary", Auxiliary("claude-opus-5-5")),
+    ],
+)
+def test_the_class_claude_code_names_outranks_every_reading_of_the_body(named: str, kind: object) -> None:
+    # A body every marker rule reads as auxiliary: the header alone decides.
+    assert classify("/v1/messages?beta=true", request(said("a"), said("b"), tools=[]), {"X-Claude-Code-Request-Class": named}) == kind
+
+
+def test_a_main_turn_claude_code_names_still_names_its_turn_by_the_billing_line() -> None:
+    body = billed(BILLING, said("go on"))
+    assert classify("/v1/messages", body, {"x-claude-code-request-class": "main"}) == MainTurn(PromptId("74fbc62d-8c76-4ce6-b21a-1057ac8e59f9"))
+
+
+def test_every_request_no_rule_can_read_is_unknown_and_says_what_it_was() -> None:
     assert classify("/v1/messages", None) == Unknown("a messages request whose body is not a JSON object")
-    assert classify("/v1/messages", request()) == Unknown("a messages request with no messages")
-    assert classify("/v1/messages", request(said("title this", marked=True), tools=[])) == Unknown(
-        "a messages request with no tools, to 'claude-opus-5-5'"
-    )
-    assert classify("/v1/messages", request(said("a"), said("b"))) == Unknown("a messages request with cache markers on messages [] of 2")
-    assert classify("/v1/messages", request(said("a", marked=True), said("b"), said("c"))) == Unknown(
-        "a messages request with cache markers on messages [0] of 3"
+    assert classify("/v1/messages", request()) == Unknown("a messages request to 'claude-opus-5-5' with no messages")
+    assert classify("/v1/messages", request(said("a")), {"x-claude-code-request-class": "dreaming"}) == Unknown(
+        "a messages request to 'claude-opus-5-5' Claude Code names 'dreaming', a class hands does not know"
     )
 
 

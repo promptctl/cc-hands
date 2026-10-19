@@ -23,10 +23,13 @@ def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
     exchange = uuid4().hex
     session = session_of(headers)
     parsed = _json(body)
-    kind = classify(path, parsed)
+    kind = classify(path, parsed, headers)
     if isinstance(kind, Unknown):
-        # [LAW:no-silent-failure] the set of shapes fills in from use, so an unknown one is said where it will be seen.
-        logger.warning(f"the wire saw {kind.shape} (exchange {exchange}, session {session}); nothing it says will be spoken")
+        # [LAW:no-silent-failure] a request hands cannot read is said where it will be seen, with what finds it again.
+        logger.warning(
+            f"hands cannot tell what kind of request this is, so it will not speak the reply: {kind.shape}"
+            f" ({len(body)} bytes to {path}, exchange {exchange} in the audit, session {session})"
+        )
     return Sent(exchange, session, kind, parsed)
 
 

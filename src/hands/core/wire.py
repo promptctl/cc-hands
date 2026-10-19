@@ -62,13 +62,22 @@ class Elsewhere:
 
 
 @dataclass(frozen=True)
+class Auxiliary:
+    """A call Claude Code makes for itself beside its loop, to `model`: the auto-mode permission classifier, a session's
+    title, a fetched page's summary, a quota probe. Claude Code's own name for the class; never the session speaking."""
+
+    model: str
+
+
+@dataclass(frozen=True)
 class Unknown:
-    """A request no rule recognises, and what about it did not match. Its reply is never spoken."""
+    """A request to the model's endpoint hands cannot read as any kind, and what about it could not be read. Its reply is
+    never spoken."""
 
     shape: str
 
 
-Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Elsewhere | Unknown
+Kind = MainTurn | Subagent | Fork | Compaction | CountTokens | Auxiliary | Elsewhere | Unknown
 
 # The first words of every compaction request's last message, in Claude Code's services/compact/prompt.ts.
 COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
@@ -76,29 +85,33 @@ COMPACTION_OPENING = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
 SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user."
 # The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
 BILLING_OPENING = "x-anthropic-billing-header:"
+# The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
+# for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts (2.1.299).
+CLASS_HEADER = "x-claude-code-request-class"
 
 
 _ENDPOINTS = ("/v1/messages/count_tokens", "/v1/messages")
 
 
-def classify(path: str, body: object) -> Kind:
-    """Which kind of request this is, from its path and its parsed body alone, decided before any reply exists.
+def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
+    """Which kind of request this is, from its path, its parsed body, and its headers, decided before any reply exists.
 
-    Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
+    Claude Code names the class itself in CLASS_HEADER; a request without it, from a Claude Code started before hands
+    turned the header on, is told by its body. Claude Code's own loop puts its newest message-level cache marker on the last message; a fire-and-forget fork
     (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
     asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
     """
-    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a messages request none of them
-    # matches is Unknown, so a shape no one has seen yet is heard and never spoken.
+    # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a request no rule can read is Unknown,
+    # and says what about it could not be read.
     path = path.split("?", 1)[0]
     # The endpoint ends the path: a gateway named in ANTHROPIC_BASE_URL puts its own path before it.
     match next((endpoint for endpoint in _ENDPOINTS if path.endswith(endpoint)), path):
         case "/v1/messages/count_tokens":
             return CountTokens()
         case "/v1/messages":
-            return _classify_messages(body)
+            return _classify_messages(body, _header(headers, CLASS_HEADER))
         case other if "/v1/messages" in other:
             # [LAW:no-silent-failure] a path of the model's own that is neither endpoint is heard, never passed over.
             return Unknown(f"a request to {other}")
@@ -108,35 +121,51 @@ def classify(path: str, body: object) -> Kind:
             return Elsewhere(other)
 
 
-def _classify_messages(body: object) -> Kind:
+def _classify_messages(body: object, named: str | None) -> Kind:
     if not isinstance(body, Mapping):
         return Unknown("a messages request whose body is not a JSON object")
     request = cast(Mapping[str, object], body)
+    model = str(request.get("model"))
+    billing = _billing(request)
+    prompt = billing.get("cc_prompt_id")
+    # The class Claude Code named outranks every reading of the body: it is Claude Code's own (OIs in 2.1.299 lists them).
+    match named:
+        case "main":
+            return MainTurn(None if prompt is None else PromptId(prompt))
+        case "subagent" | "workflow":
+            return Subagent()
+        case "compaction":
+            return Compaction()
+        case "side_reply":
+            return Fork()
+        case "auxiliary":
+            return Auxiliary(model)
+        case str() as other:
+            return Unknown(f"a messages request to {model!r} Claude Code names {other!r}, a class hands does not know")
+        case None:
+            pass
     messages = _list(request.get("messages"))
     if not messages:
-        return Unknown("a messages request with no messages")
+        return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
     # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
     if any(text.startswith(COMPACTION_OPENING) for text in asked(request)):
         return Compaction()
     if any(text.startswith(SIDE_QUESTION_OPENING) for text in asked(request)):
         return Fork()
-    if not _list(request.get("tools")):
-        return Unknown(f"a messages request with no tools, to {request.get('model')!r}")
-    marked = [index for index, message in enumerate(messages) if _cache_marked(message)]
+    # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
+    # message of a long history (2.1.285, markers on messages 5 and 7 of 8), and offers no tools in the body (2.1.296).
+    newest = next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
     last = len(messages) - 1
-    billing = _billing(request)
-    # By the newest marker: a working session also marks an earlier message of a long history, which the brain's
-    # slim requests never did (2.1.285, markers on messages 5 and 7 of 8).
-    if marked and marked[-1] == last and billing.get("cc_is_subagent") == "true":
+    if newest == last and billing.get("cc_is_subagent") == "true":
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
         return Subagent()
-    if marked and marked[-1] == last:
-        prompt = billing.get("cc_prompt_id")
+    if newest == last:
         return MainTurn(None if prompt is None else PromptId(prompt))
-    if marked and marked[-1] == last - 1:
+    if newest == last - 1:
         return Fork()
-    return Unknown(f"a messages request with cache markers on messages {marked} of {len(messages)}")
+    # Marked nowhere a loop or a fork marks: a call beside the loop, which every one Claude Code names auxiliary is.
+    return Auxiliary(model)
 
 
 def _billing(request: Mapping[str, object]) -> Mapping[str, str]:
@@ -269,8 +298,13 @@ def session_of(headers: Mapping[str, str]) -> SessionId | None:
     Not metadata.user_id: count_tokens requests carry no metadata, and since Claude Code 2.x that field is a JSON
     string rather than cc-dump's user_<hash>_account_<uuid>_session_<uuid>. None for a client that is not Claude Code.
     """
-    found = next((value for name, value in headers.items() if name.lower() == SESSION_HEADER), None)
+    found = _header(headers, SESSION_HEADER)
     return None if found is None else SessionId(found)
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    """A header's value by its lowercase name, since HTTP names are case-insensitive whatever mapping carried them."""
+    return next((value for given, value in headers.items() if given.lower() == name), None)
 
 
 # ── The stream back ──────────────────────────────────────────────────────────────────────────────────────────────────

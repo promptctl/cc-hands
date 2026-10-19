@@ -44,7 +44,7 @@ from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
-from hands.sessions.wrapper import UPDATER_OFF, Unpackaged, packaged
+from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
@@ -272,7 +272,7 @@ def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
     # session does not hand the brain that session's tap.
     kept = {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_LOGINS}
-    return {**kept, **SLIM, **UPDATER_OFF, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
+    return {**kept, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
 
 
 def workdir(config_dir: Path) -> Path:
