@@ -6,6 +6,7 @@ reads it and imports only the standard library and hands' data modules.
 """
 
 import json
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -57,6 +58,9 @@ class Status:
     live_sessions: int
     listening: bool  # a turn is open: the talk key is held and has been held long enough to mean talk
     degraded: tuple[Degradation, ...]  # each way it is running degraded, in the order the daemon found them
+    # The Python environment the run runs from, its sys.prefix, and starts again on when restarted; None from a hands
+    # from before it said.
+    runs_from: Path | None
 
 
 def encode(status: Status) -> str:
@@ -71,6 +75,7 @@ def encode(status: Status) -> str:
             "live_sessions": status.live_sessions,
             "listening": status.listening,
             "degraded": [{"brief": each.brief, "said": each.said} for each in status.degraded],
+            "runs_from": None if status.runs_from is None else str(status.runs_from),
         },
         indent=2,
     )
@@ -81,6 +86,7 @@ def parse(raw: bytes) -> Status:
     # [LAW:parse-dont-validate] every reader of the heartbeat goes through here.
     fields = Payload.parse(raw)
     last_audio_out = fields.optional_text("last_audio_out")
+    runs_from = fields.optional_text("runs_from")
     return Status(
         pid=parse_pid(fields.integer("pid")),
         started_at=_instant(fields.text("started_at")),
@@ -91,6 +97,7 @@ def parse(raw: bytes) -> Status:
         live_sessions=fields.integer("live_sessions"),
         listening=fields.optional_flag("listening"),
         degraded=_degradations(fields),
+        runs_from=None if runs_from is None else Path(runs_from),
     )
 
 
@@ -111,7 +118,7 @@ class Heart:
     period: timedelta
 
     def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...]) -> None:
-        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, degraded))
+        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, degraded, Path(sys.prefix)))
 
 
 def read(path: Path) -> Status | None:

@@ -23,7 +23,7 @@ from loguru import logger
 from hands.daemon import indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
-from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
+from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, running, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
@@ -693,13 +693,18 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 def asked_to_restart(home: Home) -> int:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
     outcome = restarted(home)
-    match outcome:
-        case Restarted():
-            out, code = sys.stdout, 0
-        case NotRunning() | NotBack():
-            out, code = sys.stderr, 1
+    out, code = answered(outcome)
     print(said(outcome, datetime.now(UTC)), file=out)
     return code
+
+
+def answered(outcome: Outcome) -> tuple[TextIO, int]:
+    """Where a restart's outcome is said, and the exit that says it: 0 only when hands is running again."""
+    match outcome:
+        case Restarted():
+            return sys.stdout, 0
+        case NotRunning() | NotBack():
+            return sys.stderr, 1
 
 
 def restarted(home: Home) -> Outcome:
@@ -712,30 +717,47 @@ def restarted(home: Home) -> Outcome:
 
 def updated(home: Home) -> int:
     """`hands update`: install master, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
+    prefix = Path(sys.prefix)
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, Path(sys.prefix), Path(work), update.run)
+        installed = update.install(home, prefix, Path(work), update.run)
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
             wide.annotate(steps=ran, failed=step)
             print(f"hands update: {step} failed, so hands was not restarted and runs as it did: {why}", file=sys.stderr)
             return 1
+        case update.Unfinished(sha=sha, step=step, said=why, ran=ran):
+            wide.annotate(steps=ran, sha=sha, failed=step)
+            print(f"hands update: {step} failed, so hands was not restarted. It runs as it did, but master at {sha} is installed, and hands starts on it next time without what {step} installs; `hands update` again finishes it: {why}", file=sys.stderr)
+            return 1
         case update.Installed(sha=sha, ran=ran):
             wide.annotate(steps=ran, sha=sha)
     print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
-    update.detach()
+    # Only a running hands is asked, and only its restart ends the caller: with none to ask, the update stays the
+    # caller's, so it hears that hands was not restarted, and exits saying so.
+    if isinstance(running(home, datetime.now(UTC)), heartbeat.Status):
+        update.detach()
     outcome = restarted(home)
+    line, (out, code) = said(outcome, datetime.now(UTC)), answered(outcome)
     match outcome:
-        case Restarted():
-            line, out, code = f"{said(outcome, datetime.now(UTC))} It runs master at {sha}.", sys.stdout, 0
+        # [LAW:one-source-of-truth] the run's own word on where it runs from, so the commit is said only of a run on it.
+        case Restarted(status=heartbeat.Status(runs_from=Path() as runs_from)) if runs_from.resolve() == prefix.resolve():
+            line = f"{line} It runs master at {sha}."
+        case Restarted(status=heartbeat.Status(runs_from=runs_from)):
+            # A hands started from elsewhere, a checkout's `uv run hands run`, restarts on what it ran, not on master.
+            line, out, code = f"{line} It runs from {runs_from or 'an environment it does not name'}, not from {prefix}, where master at {sha} is installed.", sys.stderr, 1
         case NotRunning() | NotBack():
-            line, out, code = said(outcome, datetime.now(UTC)), sys.stderr, 1
+            pass
+    wide.annotate(runs_master=code == 0)
     try:
         print(line, file=out, flush=True)
-    except BrokenPipeError:
-        # The brain read the update's output, and the restart has ended it: the line is the event's alone. Python's own
-        # flush at exit would raise again into the closed pipe.
+    except OSError as error:
+        # The brain read the update's output, and the restart has ended it: a pipe closed, or a terminal hung up. The
+        # line is the event's alone, and Python's own flush at exit would raise again into the same end.
+        wide.annotate(told=False, untold=str(error))
         os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())
+    else:
+        wide.annotate(told=True)
     return code
 
 

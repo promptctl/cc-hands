@@ -394,7 +394,7 @@ uv run hands check -v                   # the same, each step said in full, ever
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from, then
                                         # install-fritter and install-brain, then restart onto it as `hands restart` does and say the commit it runs;
-                                        # a step that fails stops it, naming the step, and hands is not restarted
+                                        # a step that fails stops it, naming the step, and hands is not restarted; it builds hands, so Go is needed
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
