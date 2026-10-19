@@ -575,6 +575,25 @@ def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_
     assert [event.facts["shim"] for event in events] == ["stale", "current"]
 
 
+def test_a_stale_shim_in_a_hands_built_without_its_fritter_is_refused_naming_the_rebuild_before_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # `hands install-fritter` cannot run in a hands that carries no fritter, so the door names the rebuild first.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path / ".hands")
+    home.bin.mkdir(parents=True)
+    home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
+    monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    run_start = Start(restarted=False)
+    with pytest.raises(CannotStart) as refused:
+        cli.door(home, run_start, None)
+    rebuild = f"hands' package carries no fritter at {wrapper.PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
+    assert str(refused.value).endswith(f"{rebuild}, then run `hands install-fritter`, then run hands again.")
+    events: list[WideEvent] = []
+    run_start.ended(events.append, None)
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [("unpackaged", "stale")]
+
+
 def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A link to a fritter that is gone is a copy that cannot be read, never no copy at all.
     from hands.voice import talkkey
