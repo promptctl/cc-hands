@@ -141,6 +141,9 @@ What it does, once built:
   its protocol, and what was measured against Claude Code.
 - [docs/failure-modes.md](docs/failure-modes.md): what goes wrong, observed and
   anticipated, and the rule each entry produced.
+- [docs/barge-in.md](docs/barge-in.md): what speaking over hands does, as a decision tree,
+  scenarios drawn as sequence diagrams and the standard voice-interface term for each of its words;
+  the rubric, and the run that scores a change.
 - [docs/happy-voice-reference.md](docs/happy-voice-reference.md): how Happy, the
   closest prior art, works, and what to copy and avoid.
 - [design-docs/monetization/hosted-subscription.md](design-docs/monetization/hosted-subscription.md):

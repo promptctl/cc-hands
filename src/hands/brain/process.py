@@ -719,7 +719,6 @@ class Brain:
         if self._turn is not turn:
             return
         if not turn.taken.done():
-            # [LAW:no-silent-failure] the turn runs on, told to stop by nobody: its words are the stage's to hold.
             logger.warning(f"the brain was not stopped: its turn was not taken, typed {turn.typings} time(s)")
             return
         try:
