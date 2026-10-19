@@ -25,10 +25,11 @@ def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
     parsed = _json(body)
     kind = classify(path, parsed, headers)
     if isinstance(kind, Unknown):
-        # [LAW:no-silent-failure] a request hands cannot read is said where it will be seen, with what finds it again.
+        # [LAW:no-silent-failure] a request hands cannot read is said where it will be seen, whole, so the rule it needs
+        # can be written from the log alone.
         logger.warning(
             f"hands cannot tell what kind of request this is, so it will not speak the reply: {kind.shape}"
-            f" ({len(body)} bytes to {path}, exchange {exchange} in the audit, session {session})"
+            f" ({len(body)} bytes to {path}, exchange {exchange}, session {session}); the request:\n{body.decode(errors='replace')}"
         )
     return Sent(exchange, session, kind, parsed)
 
