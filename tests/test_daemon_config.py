@@ -548,7 +548,31 @@ def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(c
     assert cli.door(home, run_start, None) == config.load(home)
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
-    assert [event.facts["fritter"] for event in events] == [copy]
+    assert [(event.facts["fritter"], event.facts["shim"]) for event in events] == [(copy, "absent")]
+
+
+def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_door_naming_install_fritter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # As after updating hands: the fritter is the one this hands carries, the shim the one an older hands wrote, without
+    # what this one writes into it.
+    from hands.voice import talkkey
+
+    home = Home(tmp_path / ".hands")
+    home.bin.mkdir(parents=True)
+    shutil.copy2(wrapper.PACKAGED, home.fritter)
+    home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+    run_start = Start(restarted=False)
+    with pytest.raises(CannotStart, match=re.escape(f"{home.shim} is not the shim this hands writes") + ".*run `hands install-fritter`, then run hands again.$"):
+        cli.door(home, run_start, None)
+    events: list[WideEvent] = []
+    run_start.ended(events.append, None)
+    assert [event.facts["shim"] for event in events] == ["stale"]
+    # The shim `hands install-fritter` writes passes.
+    wrapper.install(home)
+    run_start = Start(restarted=False)
+    assert cli.door(home, run_start, None) == config.load(home)
+    run_start.ended(events.append, None)
+    assert [event.facts["shim"] for event in events] == ["stale", "current"]
 
 
 def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
