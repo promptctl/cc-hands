@@ -35,7 +35,7 @@ from conftest import events, located, onboard, pin, pinned_to
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
-from hands.core.wire import Exchanged, Fork, Garbled, Heard, MainTurn, Message, MessageStarted, Reached, Send, Sent, Written
+from hands.core.wire import Auxiliary, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Send, Sent, Unknown, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
 from hands.daemon import run
@@ -222,9 +222,9 @@ def running(tmp: Path) -> list[str]:
     return subprocess.run(["pgrep", "-f", str(tmp / "bin" / "claude")], capture_output=True, text=True).stdout.split()
 
 
-def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1") -> Exchanged:
+def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1", kind: Kind = Fork()) -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged(exchange, SessionId(session), Fork(), None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
+    return Exchanged(exchange, SessionId(session), kind, None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -569,6 +569,19 @@ async def test_a_side_question_is_the_prompt_a_claude_code_of_its_own_opens_with
     [alone, within_pass] = events(recorded, "brain.aside")
     assert alone.parent_id is None and (within_pass.trace_id, within_pass.parent_id) == (passing.trace_id, passing.span_id)
     assert (own.span.trace_id, own.span.parent_id) == (alone.trace_id, alone.span_id)
+
+
+@pytest.mark.parametrize("kind", [Fork(), Auxiliary("claude-sonnet-5"), Unknown("a request no rule reads")], ids=["fork", "auxiliary", "unknown"])
+async def test_a_side_question_is_answered_by_the_reply_on_its_own_session_whatever_kind_its_request_reads_as(
+    tmp_path: Path, fake_claude: Path, kind: Kind
+) -> None:
+    asides = Asides(station(tmp_path), lambda _entry: None)
+    asked = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "what did it say?", WAITED))
+    await until(lambda: len(typed(tmp_path)) == 1)
+    [[_, _, session]] = typed(tmp_path)
+    # After #310, 2.1.289's side questions read as Auxiliary, and a question heard only as a Fork waited out every deadline.
+    asides.hear(answered(session, "It said four.", kind=kind))
+    assert await asked == "It said four."
 
 
 async def test_a_side_question_with_no_answer_fails_saying_why_and_leaves_no_claude_code_running(

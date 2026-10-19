@@ -32,7 +32,7 @@ from hands.sessions.pseudoterminal import ClaudeCode
 from hands.core.effects import Command
 from hands.core.session import CommandName, SessionId, pasted
 from hands.core.trace import Span
-from hands.core.wire import Exchanged, Fork, Observed, Reached, Route, Sent, Written
+from hands.core.wire import Exchanged, Observed, Reached, Route, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, here, since, unit, within
@@ -194,7 +194,9 @@ class Asides:
         """A side question's answer, read from the wire: the reply to its own Claude Code's request."""
         asked = self._asked
         match observed:
-            case Exchanged(session=session, kind=Fork(), reply=reply) if asked is not None and session == asked.session and not asked.answer.done():
+            # [LAW:one-source-of-truth] the question's own request is told by the session hands chose for it, never by the
+            # kind its body reads as: a reading that changes cannot leave an answer unheard (promptctl-brain-lq3.6ca).
+            case Exchanged(session=session, reply=reply) if asked is not None and session == asked.session and not asked.answer.done():
                 match reply:
                     case Reached(status=200, body=Written(message=message)):
                         said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
