@@ -120,10 +120,11 @@ EXIT_SECONDS = 1.0
 
 
 def _kept(prompt: str) -> str:
-    """A prompt as Claude Code keeps what was typed: out of a paste's tags, and without its trailing whitespace, which
-    Claude Code trims from what it takes (2.1.289, measured 2026-10-04)."""
+    """A prompt as Claude Code keeps what was typed: out of a paste's tags, and without the whitespace Claude Code trims
+    from what it takes: trailing from every prompt (2.1.289, measured 2026-10-04), leading too from one it queued (2.1.289,
+    the brain's transcript 15192e41, 2026-10-19 05:29:11)."""
     paste = PASTE.fullmatch(prompt)
-    return (prompt if paste is None else paste[2]).rstrip()
+    return (prompt if paste is None else paste[2]).strip()
 
 
 @dataclass(frozen=True)
@@ -512,7 +513,7 @@ class _Posted:
 @dataclass
 class _Turn:
     answered: asyncio.Future[BrainAnswered]
-    taken: asyncio.Future[str]  # the prompt id Claude Code gave the turn when it first took it
+    taken: asyncio.Future[None]  # resolved when Claude Code first took the turn
     # Resolved once the turn's typing is over, however it went: then it is taken, or never will be.
     tried: asyncio.Future[None]
     # Told of each permission the turn holds at its hook, to put it to the user.
@@ -533,6 +534,9 @@ class _Turn:
     # Each prompt Claude Code took the turn as: two when it was typed again after an Escape that may have stopped the
     # first, which then posts no Stop. The turn is over at the Stop of either.
     prompts: tuple[str, ...] = ()
+    # Taken from Claude Code's queue: typed while the last prompt's Stop hooks still ran, and submitted under that prompt's
+    # id, before it had its own. Its own is the first new one a hook names, since Claude Code runs one prompt at a time.
+    queued: bool = False
     # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
     broken: BaseException | None = None
 
@@ -576,6 +580,8 @@ class Brain:
         # stops them: one typed for a turn that had ended untaken, or a task's notification.
         # In the order Claude Code took them.
         self._unowned: dict[str, None] = {}
+        # The prompt whose Stop was heard last: what a prompt Claude Code queued behind it is submitted under.
+        self._ended: str | None = None
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
         with continuing(launched):
@@ -646,7 +652,7 @@ class Brain:
             except (BrainGone, Untaken) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
-            annotate(prompts=turn.prompts, typings=turn.typings, offered=turn.offered, others=turn.others)
+            annotate(prompts=turn.prompts, typings=turn.typings, offered=turn.offered, others=turn.others, queued=turn.queued)
             match turn.answered.exception():
                 case None:
                     if (error := turn.answered.result().error) is not None:
@@ -792,6 +798,7 @@ class Brain:
                 self._answer(posted)
 
     def _answer(self, posted: _Posted) -> None:
+        self._name(posted.body)
         match posted.event:
             case "PermissionRequest":
                 # What breaks in its settling is the turn's it was held for, which `_permit` finds; anything else is no turn's.
@@ -858,6 +865,21 @@ class Brain:
             annotate(prompt=prompt)
             yield
 
+    def _name(self, body: bytes) -> None:
+        """[LAW:single-enforcer] gives a turn taken from the queue its own prompt id, at the first hook of any kind to name
+        one: before its dialogs and its Stop are matched by it."""
+        turn = self._turn
+        if turn is None or not turn.queued or turn.prompts:
+            return
+        try:
+            said = Payload.parse(body)
+            session, prompt = said.session_id(), said.optional_text("prompt_id")
+        except Rejected:
+            # Said by the hook's own handler, which reads the same body next.
+            return
+        if session == self.session and prompt is not None and prompt != self._ended and prompt not in self._unowned:
+            turn.prompts = (prompt,)
+
     def _owner(self, prompt: str | None) -> _Turn | None:
         """The turn in flight a dialog posted for `prompt` is a part of, if it is still in flight."""
         turn = self._turn
@@ -898,14 +920,20 @@ class Brain:
             return
         turn = self._turn if self._turn is not None and not self._turn.answered.done() else None
         waiting = turn is not None and not turn.taken.done()
+        if event in ("Stop", "StopFailure"):
+            self._ended = prompt
         match event, submitted:
+            case "UserPromptSubmit", str(words) if waiting and turn is not None and prompt == self._ended and _kept(words) == _kept(turn.typed):
+                # Queued while that prompt's Stop hooks ran, and submitted under its id: the turn's own comes on its next hook.
+                turn.queued = True
+                turn.taken.set_result(None)
             # [LAW:single-enforcer] a turn is taken by the prompt that is what it typed, never by the next to come: a turn
             # ended untaken may still be taken, and its prompt and its Stop are then no later turn's. One typed again is
             # taken by either typing, in whichever order their hooks come.
             case "UserPromptSubmit", str(words) if turn is not None and (waiting or turn.typings > 1) and _kept(words) == _kept(turn.typed):
                 turn.prompts += (prompt,)
                 if waiting:
-                    turn.taken.set_result(prompt)
+                    turn.taken.set_result(None)
             case "UserPromptSubmit", _:
                 # Runs as a whole turn of Claude Code's, ahead of what was typed behind it, until it ends or is stopped.
                 self._unowned[prompt] = None
