@@ -81,7 +81,10 @@ def test_the_rewound_lines_first_commit_is_refused(history: History) -> None:
     result = checked(history.repo, history.first, history.first)
     assert result.returncode == 1
     assert f"{history.first} ({history.first}) {ON_THE_LINE}, which begins at {history.first}" in result.stderr
-    assert "rebuilt on master from its own commits alone" in result.stderr
+    assert (
+        "rebuilt on master from its own commits alone, with git rebase --onto origin/master "
+        "221b272e912309e8750df6f62c6a85a0e71de9fc, the line's last commit" in result.stderr
+    )
 
 
 def test_new_work_on_top_of_the_rewound_line_is_refused(history: History) -> None:
@@ -153,6 +156,22 @@ def test_a_first_commit_git_cannot_look_up_fails_rather_than_accepting(history: 
     result = checked(history.repo, "master", first)
     assert result.returncode == 2
     assert f"git could not tell whether this clone holds {first}" in result.stderr
+
+
+def test_a_first_commit_that_names_no_commit_fails_rather_than_accepting(history: History) -> None:
+    """Every repository holds the empty tree, so the lookup succeeds and only the ancestry question can fail."""
+    result = checked(history.repo, "master", EMPTY_TREE)
+    assert result.returncode == 2
+    assert f"git could not tell whether {EMPTY_TREE} is an ancestor of master" in result.stderr
+
+
+def test_outside_a_repository_it_fails_after_gits_own_error(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    env = git_env() | {"GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    result = subprocess.run((str(SCRIPT), "HEAD"), cwd=plain, env=env, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "not a git repository" in result.stderr
 
 
 def test_a_commit_this_clone_does_not_hold_fails(history: History) -> None:
