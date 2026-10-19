@@ -190,8 +190,11 @@ def test_an_export_hands_does_not_read_is_refused(raw: bytes, why: str) -> None:
 
 
 def test_lit_0_20_and_0_21_exports_read_as_the_same_backlog() -> None:
-    # 0.21 writes version 5, which adds what nothing here reads; a machine still on 0.20 writes 4.
-    assert parse_export(export(version=4)) == parse_export(export(version=5))
+    # 0.21 writes version 5, adding each ticket's plan and its law reviews; a machine still on 0.20 writes 4, without them.
+    v5 = json.loads(export(issues=[{**ISSUES[0], "plan": "Touches: the parser."}, *ISSUES[1:]]))
+    v5["plan_reviews"] = [{"id": "r1", "issue_id": ISSUES[0]["id"], "verdict": "pass", "laws": ["one-source-of-truth"], "plan_digest": "d", "created_at": "2026-10-19T10:00:00Z", "created_by": "claude"}]
+    v4 = {**{key: value for key, value in json.loads(export()).items() if key != "plan_reviews"}, "version": 4}
+    assert parse_export(json.dumps(v4).encode()) == parse_export(json.dumps(v5).encode())
 
 
 # --- the pass: lit read through its own command, the summariser asked, the store filled

@@ -19,7 +19,8 @@ from hands.sessions.payload import Payload, Rejected
 EXPORT_TIMEOUT_SECONDS = 30.0
 
 # The export versions whose every field read here means what this parser reads it as; another is refused rather than
-# half read. 5 adds each ticket's plan and its law reviews to 4 (lit 0.21), and neither is read here.
+# half read. 5 adds each ticket's plan and its law reviews to 4 (lit 0.21), and neither is read here; an issue's other
+# fields are written as before (links internal/model/model.go, issueJSON).
 EXPORT_VERSIONS = (4, 5)
 
 Status = Literal["open", "in_progress", "closed"]
