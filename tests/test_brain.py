@@ -890,6 +890,35 @@ async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_ow
     assert (untaken.facts["others"], untaken.facts["typings"]) == (("p1", "p2"), 2)
 
 
+async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the_prompt_claude_code_queued_it_as(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The next turn is typed the moment the last one's Stop is heard, while Claude Code's other Stop hooks still run: it is
+    # queued, its UserPromptSubmit comes under the last prompt's id with the queued words, and it runs as a prompt of its own.
+    monkeypatch.setenv("STOP_TAIL", "0.3")
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 1.5)
+    warned: list[str] = []
+    sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        assert await asyncio.wait_for(brain.ask("first", unasked), 10) == BrainAnswered("p1", None)
+        answered = await asyncio.wait_for(brain.ask("second", unasked), 10)
+    finally:
+        await brain.stop()
+        logger.remove(sink)
+    _, second = events(recorded, "brain.turn")
+    # Run once, as p2, with no Escape pressed into the brain and nothing said about it.
+    assert (answered, typed(tmp_path), second.facts["prompts"], second.facts["typings"], second.facts["others"], warned) == (
+        BrainAnswered("p2", None),
+        [["prompt", " first"], ["prompt", " second"]],
+        ("p2",),
+        1,
+        (),
+        [],
+    )
+
+
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(launch(tmp_path), lambda _entry: None)
     try:

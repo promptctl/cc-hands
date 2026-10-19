@@ -204,7 +204,7 @@ def pinned_to(script: Path) -> str:
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
-    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name. Everything it
+    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
     is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
@@ -252,6 +252,8 @@ tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
+# The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
+last, tail = None, 0.0
 # A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
 # line end added where it had none, and any other with its trailing whitespace trimmed.
 def taken(text):
@@ -259,7 +261,7 @@ def taken(text):
         return text.rstrip()
     return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
 def submit(text):
-    global turn, turn_text, prompts, late, running
+    global turn, turn_text, prompts, late, running, last, tail
     if text.startswith("/btw "):
         if text == "/btw stubborn":
             signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))
@@ -276,6 +278,19 @@ def submit(text):
         post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
         running, late = (late[0], late[1], time.monotonic() + float(os.environ["LATER_SECONDS"])), None
         behind.append(text)
+        return
+    if time.monotonic() < tail:
+        # Sent while the last prompt's other Stop hooks still run: queued, and taken as they end. Its UserPromptSubmit is
+        # posted before it has a prompt id of its own, under the last prompt's, holding what was queued, which Claude Code
+        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names (2.1.289, the
+        # brain's transcript 15192e41, 2026-10-19 05:29:11).
+        time.sleep(tail - time.monotonic())
+        post("UserPromptSubmit", prompt_id=last, prompt=taken(text.lstrip()))
+        typed(["prompt", text])
+        prompts += 1
+        last = f"p{{prompts}}"
+        post("Stop", prompt_id=last, last_assistant_message="Two.")
+        tail = time.monotonic() + float(os.environ["STOP_TAIL"])
         return
     typed(["prompt", text])
     prompts += 1
@@ -323,6 +338,7 @@ def submit(text):
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
     else:
         post("Stop", prompt_id=prompt, last_assistant_message="Two.")
+    last, tail = prompt, time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
 # As Claude Code reads its options: --mcp-config takes every word up to the next option or `--`, each a config or a
 # config's file, and one that is neither ends the program (a prompt read as a path: ENAMETOOLONG, exit 1).
 end = sys.argv.index("--") if "--" in sys.argv else len(sys.argv)
