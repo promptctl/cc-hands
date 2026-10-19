@@ -34,7 +34,7 @@ from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
 from hands.sessions.backfill import Reading, read_transcript
-from hands.sessions.backlog import BACKLOG, Backlog, Unread, Untracked, read_backlog
+from hands.sessions.backlog import BACKLOG, Backlog, LitFailed, Untracked
 from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, fail, unit
@@ -51,7 +51,7 @@ from hands.voice.wake import Unheard
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
-from hands.voice.sentences import SummaryStore
+from hands.voice.sentences import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
@@ -528,7 +528,7 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
                 return {"error": error}
             case Untracked(project):
                 return {"directory": str(project), "tracked": False, "items": []}
-            case (project, backlog, said):
+            case (project, Sighted(backlog=backlog, said=said)):
                 roots = backlog.roots()
                 return {
                     "directory": str(project),
@@ -554,9 +554,9 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
                 return {"error": error}
             case Untracked(project):
                 return {"error": f"{project} has no backlog, so no ticket {ticket}: lit has no workspace there"}
-            case (_, backlog, said) if ticket not in backlog.tickets:
+            case (_, Sighted(backlog=backlog)) if ticket not in backlog.tickets:
                 return {"error": f"the backlog has no ticket {ticket}"}
-            case (_, backlog, said):
+            case (_, Sighted(backlog=backlog, said=said)):
                 parent = backlog.parent.get(ticket)
                 found = backlog.tickets[ticket]
                 return {
@@ -569,23 +569,23 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     return [tool(read_backlog), tool(read_ticket)]
 
 
-async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Backlog, Mapping[str, str]] | Untracked | str:
-    """The session's project, its backlog read fresh, and every sentence already said of it; that lit has no workspace
-    there, so it has no backlog; or why it could not be read."""
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Sighted] | Untracked | str:
+    """The session's project and its backlog sighted there; that lit has no workspace there, so it has no backlog; or
+    why it could not be read."""
     member = sessions.membership(SessionId(session))
     if member is None:
         return f"there is no session {session}"
     try:
-        backlog = await read_backlog(member.cwd)
-    except (Unread, Rejected) as error:
+        read = await sighted(store, member.cwd)
+    except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
         return f"the backlog in {member.cwd} could not be read: {error}"
-    if isinstance(backlog, Untracked):
-        return backlog
-    # Every read is a sighting: what changed since the last pass is said in the background, never while this call waits.
-    store.want(member.cwd)
-    return member.cwd, backlog, store.reckon(backlog.thing()).said
+    match read:
+        case Untracked():
+            return read
+        case Sighted():
+            return member.cwd, read
 
 
 def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str, object]:

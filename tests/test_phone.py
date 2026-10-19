@@ -30,11 +30,13 @@ from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUn
 from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.sentences import Sentences
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
 from hands.voice.phonepage import phone_app
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.sentences import SummaryStore
 from conftest import events
 
 KEY = "the-phone-key"
@@ -552,7 +554,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(phone, nobody_types, home, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(phone, nobody_types, SummaryStore(Sentences(home.sentences)), home, recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -580,7 +582,7 @@ async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path
     assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
 
 
-async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_the_conversation_page_is_served_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_the_conversation_and_backlog_pages_are_served_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The page's requests run in a context copied inside `phone.served`, which ended as the page came up.
     async def asked(_home: Home) -> Untailed:
         return Untailed("the tailscale command is not on the PATH")
@@ -595,7 +597,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(phone, typing, Home(tmp_path), recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(phone, typing, SummaryStore(Sentences(tmp_path / "sentences.db")), Home(tmp_path), recorded.append))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -611,6 +613,8 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/conversation/typed", json={"text": "hello"}, headers=keyed, ssl=unverified) as sent:
         assert sent.status == 202
     assert typed == ["hello"]
+    async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/backlog/tickets", headers=keyed, ssl=unverified) as unnamed:
+        assert unnamed.status == 400 and "project" in await unnamed.text()
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await serving

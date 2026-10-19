@@ -1,5 +1,6 @@
 """The summary store: a sentence for any content-addressed thing, kept until the thing changes, served by read_backlog and read_ticket."""
 
+import asyncio
 import json
 import os
 import re
@@ -16,7 +17,7 @@ from hands.core.sentences import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from hands.sessions.backlog import BACKLOG, Unread, Untracked, parse_export, read_backlog
+from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, parse_export, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -378,7 +379,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
 
 async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
     fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
-    with pytest.raises(Unread, match="workspace_busy"):
+    with pytest.raises(LitFailed, match="workspace_busy"):
         await read_backlog(project)
 
 
@@ -392,8 +393,8 @@ async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: P
 
 async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_lit("echo $$ > pid\nexec sleep 30\n")
-    monkeypatch.setattr("hands.sessions.backlog.EXPORT_TIMEOUT_SECONDS", 0.5)
-    with pytest.raises(Unread, match="did not answer"):
+    monkeypatch.setattr("hands.sessions.backlog.LIT_TIMEOUT_SECONDS", 0.5)
+    with pytest.raises(LitFailed, match="did not answer"):
         await read_backlog(project)
     with pytest.raises(ProcessLookupError):
         os.kill(int((project / "pid").read_text()), 0)
@@ -509,6 +510,19 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
     commented = dict(await bodies["read_ticket"](session="s1", ticket=parser, full=True))
     assert [comment["body"] for comment in commented["comments"]] == ["Seen again on CI."]
     assert dict(await bodies["read_ticket"](session="s1", ticket=mic))["status"] == "closed"
+
+
+async def test_a_project_is_wanted_once_however_its_path_is_spelled(tmp_path: Path) -> None:
+    real = tmp_path / "project"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    # A session's cwd through a link, and a page's resolved path: one project, one pass.
+    store.want(tmp_path / "link")
+    store.want(real.resolve())
+    assert await store.wanted() == Backlog(real.resolve())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(store.wanted(), 0.2)
 
 
 def test_the_store_keeps_what_it_was_told_across_opening_it_again(tmp_path: Path) -> None:

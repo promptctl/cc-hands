@@ -15,7 +15,7 @@ from typing import Literal
 
 from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
-from hands.sessions.backlog import BACKLOG, Unread, Untracked, read_backlog
+from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, WideEvent, annotate, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
@@ -116,7 +116,7 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
     with _pass(BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
             backlog = await read_backlog(project)
-        except (Unread, Rejected) as error:
+        except (LitFailed, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")
             return
