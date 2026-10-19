@@ -19,8 +19,9 @@ from hands.sessions.payload import Payload, Rejected
 EXPORT_TIMEOUT_SECONDS = 30.0
 
 # The export shape this parser was written against; another is refused rather than half read. Since 2, lit renamed
-# the blocked-by edge (3) and added the purge records (4), neither of which is read here.
-EXPORT_VERSION = 4
+# the blocked-by edge (3), added the purge records (4), and added each ticket's plan with its law reviews (5), none of
+# which is read here.
+EXPORT_VERSION = 5
 
 Status = Literal["open", "in_progress", "closed"]
 
