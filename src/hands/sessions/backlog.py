@@ -77,18 +77,19 @@ class Comment:
     body: str
 
 
-@dataclass(frozen=True)
-class Above:
-    target: str
+# The side of another ticket a ticket is ranked on, as lit's own flag for it names it.
+Side = Literal["above", "below"]
 
 
 @dataclass(frozen=True)
-class Below:
+class Place:
+    """Where a ticket is ranked: directly above or directly below another of its frame."""
+
+    side: Side
     target: str
 
-
-# Where a ticket is ranked: directly above or directly below another of its frame.
-Place = Above | Below
+    def __str__(self) -> str:
+        return f"{self.side} {self.target}"
 
 
 @dataclass(frozen=True)
@@ -150,10 +151,10 @@ class Backlog:
         if move.place.target not in frame:
             return False
         at = frame.index(move.place.target)
-        match move.place:
-            case Above():
+        match move.place.side:
+            case "above":
                 return frame[at - 1 : at] == (move.ticket,)
-            case Below():
+            case "below":
                 return frame[at + 1 : at + 2] == (move.ticket,)
 
     def done(self, id: str) -> bool:
@@ -204,12 +205,7 @@ async def rank(project: Path, move: Move) -> str:
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    match move.place:
-        case Above(target=target):
-            where = ("--above", target)
-        case Below(target=target):
-            where = ("--below", target)
-    return (await _lit(project, "rank", move.ticket, *where)).decode(errors="replace").strip()
+    return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target)).decode(errors="replace").strip()
 
 
 async def _lit(project: Path, *arguments: str) -> bytes:

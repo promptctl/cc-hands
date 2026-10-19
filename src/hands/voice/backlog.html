@@ -77,9 +77,11 @@ function asked(path, init = {}) {
   return fetch(path, {...init, headers: {...init.headers, "Authorization": `Bearer ${key}`}});
 }
 
-// [LAW:no-ambient-temporal-coupling] the one owner of the page's requests: each waits for the one before it to be
-// answered and drawn, so what is drawn last is lit's backlog after every request made before it. Drags are held while
-// any is waiting, so no drop is made on a backlog a move under way is about to replace.
+// [LAW:no-ambient-temporal-coupling] the one owner of the page's requests and of its drags: each job waits for the one
+// before it, so what is drawn last is lit's backlog after every request made before it. A drag is a job too, held until
+// the pointer lets go, so nothing is redrawn under it and its drop is placed among the rows it was dragged over; a read
+// asked for meanwhile waits behind it. A drag begins only while nothing waits, so none is made on a backlog about to be
+// replaced.
 let queue = Promise.resolve();
 let waiting = 0;
 function inTurn(work) {
@@ -94,10 +96,18 @@ function inTurn(work) {
 }
 
 // The backlog as hands answered it, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth].
-function drawn(read) {
-  if (!read.tracked) { tree.replaceChildren(); say(`lit has no workspace in ${project}.`, true); return; }
+// Throws what hands said instead, or `unanswered` when it said nothing; a project lit does not track is said as such.
+async function drawnFrom(path, init, unanswered) {
+  let response;
+  try { response = await asked(path, init); } catch { throw new Error(unanswered); }
+  if (response.status === 401) throw new Error("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.");
+  if (!response.ok) throw new Error(await response.text());
+  const read = await response.json();
+  if (!read.tracked) { tree.replaceChildren(); throw new Error(`lit has no workspace in ${project}.`); }
   tree.replaceChildren(listed(read.items));
 }
+
+const TICKETS = `/backlog/tickets?project=${encodeURIComponent(project)}`;
 
 function listed(items) {
   const list = document.createElement("ol");
@@ -138,20 +148,13 @@ function item(ticket) {
   return row;
 }
 
-// Answered with the backlog to draw, or failing with what hands said, which is shown.
-async function answered(response) {
-  if (response.status === 401) throw new Error("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.");
-  if (!response.ok) throw new Error(await response.text());
-  return response.json();
-}
-
 function read() {
   return inTurn(async () => {
     try {
-      drawn(await answered(await asked(`/backlog/tickets?project=${encodeURIComponent(project)}`)));
-      if (state.classList.contains("bad")) say("");
+      await drawnFrom(TICKETS, {}, "hands is out of reach.");
+      say("");
     } catch (error) {
-      say(error instanceof TypeError ? "hands is out of reach." : error.message, true);
+      say(error.message, true);
     }
   });
 }
@@ -160,18 +163,18 @@ function moved(ticket, place) {
   return inTurn(async () => {
     say("Ranking…");
     try {
-      drawn(await answered(await asked("/backlog/rank", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, ...place})})));
+      await drawnFrom("/backlog/rank", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, ...place})}, "hands did not answer the move, so whether lit ranked it is not known; lit's order is read again.");
       say("");
       return;
     } catch (error) {
-      // hands' answer says whether lit ranked anything; one that never came cannot, and the read below shows lit's order.
-      say(error instanceof TypeError ? "hands did not answer the move; lit's order is read again below." : error.message, true);
+      // hands' answer says whether lit ranked anything.
+      say(error.message, true);
     }
     // [LAW:no-silent-failure] a move that failed is shown, and the backlog drawn again as lit has it.
     try {
-      drawn(await answered(await asked(`/backlog/tickets?project=${encodeURIComponent(project)}`)));
+      await drawnFrom(TICKETS, {}, "hands is out of reach.");
     } catch (error) {
-      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${error instanceof TypeError ? "hands is out of reach." : error.message}`, true);
+      say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${error.message}`, true);
     }
   });
 }
@@ -184,7 +187,10 @@ function pressed(event, row) {
   if (waiting > 0 || drag !== null || event.button !== 0) return;
   const siblings = [...row.parentElement.children].filter(other => other.dataset.frame === row.dataset.frame);
   if (siblings.length < 2) return;
-  drag = {row, siblings, x: event.clientX, y: event.clientY, started: false, place: null, pointer: event.pointerId, card: event.currentTarget};
+  let release;
+  const held = new Promise(done => { release = done; });
+  inTurn(() => held);
+  drag = {row, siblings, x: event.clientX, y: event.clientY, started: false, place: null, pointer: event.pointerId, card: event.currentTarget, release};
   drag.card.setPointerCapture(event.pointerId);
 }
 
@@ -224,9 +230,12 @@ function ended(event) {
   drop.style.display = "none";
   done.row.classList.remove("dragged");
   document.body.classList.remove("dragging");
+  // The drop's move is queued while the drag still holds its turn: a read asked for during the drag redraws first, and
+  // the move, which names tickets by id, is made after it.
   if (event.type === "pointerup" && done.started && done.place !== null && !still(done)) {
     moved(done.row.dataset.id, done.place.above !== undefined ? {above: done.place.above} : {below: done.place.below});
   }
+  done.release();
 }
 
 document.addEventListener("pointermove", dragging);

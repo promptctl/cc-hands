@@ -19,7 +19,7 @@ from pathlib import Path
 from aiohttp import web
 
 from hands.sessions.audit import Record
-from hands.sessions.backlog import Above, Backlog, Below, LitFailed, Move, Place, Status, Untracked, rank, read_backlog
+from hands.sessions.backlog import Backlog, LitFailed, Move, Place, Status, Untracked, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail, unit
 from hands.voice.phoneaddress import carries_key
@@ -29,12 +29,16 @@ UNKEYED = "this page's address is missing the phone's key; open it from the addr
 
 
 def parse_project(query: str | None) -> Path:
-    """The project a page names on its address; raises Rejected naming what is wrong with it."""
+    """The directory a page names as its project, resolved, so one directory has one name however it is spelled;
+    raises Rejected naming what is wrong with it."""
     match query:
         case str() if Path(query).is_absolute():
-            return Path(query)
+            pass
         case _:
             raise Rejected("project is the absolute path of a directory lit has a workspace in")
+    if not (resolved := Path(query).resolve()).is_dir():
+        raise Rejected(f"project {query} is no directory on this machine")
+    return resolved
 
 
 def parse_asked(body: bytes) -> tuple[Path, str, Place]:
@@ -48,9 +52,9 @@ def parse_asked(body: bytes) -> tuple[Path, str, Place]:
         case {"above": object(), "below": object()}:
             raise Rejected("a move is dropped above a ticket or below one, never both")
         case {"project": str(project), "ticket": str(ticket), "above": str(target)}:
-            return parse_project(project), ticket, Above(target)
+            return parse_project(project), ticket, Place("above", target)
         case {"project": str(project), "ticket": str(ticket), "below": str(target)}:
-            return parse_project(project), ticket, Below(target)
+            return parse_project(project), ticket, Place("below", target)
         case _:
             pass
     raise Rejected("a move is {project, ticket, and one of above or below: the ticket it is dropped next to}")
@@ -88,16 +92,18 @@ def every(nodes: tuple[Node, ...]) -> Iterator[Node]:
 
 
 def shown(read: Sighted | Untracked) -> dict[str, object]:
-    """The backlog as the page is given it."""
+    """The backlog as the page is given it, with whether lit tracks the project, and how many tickets it draws and how
+    many of them are said, on the event of the unit open here."""
     match read:
         case Untracked():
+            annotate(tracked=False)
             return {"tracked": False}
         case Sighted():
-            return _items(drawn(read))
-
-
-def _items(nodes: tuple[Node, ...]) -> dict[str, object]:
-    return {"tracked": True, "items": [asdict(node) for node in nodes]}
+            nodes = drawn(read)
+            annotate(tracked=True)
+            # [LAW:one-source-of-truth] counted from the nodes the page is given, so the event cannot disagree with it.
+            count(tickets=sum(1 for _ in every(nodes)), summarised=sum(node.summary is not None for node in every(nodes)))
+            return {"tracked": True, "items": [asdict(node) for node in nodes]}
 
 
 def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.RouteDef]:
@@ -124,7 +130,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
                 return web.Response(status=400, text=str(error))
             annotate(project=project)
             try:
-                return web.json_response(_given(await sighted(store, project)))
+                return web.json_response(shown(await sighted(store, project)))
             except (LitFailed, Rejected) as error:
                 fail(f"cannot read the backlog: {error}")
                 return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
@@ -161,29 +167,14 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
             try:
                 after = await sighted(store, project)
             except (LitFailed, Rejected) as error:
-                return _refused(502, f"lit ranked {ticket} as it was asked to go {_where(place)}, and the backlog could not be read again to show it: {error}")
+                return _refused(502, f"lit ranked {ticket} as it was asked to go {place}, and the backlog could not be read again to show it: {error}")
             # [LAW:no-silent-failure] the read after is the evidence: lit ranks the parent instead of a ticket another
             # writer moved out of its frame meanwhile, and exits 0 all the same, saying what it ranked.
             if not _landed(after, move):
-                return _refused(409, f"lit did not put {ticket} {_where(place)}: the backlog changed while it was moved, and lit ranked something else. lit said: {said}")
-            return web.json_response(_given(after))
+                return _refused(409, f"the backlog lit holds after the rank does not have {ticket} {place}: it changed while it was moved. lit said: {said}")
+            return web.json_response(shown(after))
 
     return [web.get("/backlog", drawn), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked)]
-
-
-def _given(read: Sighted | Untracked) -> dict[str, object]:
-    """The backlog as the page is given it, with whether lit tracks the project, and how many tickets it draws and how
-    many of them are said, on the event."""
-    match read:
-        case Untracked():
-            annotate(tracked=False)
-            return shown(read)
-        case Sighted():
-            nodes = drawn(read)
-            annotate(tracked=True)
-            # [LAW:one-source-of-truth] counted from the nodes the page is given, so the event cannot disagree with it.
-            count(tickets=sum(1 for _ in every(nodes)), summarised=sum(node.summary is not None for node in every(nodes)))
-            return _items(nodes)
 
 
 def _refused(status: int, why: str) -> web.Response:
@@ -198,11 +189,3 @@ def _landed(after: Sighted | Untracked, move: Move) -> bool:
             return False
         case Sighted(backlog=backlog):
             return backlog.landed(move)
-
-
-def _where(place: Place) -> str:
-    match place:
-        case Above(target=target):
-            return f"above {target}"
-        case Below(target=target):
-            return f"below {target}"

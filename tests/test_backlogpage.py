@@ -13,11 +13,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import Above, Below, Move, Untracked, parse_export
+from hands.sessions.backlog import Move, Place, Untracked, parse_export
 from hands.sessions.payload import Rejected
 from hands.sessions.sentences import Sentences
-from hands.sessions.wide import WideEvent
-from hands.voice.backlogpage import backlog_routes, parse_asked, shown
+from hands.sessions.wide import WideEvent, unit
+from hands.voice.backlogpage import backlog_routes, parse_asked, parse_project, shown
 from hands.voice.sentences import Sighted, SummaryStore, sighted
 from conftest import events
 
@@ -56,7 +56,9 @@ RELATIONS = [inside("e1", "e1.a"), inside("e1", "e1.b"), inside("e1", "e1.c"), i
 
 def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_sentence_and_never_its_description() -> None:
     backlog = parse_export(export(ISSUES, RELATIONS))
-    page = shown(Sighted(backlog, {"e1.a": "A, said.", "e2": "Second, said."}))
+    recorded: list[Entry] = []
+    with unit("backlog.read", recorded.append, counts=("tickets", "summarised")):
+        page = shown(Sighted(backlog, {"e1.a": "A, said.", "e2": "Second, said."}))
     assert page["tracked"] is True
     items = cast(list[dict[str, Any]], page["items"])
     assert [(node["id"], [child["id"] for child in node["children"]]) for node in items] == [("e2", ["e2.a"]), ("e1", ["e1.a", "e1.b"]), ("e2.b.f", [])]
@@ -68,25 +70,32 @@ def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_s
     assert first["children"][1]["status"] == "in_progress" and first["status"] is None
     # The frame a drop stays inside: the follow-up is drawn among the roots, and lit ranks it inside its closed parent.
     assert (second["frame"], first["children"][0]["frame"], follow_up["frame"]) == (None, "e1", "e2.b")
+    # The event counts what the page is given.
+    [event] = events(recorded, "backlog.read")
+    assert event.counts == {"tickets": 6, "summarised": 2} and event.facts["tracked"] is True
 
 
 def test_a_project_lit_does_not_track_is_drawn_as_none() -> None:
-    assert shown(Untracked(Path("/nowhere"))) == {"tracked": False}
+    recorded: list[Entry] = []
+    with unit("backlog.read", recorded.append, counts=("tickets", "summarised")):
+        assert shown(Untracked(Path("/nowhere"))) == {"tracked": False}
+    [event] = events(recorded, "backlog.read")
+    assert event.facts["tracked"] is False and event.counts == {"tickets": 0, "summarised": 0}
 
 
 def test_a_move_is_only_between_tickets_lit_ranks_inside_the_same_parent() -> None:
     backlog = parse_export(export(ISSUES, RELATIONS))
-    assert backlog.move("e1.b", Above("e1.a")) == Move("e1.b", Above("e1.a"))
-    assert backlog.move("e1", Above("e2")) == Move("e1", Above("e2"))
+    assert backlog.move("e1.b", Place("above", "e1.a")) == Move("e1.b", Place("above", "e1.a"))
+    assert backlog.move("e1", Place("above", "e2")) == Move("e1", Place("above", "e2"))
     # A closed sibling is still one lit ranks among.
-    assert backlog.move("e1.a", Below("e1.c")) == Move("e1.a", Below("e1.c"))
+    assert backlog.move("e1.a", Place("below", "e1.c")) == Move("e1.a", Place("below", "e1.c"))
     for ticket, place, why in [
-        ("e1.a", Above("e2.a"), "not inside the same parent"),
-        ("e2.b.f", Below("e1"), "not inside the same parent"),
-        ("e1.a", Above("e1"), "not inside the same parent"),
-        ("nope", Above("e1.a"), "no ticket nope"),
-        ("e1.a", Below("nope"), "no ticket nope"),
-        ("e1.a", Above("e1.a"), "next to itself"),
+        ("e1.a", Place("above", "e2.a"), "not inside the same parent"),
+        ("e2.b.f", Place("below", "e1"), "not inside the same parent"),
+        ("e1.a", Place("above", "e1"), "not inside the same parent"),
+        ("nope", Place("above", "e1.a"), "no ticket nope"),
+        ("e1.a", Place("below", "nope"), "no ticket nope"),
+        ("e1.a", Place("above", "e1.a"), "next to itself"),
     ]:
         with pytest.raises(Rejected, match=why):
             backlog.move(ticket, place)
@@ -104,28 +113,29 @@ def test_an_archived_parent_frames_its_children_and_a_deleted_one_frames_nothing
     # Both are roots of the tree the page draws, since lit lists neither parent.
     assert backlog.roots() == ("r", "gone.a", "shelf.a") and backlog.parent == {}
     assert backlog.inside == {"shelf.a": "shelf"}
-    assert backlog.move("gone.a", Below("r")) == Move("gone.a", Below("r"))
+    assert backlog.move("gone.a", Place("below", "r")) == Move("gone.a", Place("below", "r"))
     with pytest.raises(Rejected, match="not inside the same parent"):
-        backlog.move("shelf.a", Below("r"))
+        backlog.move("shelf.a", Place("below", "r"))
 
 
 def test_a_move_has_landed_only_when_the_ticket_sits_directly_beside_its_target_in_their_frame() -> None:
     backlog = parse_export(export(ISSUES, RELATIONS))
-    assert backlog.landed(Move("e1.a", Above("e1.b"))) and backlog.landed(Move("e1.b", Below("e1.a")))
-    assert backlog.landed(Move("e1.b", Above("e1.c"))) and backlog.landed(Move("e2", Above("e1")))
-    assert not backlog.landed(Move("e1.b", Above("e1.a"))) and not backlog.landed(Move("e1.a", Above("e1.c")))
+    assert backlog.landed(Move("e1.a", Place("above", "e1.b"))) and backlog.landed(Move("e1.b", Place("below", "e1.a")))
+    assert backlog.landed(Move("e1.b", Place("above", "e1.c"))) and backlog.landed(Move("e2", Place("above", "e1")))
+    assert not backlog.landed(Move("e1.b", Place("above", "e1.a"))) and not backlog.landed(Move("e1.a", Place("above", "e1.c")))
     # Beside it in rank, but not in its frame.
-    assert not backlog.landed(Move("e1", Below("e2.a")))
+    assert not backlog.landed(Move("e1", Place("below", "e2.a")))
 
 
 @pytest.mark.parametrize(
     "body, why",
     [
         (b"not json", "JSON"),
-        (b'{"project": "/p", "ticket": "a"}', "one of above or below"),
-        (b'{"project": "/p", "ticket": "a", "above": "b", "below": "c"}', "never both"),
-        (b'{"project": "/p", "ticket": 3, "above": "b"}', "one of above or below"),
+        (b'{"project": "/", "ticket": "a"}', "one of above or below"),
+        (b'{"project": "/", "ticket": "a", "above": "b", "below": "c"}', "never both"),
+        (b'{"project": "/", "ticket": 3, "above": "b"}', "one of above or below"),
         (b'{"project": "p", "ticket": "a", "above": "b"}', "absolute path"),
+        (b'{"project": "/no/such/directory", "ticket": "a", "above": "b"}', "no directory"),
     ],
 )
 def test_a_move_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why: str) -> None:
@@ -133,8 +143,15 @@ def test_a_move_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why:
         parse_asked(body)
 
 
-def test_a_move_the_page_sends_is_its_project_ticket_and_place() -> None:
-    assert parse_asked(b'{"project": "/p", "ticket": "a", "below": "b"}') == (Path("/p"), "a", Below("b"))
+def test_a_move_the_page_sends_is_its_project_resolved_its_ticket_and_its_place(tmp_path: Path) -> None:
+    spelled = tmp_path / "project" / ".." / "project"
+    (tmp_path / "project").mkdir()
+    (tmp_path / "file").touch()
+    body = json.dumps({"project": str(spelled), "ticket": "a", "below": "b"}).encode()
+    # One directory has one name however it is spelled, so it is summarised once.
+    assert parse_asked(body) == ((tmp_path / "project").resolve(), "a", Place("below", "b"))
+    with pytest.raises(Rejected, match="no directory"):
+        parse_project(str(tmp_path / "file"))
 
 
 # --- the routes, against lit itself
@@ -211,10 +228,10 @@ async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_al
     assert [event.error for event in page.events("backlog.read") + page.events("backlog.ranked")] == ["read without the phone's key", "ranked without the phone's key"]
 
 
-@pytest.mark.parametrize("query", ["", "?project=relative/path"])
-async def test_a_read_that_names_no_absolute_project_is_refused(page: Page, query: str) -> None:
+@pytest.mark.parametrize("query, why", [("", "absolute path"), ("?project=relative/path", "absolute path"), ("?project=/no/such/directory", "no directory")])
+async def test_a_read_that_names_no_directory_is_refused_rather_than_asking_lit(page: Page, query: str, why: str) -> None:
     response = await page.client.get(f"/backlog/tickets{query}", headers=KEYED)
-    assert response.status == 400 and "absolute path" in await response.text()
+    assert response.status == 400 and why in await response.text()
 
 
 @real_lit
@@ -254,10 +271,10 @@ async def test_a_drop_ranks_the_ticket_in_lit_and_the_page_is_answered_with_lits
     status, _ = await moved(page, workspace, mic, below=parser)
     assert status == 200 and workspace.order(mic, parser, docs) == [docs, parser, mic]
     first, second = page.events("backlog.ranked")
-    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"], first.facts["ranked"]) == (docs, Above(mic), True)
+    assert first.outcome == "ok" and (first.facts["ticket"], first.facts["place"], first.facts["ranked"]) == (docs, Place("above", mic), True)
     # What it showed after: the epic and its three tickets, none said yet.
     assert first.counts == {"tickets": 4, "summarised": 0}
-    assert second.outcome == "ok" and second.facts["place"] == Below(parser)
+    assert second.outcome == "ok" and second.facts["place"] == Place("below", parser)
 
 
 @real_lit
@@ -312,7 +329,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/bin:/usr/bin")
     status, body = await moved(page, workspace, parser, above=mic)
     # What lit ranked instead is said in lit's own words, to the page and on the event; nothing is undone.
-    assert status == 409 and f"lit did not put {parser} above {mic}" in body and f"ranked the epic {wire} instead" in body
+    assert status == 409 and f"does not have {parser} above {mic}" in body and f"ranked the epic {wire} instead" in body
     assert workspace.order(voice, wire) == [wire, voice]
     [event] = page.events("backlog.ranked")
     assert event.outcome == "failed" and event.error == body
