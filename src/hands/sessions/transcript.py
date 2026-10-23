@@ -1,6 +1,7 @@
 """What a session's JSONL transcript knows that its hooks do not carry: one record at a time, as it is written."""
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -25,22 +26,51 @@ def session_name(transcript: Path) -> str | None:
 
     Claude Code's own ai-title is not a name: it runs to twenty-five words and the user never sees it.
     """
-    try:
-        raw = transcript.read_bytes()
-    except FileNotFoundError:
-        # Claude Code creates the transcript with its first record.
-        return None
-    # [LAW:no-ambient-temporal-coupling] Claude Code appends while this reads, and
-    # a record is whole only once its newline is written, so the tail after the
-    # last newline is never parsed.
-    *complete, _unfinished = raw.split(b"\n")
-    name = None
-    for line in complete:
-        if _CUSTOM_TITLE_RECORD in line:
-            record = Payload.parse(line)
-            if record.text("type") == "custom-title":
-                name = record.text("customTitle")
-    return name
+    return Titles().name(transcript)
+
+
+@dataclass(frozen=True)
+class _Titled:
+    # How far the transcript has been read, to the end of its last whole record, and the newest name in what was read.
+    read: int
+    name: str | None
+
+
+class Titles:
+    """The newest name of each transcript, each read on from where it was last read: a transcript of tens of megabytes
+    is read once, and after that only what was appended to it since.
+
+    [LAW:no-shared-mutable-globals] one owner reads with each; Claude Code only appends to a transcript, so what was read
+    once is not read again.
+    """
+
+    def __init__(self) -> None:
+        self._titled: dict[Path, _Titled] = {}
+
+    def name(self, transcript: Path) -> str | None:
+        """As `session_name`."""
+        titled = self._titled.get(transcript, _Titled(0, None))
+        try:
+            with transcript.open("rb") as file:
+                # A transcript shorter than what was read of it was written anew, and is read again from its start.
+                titled = titled if file.seek(0, os.SEEK_END) >= titled.read else _Titled(0, None)
+                file.seek(titled.read)
+                raw = file.read()
+        except FileNotFoundError:
+            # Claude Code creates the transcript with its first record.
+            return None
+        # [LAW:no-ambient-temporal-coupling] Claude Code appends while this reads, and
+        # a record is whole only once its newline is written, so the tail after the
+        # last newline is never parsed: it is read again, whole, the next time.
+        *complete, unfinished = raw.split(b"\n")
+        name = titled.name
+        for line in complete:
+            if _CUSTOM_TITLE_RECORD in line:
+                record = Payload.parse(line)
+                if record.text("type") == "custom-title":
+                    name = record.text("customTitle")
+        self._titled[transcript] = _Titled(titled.read + len(raw) - len(unfinished), name)
+        return name
 
 
 # Only these record types carry a turn; the rest (modes, titles, snapshots, every other attachment) are skipped unparsed.

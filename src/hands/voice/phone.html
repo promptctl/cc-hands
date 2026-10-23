@@ -14,7 +14,10 @@
     :root { --bg: #141312; --fg: #eeebe6; --muted: #9a958d; --ring: #2c2a27; --idle: #e9e5de; --live: #f97316; --bad: #f87171; }
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; margin: 0; }
+  html, body { margin: 0; }
+  /* The body grows past the screen with the sessions listed, so the top of it is never centred out of reach. */
+  html { height: 100%; }
+  body { min-height: 100%; }
   body {
     background: var(--bg); color: var(--fg);
     font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -25,7 +28,7 @@
   #talk {
     width: min(68vw, 300px); aspect-ratio: 1; border-radius: 50%;
     border: 10px solid var(--ring); background: var(--idle); color: var(--bg);
-    font: 600 22px/1.2 inherit; letter-spacing: .02em;
+    font: inherit; font-weight: 600; font-size: 22px; line-height: 1.2; letter-spacing: .02em;
     touch-action: none; cursor: pointer; transition: transform .08s, background .08s;
   }
   #talk:disabled { opacity: .35; cursor: default; }
@@ -47,6 +50,17 @@
   #transcript .ahead { opacity: .45; }
   #transcript .now { background: var(--ring); border-radius: 3px; }
   #transcript .cut { opacity: .45; text-decoration: line-through; }
+  #sessions { width: min(100%, 36rem); }
+  #sessions-said { color: var(--muted); text-align: center; margin: 0 0 8px; }
+  #sessions-said:empty { display: none; }
+  #rows { list-style: none; margin: 0; padding: 0; }
+  #rows li { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--ring); }
+  #rows .name { font-weight: 600; }
+  #rows .state, #rows .said { color: var(--muted); font-size: 15px; margin: 0; }
+  #rows .said:empty { display: none; }
+  #rows .stop { grid-column: 2; grid-row: 1 / span 3; font: inherit; font-weight: 600; font-size: 16px; line-height: 1; color: var(--bg); background: var(--bad); border: 0; border-radius: 999px; padding: 12px 20px; cursor: pointer; }
+  #rows .stop:disabled { opacity: .45; cursor: default; }
+  #sessions-said.bad, #rows .said.bad { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -62,6 +76,13 @@
 <a id="conversation" href="/conversation" target="_blank" rel="noopener">Conversation</a>
 <!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
 <section id="transcript" aria-label="Transcript" hidden></section>
+<!-- Each running session as hands lists it to its brain, and a Stop beside it that presses Escape at that session's
+     keyboard, as the brain's interrupt_session does: what it was running stops, its row says what was typed, and its state
+     line, once hands hears the turn stop, that it is idle. -->
+<section id="sessions" aria-label="Sessions">
+  <p id="sessions-said" role="status" aria-live="polite"></p>
+  <ul id="rows"></ul>
+</section>
 <audio id="out" autoplay playsinline></audio>
 <script>
 "use strict";
@@ -83,6 +104,13 @@ const count = document.getElementById("count");
 const out = document.getElementById("out");
 const shown = document.getElementById("shown");
 const transcript = document.getElementById("transcript");
+const rows = document.getElementById("rows");
+const sessionsSaid = document.getElementById("sessions-said");
+// hands answers a read of the sessions within its 25 s wait, and a Stop at once: one unanswered for this long went to
+// an address the phone can no longer reach, and is a read or a Stop that failed. A failed read is made again after
+// the pause. What a Stop said is said of that tap alone, so it is shown under its row for a while and then taken away:
+// the row's state line says how the session stands from then on.
+const READ_MS = 40000, STOP_MS = 10000, REREAD_MS = 3000, SAID_MS = 30000;
 document.getElementById("conversation").href = `/conversation${location.hash}`;
 
 // Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
@@ -419,6 +447,102 @@ document.addEventListener("visibilitychange", () => {
 });
 // One closed hangs up.
 addEventListener("pagehide", () => end("This page hung up."));
+
+// The sessions as hands last listed them; each one's row, kept from read to read so the Stop under a finger is never
+// swapped for another mid-tap; what each one's Stop last said, until SAID_MS have passed; and the sessions whose Stop
+// hands is still answering.
+let listed = [];
+const drawn = new Map();
+const stopped = new Map();
+const stopping = new Set();
+
+function sayOfSessions(text, bad = false) { sessionsSaid.textContent = text; sessionsSaid.classList.toggle("bad", bad); }
+
+function rowOf(session) {
+  const row = document.createElement("li");
+  const parts = {
+    row,
+    name: Object.assign(document.createElement("span"), {className: "name"}),
+    state: Object.assign(document.createElement("p"), {className: "state"}),
+    said: Object.assign(document.createElement("p"), {className: "said"}),
+    stop: Object.assign(document.createElement("button"), {className: "stop", type: "button", textContent: "Stop"}),
+  };
+  parts.stop.addEventListener("click", () => stopSession(session.id));
+  row.append(parts.name, parts.stop, parts.state, parts.said);
+  return parts;
+}
+
+// [LAW:dataflow-not-control-flow] every listed session's row is drawn the same way each time, made only the first time
+// it is listed; a row is moved only when the order it is listed in changed, as moving it would cancel a tap on it.
+function drawSessions() {
+  for (const [id, parts] of drawn) if (!listed.some((session) => session.id === id)) { parts.row.remove(); drawn.delete(id); }
+  listed.forEach((session, at) => {
+    const parts = drawn.get(session.id) ?? rowOf(session);
+    drawn.set(session.id, parts);
+    parts.name.textContent = session.name;
+    parts.state.textContent = session.state;
+    parts.said.textContent = stopped.get(session.id)?.text ?? "";
+    parts.said.classList.toggle("bad", stopped.get(session.id)?.bad ?? false);
+    parts.stop.disabled = stopping.has(session.id);
+    parts.stop.setAttribute("aria-label", `Stop ${session.name}`);
+    if (rows.children[at] !== parts.row) rows.insertBefore(parts.row, rows.children[at] ?? null);
+  });
+}
+
+// The sessions are read for as long as the page is open. Each read says what the page was last given, and hands
+// answers once a row would change, or at the end of its wait. A read hands refuses ends the reading, as asking again
+// would be refused again; one that never reached it is said, and made again after a pause saying nothing seen, so it is
+// answered at once.
+async function readSessions() {
+  let seen = null;
+  for (;;) {
+    try {
+      const answered = await fetch(seen === null ? "sessions" : `sessions?seen=${encodeURIComponent(seen)}`, {
+        headers: {"Authorization": `Bearer ${key}`},
+        signal: AbortSignal.timeout(READ_MS),
+      });
+      if (!answered.ok) { sayOfSessions(`Could not read the sessions: ${await answered.text()}`, true); return; }
+      const body = await answered.json();
+      seen = body.seen;
+      listed = body.sessions;
+      sayOfSessions(listed.length ? "" : "No Claude Code session is running.");
+      drawSessions();
+    } catch (error) {
+      seen = null;
+      sayOfSessions(`Could not read the sessions: ${error.message}. Reading them again…`, true);
+      await new Promise((done) => setTimeout(done, REREAD_MS));
+    }
+  }
+}
+
+// Stop is Escape at the one session's keyboard; what hands read back of it is said under its row.
+async function stopSession(id) {
+  stopping.add(id);
+  drawSessions();
+  try {
+    const answered = await fetch(`sessions/${encodeURIComponent(id)}/interrupt`, {
+      method: "POST",
+      headers: {"Authorization": `Bearer ${key}`},
+      signal: AbortSignal.timeout(STOP_MS),
+    });
+    if (!answered.ok) throw new Error(await answered.text());
+    const said = await answered.json();
+    sayOfStop(id, "error" in said ? {text: said.error, bad: true} : {text: said.readback, bad: false});
+  } catch (error) {
+    sayOfStop(id, {text: `Could not stop it: ${error.message}`, bad: true});
+  } finally {
+    stopping.delete(id);
+    drawSessions();
+  }
+}
+
+// What a Stop said, taken away SAID_MS later unless a later Stop of the same session has said something since.
+function sayOfStop(id, said) {
+  stopped.set(id, said);
+  setTimeout(() => { if (stopped.get(id) === said) { stopped.delete(id); drawSessions(); } }, SAID_MS);
+}
+
+if (key) readSessions(); else sayOfSessions("Open this page from the address `hands phone` prints.", true);
 </script>
 </body>
 </html>

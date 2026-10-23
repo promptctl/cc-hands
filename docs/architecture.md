@@ -1913,6 +1913,28 @@ holds on the last word until hands says the sentence is done, and strikes throug
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
 lines told beside the marks.
 
+**The phone's page lists the running sessions, each with a Stop** (`hands.voice.sessionspage`).
+Below the Conversation link, each live session is a row: its name, its state line, and a Stop that
+presses Escape at that session's keyboard. The rows are `standing` (`hands.voice.tools`), the
+listing the brain's briefing reads, and a Stop answers with `interrupt`, what the brain's
+`interrupt_session` returns, so the page and the brain stop a session and say what came of it one
+way. Both routes are served beside the phone's page under its key (`hands.voice.keyed`):
+`GET /sessions?seen=<mark>` and `POST /sessions/<id>/interrupt`. Escape is typed only into a session
+running a turn (`hands.core.keyboard`), and the readback, shown under the row for 30 s, says when
+there was nothing to stop. A row's Stop is disabled until it is answered, and its state line turns
+idle once hands hears the turn stop. Each row is kept from read to read and redrawn in place, so the
+Stop under a finger is never swapped for another mid-tap. A read that has seen the rows waits until
+one of them changes: its mark is a digest of the rows, so a session streaming text, which leaves its
+state line as it was, does not wake it, and a rename does. Each look reads a transcript only past
+where it was last read (`hands.sessions.transcript.Titles`, owned by the registry), so a listing of
+sessions with transcripts of tens of megabytes costs a few small reads. The wait is the conversation
+page's too, one loop in `hands.voice.longpoll`: up to 25 s, looking every quarter second. A read
+hands refuses is said in the section and ends the reading; one that never reached hands is said and
+made again after 3 s. Each read is one `sessions.read` event,
+with how many sessions it gave, the mark it had seen, how long it waited, how many looks it took,
+and whether the rows had changed; each Stop one `sessions.interrupt`, with the session and its
+readback, or its error, which fails the event.
+
 **The conversation page is the log's conversation, with a box to type in**
 (`hands.voice.conversationpage`). It is served beside the phone's page, on its port and
 addresses, at `/conversation`, and asks for the phone's key the same way (`carries_key`

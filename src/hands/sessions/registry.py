@@ -28,7 +28,7 @@ from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
 from hands.sessions.payload import Rejected
-from hands.sessions.transcript import session_name
+from hands.sessions.transcript import Titles
 from hands.sessions.typing import Untyped, type_into
 
 
@@ -96,6 +96,9 @@ class Sessions:
         # The names hands decided and has not yet given, which every listing names its session by. A daemon given none
         # has decided none.
         self._names = names or Names()
+        # The name each session's transcript holds, read on from where it was last read, so a listing reads no transcript
+        # whole but the first time.
+        self._titles = Titles()
         # A blocking hook's connection waits on its future; only a Reply effect resolves one, until shutdown lets them all go.
         self._waiting: dict[RequestId, asyncio.Future[HookReply]] = {}
         # Set once, at shutdown: from then on a permission hook is let go as soon as it asks.
@@ -369,7 +372,7 @@ class Sessions:
 
     def _listing[S: Known](self, session: S) -> Listing[S]:
         try:
-            held = session_name(session.membership.transcript)
+            held = self._titles.name(session.membership.transcript)
         except (Rejected, OSError) as error:
             # [LAW:no-silent-failure] a transcript hands cannot read names no session; the session is still
             # listed, spoken, and answered under its project, and the log says why it has no name.

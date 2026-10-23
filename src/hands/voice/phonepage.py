@@ -1,5 +1,6 @@
-"""The phone's page: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands; and
-the conversation page and the backlog page beside it (`hands.voice.conversationpage`, `hands.voice.backlogpage`).
+"""The phone's page: served over HTTPS to the LAN and the tailnet, where a phone's browser opens it and calls hands, and
+reads and stops the sessions (`hands.voice.sessionspage`); and the conversation page and the backlog page beside it
+(`hands.voice.conversationpage`, `hands.voice.backlogpage`).
 
 Where it is reached, and the certificate and key it is reached with, are `hands.voice.phoneaddress`'s.
 
@@ -23,10 +24,12 @@ from loguru import logger
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.registry import Sessions
 from hands.sessions.wide import annotate, begun, continuing, unit
 from hands.voice.backlogpage import backlog_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
+from hands.voice.sessionspage import session_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
 from hands.voice.sentences import SummaryStore
 
@@ -78,16 +81,18 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     return app
 
 
-async def serve_phone(phone: Phone, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record) -> Never:
+async def serve_phone(phone: Phone, sessions: Sessions, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record) -> Never:
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
-    with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The conversation page is served beside
-    it, under the same key, handing `typed` what is typed into it, and the backlog page, its sentences read from `store`.
+    with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `sessions`. The
+    conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
+    page, its sentences read from `store`.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
     """
     key = phone_key(home)
     app = phone_app(phone, key, record)
+    app.add_routes(session_routes(sessions, key, record))
     app.add_routes(conversation_routes(Conversation(home.audit), typed, key, record))
     app.add_routes(backlog_routes(store, key, record))
     runner = web.AppRunner(app, access_log=None)

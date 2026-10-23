@@ -96,14 +96,22 @@ def audited(tool: Tool, record: Record) -> Tool:
             annotate(tool=tool.name, called=Called(arguments, None))
             result = await tool.body(**arguments)
             annotate(called=Called(arguments, result))
-            match result:
-                case {"error": refused}:
-                    fail(str(refused))
-                case _:
-                    pass
-            return result
+            return judged(result)
 
     return replace(tool, body=call)
+
+
+def judged(result: Result) -> Result:
+    """The result, with the unit of work open here failed where it refuses the call.
+
+    [LAW:single-enforcer] a tool's call and the phone page's Stop (`hands.voice.sessionspage`) both end failed this way.
+    """
+    match result:
+        case {"error": refused}:
+            fail(str(refused))
+        case _:
+            pass
+    return result
 
 
 def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
@@ -1352,9 +1360,18 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
+        return await interrupt(sessions, session)
 
     return [tool(body) for body in (send_command, interrupt_session)]
+
+
+async def interrupt(sessions: Sessions, session: str) -> Result:
+    """Escape pressed at one session's keyboard, and the sentence that says what came of it.
+
+    [LAW:one-source-of-truth] the brain's interrupt_session and the phone page's Stop (`hands.voice.sessionspage`) both
+    return this, so the two stop a session, and say what came of it, one way.
+    """
+    return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
