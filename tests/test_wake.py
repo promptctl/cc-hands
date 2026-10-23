@@ -2,13 +2,16 @@
 detector hears silence."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import pytest
 from aiohttp import web
+from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
+from aiohttp.streams import StreamReader
 from conftest import spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
@@ -237,6 +240,20 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
 JARVIS = PRETRAINED["Hey Jarvis"]
 
 
+@asynccontextmanager
+async def release(model: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> AsyncIterator[str]:
+    """A release served from this machine, each file in it answered by `model`: the address it is fetched from."""
+    app = web.Application()
+    app.router.add_get("/{name}", model)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    try:
+        yield f"http://127.0.0.1:{runner.addresses[0][1]}"
+    finally:
+        await runner.cleanup()
+
+
 async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_path: Path) -> None:
     served: list[str] = []
 
@@ -256,26 +273,17 @@ async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_pa
             case _:
                 return web.Response(body=b"features")
 
-    app = web.Application()
-    app.router.add_get("/{name}", model)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = runner.addresses[0][1]
-    try:
+    async with release(model) as address:
         with pytest.raises(aiohttp.ClientResponseError):
-            await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}")
+            await fetched(tmp_path, Pretrained(), address)
         assert sorted(path.name for path in tmp_path.iterdir()) == [MELSPECTROGRAM]
         (tmp_path / EMBEDDING).write_bytes(b"features")
         with pytest.raises(aiohttp.ClientPayloadError):
-            await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}")
+            await fetched(tmp_path, Pretrained(), address)
         assert not (tmp_path / JARVIS).exists()
         (tmp_path / JARVIS).write_bytes(b"word")
-        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}") == ()
+        assert await fetched(tmp_path, Pretrained(), address) == ()
         assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
-    finally:
-        await runner.cleanup()
 
 
 async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longer_than_githubs(tmp_path: Path) -> None:
@@ -285,15 +293,35 @@ async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longe
     async def model(_request: web.Request) -> web.Response:
         return web.Response(body=b"features", headers={"Content-Security-Policy": long})
 
-    app = web.Application()
-    app.router.add_get("/{name}", model)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", 0)
-    await site.start()
-    port = runner.addresses[0][1]
-    try:
-        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}") == (MELSPECTROGRAM, EMBEDDING, JARVIS)
-        assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == dict.fromkeys((MELSPECTROGRAM, EMBEDDING, JARVIS), b"features")
-    finally:
-        await runner.cleanup()
+    async with release(model) as address:
+        assert await fetched(tmp_path, Pretrained(), address) == (MELSPECTROGRAM, EMBEDDING, JARVIS)
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == dict.fromkeys((MELSPECTROGRAM, EMBEDDING, JARVIS), b"features")
+
+
+async def test_a_long_header_line_still_arriving_when_a_read_ends_is_waited_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """aiohttp's own parser, the one it falls back to where its compiled one was not built, holds a line it has not had
+    the end of against a limit of its own, so the header is split: its end is sent once its start has been read."""
+    begun = asyncio.Event()
+
+    class Reading(HttpResponseParserPy):
+        def feed_data(self, data: bytes, SEP: bytes | None = None, *args: Any, **kwargs: Any) -> tuple[list[tuple[RawResponseMessage, StreamReader]], bool, bytes]:
+            begun.set()
+            return super().feed_data(data, SEP, *args, **kwargs)
+
+    monkeypatch.setattr("aiohttp.client_proto.HttpResponseParser", Reading)
+    head = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Security-Policy: " + b"x" * (32 * 1024)
+
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(head[: len(head) // 2])
+        await writer.drain()
+        await begun.wait()
+        writer.write(head[len(head) // 2 :] + b"\r\n\r\nfeatures")
+        await writer.drain()
+        writer.close()
+
+    for name in (MELSPECTROGRAM, EMBEDDING):
+        (tmp_path / name).write_bytes(b"features")
+    async with await asyncio.start_server(answer, "127.0.0.1", 0) as server:
+        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}") == (JARVIS,)
+    assert (tmp_path / JARVIS).read_bytes() == b"features"

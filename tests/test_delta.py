@@ -177,9 +177,10 @@ def stamp(at: datetime) -> str:
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_logged_it_on(tmp_path: Path) -> None:
+async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_logged_it_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`git commit -m x && git push` carries no push operation, and the remote-tracking ref says it anyway."""
     root = published(tmp_path)
+    forge(tmp_path, monkeypatch, "[]")
 
     def push() -> None:
         (root / "a.py").write_text("x = 2\n")
@@ -306,8 +307,9 @@ async def test_renaming_a_branch_is_not_making_one(tmp_path: Path) -> None:
     assert delta.changes == ()
 
 
-async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Path) -> None:
+async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = cloned(tmp_path)
+    forge(tmp_path, monkeypatch, "[]")
     other = clone(tmp_path, "other")
     git(root, "checkout", "-q", "-b", "fix")
 
@@ -772,9 +774,7 @@ class Slow(Deltas):
     """A repository whose tree takes everything the *mark* was given, which is what a slow one really does.
 
     The deadline is the only thing separating a repository with no commit from one git could not answer for,
-    so a test of that has to spend the real deadline rather than hand one command a shorter one. Only the
-    mark is slowed: a reading slowed too would end in the narrator's patience running out, and the turn would
-    come back with no delta for a reason that has nothing to do with what this is testing.
+    so a test of that has to spend the real deadline rather than hand one command a shorter one.
     """
 
     marking = True
@@ -956,8 +956,9 @@ class Unmade(Deltas):
         return await super()._pushed(root, name, was, deadline)
 
 
-async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it(tmp_path: Path) -> None:
+async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
+    forge(tmp_path, monkeypatch, "[]")
     record: list[Entry] = []
     deltas = patient(Unmade, record.append)
     await deltas.snapshot(SID, root)

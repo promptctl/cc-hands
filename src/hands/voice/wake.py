@@ -30,8 +30,8 @@ MELSPECTROGRAM = "melspectrogram.onnx"
 EMBEDDING = "embedding_model.onnx"
 # Long enough for the three files, about 3 MB, on a slow connection; a stalled one fails the switch rather than hang it.
 FETCH_SECONDS = 60
-# The longest header line the release may answer with. aiohttp's own 8190 bytes is shorter than GitHub's
-# content-security-policy alone, 9243 bytes on 2026-10-23, and GitHub only ever adds to it.
+# The longest header line the release may answer with, whole or as much of it as one read has brought. aiohttp's own
+# 8190 bytes is shorter than GitHub's content-security-policy alone, 9243 bytes on 2026-10-23, and GitHub only ever adds to it.
 HEADER_BYTES = 64 * 1024
 # openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
 THRESHOLD = 0.5
@@ -76,7 +76,7 @@ async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str
             own = ()
     missing = tuple(name for name in (MELSPECTROGRAM, EMBEDDING, *own) if not (models / name).exists())
     models.mkdir(parents=True, exist_ok=True)
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True, max_field_size=HEADER_BYTES) as http:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=FETCH_SECONDS), raise_for_status=True, max_line_size=HEADER_BYTES, max_field_size=HEADER_BYTES) as http:
         for name in missing:
             async with http.get(f"{release}/{name}") as response:
                 partial = models / f"{name}.partial"
