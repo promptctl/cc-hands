@@ -24,7 +24,7 @@ from hands.daemon import indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Escaped, Failed, SettingsEdited, SettingsUnweighable, Signalled, Start, Stop, again, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Escaped, Failed, SettingsEdited, SettingsUnweighable, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -510,6 +510,7 @@ async def launch(
                 # No session has joined before the hooks are served, which is after the import.
                 run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop)
                 last = Ended(None, 0) if run is None else await run(stop)
+                await cancelled({watching})
                 match stop.end:
                     case Failed():
                         # A run that failed leaves its last heartbeat naming a pid that is gone, or, as it restarts, one

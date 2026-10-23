@@ -13,8 +13,9 @@ from conftest import unedited
 from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
-from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, TaskFailed
+from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, TaskFailed, cancelled
 from hands.sessions import audit, heartbeat
+from hands.sessions.audit import SettingsEdited
 from hands.sessions.wide import WideEvent
 
 NOW = datetime(2026, 10, 23, 12, 0, 0, tzinfo=UTC)
@@ -184,3 +185,42 @@ async def test_a_pipeline_told_to_stop_ends_without_failing() -> None:
     pipeline.add_done_callback(stopping(stop))
     await asyncio.wait({pipeline})
     assert (stop.named, stop.end) == (("q key",), "quit")
+
+
+async def test_a_task_that_raises_as_it_is_cancelled_is_told_before_the_cancel_returns() -> None:
+    stop = Stop()
+    stop.tell(QuitKey())
+
+    async def closes_badly() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise TEARDOWN
+
+    task = asyncio.create_task(closes_badly(), name="the phone")
+    task.add_done_callback(stopping(stop))
+    await asyncio.sleep(0)
+    await cancelled({task})
+    assert stop.named == ("q key", "the phone")
+    assert stop.end == Failed((TEARDOWN,))
+
+
+async def test_a_settings_watch_that_raises_as_the_run_ends_fails_it_on_its_event(tmp_path: Path) -> None:
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    recorded: list[audit.Entry] = []
+
+    async def watch_that_closes_badly() -> SettingsEdited:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise TEARDOWN
+        raise AssertionError("an event nothing sets was set")
+
+    async def run(stop: Stop) -> Ended:
+        stop.tell(QuitKey())
+        return Ended(None, 0)
+
+    with pytest.raises(ConnectionError, match="the device went away"):
+        await launch(lambda: run, heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False))
+    assert ran(recorded) == [("failed", ("q key", "settings unreadable"), "failed")]
+    assert not stopped(heart)

@@ -87,7 +87,7 @@ from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, cancelled, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -506,8 +506,7 @@ async def converse(
         await asyncio.wait({pipeline_run})
     finally:
         # The pipeline among them: a teardown that raised before it ended leaves nothing running past the run.
-        for task in (*background, pipeline_run, quitting):
-            task.cancel()
+        await cancelled((*background, pipeline_run, quitting))
 
 
 def stopping(stop: Stop) -> Callable[[asyncio.Task[None]], None]:

@@ -7,7 +7,7 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Callable, Coroutine, Generator
+from collections.abc import Callable, Collection, Coroutine, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -127,7 +127,8 @@ class Stop:
 
     @property
     def told(self) -> bool:
-        return self._told.is_set()
+        # The event only wakes whoever waits; whether the run was told is its causes.
+        return bool(self._causes)
 
     async def wait(self) -> None:
         """Return once a cause is told."""
@@ -148,6 +149,14 @@ class Stop:
         ends: list[Failed | Ending] = [_meaning(cause)[1] for cause in self._causes]
         errors = tuple(error for end in ends if isinstance(end, Failed) for error in end.errors)
         return Failed(errors) if errors else ends[0]
+
+
+async def cancelled[T](tasks: Collection[asyncio.Task[T]]) -> None:
+    """Cancel `tasks`, and return once every one is done: what any raised as it ended is told to the Stop its done
+    callback tells before the run reads how it ended, never after."""
+    for task in tasks:
+        task.cancel()
+    await asyncio.wait(tasks)
 
 
 class Start:
