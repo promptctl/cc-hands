@@ -13,7 +13,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, segments
 from hands.sessions.wide import WideEvent
-from hands.voice import conversationpage
+from hands.voice import longpoll
 from hands.voice.conversationpage import Conversation, conversation_routes
 from hands.voice.tool import tool
 from hands.voice.tools import audited
@@ -113,7 +113,7 @@ async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page
     page.log.record(Transcribed("what time is it"))
     first = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
     waiting = asyncio.create_task(page.client.get("/conversation/moments", params={"seen": str(first["changes"])}, headers=KEYED))
-    await asyncio.sleep(conversationpage.POLL_SECONDS * 3)
+    await asyncio.sleep(longpoll.POLL_SECONDS * 3)
     assert not waiting.done()
     page.log.record(Replied("Nine o'clock.", False))
     body = await (await waiting).json()
@@ -122,7 +122,7 @@ async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page
 
 
 async def test_a_read_whose_conversation_never_changes_is_answered_with_it_as_it_is(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(conversationpage, "WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.3)
     read = await page.client.get("/conversation/moments", params={"seen": "0"}, headers=KEYED)
     assert (await read.json()) == {"changes": 0, "moments": []}
     [event] = page.events("conversation.read")

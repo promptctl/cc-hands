@@ -13,7 +13,6 @@ pipeline (`hands.voice.turnstop.Typed`), so they reach hands as words said do, a
 
 import asyncio
 import json
-import time
 from collections.abc import Awaitable, Callable
 from importlib import resources
 from pathlib import Path
@@ -25,14 +24,10 @@ from hands.sessions.payload import Rejected
 from hands.sessions.recall import Moment, Moments, Reading
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
+from hands.voice.longpoll import waited
 
 # How many of the newest moments a page is given: an hour's talk and more, never the whole log.
 NEWEST = 200
-
-# How long a page's read waits for the conversation to change before answering with it as it is, well inside the minute
-# a browser or a proxy between gives a request; and how often the log is looked at meanwhile, as `hands log` looks.
-WAIT_SECONDS = 25.0
-POLL_SECONDS = 0.25
 
 
 class Conversation:
@@ -115,14 +110,8 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
         except Rejected as error:
             fail(str(error))
             return web.Response(status=400, text=str(error))
-        began = time.monotonic()
-        changes, moments = await conversation.caught_up()
-        # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is
-        # never missed: it is answered at once with whatever has changed since.
-        while changes == seen and time.monotonic() - began < WAIT_SECONDS:
-            await asyncio.sleep(POLL_SECONDS)
-            changes, moments = await conversation.caught_up()
-        annotate(seen=seen, changes=changes, waited_ms=round((time.monotonic() - began) * 1000, 1))
+        changes, moments = await waited(conversation.caught_up, seen)
+        annotate(seen=seen, changes=changes)
         count(moments=len(moments))
         return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
 

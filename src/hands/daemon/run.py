@@ -457,7 +457,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(voice.phone, sessions, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

@@ -609,11 +609,14 @@ def standing(sessions: Sessions) -> list[dict[str, str]]:
 
 
 def describe_listing(listing: Listing[Session]) -> dict[str, str]:
+    return {"id": listing.session.membership.id, "name": identifier(listing), **state_and_mode(listing.session)}
+
+
+def state_and_mode(session: Session) -> dict[str, str]:
+    """A session as its listing says it, but for its name: read off the registry alone, with no transcript read."""
     return {
-        "id": listing.session.membership.id,
-        "name": identifier(listing),
-        "state": _spoken_state(listing.session),
-        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
+        "state": _spoken_state(session),
+        "mode": "not reported yet" if session.mode is None else spoken_mode(session.mode),
     }
 
 
@@ -1354,9 +1357,18 @@ def keyboard_tools(sessions: Sessions) -> list[Tool]:
         Args:
             session: The session's id, from list_sessions.
         """
-        return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
+        return await interrupt(sessions, session)
 
     return [tool(body) for body in (send_command, interrupt_session)]
+
+
+async def interrupt(sessions: Sessions, session: str) -> Result:
+    """Escape pressed at one session's keyboard, and the sentence that says what came of it.
+
+    [LAW:one-source-of-truth] the brain's interrupt_session and the phone page's Stop (`hands.voice.sessionspage`) both
+    return this, so the two stop a session, and say what came of it, one way.
+    """
+    return await _answer(sessions, session, Interrupt, sessions.keyboard, _for_the_model(keyboard_readback))
 
 
 def permission_tools(sessions: Sessions) -> list[Tool]:
