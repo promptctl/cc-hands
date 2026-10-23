@@ -10,11 +10,12 @@ from typing import cast
 from hands.core.effects import AllowWith, Allow, Deny, Withdraw
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
+    BRAIN_REPLY_BY_SECONDS,
     HOOKS_FILE,
-    PERMISSION_DEADLINE_SECONDS,
     PERMISSION_HOOK_TIMEOUT_SECONDS,
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
+    REPLY_MARGIN_SECONDS,
     STOP_HOLD_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
@@ -59,9 +60,10 @@ def test_the_module_prints_the_hooks_json() -> None:
     assert set(json.loads(printed.stdout)["hooks"]) == {*SUBSCRIBED, "MessageDisplay"}
 
 
-def test_the_shim_waits_as_long_as_claude_code_lets_the_hook_and_the_daemon_denies_before_that() -> None:
+def test_the_shim_waits_a_whole_day_as_claude_code_holds_the_hook_and_only_the_brain_replies_before_it_ends() -> None:
+    assert PERMISSION_HOOK_TIMEOUT_SECONDS == 86400
     assert post_timeout("PermissionRequest") == PERMISSION_HOOK_TIMEOUT_SECONDS
-    assert PERMISSION_DEADLINE_SECONDS < PERMISSION_HOOK_TIMEOUT_SECONDS
+    assert BRAIN_REPLY_BY_SECONDS == PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARGIN_SECONDS
     # A Stop's hook is held past the window the reducer waits for the record that names it, and the shim waits the
     # hold longer than for any other hook.
     assert STOP_HOLD_SECONDS > UNTOLD / 1000

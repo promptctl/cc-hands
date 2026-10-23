@@ -62,8 +62,8 @@ def raw_terminal(fd: int) -> Generator[None]:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
 
-async def drive_quit(quit_event: asyncio.Event) -> None:
-    """Read hands' own terminal until `q`, which stops the run."""
+async def drive_quit(quit: Callable[[], None]) -> None:
+    """Read hands' own terminal until `q`, which is told to `quit`."""
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
     typed: asyncio.Queue[str] = asyncio.Queue()
@@ -72,6 +72,6 @@ async def drive_quit(quit_event: asyncio.Event) -> None:
         with raw_terminal(fd):
             while await typed.get() != QUIT:
                 pass
-            quit_event.set()
+            quit()
     finally:
         loop.remove_reader(fd)

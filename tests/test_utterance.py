@@ -13,8 +13,8 @@ from pipecat.frames.frames import Frame, InterruptionFrame, OutputAudioRawFrame,
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from hands.core.effects import Expired, SessionGone, Speak
-from hands.core.session import Permission, SessionId
+from hands.core.effects import SessionGone
+from hands.core.session import SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
@@ -26,7 +26,7 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from test_microphone import FreshPortAudio, Room, _phone  # pyright: ignore[reportPrivateUsage]
 
 API = SessionId("api")
-EXPIRED = Speak(Expired(API, Permission("Bash", {"command": "ls"})))
+GONE = SessionGone(API)
 # What the output transport pushes of one utterance: the frames that lead and close it, and what plays between.
 Step = Literal["lead", "audio", "barge-in", "resume", "close"]
 AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_channels=1)
@@ -69,18 +69,18 @@ async def rig() -> AsyncGenerator[Rig, None]:
 
 def said(utterance: Utterance) -> tuple[Frame, ...]:
     """What the brain's stage sends to say a line as written, with what reads its fate."""
-    return uttering((utterance,), (TTSSpeakFrame("Nobody answered api about Bash in time, so I told it no."),))
+    return uttering((utterance,), (TTSSpeakFrame("The session api is gone."),))
 
 
 async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_from_when_it_was_heard(rig: Rig) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     lead, line, close = said(utterance)
     rig.now[0] = utterance.begun.began + 0.25
     await rig.played([lead, AUDIO])
     rig.now[0] += 1.0
     await rig.played([AUDIO, close])
     event = await rig.event()
-    assert (event.outcome, event.facts["fate"], event.facts["first_audio_ms"], event.facts["session"], event.facts["heard"]) == ("ok", "played", 250.0, API, EXPIRED)
+    assert (event.outcome, event.facts["fate"], event.facts["first_audio_ms"], event.facts["session"], event.facts["heard"]) == ("ok", "played", 250.0, API, GONE)
     assert [type(frame) for frame in (lead, line, close)] == [Uttering, TTSSpeakFrame, Uttered]
 
 
@@ -96,7 +96,7 @@ async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_fr
     ],
 )
 async def test_what_of_an_utterance_was_heard_is_read_off_the_output_transport(rig: Rig, steps: Sequence[Step], fate: str) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     lead, _, close = said(utterance)
     pushed: dict[Step, Frame] = {"lead": lead, "audio": AUDIO, "barge-in": InterruptionFrame(), "resume": Resumed((utterance,)), "close": close}
     await rig.played([pushed[step] for step in steps])
@@ -104,7 +104,7 @@ async def test_what_of_an_utterance_was_heard_is_read_off_the_output_transport(r
 
 
 async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_first(rig: Rig) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     lead, _, close = said(utterance)
     await rig.played([lead, InterruptionFrame(), AUDIO, close])
     event = await rig.event()
@@ -112,7 +112,7 @@ async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_fi
 
 
 async def test_audio_that_played_before_an_utterance_was_led_on_is_not_its_first(rig: Rig) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     lead, _, close = said(utterance)
     await rig.played([AUDIO, Uttered(()), lead, close])
     event = await rig.event()
@@ -132,7 +132,7 @@ async def test_an_utterance_open_as_hands_stops_ends_cancelled() -> None:
 
 
 async def test_an_utterance_failed_on_its_way_says_why_and_its_fate_all_the_same(rig: Rig) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     utterance.fail("the text could not be summarised: SummaryFailed: nothing came back")
     utterance.settle("noted")
     event = await rig.event()
@@ -140,7 +140,7 @@ async def test_an_utterance_failed_on_its_way_says_why_and_its_fate_all_the_same
 
 
 async def test_an_utterance_settled_twice_is_refused(rig: Rig) -> None:
-    utterance = rig.utterances.heard(API, EXPIRED)
+    utterance = rig.utterances.heard(API, GONE)
     utterance.settle("dropped")
     with pytest.raises(asyncio.InvalidStateError):
         utterance.settle("played")
@@ -194,7 +194,7 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
     recorded: list[Entry] = []
     utterances = Utterances(recorded.append)
     keeping = asyncio.create_task(utterances.keep())
-    utterance = utterances.heard(API, EXPIRED)
+    utterance = utterances.heard(API, GONE)
     try:
         async with running([speaker], observers=[Audible(speaker)]) as run:
             await run.worker.queue_frames([Uttering((utterance,)), TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
@@ -216,7 +216,7 @@ async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_
     recorded: list[Entry] = []
     utterances = Utterances(recorded.append)
     keeping = asyncio.create_task(utterances.keep())
-    utterance = utterances.heard(API, EXPIRED)
+    utterance = utterances.heard(API, GONE)
     try:
         async with running([speaker], observers=[Audible(speaker)]) as run:
             # The device takes its first chunk and holds it: the rest of the line waits in the output transport.
@@ -246,7 +246,7 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
     recorded: list[Entry] = []
     utterances = Utterances(recorded.append)
     keeping = asyncio.create_task(utterances.keep())
-    utterance = utterances.heard(API, EXPIRED)
+    utterance = utterances.heard(API, GONE)
     try:
         async with running([speaker], observers=[Audible(speaker)]) as run:
             speakers.speaker.holding = True

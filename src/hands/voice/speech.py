@@ -9,7 +9,7 @@ from pathlib import PurePath
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
-from hands.core.effects import Allow, Announcement, Answers, Approve, Asking, DeadlineNear, Decision, Deny, Expired, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Speak, Tell
+from hands.core.effects import Allow, Answers, Approve, Asking, Decision, Deny, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Tell
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
@@ -146,13 +146,13 @@ async def relay(
                 # [LAW:nothing-unseen] whether it was said, how much of it, and what was set that decided it.
                 utterance.annotate(attention=attention, overlay=overlay, route=route)
                 await _mentioned(route, Tell(session, occurrence), utterance, queue_frame)
-            case Speak() | Narrate():
+            case Narrate():
                 await queue_frame(Unprompted(heard, (utterance,)))
 
 
 def _teller(heard: Heard) -> SessionId:
     match heard:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)) | Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
+        case Narrate(moment=Asking(session=session)) | Progress(session=session) | Tell(session=session):
             return session
 
 
@@ -177,11 +177,8 @@ def _routed(route: Route, progress: Progress, utterance: Utterance, play: Callab
 
 
 def frames(pending: Pending, names: Names) -> Saying:
-    # [LAW:one-type-per-behavior] the route is the pending thing's own variant: Speak needs no model, Narrate needs one to explain.
+    # [LAW:one-type-per-behavior] the route is the pending thing's own variant: Narrate needs a model to explain, the rest are said as written.
     match pending:
-        case Speak(announcement=announcement):
-            # In hands' lane, so a deadline is heard after the question it counts down, never ahead of it.
-            return AsWritten(TTSSpeakFrame(announcement_text(announcement, names)))
         case Narrate(moment=moment):
             return InOwnWords(narration(moment, names), f"{names(moment.session)} is waiting on you about {_what(moment.on)}.", moment.session)
         case Finished(session=session, news=news, amount=amount):
@@ -321,21 +318,12 @@ def _ask_user(on: Blocker) -> str:
             )
 
 
-def announcement_text(announcement: Announcement, names: Names) -> str:
-    match announcement:
-        case DeadlineNear(session=session, on=on, remaining=remaining):
-            return f"{round(remaining)} seconds left to answer {names(session)} about {_what(on)}."
-        case Expired(session=session, on=on):
-            # Said as what hands did: an answer typed at the dialog meanwhile would already have settled it.
-            return f"Nobody answered {names(session)} about {_what(on)} in time, so {_left(on)}."
-
-
 def answer_readback(outcome: Outcome, names: Names) -> str:
     match outcome:
         case Answered(session=session, on=on, decision=decision):
             return f"{_done(decision, _what(on), names(session))}."
         case NotWaiting():
-            return "That request is no longer waiting for a voice answer: it was already answered, answered at the keyboard, or its deadline passed."
+            return "That request is no longer waiting for a voice answer: it was already answered, by voice or at the keyboard, or the session moved on past it."
         case Unfit(on=on, decision=decision):
             return _unfit(on, decision)
 
@@ -352,14 +340,6 @@ def _done(decision: Decision, what: str, name: str) -> str:
             return f"Approved {what} for {name}{_AFTER_PLAN[mode]}"
         case KeepPlanning():
             return f"Sent {what} back to keep planning for {name}"
-
-
-def _left(on: Blocker) -> str:
-    match on:
-        case Permission():
-            return "I told it no"
-        case Question() | Plan():
-            return "it is left waiting at its dialog"
 
 
 def _what(on: Blocker) -> str:

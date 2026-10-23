@@ -22,7 +22,7 @@ class Answered:
 
 @dataclass(frozen=True)
 class NotWaiting:
-    """No session waits on this request: it was answered, withdrawn, or denied at its deadline."""
+    """No session waits on this request: it was answered, or withdrawn."""
 
     request: RequestId
 

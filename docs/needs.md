@@ -71,12 +71,12 @@ spoken-form transform, the narration tree, and the playback bookmarks. Delivered
 ## 5. Nothing happens without you
 
 The intermediary sends only what you approved, approves only what you approved,
-denies when you do not answer, and can never edit a file. Every effect it performs is
+and can never edit a file. Every effect it performs is
 one line in an audit log, so "did it send something I didn't say" has a definite
 answer. The tool surface is small and fixed, and its boundary is names and records,
 never file contents.
 
-Carried by the draft buffer, the deny-by-default deadline, the audit log, and the
+Carried by the draft buffer, the audit log, and the
 fixed tool list. Delivered across the foundation epic; the audit log lands in
 **Loud daemon**.
 
@@ -101,7 +101,7 @@ work that skips the model where the model adds nothing: a session finishing is a
 template, not a summary; steps are summarised while the turn runs, from the
 transcript tail, so the summary is ready when the turn stops; the prompt is cached.
 
-Carried by the `Speak` channel and by summaries built during the turn. Delivered
+Carried by the system channel and by summaries built during the turn. Delivered
 throughout, with the measurement kept in the latency observer.
 
 ## 8. It works where you are

@@ -7,7 +7,7 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Callable, Coroutine, Generator
+from collections.abc import Callable, Collection, Coroutine, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +33,115 @@ LAST_BEAT: dict[Ending, heartbeat.PipelineState] = {"quit": "stopped", "restart"
 
 class CannotStart(Exception):
     """A start hands will not make: a setting, a key, or a grant it cannot start without. The message is the reason."""
+
+
+@dataclass(frozen=True)
+class Signalled:
+    """A stop signal, sent to the run: Ctrl-C, SIGTERM, the terminal closing, or the restart signal."""
+
+    signal: signal.Signals
+
+
+@dataclass(frozen=True)
+class QuitKey:
+    """`q`, typed in the run's own terminal."""
+
+
+@dataclass(frozen=True)
+class SettingsEdited:
+    """An edit to config.toml that hands could start on, taken up by starting again on it."""
+
+
+@dataclass(frozen=True)
+class Failing:
+    """Something the run cannot go on without, failed, named for what it was: a task the run runs (the pipeline ending
+    without being told to stop among them), the watch on config.toml ("settings unreadable": a run that cannot weigh
+    its settings would run on settings that are not the file's), or whatever raised out of the run itself ("escaped",
+    told by the run's launch, the outermost frame it passes through)."""
+
+    name: str
+    error: BaseException
+
+
+# [LAW:types-are-the-program] every way a run stops, each told to its Stop by whatever knows it happened.
+type Cause = Signalled | QuitKey | SettingsEdited | Failing
+
+
+@dataclass(frozen=True)
+class Failed:
+    """A run that ended failing, with every failing cause's error, in the order told."""
+
+    errors: tuple[BaseException, ...]
+
+    def raised(self) -> BaseException:
+        """The errors as the one exception the run raises: a lone error as itself, so a refusal reads as one wherever it
+        was refused and a cancellation stays one; many as a group named for them all, so the event that writes it down
+        says on its one line what failed. `except*` finds a refused start in either."""
+        match self.errors:
+            case (error,):
+                return error
+            case errors:
+                return BaseExceptionGroup("; ".join(f"{type(error).__name__}: {error}" for error in errors), errors)
+
+
+def _meaning(cause: Cause) -> tuple[str, Failed | Ending]:
+    """What a cause is called on the run's event, and how the run would end were it the only one told."""
+    match cause:
+        case Signalled(signal=number):
+            return number.name, STOP_SIGNALS[number]
+        case QuitKey():
+            return "q key", "quit"
+        case SettingsEdited():
+            return "settings edited", "restart"
+        case Failing(name=name, error=error):
+            return name, Failed((error,))
+
+
+class Stop:
+    """[LAW:one-source-of-truth] why a run stops: each cause told it, in the order told. The run stops at the first,
+    and how it ended is read off them all, once, so its event and what the process does next cannot disagree."""
+
+    def __init__(self) -> None:
+        self._causes: list[Cause] = []
+        self._told = asyncio.Event()
+
+    def tell(self, cause: Cause) -> None:
+        """Stop the run, for `cause`; a cause told to a run already stopping is kept beside the first."""
+        self._causes.append(cause)
+        self._told.set()
+
+    @property
+    def told(self) -> bool:
+        # The event only wakes whoever waits; whether the run was told is its causes.
+        return bool(self._causes)
+
+    async def wait(self) -> None:
+        """Return once a cause is told."""
+        await self._told.wait()
+
+    @property
+    def named(self) -> tuple[str, ...]:
+        """Every cause told, by its name on the run's event, in the order told."""
+        return tuple(_meaning(cause)[0] for cause in self._causes)
+
+    @property
+    def end(self) -> Failed | Ending:
+        """Failed, where any cause failed, with every failing cause's error; otherwise the first cause's quit or restart:
+        a restart asked while a quit winds the run down is not one. Raises for a run no cause was told: every way out of
+        a run tells one."""
+        if not self._causes:
+            raise LookupError("the run ended with no cause told it to stop")
+        ends: list[Failed | Ending] = [_meaning(cause)[1] for cause in self._causes]
+        errors = tuple(error for end in ends if isinstance(end, Failed) for error in end.errors)
+        return Failed(errors) if errors else ends[0]
+
+
+async def cancelled[T](tasks: Collection[asyncio.Task[T]]) -> None:
+    """Cancel `tasks`, and return once every one is done: what any raised as it ended is told to the Stop its done
+    callback tells before the run reads how it ended, never after."""
+    for task in tasks:
+        task.cancel()
+    await asyncio.wait(tasks)
 
 
 class Start:
@@ -131,7 +240,7 @@ def again(argv: list[str]) -> NoReturn:
     os.execv(argv[0], argv)
 
 
-async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], degraded: Callable[[], tuple[heartbeat.Degradation, ...]], quit_event: asyncio.Event
+async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop
 ) -> T | None:
     """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
 
@@ -142,7 +251,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     """
     preparing = asyncio.create_task(prepare())
     starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded()), heart.period.total_seconds()))
-    quitting = asyncio.create_task(quit_event.wait())
+    quitting = asyncio.create_task(stop.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
     finally:

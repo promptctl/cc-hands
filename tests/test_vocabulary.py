@@ -157,7 +157,7 @@ async def test_with_nothing_focused_and_nothing_running_whisper_is_unprimed_and_
     recorded: list[Entry] = []
     home = Home(tmp_path)
     set_focus(home, None)
-    lexicon = Lexicon(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), home, ENVIRONMENT, recorded.append)
+    lexicon = Lexicon(Sessions(clock=lambda: 0.0, record=recorded.append), home, ENVIRONMENT, recorded.append)
 
     assert await lexicon() is None
     assert [(entry.focus, entry.words, entry.failed) for entry in recorded if isinstance(entry, Primed)] == [(None, (), None)]

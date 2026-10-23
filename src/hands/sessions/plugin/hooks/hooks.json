@@ -52,7 +52,7 @@
               "-m",
               "hands.sessions.shim"
             ],
-            "timeout": 90
+            "timeout": 86400
           }
         ]
       }

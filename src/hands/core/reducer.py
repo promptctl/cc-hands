@@ -12,19 +12,14 @@ from hands.core.effects import (
     AfterEnd,
     Audit,
     AuditRecord,
-    Deny,
     Effect,
-    HookReply,
     Narrate,
     Progress,
     Asking,
-    DeadlineNear,
-    Expired,
     Holding,
     Overtaken,
     Reply,
     SessionGone,
-    Speak,
     Compare,
     Snapshot,
     Summarise,
@@ -67,12 +62,9 @@ from hands.core.events import (
 )
 from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
-from hands.core.session import ids, Blocker, Dialog, Gone, Held, Idle, Instant, Known, LetGo, Membership, Mode, Opened, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unnamed, Unreported, Untold, status_stamp
+from hands.core.session import ids, Blocker, Gone, Held, Idle, Instant, Known, Membership, Mode, Opened, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Unnamed, Unreported, Untold, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
-
-# How long before a permission's deadline the one warning is spoken.
-WARNING_LEAD_SECONDS = 10.0
 
 # How long past the idle Claude Code set a turn waits to be told for the record of how it ended, and past a Stop hands
 # heard it waits for a record naming its id, in milliseconds on Claude Code's own clock: an interrupt's is written 37 ms
@@ -80,17 +72,11 @@ WARNING_LEAD_SECONDS = 10.0
 # write none. The transcript read through this point holds it if it was ever coming.
 UNTOLD = 1000
 
-# What the agent reads when nobody answered in time.
-EXPIRED_MESSAGE = (
-    "Nobody answered this permission request by voice before its deadline, so hands denied it. "
-    "Do not retry it until the user asks."
-)
-
 
 def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
     """One event in; the next registry and the effects it calls for out. No I/O."""
-    # [LAW:effects-at-boundaries] time arrives inside the event and the deadline
-    # inside the registry, so a deadline is arithmetic on values, never a clock read.
+    # [LAW:effects-at-boundaries] time arrives inside the event, so when a burst settles is arithmetic on values,
+    # never a clock read.
     match event:
         case Joined(membership=membership, source=source):
             previous = registry.sessions.get(membership.id)
@@ -232,7 +218,7 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     # is heard at the session's next hook, whatever that hook moves the session to.
     mode = held if reported is None else reported
     background, overtaken = _backgrounded(event, was)
-    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog, registry.permission_deadline), background=background)
+    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialog=_dialog(event, was.dialog), background=background)
     moved, stopped = _stopped(moved, event)
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
@@ -331,18 +317,18 @@ def _since_idle(state: SessionState, written: Stamp | None) -> bool:
             return True
 
 
-def _dialog(event: Moving, dialog: Dialog | None, deadline: float) -> Dialog | None:
+def _dialog(event: Moving, dialog: Held | None) -> Held | None:
     """The dialog the session is at after the event, as its hooks and Claude Code's idle tell it."""
     match (event, dialog):
         case (StatusReported(report=Report(status=at)), _) if isinstance(at, AtPrompt):
             # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
             return None
         case (PermissionRequested(request=request), Held(request=held)) if held == request:
-            # The request it already waits on, heard again: its deadline and whether it was warned are its own, by request id.
+            # The request it already waits on, heard again: it is the same dialog, by request id.
             return dialog
-        case (PermissionRequested(at=at, request=request, on=on), _):
-            return Held(on=on, request=request, deadline=at + deadline, warned=False)
-        case (ToolFinished(call=call), Held(on=asked) | LetGo(on=asked)) if _same_call(asked, call):
+        case (PermissionRequested(request=request, on=on), _):
+            return Held(on=on, request=request)
+        case (ToolFinished(call=call), Held(on=asked)) if _same_call(asked, call):
             # The tool the session was waiting to run has run, so its dialog was answered at the keyboard.
             return None
         case (Prompted(), _):
@@ -601,7 +587,7 @@ def _transition(before: Known | None, after: Session) -> list[Effect]:
             return _dialogs(id, None, after.dialog)
 
 
-def _dialogs(session: SessionId, before: Dialog | None, after: Dialog | None) -> list[Effect]:
+def _dialogs(session: SessionId, before: Held | None, after: Held | None) -> list[Effect]:
     match (before, after):
         case (Held(request=held), Held(request=asked)) if held == asked:
             return []
@@ -615,18 +601,6 @@ def _dialogs(session: SessionId, before: Dialog | None, after: Dialog | None) ->
             return [Narrate(Asking(session, asked, on))]
         case _:
             return []
-
-
-def _expiry(on: Blocker) -> tuple[Dialog | None, HookReply]:
-    """Where a request left unanswered at its deadline leaves the session's dialog, and what its hook is told."""
-    match on:
-        case Permission():
-            # [LAW:no-silent-failure] silence never approves: an unanswered request is denied, and said to be.
-            return None, Deny(EXPIRED_MESSAGE)
-        case Question() | Plan():
-            # Silence cannot answer a question or judge a plan, so there is nothing to refuse: it is left to its
-            # dialog, where the user may be answering it at the keyboard, rather than closed under them.
-            return LetGo(on), Withdraw()
 
 
 def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
@@ -658,13 +632,12 @@ def _ticked(registry: Registry, at: Instant) -> tuple[Registry, list[Effect]]:
     after, effects = registry, list[Effect]()
     for session in registry.live():
         id = session.membership.id
-        dialog, expiring = _expiring(id, session.dialog, at)
         turn, settled = _burst(id, session.turn, at)
         # [LAW:dataflow-not-control-flow] each subagent's burst settles on the same clock as its parent's own.
         due = {agent: gathering for agent, gathering in session.subagents.items() if at >= gathering.due()}
         subagents = {agent: gathering for agent, gathering in session.subagents.items() if agent not in due}
-        after = after.put(replace(session, dialog=dialog, turn=turn, subagents=subagents))
-        effects += [*expiring, *settled, *(Progress(id, agent, gathering.doings, gathering.written) for agent, gathering in due.items())]
+        after = after.put(replace(session, turn=turn, subagents=subagents))
+        effects += [*settled, *(Progress(id, agent, gathering.doings, gathering.written) for agent, gathering in due.items())]
     return after, effects
 
 
@@ -676,14 +649,3 @@ def _burst(session: SessionId, turn: Turn, at: Instant) -> tuple[Turn, list[Effe
             return replace(turn, gathering=None), [Progress(session, ids(turn), gathering.doings, gathering.written)]
         case _:
             return turn, []
-
-
-def _expiring(session: SessionId, dialog: Dialog | None, at: Instant) -> tuple[Dialog | None, list[Effect]]:
-    match dialog:
-        case Held(on=on, request=request, deadline=deadline) if at >= deadline:
-            left, reply = _expiry(on)
-            return left, [Reply(session, request, reply), Speak(Expired(session, on))]
-        case Held(on=on, request=request, deadline=deadline, warned=False) if at >= deadline - WARNING_LEAD_SECONDS:
-            return replace(dialog, warned=True), [Speak(DeadlineNear(session, request, on, remaining=deadline - at))]
-        case _:
-            return dialog, []

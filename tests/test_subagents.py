@@ -105,7 +105,7 @@ async def told(transcript: Path) -> tuple[Recounts, dict[str, object]]:
 
 
 async def opened(recounts: Recounts, part: str) -> list[str]:
-    call = expand_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), recounts).body
+    call = expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body
     result = await call(session=SID, part=part)
     return [entry["told"] for entry in cast(list[dict[str, str]], result["parts"])]
 
@@ -114,7 +114,7 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
     transcript = parent(tmp_path, REVIEWER)
     reviewer(transcript)
     recounts, facts = await told(transcript)
-    whole = await expand_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), recounts).body(session=SID)
+    whole = await expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body(session=SID)
     lines = [entry["told"] for entry in cast(list[dict[str, str]], whole["parts"]) if entry["part"] == WORK]
     # Named by the job it was given, and counted: its prompt is the job, and not a step of it.
     assert lines == ["A subagent's own work on /code-review medium 66: two steps."]

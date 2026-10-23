@@ -25,7 +25,7 @@ def member(name: str, pid: int) -> Membership:
 
 
 def sessions() -> Sessions:
-    return Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _: None)
+    return Sessions(clock=time.monotonic, record=lambda _: None)
 
 
 @pytest.mark.parametrize(

@@ -24,7 +24,7 @@ from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutco
 from hands.core.effects import Allow, Answers, Approve, Command, Decision, Deny, KeepPlanning, ModeAfterPlan
 from hands.core.keyboard import Interrupt, SendCommand
 from hands.core.progress import Doing, said
-from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, LetGo, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
+from hands.core.session import Blocker, Membership, CommandName, Opened, Held, Idle, KEYSTROKES, Permission, Plan, PromptText, Question, RequestId, Resolution, Running, Session, SessionId, SessionState, Staged, Unreported, delegating
 from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waiting
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
@@ -622,8 +622,6 @@ def _spoken_state(session: Session) -> str:
         case (Held(on=on), _, _):
             # Said by what it asks, though the status saying it waits may not have been read yet.
             return _waiting_on(on)
-        case (LetGo(on=on), _, _):
-            return f"{_waiting_on(on)} on its screen, a dialog hands let go of and its answer tools no longer reach"
         case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
             # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
             # notes are this listing at the tail of its every request.

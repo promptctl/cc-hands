@@ -389,8 +389,8 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
     assert [event.facts for event in events(recorded, "brain.elicitation")] == [{"prompt": "p1", "server": "probe"}, {"prompt": "p2", "server": "probe"}]
 
 
-async def test_a_permission_nobody_answers_is_refused_at_its_deadline(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("hands.brain.process.PERMISSION_DEADLINE_SECONDS", 0.3)
+async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hands.brain.process.BRAIN_REPLY_BY_SECONDS", 0.3)
     recorded: list[Entry] = []
     held: list[Asked] = []
     brain = await start(launch(tmp_path), recorded.append)
@@ -1425,7 +1425,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
@@ -1461,7 +1461,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
 async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
@@ -1486,7 +1486,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
     async def unread() -> InFront:
         return FrontUnread("not read in this test")
@@ -1505,7 +1505,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
 

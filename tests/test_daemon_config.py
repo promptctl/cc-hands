@@ -19,7 +19,7 @@ import pytest
 from conftest import onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
-from hands.daemon.starting import CannotStart, Ended, Start, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
@@ -307,7 +307,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01))
-    sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=lambda _event: None)
+    sessions = Sessions(clock=time.monotonic, record=lambda _event: None)
     config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
@@ -324,7 +324,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     run_start = Start(restarted=False)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), asyncio.Event()))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop()))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -358,9 +358,9 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
         never.wait()
         raise AssertionError("the prompt was never answered")
 
-    quit_event = asyncio.Event()
-    quit_event.set()
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), quit_event) is None
+    stop = Stop()
+    stop.tell(QuitKey())
+    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), stop) is None
     never.set()
 
 
@@ -373,7 +373,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), asyncio.Event()))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), Stop()))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -391,7 +391,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), asyncio.Event()))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), Stop()))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -410,7 +410,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), asyncio.Event(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable))
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable))
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -442,11 +442,11 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli.logger, "remove", kept)
 
     def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
-        sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=record)
+        sessions = Sessions(clock=time.monotonic, record=record)
 
-        async def refused(quit_event: asyncio.Event) -> Ended:
+        async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), quit_event)
+            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
@@ -461,6 +461,38 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
     assert cli.main(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
+def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def unshown(_home: Home) -> int:
+        return 0
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "start_indicator", unshown)
+    monkeypatch.setattr(cli, "reap", kept)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+
+    def loaded(*_: object) -> cli.Run:
+        async def refused(stop: Stop) -> Ended:
+            stop.tell(Failing("the namer", OSError("the disk is gone")))
+            raise CannotStart("no key")
+
+        return refused
+
+    monkeypatch.setattr(cli, "loaded", loaded)
+    with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
+        cli.main(["--home", str(home.root), "run"])
+    assert capsys.readouterr().err == "hands: no key\n"
+    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
 def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

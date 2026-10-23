@@ -24,7 +24,7 @@ from hands.daemon import indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Start, again, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -232,15 +232,22 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
             refuse(cannot, held)
             return 1
         try:
-            ending, shown = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
-        except CannotStart as cannot:
-            # The run's launch ended the start, failed with this reason, on the edge the settings chose.
-            refuse(cannot, heart)
-            return 1
-        match ending:
-            case "quit":
+            ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+        except* CannotStart as cannot:
+            # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
+            # refused once, and said so even where another error raised with it is raised on past this block.
+            match cannot.exceptions:
+                case (CannotStart() as reason,):
+                    refuse(reason, heart)
+                    ran = reason
+                case _:
+                    raise
+        match ran:
+            case CannotStart():
+                return 1
+            case ("quit", _):
                 return 0
-            case "restart":
+            case ("restart", shown):
                 # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
                 # one argument, so an id that begins with a dash is never read as an option.
                 again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
@@ -458,70 +465,78 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     return ending, shown
 
 
-# hands' run, given the event that stops it; it ends saying what it knew last.
-type Run = Callable[[asyncio.Event], Coroutine[object, object, Ended]]
+# hands' run, given the Stop that every cause of its end is told to; it ends saying what it knew last.
+type Run = Callable[[Stop], Coroutine[object, object, Ended]]
 
 
 async def launch(
     load: Callable[[], Run], heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start
 ) -> Ending:
-    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told to end.
+    """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told
+    to end, or, where it failed, every failing cause's error raised together as one group.
     A run that ends before it was ready ends its start here: failed with what it raised, or cancelled, told to stop first.
 
     [LAW:single-enforcer] a SIGTERM, a terminal's Ctrl-C, the terminal closing (SIGHUP), the restart signal, the q key,
-    a failed background task, and an edit to the settings (`edited` returning one that parses) all set this one event, and it is
-    installed before the import, so a stop is heard in every phase. The last heartbeat is written here, by the one place that knows whether a restart follows it.
+    a failed background task, the pipeline ending on its own, an edit to the settings (`edited` returning one that
+    parses), a watch on them that fails, and whatever raised out of the run are all told to one Stop, whose handlers
+    are in before the import, so a stop is heard in every phase. [LAW:nothing-unseen] the run is one `hands.run` event,
+    emitted here as it ends: every cause told, in order, and the end read off them, which is what this returns or raises.
+    The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
-    quit_event = asyncio.Event()
-    ending: Ending = "quit"
-    failed: list[BaseException] = []
-
-    def stop(how: Ending) -> None:
-        # The first stop says how the run ends, the q key's and a failed task's included, which set the event alone:
-        # a restart asked while a quit winds the run down is not one.
-        nonlocal ending
-        ending = ending if quit_event.is_set() else how
-        quit_event.set()
+    began = wide.begun()
+    stop = Stop()
 
     def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
         if watch.cancelled():
             return
         if (error := watch.exception()) is not None:
-            # [LAW:no-silent-failure] a run that cannot weigh its settings would run on settings that are not the
-            # file's: it ends raising, as a run whose background task failed does.
-            failed.append(error)
-            stop("quit")
+            stop.tell(Failing("settings unreadable", error))
             return
         # A run already ending says nothing of an edit it does not restart on; the next start reads the file as edited.
-        if quit_event.is_set():
+        if stop.told:
             return
         # The settings take effect as everything else on disk does: in a run started again on them.
         record(watch.result())
-        stop("restart")
+        stop.tell(SettingsEdited())
 
     watching = asyncio.create_task(edited())
     watching.add_done_callback(heard)
     loop = asyncio.get_running_loop()
-    for signal_number, how in STOP_SIGNALS.items():
-        loop.add_signal_handler(signal_number, stop, how)
+    for signal_number in STOP_SIGNALS:
+        loop.add_signal_handler(signal_number, stop.tell, Signalled(signal_number))
     try:
         with run_start.ending(record):
-            # No session has joined before the hooks are served, which is after the import.
-            run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, quit_event)
-            last = Ended(None, 0) if run is None else await run(quit_event)
-            if failed:
-                raise failed[0]
-        # Written only by a run told to stop: a refused start's last is refuse's, and any other run that raised leaves
-        # its last heartbeat naming a pid that is gone, or, as it restarts, one that stops beating, and neither reads as stopped. [LAW:no-ambient-temporal-coupling] it
-        # goes out while the handlers are in, so a restart is never asked once they are out: the heartbeat no longer
-        # says running, and one asked before it reads that is heard by stop, where the first stop already decided.
-        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
+            try:
+                # No session has joined before the hooks are served, which is after the import.
+                run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop)
+                last = Ended(None, 0) if run is None else await run(stop)
+                await cancelled({watching})
+                match stop.end:
+                    case Failed():
+                        # A run that failed leaves its last heartbeat naming a pid that is gone, or, as it restarts, one
+                        # that stops beating, and neither reads as stopped.
+                        pass
+                    case ending:
+                        # [LAW:no-ambient-temporal-coupling] it goes out while the handlers are in, so a restart is never
+                        # asked once they are out: the heartbeat no longer says running, and one asked before it reads
+                        # that is told after the first cause, which already decided.
+                        heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
+            except BaseException as error:
+                stop.tell(Failing("escaped", error))
+            match stop.end:
+                case Failed() as failed:
+                    raised = failed.raised()
+                    wide.ended("hands.run", record, began, raised, stopped_by=stop.named, ending="failed", pid=os.getpid())
+                    # Raised inside the start's end, so a start the run never readied ends failed with it.
+                    raise raised
+                case ending:
+                    wide.ended("hands.run", record, began, None, stopped_by=stop.named, ending=ending, pid=os.getpid())
+                    return ending
     finally:
         watching.cancel()
         # From here a signal has its default effect again: nothing is left to stop gracefully.
         for signal_number in STOP_SIGNALS:
             loop.remove_signal_handler(signal_number)
-    return ending
 
 
 def reachable(home: Home, settings: Config) -> None:
@@ -549,7 +564,7 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
         survey(readiness.check(home, path, True, reached, running, keyboards))
 
-    return lambda quit_event: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, quit_event, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
+    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
 
 
 def start_indicator(home: Home) -> int:

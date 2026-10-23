@@ -30,7 +30,7 @@ from test_startsession import home_in
 
 
 def registry() -> Sessions:
-    return Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    return Sessions(clock=lambda: 0.0, record=lambda _: None)
 
 
 def run[T](home: Home, sessions: Sessions, body: Callable[[], Awaitable[T]]) -> T:

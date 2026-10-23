@@ -429,7 +429,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
 
 
 async def tools(project: Path, store: SummaryStore) -> dict[str, Any]:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=project, transcript=project / "s1.jsonl"), "startup"))
     return {tool.name: tool.body for tool in backlog_tools(sessions, store)}
 

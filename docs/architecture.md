@@ -114,7 +114,7 @@ class Session:
     state: SessionState       # what Claude Code says it is doing
     mode: PermissionMode      # from each hook payload that carries it
     turn: Turn                # which turn it is, as hooks and records say
-    dialog: Dialog | None     # the dialog it is at, as its hooks say; an idle ends it
+    dialog: Held | None       # the dialog it is at, as its hooks say; an idle ends it
     background: frozenset[AgentId]  # subagents it started in the background, launched and not reported back
 
 # An ended session has no status, turn, or dialog: its last turn was told and its held
@@ -142,13 +142,10 @@ class Untold:    turn: PromptId; others: frozenset[PromptId]; by: Stamp
 @dataclass(frozen=True)
 class Told:      turn: PromptId | None; others: frozenset[PromptId]
 
-Dialog = Held | LetGo
 @dataclass(frozen=True)
 class Held:
     on: Blocker
     request: RequestId                    # the shim call waiting for a reply
-    deadline: Instant                     # derived from the hook config's timeout
-    warned: bool                          # the deadline warning has been spoken
 
 # Everything Claude Code stops for arrives through the same PermissionRequest hook.
 Blocker = Permission | Question | Plan
@@ -222,8 +219,8 @@ class Staged:   text: str; resolutions: Sequence[Resolution]
 ```
 
 The block above is the target. `hands.core.effects` defines less today:
-`Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
-permission announcements and requests and `Story = Summarise | SessionGone` carries
+`Effect = Audit | Reply | Heard | Story | Repository`, where `Heard = Narrate | Progress | Tell` carries
+permission requests, a turn's settled progress, and what a session's hook said happened, and `Story = Summarise | SessionGone` carries
 finished turns and sessions gone. Today's `Summarise` holds a session, the prompt id of
 the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Play`, and `Snapshot`,
 and the segment, narration, and playback types, are planned.
@@ -259,9 +256,10 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has seven of those eight today -
-`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Summarise`, `Snapshot` - plus
-`SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt. `Input` is
+That block is the design, not the code. `core/effects.py` has six of those eight today -
+`Audit`, `Reply`, `Type`, `Narrate`, `Summarise`, `Snapshot` - plus
+`SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt, and no
+effect speaks: hands' own facts reach TTS through the system channel (`hands.voice.system`). `Input` is
 `Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
 `core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
 the draft leaves the registry the moment the send is decided, so it is sent at most once,
@@ -282,26 +280,22 @@ Each timing fact has one owner.
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
 | Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
 | That a session's end is heard after its last turn | the story queue: `Summarise` and `SessionGone` wait in one queue, and the narrator tells each in turn |
-| When a permission deadline warns and expires | the reducer, from `Held.deadline`, driven by one `Tick` source |
+| When a burst of a session's progress has settled | the reducer, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
 | When the daemon is up, and restarting it | you, with `hands run` in a terminal |
 
-Deadlines are data. The `Held` dialog carries the instant it expires and whether
-the warning has been spoken. A single ticker sends `Tick(now)` once a second; the
-reducer compares, and emits `Speak("ten seconds on that permission")` exactly once,
-because the transition from `warned=False` to `warned=True` is a state change, not a
-timer callback. At the deadline it emits `Reply(deny)` for a permission and says so;
-a question, which silence cannot answer, is withdrawn instead and left to its dialog,
-where the user may be answering it at the keyboard. Its dialog is then `LetGo`: still
-waiting, now on the keyboard alone, until the answered call comes back. The ticker's
-period only bounds how late a deadline is heard; no correctness property depends on
-a `sleep`.
+Time is data. A single ticker sends `Tick(now)` once a second, and the reducer compares
+it with when a burst of progress settles; the ticker's period only bounds how late that
+is heard, and no correctness property depends on a `sleep`.
 
-The deadline itself comes from one number. `hands.sessions.hookconfig` declares the
-`PermissionRequest` hook's timeout (90 seconds) in the plugin's `hooks/hooks.json`; the shim
-waits on the daemon that long for that hook alone, and the daemon denies 5 seconds
-earlier, so the deny reaches Claude Code before Claude Code kills the hook
-`[LAW:single-enforcer]`.
+A request a session asks is held with no deadline of hands' own: it waits on the user as
+its dialog on the screen does. `hands.sessions.hookconfig` declares the
+`PermissionRequest` hook's timeout in the plugin's `hooks/hooks.json`, a day, and the shim
+waits on the daemon that long for that hook alone `[LAW:single-enforcer]`. Should Claude
+Code kill the hook at the end of that day, its closed connection ends the wait, and the
+request is left to its dialog. The brain's own dialog is one nobody sees, so the brain
+alone denies a request of its own 5 seconds before its hook's day ends, which reaches
+Claude Code before the kill.
 
 Claude Code queues messages submitted while a turn is running and shows them with
 "Press up to edit queued messages". Measured on 2.1.270: text pasted into a working
@@ -354,7 +348,7 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
   interpretation, no latency beyond synthesis. Used for facts a template can say:
-  "auth-refactor finished", "ten seconds on that permission", "cc-hands is gone, its
+  "auth-refactor finished", "cc-hands is gone, its
   terminal closed", "the language model is unreachable". This channel is also how the
   daemon reports its own failures, which is why it must not depend on the LLM.
 - **Play.** A narration's segments go to TTS one at a time through the player,
@@ -370,7 +364,7 @@ What the brain is to know and not say needs no route: the tail of its next reque
 says how the sessions stand.
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
-announcements as `Speak` and permission requests as `Narrate`,
+requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
 unprompted of the sessions reaches the floor (`voice/floor.py`) ahead
 of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
@@ -417,8 +411,7 @@ and `ended_route` are the tables over it and the overlay; a muted session's turn
 whatever is set, until the user asks for it through `tell_turn`. The user sets the overlay
 by voice with `set_overlay`, and what is said unprompted with `attention` or
 `/hands:attention`. A muted session's permission requests,
-questions, and plans are still narrated: held unsaid, each would wait out its deadline and
-be refused. Progress has its row of the table today, `attention.progress_route` over what
+questions, and plans are still narrated: the session waits on each until it is answered. Progress has its row of the table today, `attention.progress_route` over what
 is set, the focus, and the overlay (see "Streaming"); the player and the table over every other event kind
 below are planned.
 
@@ -438,8 +431,8 @@ value is a new column `[LAW:one-type-per-behavior]`.
 
 Pending speech is ordered as the floor lets it go, and nothing starts while the key is
 down. `coalesce` (`core/pending.py`) is pure: it drops what is no longer so, read off the
-live sessions as the floor lets go: a request answered at the keyboard while you talked and
-a deadline counted down on it, by the held dialog's request id, and progress of a turn that
+live sessions as the floor lets go: a request answered at the keyboard while you talked,
+by the held dialog's request id, and progress of a turn that
 ended meanwhile, whether or not its ending was told; it folds one session's
 finished turns into one `Finished` where the first stood, whose headline covers them all
 ("finished 3 turns") and whose tellings keep their narration parts and so their record ids,
@@ -453,7 +446,7 @@ is told with that sooner thing, so its next turn's request is never heard ahead 
 before it. A folded telling shares one `REPLY_SHOWN` bound among its turns. A `Pending`'s priority is read off its variant, never stored beside it. This
 queue is not the player's bookmarks: resuming replays a bookmarked sentence and never
 re-enqueues a telling. Each item is a transition, never a state, so nothing is announced
-twice `[LAW:one-source-of-truth]`: a request is narrated, warned of, and expired by its
+twice `[LAW:one-source-of-truth]`: a request is narrated by its
 request id, which the daemon mints per hook delivery, so a second delivery is a second request; a turn's `Summarise` asks the
 tail only for the records it has not told. The same event heard twice is said once
 (`tests/test_reducer.py`).
@@ -669,8 +662,8 @@ a resume, a `/branch`) from writing a file that would outrank the new session's.
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that
 waits for anything stutters the agent's own output. Every shim POSTs and returns; the
 sole exception is `PermissionRequest`, where blocking is the feature. Its timeout is
-declared in the hook config, and the daemon derives its default-deny deadline from
-that same number, so there is one place the budget is set `[LAW:single-enforcer]`.
+declared in the hook config, and the shim's wait is that same number, so there is one
+place the budget is set `[LAW:single-enforcer]`.
 
 **The dialog and the hook race.** Measured on 2.1.270: Claude Code shows its
 permission dialog at once and runs the `PermissionRequest` hook beside it, and
@@ -684,10 +677,7 @@ waiting reply, which prints nothing. A hook whose connection closes first ends t
 no reply at all, so a later voice answer hears that the request is gone rather than
 that it went through. That is how a keyboard refusal arrives: answering No or Esc at
 the dialog fires no post-tool hook and no `Stop`, but Claude Code kills the waiting
-hook, and the closed connection releases the session (measured on 2.1.270). What is left
-is a tool approved at the keyboard that is still running at the deadline: its warning
-and its deny, which Claude Code ignores, are still heard, so the expiry is spoken as
-what hands did ("so I told it no"), never as what happened to the tool. A permission
+hook, and the closed connection releases the session (measured on 2.1.270). A permission
 request from a session the daemon has not heard of joins the session first, so it is
 asked aloud like any other.
 
@@ -2010,8 +2000,8 @@ sounds like too. So every failure has a path to the user that does not depend on
 thing that failed `[LAW:no-silent-failure]`:
 
 1. **Speech.** The system channel says "the language model is unreachable", "speech
-   recognition failed for that turn", "the session cc-hands is gone". These are
-   `Speak` effects and need no model. `hands.voice.system` renders each fact from a
+   recognition failed for that turn", "the session cc-hands is gone". These need
+   no model. `hands.voice.system` renders each fact from a
    template and queues it at the TTS processor, past the LLM and out of the replies
    the audit log records, so no system line reads as a reply the model gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
@@ -2132,15 +2122,21 @@ The heartbeat is honest at both ends of a run. `hands run` writes its first hear
 `pipeline starting`, before it imports Pipecat. The models load off the event loop,
 which keeps beating, so a new run shows its pid within half a second of starting,
 and only a loop that is actually stuck reads as not responding. A SIGTERM,
-Ctrl-C, the `q` key, and a failed background task all set one quit event. Its handler
-is in place before the models load, so a stop during the load does not wait for them.
+Ctrl-C, the terminal closing, the restart signal, the `q` key, an edit to the settings, a failed
+background task, the pipeline ending on its own, and whatever raises out of the run are each told,
+as a cause, to one `Stop` (`hands.daemon.starting`). Its handlers are in place before the models
+load, so a stop during the load does not wait for them.
 Shutdown lets every permission hook still waiting go undecided, including one that
 arrives as shutdown begins, so that session's own dialog stands and the daemon exits
 in under a second. After the socket is released, a stop writes a last heartbeat that
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
-reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+reads as down. A run with any failing cause counts as a crash, whatever stopped it first: it raises
+every failing cause's error together as one group, exits nonzero, is not restarted, and reads as down
+until it is run again. Otherwise the first cause says whether it quits or restarts. Each run is one
+`hands.run` event, emitted as it ends: `stopped_by` names every cause in the order told, `ending`
+says failed, quit, or restart, and a failed run carries its errors. A run killed outright writes no
+event, and that absence is the only one the log has.
 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
 `hands run` began to the moment the pipeline reported started, so its duration is how

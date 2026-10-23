@@ -169,10 +169,10 @@ no process is spawned per batch.
 `PermissionRequest` blocks while you decide out loud. You will sometimes be slow, or
 across the room, or talking to someone else.
 
-**Rule:** the budget is declared, not discovered. The shim's hook config sets the
-`timeout` on its `PermissionRequest` entry, and the daemon's default-deny deadline
-derives from that same number. Speak the timeout as it approaches rather than letting
-the decision evaporate.
+**Rule:** the budget is declared, not discovered, and it is never yours to beat. The
+shim's hook config sets the `timeout` on its `PermissionRequest` entry to a day, and hands
+puts no deadline of its own on a request, counts nothing down, and denies nothing for
+silence: the request waits on you as its dialog on the screen does.
 
 ### 14. The daemon dies and everything stays quiet
 

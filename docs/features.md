@@ -145,7 +145,7 @@ closes.
   runs in the foreground of a terminal; every heartbeat rewrites
   `~/.hands/status.json`; `hands status` prints it. Done when killing the daemon
   reads as down in `hands status`, and running it again shows the new pid and uptime.
-- **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
+- **System speech channel.** The system channel speaks as a `TTSSpeakFrame`; the
   daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
   result, and a TTS error posts a macOS notification instead. Done when an unreachable
   model server is heard within one turn, with no model involved.
@@ -228,8 +228,7 @@ Need 3. How several sessions share one ear.
   ids. Done by a table test on `coalesce` and a live test with two sessions
   finishing during one held key.
 - **Transitions only.** Every announcement is keyed by the record id or request id
-  that caused it and is never repeated; the deadline warning is the
-  `warned: False → True` transition. Done by reducer tests: the same event twice
+  that caused it and is never repeated. Done by reducer tests: the same event twice
   yields one utterance.
 - **Catch-up.** `catch_up(minutes)` reads the audit log and narrates what was said
   and done while you were away, at summary depth. Done when "what did I miss"

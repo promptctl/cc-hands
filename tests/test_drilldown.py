@@ -30,7 +30,7 @@ def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
 
 def expand(recounts: Recounts) -> Body:
     """The tool's body, as the model calls it."""
-    return expand_tool(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None), recounts).body
+    return expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body
 
 
 def parts(result: Result) -> list[tuple[str, str]]:
