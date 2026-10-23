@@ -15,7 +15,7 @@ from pathlib import Path
 
 from hands.daemon.cli import launch
 from hands.daemon.config import edited, load
-from hands.daemon.starting import Ended, Start, again, keep_beating
+from hands.daemon.starting import Ended, Start, Stop, again, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
@@ -33,14 +33,14 @@ def main() -> None:
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     settings = load(home)
 
-    async def run(quit_event: asyncio.Event) -> Ended:
+    async def run(stop: Stop) -> Ended:
         sessions = Sessions(clock=time.monotonic, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
         beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), PERIOD.total_seconds()))
         # As hands' run is once its pipeline has started.
         run_start.ended(audit.record, None)
-        await quit_event.wait()
+        await stop.wait()
         beating.cancel()
         return Ended(None, sessions.live_count())
 

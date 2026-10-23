@@ -17,7 +17,7 @@ from conftest import unedited
 from hands.daemon import indicator
 from hands.sessions import heartbeat
 from hands.daemon.cli import Run, launch, main
-from hands.daemon.starting import Ended, Start, keep_beating
+from hands.daemon.starting import Ended, QuitKey, Start, Stop, keep_beating
 from hands.threads import off_loop
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -125,10 +125,12 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
 async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_loads_begins(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     imported = threading.Event()
-    ran: list[asyncio.Event] = []
+    ran: list[bool] = []
 
-    async def run(quit_event: asyncio.Event) -> Ended:
-        ran.append(quit_event)
+    async def run(stop: Stop) -> Ended:
+        # Whether it was told to stop before it began; then it quits.
+        ran.append(stop.told)
+        stop.tell(QuitKey())
         return Ended(None, 0)
 
     def load() -> Run:
@@ -145,7 +147,7 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
         await asyncio.sleep(0.005)
     imported.set()
     await launched
-    assert len(ran) == 1 and not ran[0].is_set()
+    assert ran == [False]
 
 
 async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path: Path) -> None:

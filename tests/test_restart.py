@@ -20,7 +20,7 @@ from hands.core.session import Membership, SessionId
 from hands.daemon import cli
 from hands.daemon.cli import launch, retire
 from hands.daemon.restart import RESTART_SIGNAL
-from hands.daemon.starting import Ended, Start
+from hands.daemon.starting import Ended, QuitKey, Start, Stop
 from hands.sessions import audit, heartbeat
 from hands.sessions.hookconfig import LAUNCHER
 from hands.sessions.home import Home
@@ -39,6 +39,11 @@ def started(home: Home) -> list[dict[str, Any]]:
 
 def start_outcomes(recorded: list[audit.Entry]) -> list[str]:
     return [entry.outcome for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.start"]
+
+
+def ran(recorded: list[audit.Entry]) -> list[tuple[str, object, object]]:
+    """Each hands.run event's outcome, causes, and ending."""
+    return [(entry.outcome, entry.facts["stopped_by"], entry.facts["ending"]) for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hands.run"]
 
 
 def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -131,9 +136,9 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     edit = asyncio.Event()
 
-    async def run(quit_event: asyncio.Event) -> Ended:
+    async def run(stop: Stop) -> Ended:
         edit.set()
-        await quit_event.wait()
+        await stop.wait()
         return Ended(None, 0)
 
     async def edited() -> audit.SettingsEdited:
@@ -143,16 +148,17 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
     recorded: list[audit.Entry] = []
     assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False)) == "restart"
     # Told to stop before it was ready, the start ends cancelled.
-    assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
+    assert recorded[0] == EDITED and start_outcomes(recorded) == ["cancelled"] and len(recorded) == 3
+    assert ran(recorded) == [("ok", ("settings edited",), "restart")]
 
 
 async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_not_said(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     edit = asyncio.Event()
 
-    async def run(quit_event: asyncio.Event) -> Ended:
-        # As the q key does: the event set alone, then the run winds down while the file is saved.
-        quit_event.set()
+    async def run(stop: Stop) -> Ended:
+        # The q key, then the run winds down while the file is saved.
+        stop.tell(QuitKey())
         edit.set()
         await asyncio.sleep(0.05)
         return Ended(None, 0)
@@ -163,24 +169,27 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
 
     recorded: list[audit.Entry] = []
     assert await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False)) == "quit"
-    assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 1
+    assert start_outcomes(recorded) == ["cancelled"] and len(recorded) == 2
+    assert ran(recorded) == [("ok", ("q key",), "quit")]
 
 
 async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
 
-    async def run(quit_event: asyncio.Event) -> Ended:
-        await quit_event.wait()
+    async def run(stop: Stop) -> Ended:
+        await stop.wait()
         return Ended(None, 0)
 
     async def edited() -> audit.SettingsEdited:
         raise PermissionError("config.toml")
 
     recorded: list[audit.Entry] = []
-    with pytest.raises(PermissionError, match="config.toml"):
+    with pytest.RaisesGroup(pytest.RaisesExc(PermissionError, match="config.toml")):
         await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False))
-    # A start that ends raising is failed, with what it raised.
-    assert [(entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("failed", "PermissionError: config.toml")]
+    # The run and its start, which it ended raising, are failed, with what it raised.
+    failed = "ExceptionGroup: PermissionError: config.toml (1 sub-exception)"
+    assert [(entry.event, entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("hands.run", "failed", failed), ("hands.start", "failed", failed)]
+    assert ran(recorded) == [("failed", ("settings unreadable",), "failed")]
     # As a run whose background task failed: its last heartbeat does not read as stopped.
     status = heartbeat.read(heart.path)
     assert status is None or status.pipeline != "stopped"
@@ -205,18 +214,20 @@ def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, plugin: Path) -> N
 
 async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_says_starting(tmp_path: Path) -> None:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
-    told: list[asyncio.Event] = []
+    told: list[Stop] = []
 
-    async def run(quit_event: asyncio.Event) -> Ended:
-        told.append(quit_event)
-        await quit_event.wait()
+    async def run(stop: Stop) -> Ended:
+        told.append(stop)
+        await stop.wait()
         return Ended(NOW, 3)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
+    recorded: list[audit.Entry] = []
+    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False)))
     while not told:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "restart"
+    assert ran(recorded) == [("ok", ("SIGUSR1",), "restart")]
     last = heartbeat.read(heart.path)
     # Not stopped: the indicator reads the moment before the next run as starting, and posts nothing.
     assert last is not None and (last.pipeline, last.last_audio_out, last.live_sessions) == ("starting", NOW, 3)
@@ -226,17 +237,20 @@ async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
     winding_down = asyncio.Event()
 
-    async def run(quit_event: asyncio.Event) -> Ended:
-        # As the q key does: the event is set with no signal, and the run takes a while to close.
-        quit_event.set()
+    async def run(stop: Stop) -> Ended:
+        # The q key, with no signal, and the run takes a while to close.
+        stop.tell(QuitKey())
         winding_down.set()
         await asyncio.sleep(0.05)
         return Ended(None, 0)
 
-    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
+    recorded: list[audit.Entry] = []
+    launched = asyncio.create_task(launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False)))
     await winding_down.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
     assert await launched == "quit"
+    # The restart asked is kept beside the quit, which decided.
+    assert ran(recorded) == [("ok", ("q key", "SIGUSR1"), "quit")]
     last = heartbeat.read(heart.path)
     assert last is not None and last.pipeline == "stopped"
 
@@ -310,7 +324,8 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
         pass
 
     def loaded(*_: object) -> cli.Run:
-        async def quits(_quit_event: asyncio.Event) -> Ended:
+        async def quits(stop: Stop) -> Ended:
+            stop.tell(QuitKey())
             return Ended(None, 0)
 
         return quits

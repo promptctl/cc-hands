@@ -2121,15 +2121,21 @@ The heartbeat is honest at both ends of a run. `hands run` writes its first hear
 `pipeline starting`, before it imports Pipecat. The models load off the event loop,
 which keeps beating, so a new run shows its pid within half a second of starting,
 and only a loop that is actually stuck reads as not responding. A SIGTERM,
-Ctrl-C, the `q` key, and a failed background task all set one quit event. Its handler
-is in place before the models load, so a stop during the load does not wait for them.
+Ctrl-C, the terminal closing, the restart signal, the `q` key, an edit to the settings, a failed
+background task, the pipeline ending on its own, and whatever raises out of the run are each told,
+as a cause, to one `Stop` (`hands.daemon.starting`). Its handlers are in place before the models
+load, so a stop during the load does not wait for them.
 Shutdown lets every permission hook still waiting go undecided, including one that
 arrives as shutdown begins, so that session's own dialog stands and the daemon exits
 in under a second. After the socket is released, a stop writes a last heartbeat that
 says `stopped`, and a stopped daemon reads as stopped even if its pid is later reused.
 A crash writes nothing more, so its last heartbeat names a pid that is gone, and it
-reads as down. A background task that failed or a pipeline that ended on its own
-counts as a crash: the run raises, exits nonzero, and reads as down until it is run again.
+reads as down. A run with any failing cause counts as a crash, whatever stopped it first: it raises
+every failing cause's error together as one group, exits nonzero, is not restarted, and reads as down
+until it is run again. Otherwise the first cause says whether it quits or restarts. Each run is one
+`hands.run` event, emitted as it ends: `stopped_by` names every cause in the order told, `ending`
+says failed, quit, or restart, and a failed run carries its errors. A run killed outright writes no
+event, and that absence is the only one the log has.
 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
 `hands run` began to the moment the pipeline reported started, so its duration is how

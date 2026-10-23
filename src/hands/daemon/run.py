@@ -87,7 +87,7 @@ from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, Start, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -221,7 +221,7 @@ async def outlived(brain: Brain) -> None:
 
 async def run(
     configure: Callable[[Mapping[str, str]], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, heart: heartbeat.Heart, record: Record,
-    degraded: Callable[[], tuple[heartbeat.Degradation, ...]], quit_event: asyncio.Event, after_crash: bool,
+    degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, after_crash: bool,
     environment: Mapping[str, str],
     run_start: Start,
     own: OwnModel,
@@ -281,7 +281,7 @@ async def run(
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
-        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, quit_event)
+        config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop)
         if config is not None:
             tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
@@ -296,10 +296,10 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, quit_event)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, degraded, quit_event, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)
+                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -337,7 +337,7 @@ async def converse(
     sessions: Sessions,
     heart: heartbeat.Heart,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]],
-    quit_event: asyncio.Event,
+    stop: Stop,
     after_crash: bool,
     record: Record,
     deltas: Deltas,
@@ -351,30 +351,25 @@ async def converse(
     wake_word: Word,
     run_start: Start,
 ) -> None:
-    """Run the pipeline and what feeds it until the run is told to stop; raises what failed if anything did. The start is
-    ready, and ends, once the pipeline has started."""
+    """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
+    ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
     tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
-    failures: list[BaseException] = []
 
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
         heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
-    def stop_if_failed(task: asyncio.Task[None]) -> None:
-        # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
-        # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
-        # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
-        # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
-        if not task.cancelled() and (error := task.exception()) is not None:
-            logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
-            failures.append(error)
-            quit_event.set()
+    # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
+    # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
+    # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute, without the talk key no turn starts, and without the pipeline nothing is heard or said at all, so any of
+    # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
+    stop_if_failed = stopping(stop)
 
     # First sight of every project a session is already working in: its backlog is said before anyone asks for it.
     for listing in sessions.live():
@@ -485,14 +480,17 @@ async def converse(
     background.append(phone)
     logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn.")
     if sys.stdin.isatty():
-        quit_key = asyncio.create_task(drive_quit(quit_event), name="the terminal quit key")
+        quit_key = asyncio.create_task(drive_quit(lambda: stop.tell(QuitKey())), name="the terminal quit key")
         quit_key.add_done_callback(stop_if_failed)
         background.append(quit_key)
         logger.info("q: quit.")
     # The run's own signal handler stops the pipeline, so Pipecat installs none of its own.
     runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
-    pipeline_run = asyncio.create_task(runner.run(voice.worker))
-    quitting = asyncio.create_task(quit_event.wait())
+    pipeline_run = asyncio.create_task(until_told(runner.run(voice.worker), stop), name="the pipeline")
+    # [LAW:no-ambient-temporal-coupling] added before the wait below adds its own, so a pipeline that ended on its own is
+    # told, first, before any teardown, and a Ctrl-C or an edit during the teardown is listed after it.
+    pipeline_run.add_done_callback(stop_if_failed)
+    quitting = asyncio.create_task(stop.wait())
     try:
         await asyncio.wait({pipeline_run, quitting}, return_when=asyncio.FIRST_COMPLETED)
         # A run told to stop takes no more turns: the key stops being watched before the pipeline tears down, not after.
@@ -504,16 +502,29 @@ async def converse(
         following.cancel()
         await asyncio.wait({following})
         await runner.cancel("quit")
-        await pipeline_run
+        # What it raised is told already, by stop_if_failed.
+        await asyncio.wait({pipeline_run})
     finally:
         quitting.cancel()
         for task in background:
             task.cancel()
-    # [LAW:no-silent-failure] a run that failed ends by raising, so it is not written as stopped: it reads as down,
-    # exits nonzero, and every hook after it fails loudly until hands is run again.
-    if failures:
-        raise failures[0]
-    if not quit_event.is_set():
+
+
+def stopping(stop: Stop) -> Callable[[asyncio.Task[None]], None]:
+    """A task's done callback that tells `stop` the task failed, once it has, and logs what it raised."""
+
+    def stop_if_failed(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
+            stop.tell(TaskFailed(task.get_name(), error))
+
+    return stop_if_failed
+
+
+async def until_told(running: Awaitable[None], stop: Stop) -> None:
+    """Await the pipeline `running`, which ends only once the run is told to stop: raises where it ended first, having died."""
+    await running
+    if not stop.told:
         raise RuntimeError("the pipeline ended without being told to stop")
 
 
