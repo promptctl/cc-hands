@@ -33,6 +33,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSSpeakFrame,
+    UserStoppedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -151,7 +152,7 @@ def wire_name(tool: Tool) -> str:
 _UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
 
 # What each turn's event counts: the model's round trips on the wire, and the calls its replies made.
-COUNTS = ("round_trips", "tools", "refused")
+COUNTS = ("round_trips", "tools", "refused", "cut_in")
 
 
 @dataclass
@@ -225,6 +226,9 @@ class _Turn:
     # Where the user barged in on the turn, which is said to nobody from then on: the reading on the speaker and how much
     # of it had played, once the speaker has been cut off. None while the user has not barged in.
     cut: asyncio.Future[Bookmark] | None = None
+    # How many times the user cut in on the turn and stopped nothing of it: nothing it said or asked was still to be
+    # heard, or what they said answers the question they heard.
+    cut_in: int = 0
     # A reply of the turn's is under way for whatever hears it: started, and not yet ended.
     replying: bool = False
     # The permissions the turn has put to the user, oldest first, which are asked one at a time.
@@ -247,8 +251,9 @@ class _Turn:
     asides: list[tuple[str, float]] = field(default_factory=list[tuple[str, float]])
     # [LAW:one-source-of-truth] a text block of the turn's is streaming. The turn's, not the reply's: a reply broken in
     # the middle of one is asked again, and the text the retry goes on with is the same block. Blocks stream one at a
-    # time, so at most one is.
-    voicing: bool = False
+    # time, so at most one is: here where it last started, the request and its index in that request's reply, so only its
+    # own stop ends it, never a thinking block's of a retry opening ahead of the text it goes on with. None while none is.
+    voicing: tuple[str, int] | None = None
     # How many points the turn has put to the user, and how many of them the speaker has played: its cursor through
     # what the brain said and asked.
     marked: int = 0
@@ -264,7 +269,7 @@ class _Turn:
     def to_hear(self) -> bool:
         """Something the brain said or asked is still to be heard: a text block still streaming, or a point the speaker
         has not played. It plays them in order, so once the last has played, every one before it has."""
-        return self.voicing or self.reached < self.marked
+        return self.voicing is not None or self.reached < self.marked
 
     def point(self, point: _Point) -> None:
         """Puts what the brain said or asked to the user, counted until its Mark has played."""
@@ -283,8 +288,8 @@ class _Turn:
 
     def close(self) -> None:
         """Ends the text block streaming now, if one is: its words are all handed on, and the lines waiting behind it follow."""
-        if self.voicing:
-            self.voicing = False
+        if self.voicing is not None:
+            self.voicing = None
             self.point(_Close())
             self._let_through()
 
@@ -293,9 +298,16 @@ class _Turn:
         self.behind.append(aside)
         self._let_through()
 
+    def over(self) -> None:
+        """Ends the turn on `said`. A text block left open, by a reply broken past its retry or a brain that failed, ends
+        with it, unmarked, since nothing cuts in on a turn that is over, and the lines waiting behind it are said first."""
+        self.voicing = None
+        self._let_through()
+        self.said.put_nowait(None)
+
     def _let_through(self) -> None:
         # [LAW:no-ambient-temporal-coupling] where hands' line lands is the turn's state, not when it was given.
-        while self.behind and not self.voicing:
+        while self.behind and self.voicing is None:
             self.said.put_nowait(self.behind.pop(0))
 
     def empty(self) -> bool:
@@ -303,8 +315,9 @@ class _Turn:
         return bool(self.exchanges) and not self.replied
 
     def unheard(self) -> bool:
-        """The user asked the turn and has heard nothing of it: no word, no question, and they have not spoken over it."""
-        return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted
+        """The user asked the turn and has heard nothing of it: no word, no question, and they have not spoken in it, over
+        it or not. Their words in it are answered instead."""
+        return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted and not self.cut_in
 
     def asking(self) -> Asked | None:
         """The permission the user's next words answer: the one they heard asked, while it is still open."""
@@ -370,6 +383,11 @@ class BrainStage(FrameProcessor):
         # asked while they are still being transcribed is not what they were answering. Every turn that carries words is
         # cut first (`hands.voice.turnstart`).
         self._answering: Asked | None = None
+        # [LAW:no-ambient-temporal-coupling] set while hands has the floor: taken by every cut, and given back as the
+        # user's turn stops, which Pipecat says of every turn, words or none. Nothing of a turn is handed on while the user
+        # speaks: what it says meanwhile waits for them, as what hands tells of the sessions does (`hands.voice.floor`).
+        self._floor = asyncio.Event()
+        self._floor.set()
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
         # What the user did not hear of the last turn, told to the brain with its next turn: what the API broke off, which
@@ -398,15 +416,18 @@ class BrainStage(FrameProcessor):
                 self._words.append((words, arrived, let_go, asyncio.ensure_future(self._read_front(self._modality(), opened))))
                 self._waiting.set()
                 match self._turn:
-                    case _Turn() as turn if not turn.interrupted:
-                        # Said behind the turn, and heard: the user hears so in its own voice, and hands' acknowledgement
-                        # of the turn is said no more, as the turn's end has it.
-                        turn.acknowledging.cancel()
+                    case _Turn(asker=UserAsked()) as turn if not turn.interrupted:
+                        # Said behind the user's turn, and heard: they hear so in its own voice.
                         turn.aside(_Aside(next(self._answers), arrived if let_go is None else let_go))
                     case _:
-                        # No turn to answer in, or one spoken over, whose voice is stopped: the words are simply the next turn.
+                        # No turn of the user's to answer in, or one spoken over, whose voice is stopped: the words are
+                        # simply the next turn. A telling is not answered in, as it is not acknowledged: what it says is
+                        # the session's, and its words are all heard of it.
                         pass
             case HoldDiscarded():
+                await self.push_frame(frame, direction)
+            case UserStoppedSpeakingFrame():
+                self._floor.set()
                 await self.push_frame(frame, direction)
             case VADUserStoppedSpeakingFrame():
                 # The key let go on words to be transcribed: the end of the user's words, and the start of their wait.
@@ -419,6 +440,7 @@ class BrainStage(FrameProcessor):
                 # [LAW:no-ambient-temporal-coupling] the turn stops being spoken before the pipeline is told, so no word of
                 # it follows the barge-in down. The brain is told nothing: its turn runs to its own end.
                 turn = self._turn
+                self._floor.clear()
                 self._answering = None if turn is None else turn.asking()
                 self._barge_in(self._answering)
                 await self.push_frame(frame, direction)
@@ -529,7 +551,7 @@ class BrainStage(FrameProcessor):
                 ended = self._now()
                 # [LAW:no-ambient-temporal-coupling] nothing acknowledges a turn once it is over.
                 turn.acknowledging.cancel()
-                said.put_nowait(None)
+                turn.over()
             await asyncio.wait({turn.speaking})
             # [LAW:single-enforcer] a refusal the user heard asked is never left to silence, whatever the model did after it.
             refusals = tuple(brain_refused(permission) for permission in turn.unacknowledged)
@@ -595,7 +617,7 @@ class BrainStage(FrameProcessor):
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
-        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused)
+        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused, cut_in=turn.cut_in)
         self._spans.ended(turn.tools)
         for call, ran in turn.tools.items():
             # A call whose result never left ran until the turn ended without it.
@@ -629,7 +651,7 @@ class BrainStage(FrameProcessor):
 
     async def _speak(self, turn: _Turn) -> None:
         await self._reply(turn, True)
-        while (words := await turn.said.get()) is not None:
+        while (words := await self._handed(turn)) is not None:
             match words:
                 case str():
                     turn.spoken.append(words)
@@ -647,6 +669,12 @@ class BrainStage(FrameProcessor):
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
 
+    async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
+        """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""
+        words = await turn.said.get()
+        await self._floor.wait()
+        return words
+
     async def _point(self, turn: _Turn, point: _Point) -> None:
         """Says a point of the brain's: the end of a text block, or the question it asks, while that is still open, then
         the point's Mark, behind which a question waits for its answer."""
@@ -655,12 +683,11 @@ class BrainStage(FrameProcessor):
         question = point if isinstance(point, Asked) and point.open else None
         # The reply so far ends first, so what TTS holds of it is said ahead of the Mark: a text block's last sentence as
         # the block closes, never held back for words that come after a call.
-        await self._reply(turn, False)
         match question:
             case Asked(permission=permission):
-                await self.push_frame(TTSSpeakFrame(brain_asks(permission)))
+                await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
             case None:
-                pass
+                await self._reply(turn, False)
         # [LAW:single-enforcer] each point's one Mark. [LAW:no-ambient-temporal-coupling] a question is answerable once
         # the speaker has played it to its end, which the mark is told of, and never if a barge-in cut it off.
         await self.push_frame(Mark(partial(turn.reach, point)))
@@ -691,7 +718,10 @@ class BrainStage(FrameProcessor):
         # A turn with nothing of the brain's still to be heard is not spoken over: the user's words follow it as the next
         # turn, as they do one none of whose requests has left. One that asks the user a permission they heard is waiting
         # on what they say: their words answer it, and stop nothing.
-        if turn is None or turn.interrupted or not turn.to_hear or answering is not None:
+        if turn is None or turn.interrupted:
+            return
+        if not turn.to_hear or answering is not None:
+            turn.cut_in += 1
             return
         # Asked of the speaker before the barge-in goes down to it: it says how far it played once it gets there.
         turn.cut = self._cut_off()
@@ -761,10 +791,10 @@ class BrainStage(FrameProcessor):
             # ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
             # One broken before then is asked again without a stream (2.1.289): the reply asked again goes on from where
             # the user stopped hearing the broken one when it opens as that did, and is said whole when it does not.
-            case Heard(exchange=exchange, event=BlockStarted(block={"type": "text"})) if exchange in turn.exchanges:
+            case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "text"})) if exchange in turn.exchanges:
                 turn.ahead = turn.between
                 # Opened, or gone on with, where a retry carries on with the block a broken reply left streaming.
-                turn.voicing = True
+                turn.voicing = (exchange, index)
             case Heard(exchange=exchange, event=TextDelta(text=text)) if exchange in turn.exchanges:
                 again = next((at for at, broken in enumerate(turn.broken) if not turn.reply and broken.retry == exchange and broken.heard and text.startswith(broken.heard)), None)
                 match again:
@@ -784,6 +814,9 @@ class BrainStage(FrameProcessor):
                 turn.close()
                 turn.opening[index] = (call, name)
                 turn.replied = True
+            case Heard(exchange=exchange, event=BlockStarted(block={"type": "thinking" | "redacted_thinking"})) if exchange in turn.exchanges:
+                # Thinking opens a reply, ahead of what it says: a retry's text after it goes on with the block left open.
+                pass
             case Heard(exchange=exchange, event=BlockStarted()) if exchange in turn.exchanges:
                 turn.close()
             # Claude Code runs a call once its block is whole, before the reply's last byte, and hands hears each byte
@@ -794,8 +827,7 @@ class BrainStage(FrameProcessor):
                 ran = turn.tools[call] = _Call(name, now, datetime.now(UTC), within(turn.span))
                 self._spans.opened(call, ran.span)
                 turn.working.set()
-            case Heard(exchange=exchange, event=BlockStopped()) if exchange in turn.exchanges:
-                # Blocks stream one at a time: a block stopped that is not a call is the text block streaming, if one is.
+            case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):
                 turn.close()
             # [LAW:one-source-of-truth] why a turn failed is the wire's: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after

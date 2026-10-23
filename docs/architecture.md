@@ -1060,7 +1060,8 @@ too; a side question's own request is under its `brain.aside`. The router decide
 and an exchange made for no unit of work, a wrapped session's through the tap or the brain's outside a turn, is a
 `proxy.exchange` span at the root of a trace of its own, saying its session, kind and path. A turn hands stopped mid-way
 still emits its event, cancelled, with what it had done.
-The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), and
+The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), how
+many times they cut in on it and stopped nothing of it (`cut_in`, counted with `round_trips`, `tools` and `refused`), and
 the note that tells the brain, after the user's next words, what of the turn they did not hear (`spoken_over`, empty
 when nobody spoke over it). A barge-in presses no key and holds no request: the turn runs to its own end, said to nobody.
 The note quotes the last sentence the speaker played to its end, then the rest of the reading it was cut off in
@@ -1071,14 +1072,22 @@ cut was heard by nobody.
 A cut is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
 or a text block's end or a permission question whose Mark the speaker has not yet played. Each text block ends the
 reply as it closes, so its last sentence is said then, before the call after it runs, and a Mark behind it is exact.
-Words said while the brain works in silence stop nothing: they are the next turn, and hands answers them at once in the
-turn's voice with a line from `ANSWERS` ("Got it. I'll come to that when this is done.", ...), said after the text
-block streaming when they arrive, if one is. What the user's words answer is read once, at the cut they open with, so a
-permission question asked while they are still being transcribed is not what they answer.
+Only the text block's own stop, or the start of a block that is neither text nor thinking, ends it: a retry that opens
+with thinking goes on with the block the broken reply left streaming, still one sentence. A text block still open when
+the turn ends, in a reply broken past its retry or a brain that failed, ends with the turn, and hands' lines waiting
+behind it are said. Words said while the brain works in silence stop nothing: they are the next turn, and hands answers
+them at once in the turn's voice with a line from `ANSWERS` ("Got it. I'll come to that when this is done.", ...), said
+after the text block streaming when they arrive, if one is. A turn hands narrates is not answered in, as it is not
+acknowledged: what it says is the session's, and an answer said inside it would be read by the utterance tracking as
+the telling's own audio. Every cut takes the floor from hands, and the stage gives it back as the user's turn stops,
+which Pipecat's `UserStoppedSpeakingFrame` says of every turn, words or none. Nothing of the brain's turn is handed on
+while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play,
+as what hands tells of the sessions waits at the floor, never said over them. What the user's words answer is read once,
+at the cut they open with, so a permission question asked after the cut is not what they answer.
 
 A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question,
-their own barge-in, or hands answering words they said behind it. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
+or their own cut into it, barge-in or not, whose words are answered instead. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
 a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
 question does, and is kept out of the replies the audit log records, since the brain never said it. A call that comes straight back, a turn
 that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says
