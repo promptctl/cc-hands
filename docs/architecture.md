@@ -1050,7 +1050,7 @@ For the brain, a narration waits in a lane of `BrainStage`'s own, and the user's
 was answering is asked only once no words of the user's are waiting. What the narrator
 says as written waits in the same lane (`Aloud`), so a session's end is heard after its
 last turn. Each turn is one `voice.turn` wide event, and its `queued_ms` is how long it waited in its lane.
-Its `waited_ms` is how long the user waited from letting go of the key to the turn's first word on the wire,
+Its `waited_ms` is how long the user waited from letting go of the key to the turn's first word handed to the speaker,
 `transcribed_ms` and `queued_ms` are where that wait went before the brain was written to; words that waited behind a
 turn together are timed from the last of them. Each call the brain's replies made (`tool.call`) is a child event under
 it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
@@ -1079,11 +1079,13 @@ behind it are said. Words said while the brain works in silence stop nothing: th
 them at once in the turn's voice with a line from `ANSWERS` ("Got it. I'll come to that when this is done.", ...), said
 after the text block streaming when they arrive, if one is. A turn hands narrates is not answered in, as it is not
 acknowledged: what it says is the session's, and an answer said inside it would be read by the utterance tracking as
-the telling's own audio. Every cut takes the floor from hands, and the stage gives it back as the user's turn stops,
-which Pipecat's `UserStoppedSpeakingFrame` says of every turn, words or none. Nothing of the brain's turn is handed on
-while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play,
-as what hands tells of the sessions waits at the floor, never said over them. What the user's words answer is read once,
-at the cut they open with, so a permission question asked after the cut is not what they answer.
+the telling's own audio. The cut takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts,
+just ahead of its interruption, and the stage gives it back as the user's turn stops, which Pipecat's
+`UserStoppedSpeakingFrame` says of every turn, words or none. Pipecat pairs the two, so no interruption of any other
+kind holds the floor. Nothing of the brain's turn is handed on while the user speaks: its text, its permission
+questions and the readbacks after it wait for them to stop, then play, as what hands tells of the sessions waits at the
+floor, never said over them. What the user's words answer is read once, at the cut they open with, so a permission
+question asked after the cut is not what they answer.
 
 A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question,

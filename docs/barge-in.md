@@ -76,7 +76,7 @@ flowchart TD
 ## Two decisions
 
 **1. The cut.** The edge that opened the hold decides when the turn cuts (`voice/turnstart.py:1–15`;
-the mechanism, `docs/architecture.md:1681–1705`). The cut is Pipecat's `InterruptionFrame`.
+the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `InterruptionFrame`.
 
 | The hold was opened by | It cuts |
 |---|---|
@@ -85,15 +85,15 @@ the mechanism, `docs/architecture.md:1681–1705`). The cut is Pipecat's `Interr
 | engaged conversation | once Whisper pushes words for it |
 | a hold that holds no words | nothing, so nothing has to be undone |
 
-**2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:714–734`, decides whether a cut is
-a barge-in. The guards on lines 721–725 say no in four cases:
+**2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:721–741`, decides whether a cut is
+a barge-in. The guards on lines 728–732 say no in four cases:
 
 | A cut is not a barge-in when | Because |
 |---|---|
 | no brain turn is in flight | there is nothing to cut off |
 | the turn was already cut | once is enough |
-| nothing the brain said or asked is still to be heard (`to_hear`, `brain/stage.py:269–272`) | there is nothing to stop: no text block is streaming, and the speaker has played every text block's end and every question to its Mark. The words queue as the next turn, and hands answers them at once in the turn's voice (S2), unless the turn is a session telling: what a telling says is the session's, and an answer said inside it would be read as the telling's own audio (`brain/stage.py:419`). A turn none of whose requests has left has said nothing yet (S6). Every cut takes the floor from hands (`brain/stage.py:443`), and the stage gives it back as the user's turn stops: Pipecat's `UserStoppedSpeakingFrame`, pushed for every turn, words or none (`brain/stage.py:429–430`). Nothing of the turn is handed on while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play (`brain/stage.py:672–676`), as what hands tells of the sessions waits at the floor (`voice/floor.py`), never said over them |
-| the user is answering a permission question they heard to its end (`asking()`, `brain/stage.py:322–324`) | words over an open heard question are its answer, not a turn (`brain/stage.py:401–405`). Read once, at the cut, and the words take what it read (`brain/stage.py:444`): a question asked after the cut is not what they answer |
+| nothing the brain said or asked is still to be heard (`to_hear`, `brain/stage.py:271–274`) | there is nothing to stop: no text block is streaming, and the speaker has played every text block's end and every question to its Mark. The words queue as the next turn, and hands answers them at once in the turn's voice (S2), unless the turn is a session telling: what a telling says is the session's, and an answer said inside it would be read as the telling's own audio (`brain/stage.py:422`). A turn none of whose requests has left has said nothing yet (S6). The cut takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts, just ahead of its interruption (`brain/stage.py:432–435`), and the stage gives it back as the user's turn stops: Pipecat's `UserStoppedSpeakingFrame`, pushed for every turn, words or none (`brain/stage.py:436–437`). Pipecat pairs the two, so no interruption of any other kind holds the floor. Nothing of the turn is handed on while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play (`brain/stage.py:679–683`), as what hands tells of the sessions waits at the floor (`voice/floor.py`), never said over them |
+| the user is answering a permission question they heard to its end (`asking()`, `brain/stage.py:324–326`) | words over an open heard question are its answer, not a turn (`brain/stage.py:404–408`). Read once, at the cut, and the words take what it read (`brain/stage.py:450`): a question asked after the cut is not what they answer |
 
 A cut over a line of hands' own, the acknowledgement or an answer, is not a barge-in: it is no word
 of the brain's, so it carries no Mark and stops nothing of the turn. A turn opened by voice cuts only
@@ -102,22 +102,24 @@ speak and that moment is still answered by their words, as on master. And a cut 
 between the output passing on a point's Mark and `Marks` taking it still reads as a barge-in, though
 everything had played. And hands' answer to words that arrive while a question the user heard is
 still waiting on them is said once that question is decided, not within a second
-(`test_a_question_asked_after_the_cut_is_not_answered_by_its_words`).
+(`test_a_question_asked_after_the_cut_is_not_answered_by_its_words`). And when the user's turn stops
+while the turn holds words of the brain's it would have said over them, those play first, as they
+came, and hands' answer to the user's words follows them rather than within a second.
 
 Otherwise it is a barge-in, and the next table says what becomes of each thing it cuts off. The
 brain is told nothing and nothing is typed into it: `Asking`, the protocol the stage holds the brain
-by (`brain/stage.py:84–91`), has `session` and `ask` and no interrupt, and the frame's handler at
-`brain/stage.py:439–453` lets the turn run to its own end.
+by (`brain/stage.py:85–92`), has `session` and `ask` and no interrupt, and the frame's handler at
+`brain/stage.py:446–459` lets the turn run to its own end.
 
 ## What a barge-in does to each thing it can cut off
 
 | Cut off | What happens | What the brain holds afterwards | Where to check |
 |---|---|---|---|
-| the brain's words after the cut | not played; quoted in the note | its own words, in its history; the note | `brain/stage.py:567`, `871–887`; `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`, `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end` |
-| a call's readback | not said; quoted in the note | the call's result; the note | `brain/stage.py:567`; `test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_said` |
-| a brain permission question: playing, queued behind another, or raised after the cut | settled `Deny(SPOKEN_OVER)`; never said again | the denial text as the tool result; it may re-ask next turn (unverified by test) | `brain/stage.py:638–640`, `731–732`; `brain/process.py:95`; `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`, `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`, `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said` |
-| the refusal lines hands owed the user (`unacknowledged`) | cleared | the refusals it received | `brain/stage.py:734`; unverified by test |
-| the acknowledgement, and hands' answers to words said behind the turn | not said | nothing | `brain/stage.py:317–320`, `776–782`; `test_words_said_while_the_brains_words_still_play_are_a_barge_in_and_unanswered` |
+| the brain's words after the cut | not played; quoted in the note | its own words, in its history; the note | `brain/stage.py:573`, `880–896`; `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`, `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end` |
+| a call's readback | not said; quoted in the note | the call's result; the note | `brain/stage.py:573`; `test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_said` |
+| a brain permission question: playing, queued behind another, or raised after the cut | settled `Deny(SPOKEN_OVER)`; never said again | the denial text as the tool result; it may re-ask next turn (unverified by test) | `brain/stage.py:644–646`, `738–739`; `brain/process.py:95`; `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`, `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`, `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said` |
+| the refusal lines hands owed the user (`unacknowledged`) | cleared | the refusals it received | `brain/stage.py:741`; unverified by test |
+| the acknowledgement, and hands' answers to words said behind the turn | not said | nothing | `brain/stage.py:319–322`, `783–789`; `test_words_said_while_the_brains_words_still_play_are_a_barge_in_and_unanswered` |
 | a session telling | not played; quoted in the note; its utterance's fate is `cut` | the note; hands does not re-tell it (unverified by test) | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
 | a session's permission, question or plan | untouched; it waits on the user | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:11–15`; unverified by test |
 | a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
@@ -128,8 +130,8 @@ automatically refused."
 
 ## What the brain receives
 
-Nothing at the cut. At the turn's end the note is built and recorded (`brain/stage.py:560–568`;
-`_spoken_over`, `871–887`), and it goes after the user's next words (`_notes`, `brain/stage.py:533`;
+Nothing at the cut. At the turn's end the note is built and recorded (`brain/stage.py:566–574`;
+`_spoken_over`, `880–896`), and it goes after the user's next words (`_notes`, `brain/stage.py:539`;
 asserted by `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`
 and `test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_said`). Its shape:
 
@@ -155,13 +157,13 @@ The brain reads the note under this instruction, `voice/intermediary_instruction
 
 ## Scenarios
 
-A live check reads the `voice.turn` event, one per brain turn (`brain/stage.py:603–619`; the event
-and the note, `docs/architecture.md:1063–1095`): `asked`, `text`, `interrupted`, `cut_in` (how many
+A live check reads the `voice.turn` event, one per brain turn (`brain/stage.py:609–625`; the event
+and the note, `docs/architecture.md:1063–1097`): `asked`, `text`, `interrupted`, `cut_in` (how many
 times you cut in on the turn and stopped nothing of it), `spoken_over`,
 `asides` (each line hands said in the turn, the acknowledgement and its answers to words said behind
 it, with how long after your wait began it went to the speaker), `refused`, `refusals`, `queued_ms` (how long your words waited behind the turn
-before them) and `waited_ms` (from the end of your words to the turn's first word; null when none
-was said); and the `utterance` event's `fate` (`played`, `cut`, `silent`, `noted`, `dropped`) for a
+before them) and `waited_ms` (from the end of your words to the turn's first word handed to the speaker; null
+when none was); and the `utterance` event's `fate` (`played`, `cut`, `silent`, `noted`, `dropped`) for a
 session telling (`voice/utterance.py:84–91`; the floor and utterances, `docs/architecture.md:392–395`).
 The brain's history is Claude Code's transcript for its conversation,
 `<brain config dir>/projects/*/<session>.jsonl`, found by `conversation`, `brain/process.py:185–197`.

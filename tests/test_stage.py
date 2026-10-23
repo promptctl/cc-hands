@@ -23,6 +23,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     TTSSpeakFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -304,7 +305,9 @@ class Rig:
         await self.until(lambda: self.out.releases > released)
 
     async def interrupt(self) -> None:
+        """The cut, as the user aggregator broadcasts it: that the user started speaking, then the interruption."""
         cuts = self.out.shape().count("InterruptionFrame")
+        await self.worker.queue_frame(UserStartedSpeakingFrame())
         await self.worker.queue_frame(InterruptionFrame())
         await self.until(lambda: self.out.shape().count("InterruptionFrame") > cuts)
 
@@ -663,6 +666,8 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     rig.stage.hear(Answering(second, 200, None))
     rig.now[0] = 1002.0
     rig.stream(second, "api is running its tests.")
+    # The wait ends as the first word goes to the speaker.
+    await rig.until(lambda: rig.out.said() == ["api is running its tests."])
     rig.now[0] = 1002.3
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
@@ -1759,6 +1764,7 @@ async def test_words_that_arrive_while_a_text_block_streams_are_answered_after_i
 
 
 async def test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for_them_and_it_is_not_acknowledged(rig: Rig) -> None:
+    rig.now[0] = 1000.0
     await rig.say("find out why the build broke")
     first, _ = rig.request()
     rig.calls(first, ("t1", "Bash"))
@@ -1767,10 +1773,12 @@ async def test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for
     await rig.interrupt()
     await rig.elapse()
     second, _ = rig.request(answering("Bash", {"output": "error"}))
+    rig.now[0] = 1001.0
     rig.stream(second, "The build broke on a missing import.")
     rig.close(second)
     await asyncio.sleep(0.1)
     assert rig.out.said() == []
+    rig.now[0] = 1004.0
     await rig.stop()
     await rig.until(lambda: rig.out.said() == ["The build broke on a missing import."])
     rig.brain.end()
@@ -1779,6 +1787,8 @@ async def test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for
     assert acknowledgements(rig) == []
     [turn] = turns(rig.recorded)
     assert (turn.facts["interrupted"], turn.counts["cut_in"], turn.facts["asides"]) == (False, 1, ())
+    # The user waited until the first word went to the speaker, not until it reached hands.
+    assert turn.facts["waited_ms"] == 4000.0
 
 
 async def test_words_said_over_a_tellings_silence_are_the_next_turn_and_not_answered_in_it(rig: Rig) -> None:
