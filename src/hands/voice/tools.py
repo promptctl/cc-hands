@@ -96,14 +96,22 @@ def audited(tool: Tool, record: Record) -> Tool:
             annotate(tool=tool.name, called=Called(arguments, None))
             result = await tool.body(**arguments)
             annotate(called=Called(arguments, result))
-            match result:
-                case {"error": refused}:
-                    fail(str(refused))
-                case _:
-                    pass
-            return result
+            return judged(result)
 
     return replace(tool, body=call)
+
+
+def judged(result: Result) -> Result:
+    """The result, with the unit of work open here failed where it refuses the call.
+
+    [LAW:single-enforcer] a tool's call and the phone page's Stop (`hands.voice.sessionspage`) both end failed this way.
+    """
+    match result:
+        case {"error": refused}:
+            fail(str(refused))
+        case _:
+            pass
+    return result
 
 
 def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
@@ -609,14 +617,11 @@ def standing(sessions: Sessions) -> list[dict[str, str]]:
 
 
 def describe_listing(listing: Listing[Session]) -> dict[str, str]:
-    return {"id": listing.session.membership.id, "name": identifier(listing), **state_and_mode(listing.session)}
-
-
-def state_and_mode(session: Session) -> dict[str, str]:
-    """A session as its listing says it, but for its name: read off the registry alone, with no transcript read."""
     return {
-        "state": _spoken_state(session),
-        "mode": "not reported yet" if session.mode is None else spoken_mode(session.mode),
+        "id": listing.session.membership.id,
+        "name": identifier(listing),
+        "state": _spoken_state(listing.session),
+        "mode": "not reported yet" if listing.session.mode is None else spoken_mode(listing.session.mode),
     }
 
 

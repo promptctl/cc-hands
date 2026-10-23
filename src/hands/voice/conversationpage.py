@@ -111,7 +111,7 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
             fail(str(error))
             return web.Response(status=400, text=str(error))
         changes, moments = await waited(conversation.caught_up, seen)
-        annotate(seen=seen, changes=changes)
+        annotate(changes=changes)
         count(moments=len(moments))
         return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
 

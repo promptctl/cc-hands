@@ -18,7 +18,7 @@ from hands.sessions.home import Home
 from hands.sessions.names import Names
 from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
-from hands.sessions.transcript import session_name
+from hands.sessions.transcript import Titles, session_name
 from hands.voice.tools import list_sessions_tool
 
 
@@ -145,6 +145,21 @@ def test_a_name_record_still_being_written_is_not_read(tmp_path: Path) -> None:
     for unfinished in (b'{"type":"custom-title","customTitle":"half', '{"type":"custom-title","customTitle":"caf\u00e9'.encode()[:-1]):
         transcript.write_bytes(whole + unfinished)
         assert session_name(transcript) == "finished name"
+
+
+def test_a_transcript_read_on_gives_each_name_appended_to_it_and_a_record_once_it_is_whole(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    titles = Titles()
+    assert titles.name(transcript) is None
+    named(transcript, "first name")
+    assert titles.name(transcript) == "first name"
+    with transcript.open("ab") as appending:
+        appending.write(b'{"type":"user","message":{"content":"hi"}}\n{"type":"custom-title","custom')
+    assert titles.name(transcript) == "first name"
+    with transcript.open("ab") as appending:
+        appending.write(b'Title":"second name"}\n')
+    assert titles.name(transcript) == "second name" == session_name(transcript)
+    assert titles.name(transcript) == "second name"
 
 
 async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_project(tmp_path: Path) -> None:
