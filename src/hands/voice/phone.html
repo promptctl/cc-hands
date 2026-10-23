@@ -490,8 +490,9 @@ function drawSessions() {
 }
 
 // The sessions are read for as long as the page is open. Each read says what the page was last given, and hands
-// answers once a row would change, or at the end of its wait; a read that fails is said, and made again after a pause
-// saying nothing seen, so it is answered at once.
+// answers once a row would change, or at the end of its wait. A read hands refuses ends the reading, as asking again
+// would be refused again; one that never reached it is said, and made again after a pause saying nothing seen, so it is
+// answered at once.
 async function readSessions() {
   let seen = null;
   for (;;) {
@@ -500,7 +501,7 @@ async function readSessions() {
         headers: {"Authorization": `Bearer ${key}`},
         signal: AbortSignal.timeout(READ_MS),
       });
-      if (!answered.ok) throw new Error(await answered.text());
+      if (!answered.ok) { sayOfSessions(`Could not read the sessions: ${await answered.text()}`, true); return; }
       const body = await answered.json();
       seen = body.seen;
       listed = body.sessions;

@@ -162,6 +162,15 @@ def test_a_transcript_read_on_gives_each_name_appended_to_it_and_a_record_once_i
     assert titles.name(transcript) == "second name"
 
 
+def test_a_transcript_written_anew_shorter_than_what_was_read_of_it_is_read_again_from_its_start(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    titles = Titles()
+    named(transcript, "a long first name that was read")
+    assert titles.name(transcript) == "a long first name that was read"
+    transcript.write_bytes(b'{"type":"custom-title","customTitle":"anew"}\n')
+    assert titles.name(transcript) == "anew"
+
+
 async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_project(tmp_path: Path) -> None:
     broken = membership(tmp_path, "broken")
     broken.transcript.write_text('{"type":"custom-title","sessionId":"broken"}\n')

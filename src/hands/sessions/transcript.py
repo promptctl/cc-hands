@@ -1,6 +1,7 @@
 """What a session's JSONL transcript knows that its hooks do not carry: one record at a time, as it is written."""
 
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -39,8 +40,8 @@ class Titles:
     """The newest name of each transcript, each read on from where it was last read: a transcript of tens of megabytes
     is read once, and after that only what was appended to it since.
 
-    [LAW:no-shared-mutable-globals] one owner reads with each; Claude Code only ever appends to a transcript, so what was
-    read once is never read again.
+    [LAW:no-shared-mutable-globals] one owner reads with each; Claude Code only appends to a transcript, so what was read
+    once is not read again.
     """
 
     def __init__(self) -> None:
@@ -51,6 +52,8 @@ class Titles:
         titled = self._titled.get(transcript, _Titled(0, None))
         try:
             with transcript.open("rb") as file:
+                # A transcript shorter than what was read of it was written anew, and is read again from its start.
+                titled = titled if file.seek(0, os.SEEK_END) >= titled.read else _Titled(0, None)
                 file.seek(titled.read)
                 raw = file.read()
         except FileNotFoundError:

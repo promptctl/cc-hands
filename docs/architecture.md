@@ -1939,7 +1939,8 @@ state line as it was, does not wake it, and a rename does. Each look reads a tra
 where it was last read (`hands.sessions.transcript.Titles`, owned by the registry), so a listing of
 sessions with transcripts of tens of megabytes costs a few small reads. The wait is the conversation
 page's too, one loop in `hands.voice.longpoll`: up to 25 s, looking every quarter second. A read
-that fails is said in the section and made again after 3 s. Each read is one `sessions.read` event,
+hands refuses is said in the section and ends the reading; one that never reached hands is said and
+made again after 3 s. Each read is one `sessions.read` event,
 with how many sessions it gave, the mark it had seen, how long it waited, how many looks it took,
 and whether the rows had changed; each Stop one `sessions.interrupt`, with the session and its
 readback, or its error, which fails the event.
