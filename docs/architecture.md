@@ -1923,6 +1923,23 @@ holds on the last word until hands says the sentence is done, and strikes throug
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
 lines told beside the marks.
 
+**The phone's page lists the running sessions, each with a Stop** (`hands.voice.sessionspage`).
+Below the Conversation link, each live session is a row: its name, its state line, and a Stop that
+presses Escape at that session's keyboard. The rows are `standing` (`hands.voice.tools`), the
+listing the brain's briefing reads, and a Stop answers with `interrupt`, what the brain's
+`interrupt_session` returns, so the page and the brain stop a session and say what came of it one
+way. Both routes are served beside the phone's page under its key (`hands.voice.keyed`):
+`GET /sessions?seen=<mark>` and `POST /sessions/<id>/interrupt`. Escape is typed only into a session
+running a turn (`hands.core.keyboard`), and the readback, shown under the row, says when there was
+nothing to stop. A row's Stop is disabled until it is answered, and its state line turns idle once
+hands hears the turn stop. A read that has seen the rows waits until what one of them shows changes:
+its mark is a digest of each live session's state and mode, read off the registry with no transcript
+read, so a session streaming text does not wake it, and the names are read once per answer. The
+wait is the conversation page's too, one loop in `hands.voice.longpoll`: up to 25 s, looking every
+quarter second. A read that fails is said in the section and made again after 3 s. Each read is one
+`sessions.read` event, with how many sessions it gave, how long it waited, and how many looks it
+took; each Stop one `sessions.interrupt`, with the session and its readback or its error.
+
 **The conversation page is the log's conversation, with a box to type in**
 (`hands.voice.conversationpage`). It is served beside the phone's page, on its port and
 addresses, at `/conversation`, and asks for the phone's key the same way (`carries_key`
