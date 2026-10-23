@@ -19,7 +19,7 @@ import pytest
 from conftest import onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, start
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
@@ -457,10 +457,42 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     assert capsys.readouterr().err == f"hands: {reason}\n"
     # The start's one event is failed with the reason, and says which run it was.
     [refused] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]
-    assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"ExceptionGroup: CannotStart: {reason} (1 sub-exception)")
+    assert (refused["level"], refused["outcome"], refused["error"]) == ("error", "failed", f"CannotStart: {reason}")
     assert (refused["facts"]["pid"], refused["facts"]["restarted"], refused["facts"]["after_crash"]) == (os.getpid(), False, False)
     assert cli.main(["--home", str(home.root), "status"]) == 1
     assert capsys.readouterr().out == f"hands refused to start 0s ago: {reason}\n"
+
+
+def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    from hands.voice import talkkey
+
+    home = Home(tmp_path)
+    monkeypatch.setattr(talkkey, "granted", lambda: True)
+
+    def unshown(_home: Home) -> int:
+        return 0
+
+    def kept(*_: object) -> None:
+        pass
+
+    monkeypatch.setattr(cli, "start_indicator", unshown)
+    monkeypatch.setattr(cli, "reap", kept)
+    monkeypatch.setattr(cli, "to_terminal", kept)
+    monkeypatch.setattr(cli.logger, "remove", kept)
+
+    def loaded(*_: object) -> cli.Run:
+        async def refused(stop: Stop) -> Ended:
+            stop.tell(TaskFailed("the namer", OSError("the disk is gone")))
+            raise CannotStart("no key")
+
+        return refused
+
+    monkeypatch.setattr(cli, "loaded", loaded)
+    with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
+        cli.main(["--home", str(home.root), "run"])
+    assert capsys.readouterr().err == "hands: no key\n"
+    assert cli.main(["--home", str(home.root), "status"]) == 1
+    assert capsys.readouterr().out == "hands refused to start 0s ago: no key\n"
 
 
 def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

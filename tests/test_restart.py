@@ -184,10 +184,10 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
         raise PermissionError("config.toml")
 
     recorded: list[audit.Entry] = []
-    with pytest.RaisesGroup(pytest.RaisesExc(PermissionError, match="config.toml")):
+    with pytest.raises(PermissionError, match="config.toml"):
         await launch(lambda: run, heart, lambda: (), edited, recorded.append, Start(restarted=False))
     # The run and its start, which it ended raising, are failed, with what it raised.
-    failed = "ExceptionGroup: PermissionError: config.toml (1 sub-exception)"
+    failed = "PermissionError: config.toml"
     assert [(entry.event, entry.outcome, entry.error) for entry in recorded if isinstance(entry, WideEvent)] == [("hands.run", "failed", failed), ("hands.start", "failed", failed)]
     assert ran(recorded) == [("failed", ("settings unreadable",), "failed")]
     # As a run whose background task failed: its last heartbeat does not read as stopped.

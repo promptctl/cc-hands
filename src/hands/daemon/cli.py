@@ -235,15 +235,15 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
             ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
         except* CannotStart as cannot:
             # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
-            # refused once; any other error raised with it is raised on past this block.
+            # refused once, and said so even where another error raised with it is raised on past this block.
             match cannot.exceptions:
                 case (CannotStart() as reason,):
+                    refuse(reason, heart)
                     ran = reason
                 case _:
                     raise
         match ran:
             case CannotStart():
-                refuse(ran, heart)
                 return 1
             case ("quit", _):
                 return 0

@@ -505,8 +505,8 @@ async def converse(
         # What it raised is told already, by stop_if_failed.
         await asyncio.wait({pipeline_run})
     finally:
-        quitting.cancel()
-        for task in background:
+        # The pipeline among them: a teardown that raised before it ended leaves nothing running past the run.
+        for task in (*background, pipeline_run, quitting):
             task.cancel()
 
 

@@ -90,11 +90,11 @@ async def test_the_q_key_ends_a_run_as_a_quit_named_by_the_key(tmp_path: Path) -
 
 async def test_a_failed_task_ends_a_run_failed_with_its_error(tmp_path: Path) -> None:
     launched = Launched(tmp_path, [FAILED], [])
-    with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
+    with pytest.raises(OSError, match="the disk is gone"):
         await launched.task
     assert ran(launched.recorded) == [("failed", ("the namer",), "failed")]
     [event] = events(launched.recorded, "hands.run")
-    assert event.error == "ExceptionGroup: OSError: the disk is gone (1 sub-exception)"
+    assert event.error == "OSError: the disk is gone"
     # Not stopped: a run that failed reads as down.
     assert not stopped(launched.heart)
 
@@ -103,7 +103,7 @@ async def test_a_failed_task_ends_a_run_failed_with_its_error(tmp_path: Path) ->
 async def test_a_task_that_fails_as_the_run_winds_down_fails_it_whatever_stopped_it_first(tmp_path: Path, first: Cause, name: str) -> None:
     # Failed, and so not restarted: the event's ending is what the run raises.
     launched = Launched(tmp_path, [first], [FAILED])
-    with pytest.RaisesGroup(pytest.RaisesExc(OSError, match="the disk is gone")):
+    with pytest.raises(OSError, match="the disk is gone"):
         await launched.task
     assert ran(launched.recorded) == [("failed", (name, "the namer"), "failed")]
     assert not stopped(launched.heart)
@@ -113,7 +113,7 @@ async def test_a_teardown_that_raises_after_the_restart_signal_fails_the_run(tmp
     launched = Launched(tmp_path, [], [TEARDOWN])
     await launched.running.wait()
     os.kill(os.getpid(), RESTART_SIGNAL)
-    with pytest.RaisesGroup(pytest.RaisesExc(ConnectionError, match="the device went away")):
+    with pytest.raises(ConnectionError, match="the device went away"):
         await launched.task
     assert ran(launched.recorded) == [("failed", ("SIGUSR1", "escaped"), "failed")]
     assert not stopped(launched.heart)
@@ -131,10 +131,10 @@ async def test_a_task_failed_and_a_teardown_that_raises_are_both_raised_and_both
 
 async def test_a_run_that_fails_before_it_was_ready_fails_its_start_too(tmp_path: Path) -> None:
     launched = Launched(tmp_path, [TaskFailed("the pipeline", RuntimeError("the pipeline ended without being told to stop"))], [], ready=False)
-    with pytest.RaisesGroup(RuntimeError):
+    with pytest.raises(RuntimeError):
         await launched.task
     [start] = events(launched.recorded, "hands.start")
-    assert (start.outcome, start.error) == ("failed", "ExceptionGroup: RuntimeError: the pipeline ended without being told to stop (1 sub-exception)")
+    assert (start.outcome, start.error) == ("failed", "RuntimeError: the pipeline ended without being told to stop")
     assert ran(launched.recorded) == [("failed", ("the pipeline",), "failed")]
 
 
@@ -145,7 +145,7 @@ async def test_a_run_that_returns_with_no_cause_told_fails_saying_so(tmp_path: P
     async def run(_stop: Stop) -> Ended:
         return Ended(None, 0)
 
-    with pytest.RaisesGroup(pytest.RaisesExc(LookupError, match="no cause told")):
+    with pytest.raises(LookupError, match="no cause told"):
         await launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False))
     assert ran(recorded) == [("failed", ("escaped",), "failed")]
 

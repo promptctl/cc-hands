@@ -101,7 +101,7 @@ work that skips the model where the model adds nothing: a session finishing is a
 template, not a summary; steps are summarised while the turn runs, from the
 transcript tail, so the summary is ready when the turn stops; the prompt is cached.
 
-Carried by the `Speak` channel and by summaries built during the turn. Delivered
+Carried by the system channel and by summaries built during the turn. Delivered
 throughout, with the measurement kept in the latency observer.
 
 ## 8. It works where you are

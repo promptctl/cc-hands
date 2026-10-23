@@ -84,10 +84,15 @@ class Failed:
 
     errors: tuple[BaseException, ...]
 
-    def raised(self) -> BaseExceptionGroup[BaseException]:
-        """The errors as the one exception the run raises, one or many alike, named for them all, so the event that
-        writes it down says on its one line what failed, and `except*` finds a refused start inside it."""
-        return BaseExceptionGroup("; ".join(f"{type(error).__name__}: {error}" for error in self.errors), self.errors)
+    def raised(self) -> BaseException:
+        """The errors as the one exception the run raises: a lone error as itself, so a refusal reads as one wherever it
+        was refused and a cancellation stays one; many as a group named for them all, so the event that writes it down
+        says on its one line what failed. `except*` finds a refused start in either."""
+        match self.errors:
+            case (error,):
+                return error
+            case errors:
+                return BaseExceptionGroup("; ".join(f"{type(error).__name__}: {error}" for error in errors), errors)
 
 
 def _meaning(cause: Cause) -> tuple[str, Failed | Ending]:

@@ -145,7 +145,7 @@ closes.
   runs in the foreground of a terminal; every heartbeat rewrites
   `~/.hands/status.json`; `hands status` prints it. Done when killing the daemon
   reads as down in `hands status`, and running it again shows the new pid and uptime.
-- **System speech channel.** The `Speak` effect becomes a `TTSSpeakFrame`; the
+- **System speech channel.** The system channel speaks as a `TTSSpeakFrame`; the
   daemon speaks its own start and restart, an unreachable LLM, an empty Whisper
   result, and a TTS error posts a macOS notification instead. Done when an unreachable
   model server is heard within one turn, with no model involved.

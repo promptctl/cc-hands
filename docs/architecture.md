@@ -114,7 +114,7 @@ class Session:
     state: SessionState       # what Claude Code says it is doing
     mode: PermissionMode      # from each hook payload that carries it
     turn: Turn                # which turn it is, as hooks and records say
-    dialog: Dialog | None     # the dialog it is at, as its hooks say; an idle ends it
+    dialog: Held | None       # the dialog it is at, as its hooks say; an idle ends it
     background: frozenset[AgentId]  # subagents it started in the background, launched and not reported back
 
 # An ended session has no status, turn, or dialog: its last turn was told and its held
@@ -219,8 +219,8 @@ class Staged:   text: str; resolutions: Sequence[Resolution]
 ```
 
 The block above is the target. `hands.core.effects` defines less today:
-`Effect = Audit | Reply | Heard | Story`, where `Heard = Speak | Narrate` carries
-permission announcements and requests and `Story = Summarise | SessionGone` carries
+`Effect = Audit | Reply | Heard | Story | Repository`, where `Heard = Narrate | Progress | Tell` carries
+permission requests, a turn's settled progress, and what a session's hook said happened, and `Story = Summarise | SessionGone` carries
 finished turns and sessions gone. Today's `Summarise` holds a session, the prompt id of
 the turn that ended, and the reply its `Stop` hook carried, not a narration id and steps. `Type`, `Play`, and `Snapshot`,
 and the segment, narration, and playback types, are planned.
@@ -256,9 +256,10 @@ adapter that fails raises; the supervisor logs it and the failure is spoken thro
 the system channel. Nothing is retried silently and nothing falls back
 `[LAW:no-silent-failure]`.
 
-That block is the design, not the code. `core/effects.py` has seven of those eight today -
-`Audit`, `Reply`, `Type`, `Speak`, `Narrate`, `Summarise`, `Snapshot` - plus
-`SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt. `Input` is
+That block is the design, not the code. `core/effects.py` has six of those eight today -
+`Audit`, `Reply`, `Type`, `Narrate`, `Summarise`, `Snapshot` - plus
+`SessionGone` and `Compare`, which the block above leaves out. `Play` is unbuilt, and no
+effect speaks: hands' own facts reach TTS through the system channel (`hands.voice.system`). `Input` is
 `Text` alone so far; `Command` and `Key` are `hands-keyboard-gxr.i5n`. `Type` is emitted by
 `core.drafts.decide` for a send rather than by `reduce`, and `Sessions.draft` performs it:
 the draft leaves the registry the moment the send is decided, so it is sent at most once,
@@ -347,7 +348,7 @@ chosen by a table, not by code that looks at the event `[LAW:dataflow-not-contro
 
 - **Speak.** Text goes straight to TTS as a `TTSSpeakFrame`. No model call, no
   interpretation, no latency beyond synthesis. Used for facts a template can say:
-  "auth-refactor finished", "ten seconds on that permission", "cc-hands is gone, its
+  "auth-refactor finished", "cc-hands is gone, its
   terminal closed", "the language model is unreachable". This channel is also how the
   daemon reports its own failures, which is why it must not depend on the LLM.
 - **Play.** A narration's segments go to TTS one at a time through the player,
@@ -363,7 +364,7 @@ What the brain is to know and not say needs no route: the tail of its next reque
 says how the sessions stand.
 
 Today no table chooses; two queues stand in for it. `Heard` carries permission
-announcements as `Speak` and permission requests as `Narrate`,
+requests as `Narrate`,
 relayed as soon as the reducer emits them. Relayed is not heard: everything hands says
 unprompted of the sessions reaches the floor (`voice/floor.py`) ahead
 of the user aggregator as a value, a `Pending` (`core/pending.py`), not yet a frame. From the
@@ -1999,8 +2000,8 @@ sounds like too. So every failure has a path to the user that does not depend on
 thing that failed `[LAW:no-silent-failure]`:
 
 1. **Speech.** The system channel says "the language model is unreachable", "speech
-   recognition failed for that turn", "the session cc-hands is gone". These are
-   `Speak` effects and need no model. `hands.voice.system` renders each fact from a
+   recognition failed for that turn", "the session cc-hands is gone". These need
+   no model. `hands.voice.system` renders each fact from a
    template and queues it at the TTS processor, past the LLM and out of the replies
    the audit log records, so no system line reads as a reply the model gave. The worker's
    `on_pipeline_error` routes every error by the processor that raised it: the LLM's
