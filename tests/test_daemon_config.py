@@ -19,7 +19,7 @@ import pytest
 from conftest import onboard
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
 from hands.daemon.backend import backend
 from hands.sessions import audit, heartbeat, wrapper
 from hands.sessions.audit import Entry, SettingsEdited
@@ -482,7 +482,7 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     def loaded(*_: object) -> cli.Run:
         async def refused(stop: Stop) -> Ended:
-            stop.tell(TaskFailed("the namer", OSError("the disk is gone")))
+            stop.tell(Failing("the namer", OSError("the disk is gone")))
             raise CannotStart("no key")
 
         return refused

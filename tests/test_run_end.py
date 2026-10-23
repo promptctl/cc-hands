@@ -13,13 +13,13 @@ from conftest import unedited
 from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
-from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, TaskFailed, cancelled
+from hands.daemon.starting import QUIT_SIGNALS, Cause, Ended, Failed, QuitKey, Signalled, Start, Stop, Failing, cancelled
 from hands.sessions import audit, heartbeat
 from hands.sessions.audit import SettingsEdited
 from hands.sessions.wide import WideEvent
 
 NOW = datetime(2026, 10, 23, 12, 0, 0, tzinfo=UTC)
-FAILED = TaskFailed("the namer", OSError("the disk is gone"))
+FAILED = Failing("the namer", OSError("the disk is gone"))
 TEARDOWN = ConnectionError("the device went away")
 
 # What the run under test does: tell its Stop a cause, or raise.
@@ -131,7 +131,7 @@ async def test_a_task_failed_and_a_teardown_that_raises_are_both_raised_and_both
 
 
 async def test_a_run_that_fails_before_it_was_ready_fails_its_start_too(tmp_path: Path) -> None:
-    launched = Launched(tmp_path, [TaskFailed("the pipeline", RuntimeError("the pipeline ended without being told to stop"))], [], ready=False)
+    launched = Launched(tmp_path, [Failing("the pipeline", RuntimeError("the pipeline ended without being told to stop"))], [], ready=False)
     with pytest.raises(RuntimeError):
         await launched.task
     [start] = events(launched.recorded, "hands.start")

@@ -87,7 +87,7 @@ from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
 from hands.threads import off_loop
-from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, TaskFailed, cancelled, invocation, keep_beating, start
+from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, cancelled, invocation, keep_beating, start
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
@@ -515,7 +515,7 @@ def stopping(stop: Stop) -> Callable[[asyncio.Task[None]], None]:
     def stop_if_failed(task: asyncio.Task[None]) -> None:
         if not task.cancelled() and (error := task.exception()) is not None:
             logger.opt(exception=error).error(f"{task.get_name()} failed; stopping")
-            stop.tell(TaskFailed(task.get_name(), error))
+            stop.tell(Failing(task.get_name(), error))
 
     return stop_if_failed
 

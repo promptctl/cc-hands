@@ -53,29 +53,18 @@ class SettingsEdited:
 
 
 @dataclass(frozen=True)
-class TaskFailed:
-    """A task the run cannot go on without, failed: the pipeline ending without being told to stop is one."""
+class Failing:
+    """Something the run cannot go on without, failed, named for what it was: a task the run runs (the pipeline ending
+    without being told to stop among them), the watch on config.toml ("settings unreadable": a run that cannot weigh
+    its settings would run on settings that are not the file's), or whatever raised out of the run itself ("escaped",
+    told by the run's launch, the outermost frame it passes through)."""
 
-    task: str
-    error: BaseException
-
-
-@dataclass(frozen=True)
-class SettingsUnweighable:
-    """The watch on config.toml, failed: a run that cannot weigh its settings would run on settings that are not the file's."""
-
-    error: BaseException
-
-
-@dataclass(frozen=True)
-class Escaped:
-    """Whatever raised out of the run itself, told by the run's launch, the outermost frame it passes through."""
-
+    name: str
     error: BaseException
 
 
 # [LAW:types-are-the-program] every way a run stops, each told to its Stop by whatever knows it happened.
-type Cause = Signalled | QuitKey | SettingsEdited | TaskFailed | SettingsUnweighable | Escaped
+type Cause = Signalled | QuitKey | SettingsEdited | Failing
 
 
 @dataclass(frozen=True)
@@ -104,12 +93,8 @@ def _meaning(cause: Cause) -> tuple[str, Failed | Ending]:
             return "q key", "quit"
         case SettingsEdited():
             return "settings edited", "restart"
-        case TaskFailed(task=task, error=error):
-            return task, Failed((error,))
-        case SettingsUnweighable(error=error):
-            return "settings unreadable", Failed((error,))
-        case Escaped(error=error):
-            return "escaped", Failed((error,))
+        case Failing(name=name, error=error):
+            return name, Failed((error,))
 
 
 class Stop:

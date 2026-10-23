@@ -546,8 +546,9 @@ def test_any_other_start_has_not_reported_a_mode(source: StartSource) -> None:
     assert live(reduce(moded(IDLE, "acceptEdits"), Joined(ONE, source))[0]).mode is None
 
 
-def test_a_session_keeps_its_mode_through_a_deadline_and_an_abandoned_hook() -> None:
-    assert live(reduce(moded(AT_DIALOG, "plan", HELD), Tick(at=100.0))[0]).mode == "plan"
+def test_a_held_dialog_and_its_mode_outlast_any_tick_and_the_mode_an_abandoned_hook() -> None:
+    after = live(reduce(moded(AT_DIALOG, "plan", HELD), Tick(at=86400.0))[0])
+    assert (after.mode, after.dialog) == ("plan", HELD)
     assert live(reduce(moded(AT_DIALOG, "plan", HELD), Abandoned(ONE.id, RequestId("r0"), at=9.0))[0]).mode == "plan"
 
 

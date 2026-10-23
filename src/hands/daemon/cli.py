@@ -24,7 +24,7 @@ from hands.daemon import indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Escaped, Failed, SettingsEdited, SettingsUnweighable, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -490,7 +490,7 @@ async def launch(
         if watch.cancelled():
             return
         if (error := watch.exception()) is not None:
-            stop.tell(SettingsUnweighable(error))
+            stop.tell(Failing("settings unreadable", error))
             return
         # A run already ending says nothing of an edit it does not restart on; the next start reads the file as edited.
         if stop.told:
@@ -522,7 +522,7 @@ async def launch(
                         # that is told after the first cause, which already decided.
                         heart.beat(LAST_BEAT[ending], last.last_audio_out, last.live_sessions, listening=False, degraded=())
             except BaseException as error:
-                stop.tell(Escaped(error))
+                stop.tell(Failing("escaped", error))
             match stop.end:
                 case Failed() as failed:
                     raised = failed.raised()
