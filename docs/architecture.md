@@ -1068,14 +1068,23 @@ The note quotes the last sentence the speaker played to its end, then the rest o
 included, and its calls' readbacks. A turn spoken over that then fails adds only that it failed; a reply broken after the
 cut was heard by nobody.
 
+A cut is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
+or a text block's end or a permission question whose Mark the speaker has not yet played. Each text block ends the
+reply as it closes, so its last sentence is said then, before the call after it runs, and a Mark behind it is exact.
+Words said while the brain works in silence stop nothing: they are the next turn, and hands answers them at once in the
+turn's voice with a line from `ANSWERS` ("Got it. I'll come to that when this is done.", ...), said after the text
+block streaming when they arrive, if one is. What the user's words answer is read once, at the cut they open with, so a
+permission question asked while they are still being transcribed is not what they answer.
+
 A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
-many calls the work takes, unless the user has already heard something of the turn: a word, a permission question, or
-their own barge-in. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
+many calls the work takes, unless the user has already heard something of the turn: a word, a permission question,
+their own barge-in, or hands answering words they said behind it. hands says a short line of its own ("One moment.", "On it.", ...), taken in turn from `ACKNOWLEDGEMENTS` so two turns in
 a row are not acknowledged alike. It goes out on the turn's speaker as a sentence of its own, the way a permission
 question does, and is kept out of the replies the audit log records, since the brain never said it. A call that comes straight back, a turn
-that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says the
-line (`acknowledged`) and how long after the turn left its lane it was handed to the speaker (`acknowledged_ms`), as
-the turn's own words are told: a line the user spoke over before it came to be said is not told.
+that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says
+each line hands said in it, the acknowledgement and its answers alike (`asides`), with how long after the user's wait
+for it began it was handed to the speaker, as the turn's own words are told: a line the user spoke over before it came
+to be said is not told. A cut over one of these lines is not a barge-in, since none is the brain's.
 
 The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), on which
