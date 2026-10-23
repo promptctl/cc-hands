@@ -241,7 +241,7 @@ JARVIS = PRETRAINED["Hey Jarvis"]
 
 
 @asynccontextmanager
-async def release(model: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> AsyncIterator[str]:
+async def release(model: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> AsyncGenerator[str]:
     """A release served from this machine, each file in it answered by `model`: the address it is fetched from."""
     app = web.Application()
     app.router.add_get("/{name}", model)
@@ -304,9 +304,9 @@ async def test_a_long_header_line_still_arriving_when_a_read_ends_is_waited_for(
     begun = asyncio.Event()
 
     class Reading(HttpResponseParserPy):
-        def feed_data(self, data: bytes, SEP: bytes | None = None, *args: Any, **kwargs: Any) -> tuple[list[tuple[RawResponseMessage, StreamReader]], bool, bytes]:
+        def feed_data(self, data: bytes, *args: Any, **kwargs: Any) -> tuple[list[tuple[RawResponseMessage, StreamReader]], bool, bytes]:
             begun.set()
-            return super().feed_data(data, SEP, *args, **kwargs)
+            return super().feed_data(data, *args, **kwargs)
 
     monkeypatch.setattr("aiohttp.client_proto.HttpResponseParser", Reading)
     head = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nContent-Security-Policy: " + b"x" * (32 * 1024)
