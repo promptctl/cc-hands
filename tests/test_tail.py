@@ -1,7 +1,6 @@
 """A session's transcript, followed as Claude Code writes it, and the turn it is read into."""
 
 import asyncio
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +18,7 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold, delegating
 from hands.sessions.delta import Deltas
+from conftest import patient
 from hands.sessions.registry import Sessions
 from hands.sessions.tail import KEPT, StoodIn, Tails, Telling, keep_tailing
 from hands.sessions.turning import Turning
@@ -867,7 +867,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
         subprocess.run(("git", "-C", str(root), *args), check=True)
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
-    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
+    deltas = patient(Deltas, lambda _entry: None)
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
     tails = Tails(sessions)

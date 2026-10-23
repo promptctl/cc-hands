@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -22,7 +23,8 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.sessions.audit import Entry, SettingsEdited
+from hands.sessions.audit import Entry, Record, SettingsEdited
+from hands.sessions.delta import MARKING, READING, Deltas
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
@@ -40,6 +42,12 @@ def spoken(text: str, at: Path) -> bytes:
     subprocess.run(["say", "-v", "Samantha", "-o", str(at), "--data-format=LEI16@16000", text], check=True)
     with wave.open(str(at)) as clip:
         return clip.readframes(clip.getnframes())
+
+
+def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) -> D:
+    """A `kind` of Deltas whose readings are taken with as much patience as each is given to run: a test asserts what a
+    reading found, never whether a loaded machine found it inside the narrator's few seconds of PATIENCE."""
+    return kind(record=record, inherited=os.environ, marking=marking, patience=READING)
 
 
 # How long a pipeline may take to start before a test fails on it.
