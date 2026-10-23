@@ -95,7 +95,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
     async def let_go(_app: web.Application) -> None:
         sessions.release_waiting()
 
-    # Cleanup waits for every handler to return, and a permission hook would wait out its deadline; runs before that wait.
+    # Cleanup waits for every handler to return, and a permission hook would wait out its day; runs before that wait.
     app.on_shutdown.append(let_go)
     # A hook Claude Code killed closes its connection; cancelling the handler lets go of its wait,
     # so a reply decided afterwards is logged as unheard instead of as delivered.

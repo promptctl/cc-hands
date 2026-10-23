@@ -550,7 +550,7 @@ def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_
 
 async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Tick(1.0))
     assert recorded == []
     await sessions.apply(Joined(member(), "startup"))
@@ -561,7 +561,7 @@ async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is()
 
 async def test_an_applied_event_whose_effects_all_succeed_is_one_event_with_each_effect_and_them_counted_by_kind() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
@@ -584,7 +584,7 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
     # The one effect a test can make fail: an audit effect is performed as a line through loguru.
     sink = logger.add(full, level="WARNING", catch=False)
     try:
-        sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+        sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
         never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"))
         with pytest.raises(OSError):
             await sessions.apply(never)
@@ -598,25 +598,9 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
     assert event.counts["Audit"] == 1
 
 
-async def test_a_tick_that_calls_for_a_deadline_is_one_event_with_the_deny_and_what_is_said() -> None:
-    recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
-    await sessions.apply(Joined(member(), "startup"))
-    asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
-    hook = asyncio.create_task(sessions.ask(asked))
-    await asyncio.sleep(0)
-    recorded.clear()
-    await sessions.apply(Tick(61.0))
-    assert isinstance(await asyncio.wait_for(hook, 1.0), Deny)
-    [event] = [event for event in applied(recorded) if event.facts["applied"] == Tick(61.0)]
-    assert event.facts["applied"] == Tick(61.0)
-    assert [(type(effect).__name__, outcome) for effect, outcome in performed(event)] == [("Reply", "ok"), ("Speak", "ok")]
-    assert (event.counts["Reply"], event.counts["Speak"], event.counts["Audit"]) == (1, 1, 0)
-
-
 async def test_an_event_applied_inside_a_unit_of_work_is_that_units_child() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     with unit("hook", recorded.append):
         await sessions.apply(Joined(member(), "startup"))
     event, hook = recorded
@@ -626,7 +610,7 @@ async def test_an_event_applied_inside_a_unit_of_work_is_that_units_child() -> N
 
 async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
     hook = asyncio.create_task(sessions.ask(asked))
@@ -640,7 +624,7 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
 
 async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it_heard_or_applied_inside_a_unit() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, changes=Marking(recorded.append))
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=Marking(recorded.append))
     await sessions.apply(Joined(member(), "startup"))
     with unit("hook", recorded.append):
         await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -658,7 +642,7 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
     recorded: list[Entry] = []
     hanging = Hanging()
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, changes=hanging)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=hanging)
     await sessions.apply(Joined(member(), "startup"))
     prompts = [Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")), Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"))]
     for prompted in prompts:
@@ -679,7 +663,7 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
 
 async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     recorded.clear()
     assert await sessions.answer(RequestId("gone"), Deny("no")) == NotWaiting(RequestId("gone"))
@@ -688,7 +672,7 @@ async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> 
 
 async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
@@ -700,7 +684,7 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
 
 async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     # Its transcript is read once a status is, so a record could name the Stop.
@@ -718,7 +702,7 @@ async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_onc
 
 async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     """Claude Code waits on the hook, so what deciding the Stop calls for is done before it goes on."""
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     # Its transcript is read once a status is, so a record could name the Stop.
@@ -732,7 +716,7 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
 
 async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whichever_came_first() -> None:
     """A Stop decided just before shutdown began was decided, though shutdown has since let every hook go."""
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
@@ -752,7 +736,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:
     """The hold bounds how long Claude Code waits, however slowly the transcript is read."""
     recorded: list[Entry] = []
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
@@ -765,7 +749,7 @@ async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_l
 
 async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
     """Letting every hook go at shutdown lets go of its wait, not of what it says happened."""
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
     sessions.release_waiting()
@@ -837,7 +821,7 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
     failing = logger.add(full, level="WARNING", catch=False)
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
     try:
-        sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=recorded.append)
+        sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
         sessions.hear(never)
 
         async def failed() -> None:

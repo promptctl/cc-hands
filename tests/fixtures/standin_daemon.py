@@ -34,7 +34,7 @@ def main() -> None:
     settings = load(home)
 
     async def run(quit_event: asyncio.Event) -> Ended:
-        sessions = Sessions(permission_deadline=60.0, clock=time.monotonic, record=audit.record)
+        sessions = Sessions(clock=time.monotonic, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
         beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), PERIOD.total_seconds()))

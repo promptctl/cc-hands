@@ -54,7 +54,7 @@ def home() -> Iterator[Home]:
 
 @pytest.fixture
 async def sessions(home: Home) -> AsyncIterator[Sessions]:
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
     runner = await serve_hooks(home, registry, Names(), lambda _: None)
     yield registry
     await runner.cleanup()
@@ -269,7 +269,7 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
 
 async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Home) -> None:
     recorded: list[Entry] = []
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.2)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.2)
     runner = await serve_hooks(home, registry, Names(), recorded.append)
     try:
         await shim(home, START)
@@ -304,7 +304,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     dead.bind(str(home.socket))
     dead.close()
     assert home.socket.exists()
-    registry = Sessions(60.0, clock=lambda: 0.0, record=lambda _: None)
+    registry = Sessions(clock=lambda: 0.0, record=lambda _: None)
     runner = await serve_hooks(home, registry, Names(), lambda _: None)
     try:
         assert await shim(home, START) == (0, STARTED, "")
@@ -359,7 +359,7 @@ async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_
 async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_claude_code_at_the_next_prompt_once(home: Home) -> None:
     names = Names()
     given: list[Entry] = []
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
     runner = await serve_hooks(home, registry, names, given.append)
     try:
         await shim(home, START)
@@ -387,7 +387,7 @@ async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home:
     # The user gave the session a name with /rename after hands decided its own against the session having none.
     transcript.write_text('{"type":"custom-title","customTitle":"my thing","sessionId":"s"}\n')
     at = {"transcript_path": str(transcript)}
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
     runner = await serve_hooks(home, registry, names, given.append)
     try:
         await shim(home, {**START, **at})
@@ -404,7 +404,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
     given: list[Entry] = []
     # A directory where the transcript should be: reading the session's title fails.
     at = {"transcript_path": str(tmp_path)}
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
     runner = await serve_hooks(home, registry, names, given.append)
     try:
         await shim(home, {**START, **at})
@@ -419,7 +419,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
 
 async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
     names = Names()
-    registry = Sessions(permission_deadline=60.0, clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
     runner = await serve_hooks(home, registry, names, lambda _: None)
     try:
         await shim(home, START)

@@ -8,13 +8,16 @@ It is imported by the shim, so it holds only the standard library and hands' dat
 import json
 from collections.abc import Mapping
 
-# [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks
-# below declare it, and the shim's wait and the daemon's default-deny deadline are both derived from it.
-PERMISSION_HOOK_TIMEOUT_SECONDS = 90
+# [LAW:single-enforcer] Claude Code kills a PermissionRequest hook after this many seconds. The hooks below declare
+# it, and the shim waits as long. It is hands' own choice, a day, so that no answer by voice is ever hurried: hands puts
+# no deadline of its own on a session's request, which waits on the user as its dialog on the screen does. Claude Code
+# takes any positive number here, and omitted, its own default; a day is well inside the 2^31 ms a JS timer can hold.
+PERMISSION_HOOK_TIMEOUT_SECONDS = 86400
 
-# A deny sent at the deadline must reach Claude Code before it kills the hook, or nothing denies it.
+# The brain's own dialog is on a terminal nobody sees, so a request of its own must be answered before Claude Code kills
+# its hook, or its turn holds at that dialog for good: a deny sent this long before the kill still reaches Claude Code.
 REPLY_MARGIN_SECONDS = 5
-PERMISSION_DEADLINE_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARGIN_SECONDS)
+BRAIN_REPLY_BY_SECONDS = float(PERMISSION_HOOK_TIMEOUT_SECONDS - REPLY_MARGIN_SECONDS)
 
 # Every other hook posts and returns, so a daemon slower than this is reported as unreachable.
 POST_TIMEOUT_SECONDS = 2.0

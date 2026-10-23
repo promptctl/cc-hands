@@ -110,7 +110,7 @@ by (`brain/stage.py:81–88`), has `session` and `ask` and no interrupt, and the
 | the refusal lines hands owed the user (`unacknowledged`) | cleared | the refusals it received | `brain/stage.py:609`; unverified by test |
 | the acknowledgement | not said | nothing | `brain/stage.py:239–241`, `651–657`; `test_a_turn_the_user_spoke_over_while_its_call_runs_is_not_acknowledged` |
 | a session telling | not played; quoted in the note; its utterance's fate is `cut` | the note; hands does not re-tell it (unverified by test) | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
-| a session's permission, question or plan | untouched; it waits on its own deadline | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:13–17`; unverified by test |
+| a session's permission, question or plan | untouched; it waits on the user | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:11–15`; unverified by test |
 | a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
 
 The user, 2026-10-17, on the third and seventh rows: "Brain permissions, I understand we are blocked
@@ -298,13 +298,13 @@ sequenceDiagram
     participant H as hands
     participant B as Brain
     participant S as Session api
-    S->>H: asks to run a command, with its own deadline
+    S->>H: asks to run a command
     H->>B: a turn: tell the user
     B-->>H: the telling: "api is asking to run…"
     H->>U: says "api is asking to run…"
     U->>H: cuts in
     Note over H: cut: the telling stops, and its utterance's fate is cut
-    Note over S: untouched: it waits on its own deadline
+    Note over S: untouched: it waits on the user
     Note over B: the turn runs to its own end
     H->>B: the next turn: the user's words, then the note
     Note over H,B: nothing re-tells the telling on its own (unverified by test)
@@ -315,7 +315,7 @@ sequenceDiagram
 - You: hands is saying "api is asking to run …" or "api finished a turn, …"; you cut in.
 - You hear: the telling stops.
 - The brain's history holds: its turn for the telling, run to its end. The session's request is
-  untouched and waits on its own deadline, and the brain answers it with `answer_permission` when
+  untouched and waits on you, and the brain answers it with `answer_permission` when
   you say so; nothing re-tells the telling on its own, the note being the path back (unverified by
   test).
 - The next turn's `asked` carries: your words, then the note.

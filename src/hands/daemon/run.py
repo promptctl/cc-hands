@@ -43,7 +43,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
 from hands.sessions.audit import Record, failures_to
-from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT, PERMISSION_DEADLINE_SECONDS
+from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
 from hands.sessions.statusfile import keep_reading_statuses
@@ -105,7 +105,7 @@ from hands.brain.usage import Usage
 from hands.spotify import Catalogue, credentials
 from hands.core.session import SessionId
 
-# How late a permission deadline can be heard.
+# How late a settled burst of a session's progress can be heard.
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
 SWEEP_SECONDS = 2.0
@@ -238,7 +238,7 @@ async def run(
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
         sessions = Sessions(
-            permission_deadline=PERMISSION_DEADLINE_SECONDS, clock=time.monotonic, record=record, changes=deltas, names=names,
+            clock=time.monotonic, record=record, changes=deltas, names=names,
             typist=partial(type_into, environment), keyboards=partial(tmux.keyboards, environment=environment),
         )
         hooks = await serve_hooks(home, sessions, names, record)
@@ -367,7 +367,7 @@ async def converse(
         heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
     def stop_if_failed(task: asyncio.Task[None]) -> None:
-        # [LAW:no-silent-failure] without the ticker nothing is denied at its deadline, without the sweep a dead
+        # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
         # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
         # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute, and without the talk key no turn starts, so any of
         # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
@@ -383,7 +383,7 @@ async def converse(
     playing = Playing()
     utterances = Utterances(record)
     background = [
-        asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the permission deadline ticker"),
+        asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the progress ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
         asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
         asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),

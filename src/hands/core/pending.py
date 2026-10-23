@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from hands.core.attention import Amount
-from hands.core.effects import DeadlineNear, Expired, Narrate, SessionGone, Speak
+from hands.core.effects import Narrate, SessionGone
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
@@ -76,7 +76,7 @@ class Mentioned:
     amount: Amount
 
 
-Pending = Speak | Narrate | Finished | Unread | SessionGone | Working | Mentioned
+Pending = Narrate | Finished | Unread | SessionGone | Working | Mentioned
 
 # How soon a pending thing is told, soonest first. "blocking" is something a session waits on the user for. "result" is
 # what a session did. "fyi" is the rest.
@@ -87,7 +87,7 @@ _SOONEST: Sequence[Priority] = ("blocking", "result", "fyi")
 def priority(pending: Pending) -> Priority:
     # [LAW:one-source-of-truth] read off the variant, never stored beside it.
     match pending:
-        case Narrate() | Speak():
+        case Narrate():
             return "blocking"
         case Finished() | Unread():
             return "result"
@@ -113,7 +113,7 @@ def coalesce(pending: Sequence[Pending], live: Mapping[SessionId, Session]) -> t
     thing, never after it, so its next turn's request is not heard ahead of the turn that came before it.
 
     `live` is each session that has not ended, read as the floor lets go: a request answered at the keyboard while the
-    user talked is no longer one, and neither is a deadline counted down on it; and progress of a turn that ended
+    user talked is no longer one; and progress of a turn that ended
     meanwhile is out of date, however the ending was told, or whether it was told at all.
     """
     told = _folded(_current([Coalesced(each, (at,)) for at, each in enumerate(pending) if _waits(each, live)]))
@@ -132,8 +132,6 @@ def _waits(pending: Pending, live: Mapping[SessionId, Session]) -> bool:
     match pending:
         case Narrate(moment=moment):
             return _asks(live.get(moment.session), moment.request)
-        case Speak(announcement=DeadlineNear(session=session, request=request)):
-            return _asks(live.get(session), request)
         case Working(session=session, of=of):
             return current(live.get(session), of)
         case _:
@@ -164,8 +162,6 @@ def current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> boo
 def _story(pending: Pending) -> SessionId:
     """Whose story `pending` is told in: its session's."""
     match pending:
-        case Speak(announcement=DeadlineNear(session=session) | Expired(session=session)):
-            return session
         case Narrate(moment=moment):
             return moment.session
         case Finished(session=session) | Unread(session=session) | SessionGone(session=session) | Working(session=session) | Mentioned(session=session):

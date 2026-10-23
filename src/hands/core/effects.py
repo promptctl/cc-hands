@@ -155,32 +155,6 @@ class Asking:
 
 
 @dataclass(frozen=True)
-class DeadlineNear:
-    session: SessionId
-    request: RequestId
-    on: Blocker
-    remaining: float  # seconds
-
-
-@dataclass(frozen=True)
-class Expired:
-    """Nobody answered by voice in time: a permission was denied, a question left to its dialog."""
-
-    session: SessionId
-    on: Blocker
-
-
-Announcement = DeadlineNear | Expired
-
-
-@dataclass(frozen=True)
-class Speak:
-    """Said as written, with no model in the way."""
-
-    announcement: Announcement
-
-
-@dataclass(frozen=True)
 class Narrate:
     """Handed to the intermediary to explain in its own words, and to act on what the user answers."""
 
@@ -210,7 +184,7 @@ class Tell:
     occurrence: Occurrence
 
 
-Heard = Speak | Narrate | Progress | Tell
+Heard = Narrate | Progress | Tell
 
 
 @dataclass(frozen=True)

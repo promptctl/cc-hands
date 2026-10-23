@@ -44,7 +44,7 @@ class Breaks:
 
 
 def attached(tmp_path: Path) -> Sessions:
-    return Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=Breaks())
+    return Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=Breaks())
 
 
 def git(repo: Path, *args: str) -> str:
@@ -592,7 +592,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
 
     root = repo(tmp_path)
     deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -1098,7 +1098,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     marked, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
     deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     await sessions.apply(Taken(SID, PromptId("p1"), None, 5.0))
@@ -1118,7 +1118,7 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code (2.1.282)."""
     root = repo(tmp_path)
     deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -1160,7 +1160,7 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_turn_
     """The reply on the wire tells the turn and starts marking the one queued behind it before the Stop fires. The Stop
     then ends nothing, and its hook is let go only once that mark is taken: Claude Code runs the queued turn after it."""
     repository = Marking()
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
@@ -1193,7 +1193,7 @@ class Reading:
 
 async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tmp_path: Path) -> None:
     repository = Reading()
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     sessions.hear(Closed(SID, PromptId("p1"), "Done."))

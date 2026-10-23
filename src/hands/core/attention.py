@@ -3,7 +3,7 @@ tables that route a finished turn, a session's progress, and a session ending by
 
 [LAW:one-source-of-truth] one control: every kind of thing hands says unprompted has its level here, and quiet is one
 setting of the same value, never a switch beside it. What a session asks (a permission, a question, a plan) is no kind
-here: it needs an answer, and one held unsaid would wait out its deadline and be refused, so it is spoken whatever is set.
+here: it needs an answer, and the session waits on it until one comes, so it is spoken whatever is set.
 """
 
 from dataclasses import dataclass

@@ -657,7 +657,7 @@ async def test_a_queued_command_taken_in_mid_turn_is_heard_from_the_results_clau
 async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_session_idle(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     await sessions.apply(said_busy(at=1.0))
@@ -698,7 +698,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
     ends it, so the prompt sent again is a turn of its own."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p0")))
     tails = Tails(sessions)
@@ -725,7 +725,7 @@ async def test_a_prompt_whose_first_record_is_its_interrupt_is_heard_taken_befor
 async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tells_the_turn_claude_code_said_is_over(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     tailing = asyncio.create_task(keep_tailing(Tails(sessions), 0.01, sessions.apply))
@@ -830,7 +830,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     interrupt and all; p2 only its own steps."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, WRITING))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
     tails = Tails(sessions)
@@ -868,7 +868,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
     deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, changes=deltas)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
     tails = Tails(sessions)
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
@@ -989,7 +989,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
     running, and reads its transcript from the start."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(*HISTORY, RUNNING, LOOPING))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(3000)), at=3.0))
     tails = Tails(sessions)
@@ -1226,7 +1226,7 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     prompt with a subagent out; the report opens its own turn, and its Stop tells that turn alone."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))
     tails = Tails(sessions)
@@ -1366,7 +1366,7 @@ async def test_a_command_run_while_a_subagent_works_in_the_background_returns_th
     stayed open until the subagent reported back, and the session read as working."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))
     tails = Tails(sessions)

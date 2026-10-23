@@ -232,7 +232,7 @@ own MCP server, which it may use without asking, and its hooks, and it keeps the
 Nobody sits at its keyboard to answer a dialog. A permission its settings ask about is put to the user by voice, in
 the turn of theirs that led to it: hands says what the tool would do, and only a plain yes, said once the question has
 played to its end, runs it. Anything else they say refuses it and is handed to the brain, and a permission nobody can
-be asked, or nobody answers in time, is refused; a `brain.permission` event records how each was settled. Any
+be asked, or nobody answers in the day its hook is held, is refused; a `brain.permission` event records how each was settled. Any
 other dialog is refused: the brain asks its questions in its reply, and an MCP server asking for input gets a
 `brain.elicitation` event. Its settings say `"defaultMode": "default"` with the tools it may use without asking in
 `permissions.allow`, and `"syncClaudeAiSkills": false` and `"syncClaudeAiPlugins": false` keep the

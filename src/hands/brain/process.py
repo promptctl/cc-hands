@@ -37,7 +37,7 @@ from hands.core.session import Permission, PromptText, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.sessions.audit import Record
-from hands.sessions.hookconfig import PERMISSION_DEADLINE_SECONDS, declared
+from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, declared
 from hands.sessions.hooks import called, hook_output
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
@@ -92,7 +92,7 @@ NOBODY = "Nobody can be asked: no turn of the user's is in flight to ask in, so 
 UNREAD = "hands could not read this permission request, so it is refused."
 BROKEN = "hands failed while it settled this permission request, so it is refused."
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
-UNANSWERED = "No answer came from the user in time, so it did not run. Tell them aloud that it did not run and what that leaves undone."
+UNANSWERED = "No answer came from the user in the day its hook is held, so it did not run. Tell them aloud that it did not run and what that leaves undone."
 SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
 STOPPED = "hands stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
@@ -258,7 +258,7 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
         "--plugin-dir", str(PLUGIN),
         "--settings", json.dumps({
             # [LAW:single-enforcer] each hook declared as the plugin declares it: a held permission's lives as long as a
-            # working session's, and is denied by the same deadline.
+            # working session's, a day, and is denied only as that day ends, since its dialog is one nobody sees.
             "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS},
             # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
             # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
@@ -486,7 +486,7 @@ class BrainAnswered:
 @dataclass(frozen=True, eq=False)
 class Asked:
     """A permission the brain's own setup asks about, held at its hook while the user is asked: settled once, by what they
-    answer, by nobody answering in time, or by the turn's end, whichever comes first."""
+    answer, by its hook's day running out, or by the turn's end, whichever comes first."""
 
     permission: Permission
     decision: "asyncio.Future[Allow | Deny]"
@@ -840,7 +840,7 @@ class Brain:
                             self._held.add(held)
                             try:
                                 turn.asks(held)
-                                await asyncio.wait({held.decision}, timeout=PERMISSION_DEADLINE_SECONDS)
+                                await asyncio.wait({held.decision}, timeout=BRAIN_REPLY_BY_SECONDS)
                                 held.settle(Deny(UNANSWERED))
                             finally:
                                 self._held.discard(held)

@@ -54,7 +54,7 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # The rule in intermediary_instruction: a prompt that asks for a tool before it exists gets that tool paraphrased.
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
-    given = set(names(Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)))
+    given = set(names(Sessions(clock=lambda: 0.0, record=lambda _: None)))
     prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands", None)
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
     assert named, "the prompt names no tool at all"

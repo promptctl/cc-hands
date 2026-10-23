@@ -53,11 +53,11 @@ SHELLING = Idle(Shell(), Stamp(1), after=None)
 
 
 def registry(state: SessionState, member: Membership = ONE, turn: Turn = Told()) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Session(member, state, mode=None, turn=turn)}, drafts={})
+    return Registry(sessions={ONE.id: Session(member, state, mode=None, turn=turn)}, drafts={})
 
 
 def gone(member: Membership = ONE) -> Registry:
-    return Registry(permission_deadline=60.0, sessions={ONE.id: Gone(member)}, drafts={})
+    return Registry(sessions={ONE.id: Gone(member)}, drafts={})
 
 
 @pytest.mark.parametrize("state", [IDLE, running(), SHELLING, Unreported()])

@@ -575,7 +575,7 @@ class BrainStage(FrameProcessor):
                             turn.unacknowledged.append(permission)
                     await self._reply(turn, True)
                 case Asked():
-                    # Settled before its turn came to be said, by the deadline, the turn's end, or an answer: nothing asks.
+                    # Settled before its turn came to be said, by its hook's day ending, the turn's end, or an answer: nothing asks.
                     pass
                 case _Acknowledgement(line=line):
                     turn.acknowledged = (line, self._now())

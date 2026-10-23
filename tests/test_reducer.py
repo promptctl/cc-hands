@@ -13,16 +13,12 @@ from hands.core.effects import (
     Unclosed,
     Unsettled,
     Audit,
-    Deny,
     Effect,
     Narrate,
     Asking,
-    DeadlineNear,
-    Expired,
     Heard,
     Reply,
     SessionGone,
-    Speak,
     Compare,
     Snapshot,
     Summarise,
@@ -31,15 +27,13 @@ from hands.core.effects import (
 )
 from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
 from hands.core import progress
-from hands.core.reducer import EXPIRED_MESSAGE, UNTOLD, WARNING_LEAD_SECONDS, reduce
+from hands.core.reducer import UNTOLD, reduce
 from hands.core.session import (
     AskedQuestion,
-    Dialog,
     Gone,
     Held,
     Idle,
     Known,
-    LetGo,
     Membership,
     Mode,
     Opened,
@@ -70,7 +64,6 @@ from hands.core.turn import AgentId
 STOP_HEARD = Stamp(1500)
 STOP_REQUEST = RequestId("stop")
 
-TIMEOUT = 60.0
 ONE = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/a"), transcript=Path("/t/s1.jsonl"))
 # A Stop's hook let go, once what deciding it called for is done.
 LET_STOP = Reply(ONE.id, STOP_REQUEST, Withdraw())
@@ -82,7 +75,7 @@ NEXT = PromptId("p2")
 IDLE = Idle(status.Idle(), Stamp(900), after=None)
 BUSY = Running(Busy(), Stamp(1000), idled=Stamp(1000))
 AT_DIALOG = Running(Waiting("permission prompt"), Stamp(1100), idled=Stamp(1000))
-HELD = Held(on=BASH, request=RequestId("r0"), deadline=61.0, warned=False)
+HELD = Held(on=BASH, request=RequestId("r0"))
 
 LIVE: list[SessionState] = [Unreported(), IDLE, BUSY, AT_DIALOG]
 SESSION_EVENTS: list[SessionEvent] = [
@@ -110,10 +103,10 @@ HEARD: list[SessionEvent] = [
 
 
 def registry(*sessions: Known) -> Registry:
-    return Registry(permission_deadline=TIMEOUT, sessions={s.membership.id: s for s in sessions}, drafts={})
+    return Registry(sessions={s.membership.id: s for s in sessions}, drafts={})
 
 
-GONE = Registry(permission_deadline=TIMEOUT, sessions={ONE.id: Gone(ONE)}, drafts={})
+GONE = Registry(sessions={ONE.id: Gone(ONE)}, drafts={})
 
 
 def live(registry: Registry) -> Session:
@@ -125,11 +118,11 @@ def live(registry: Registry) -> Session:
             raise AssertionError("session one ended")
 
 
-def holding(state: SessionState, turn: Turn = Told(), dialog: Dialog | None = None, earlier: frozenset[PromptId] = frozenset()) -> Registry:
+def holding(state: SessionState, turn: Turn = Told(), dialog: Held | None = None, earlier: frozenset[PromptId] = frozenset()) -> Registry:
     return registry(Session(ONE, state, mode=None, turn=turn, dialog=dialog, earlier=earlier))
 
 
-def in_turn(state: SessionState = BUSY, dialog: Dialog | None = None, turn: PromptId = TURN) -> Registry:
+def in_turn(state: SessionState = BUSY, dialog: Held | None = None, turn: PromptId = TURN) -> Registry:
     return holding(state, Opened(turn), dialog)
 
 
@@ -199,7 +192,7 @@ def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: Ses
 def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState) -> None:
     """Held whatever the status last read: a session that joins on its request has had none read yet."""
     event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None)
-    assert reduce(holding(before), event) == (holding(before, dialog=replace(HELD, request=RequestId("r1"), deadline=5.0 + TIMEOUT)), [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
+    assert reduce(holding(before), event) == (holding(before, dialog=replace(HELD, request=RequestId("r1"))), [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
 
 
 @pytest.mark.parametrize(
@@ -275,51 +268,26 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
 def test_a_second_request_while_waiting_lets_the_first_go_and_asks_the_second() -> None:
     edit = Permission(tool="Edit", input={"file_path": "a.py"})
     after, effects = reduce(holding(AT_DIALOG, dialog=HELD), PermissionRequested(ONE.id, at=7.0, request=RequestId("r1"), on=edit, mode=None))
-    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1"), deadline=7.0 + TIMEOUT, warned=False))
+    assert after == holding(AT_DIALOG, dialog=Held(on=edit, request=RequestId("r1")))
     assert effects == [Reply(ONE.id, RequestId("r0"), Withdraw()), Narrate(Asking(ONE.id, RequestId("r1"), edit))]
 
 
-def test_before_the_warning_window_a_tick_changes_nothing() -> None:
-    assert reduce(holding(AT_DIALOG, dialog=HELD), Tick(at=61.0 - WARNING_LEAD_SECONDS - 0.5)) == (holding(AT_DIALOG, dialog=HELD), [])
-
-
-def test_the_warning_is_spoken_once_as_the_deadline_nears() -> None:
-    warned, effects = reduce(holding(AT_DIALOG, dialog=HELD), Tick(at=53.0))
-    assert warned == holding(AT_DIALOG, dialog=replace(HELD, warned=True))
-    assert effects == [Speak(DeadlineNear(ONE.id, RequestId("r0"), BASH, remaining=8.0))]
-    assert reduce(warned, Tick(at=54.0)) == (warned, [])
-
-
-@pytest.mark.parametrize("warned", [True, False])
-def test_at_the_deadline_the_request_is_denied_and_said_to_be(warned: bool) -> None:
-    after, effects = reduce(holding(AT_DIALOG, dialog=replace(HELD, warned=warned)), Tick(at=61.0))
-    assert after == holding(AT_DIALOG)
-    assert effects == [Reply(ONE.id, RequestId("r0"), Deny(EXPIRED_MESSAGE)), Speak(Expired(ONE.id, BASH))]
-
-
-def test_ticking_through_a_whole_wait_warns_exactly_once_then_denies_once() -> None:
-    state = holding(BUSY)
-    state, asked = reduce(state, PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None))
+def test_a_held_request_is_never_denied_warned_of_or_let_go_on_the_clock() -> None:
+    """The user, 2026-10-19: no answer is timed. However long the request waits, a tick says nothing of it and moves
+    nothing: it waits on the user, as its dialog on the screen does."""
+    state, asked = reduce(holding(BUSY), PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None))
     heard: list[Effect] = [*asked]
-    for second in range(1, int(TIMEOUT) + 5):
-        state, effects = reduce(state, Tick(at=float(second)))
+    for second in (1.0, 85.0, 90.0, 3600.0, 86400.0, 10 * 86400.0):
+        state, effects = reduce(state, Tick(at=second))
         heard += effects
-    assert heard == [
-        Narrate(Asking(ONE.id, RequestId("r"), BASH)),
-        Speak(DeadlineNear(ONE.id, RequestId("r"), BASH, remaining=WARNING_LEAD_SECONDS)),
-        Reply(ONE.id, RequestId("r"), Deny(EXPIRED_MESSAGE)),
-        Speak(Expired(ONE.id, BASH)),
-    ]
+    assert heard == [Narrate(Asking(ONE.id, RequestId("r"), BASH))]
+    assert live(state).dialog == Held(on=BASH, request=RequestId("r"))
 
 
-def test_a_request_heard_again_keeps_its_deadline_and_is_warned_of_once() -> None:
+def test_a_request_heard_again_is_the_same_dialog_and_is_asked_once() -> None:
     asked = PermissionRequested(ONE.id, at=0.0, request=RequestId("r"), on=BASH, mode=None)
     state, _ = reduce(holding(AT_DIALOG), asked)
-    state, warned = reduce(state, Tick(at=51.0))
-    again, effects = reduce(state, replace(asked, at=52.0))
-    assert (again, effects) == (state, [])
-    assert warned == [Speak(DeadlineNear(ONE.id, RequestId("r"), BASH, remaining=9.0))]
-    assert reduce(again, Tick(at=53.0)) == (again, [])
+    assert reduce(state, replace(asked, at=52.0)) == (state, [])
 
 
 SAID_TWICE_FROM: list[Registry] = [
@@ -329,8 +297,6 @@ SAID_TWICE_FROM: list[Registry] = [
     holding(IDLE, Untold(TURN, frozenset(), Stamp(5000))),
     holding(IDLE, Told(TURN, frozenset())),
     in_turn(AT_DIALOG, HELD),
-    in_turn(AT_DIALOG, replace(HELD, warned=True)),
-    in_turn(AT_DIALOG, LetGo(BASH)),
 ]
 
 
@@ -357,12 +323,6 @@ def test_the_same_event_heard_twice_is_said_once(before: Registry, event: Event)
     assert [effect for effect in again if isinstance(effect, Heard | SessionGone)] == []
 
 
-def test_a_tick_moves_only_sessions_waiting_on_a_deadline() -> None:
-    before = registry(Session(ONE, AT_DIALOG, mode=None, dialog=HELD), Session(TWO, BUSY, mode=None))
-    after, _ = reduce(before, Tick(at=100.0))
-    assert after == registry(Session(ONE, AT_DIALOG, mode=None), Session(TWO, BUSY, mode=None))
-
-
 @pytest.mark.parametrize(
     "before",
     [
@@ -370,7 +330,6 @@ def test_a_tick_moves_only_sessions_waiting_on_a_deadline() -> None:
         Session(ONE, IDLE, mode=None, turn=Told(TURN)),
         Session(ONE, BUSY, mode=None, turn=Opened(TURN, frozenset({NEXT}), queued=True)),
         Session(ONE, AT_DIALOG, mode="acceptEdits", turn=Opened(TURN), dialog=HELD),
-        Session(ONE, AT_DIALOG, mode=None, turn=Opened(TURN), dialog=LetGo(BASH)),
         Session(ONE, Unreported(), mode=None),
     ],
 )
@@ -434,13 +393,13 @@ def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_sti
     asked = {"questions": [{"question": "Which?", "options": [{"label": "this"}]}]}
     question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), asked)
     answered = Question(question.asked, {**asked, "answers": {"Which?": "this"}})
-    waiting = Held(on=question, request=RequestId("r0"), deadline=65.0, warned=False)
+    waiting = Held(on=question, request=RequestId("r0"))
     after, effects = reduce(holding(AT_DIALOG, dialog=waiting), ToolFinished(ONE.id, at=20.0, call=answered, mode=None))
     assert (after, effects) == (holding(AT_DIALOG), [Reply(ONE.id, RequestId("r0"), Withdraw())])
 
 
-@pytest.mark.parametrize("dialog", [Held(on=Plan("the plan"), request=RequestId("r0"), deadline=65.0, warned=False), LetGo(Plan("the plan"))])
-def test_a_plan_approved_at_the_keyboard_releases_the_wait(dialog: Dialog) -> None:
+def test_a_plan_approved_at_the_keyboard_releases_the_wait() -> None:
+    dialog = Held(on=Plan("the plan"), request=RequestId("r0"))
     after, _ = reduce(holding(AT_DIALOG, dialog=dialog), ToolFinished(ONE.id, at=20.0, call=PlanApproved(), mode=None))
     assert after == holding(AT_DIALOG)
 
@@ -488,7 +447,7 @@ def test_a_session_this_run_never_listed_ending_says_nothing(ended: Event) -> No
 
 @pytest.mark.parametrize("dialog", [None, HELD])
 @pytest.mark.parametrize("before", LIVE)
-def test_a_live_session_whose_process_died_is_gone_and_spoken_and_its_hook_let_go(before: SessionState, dialog: Dialog | None) -> None:
+def test_a_live_session_whose_process_died_is_gone_and_spoken_and_its_hook_let_go(before: SessionState, dialog: Held | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
     assert reduce(holding(before, dialog=dialog), Died(ONE)) == (GONE, [*released, SessionGone(ONE.id)])
 
@@ -504,7 +463,7 @@ def test_a_dead_process_that_is_no_longer_the_sessions_changes_nothing() -> None
 
 @pytest.mark.parametrize("dialog", [None, HELD])
 @pytest.mark.parametrize("before", LIVE)
-def test_a_session_whose_process_moved_on_is_gone_silently_and_its_hook_let_go(before: SessionState, dialog: Dialog | None) -> None:
+def test_a_session_whose_process_moved_on_is_gone_silently_and_its_hook_let_go(before: SessionState, dialog: Held | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
     assert reduce(holding(before, dialog=dialog), MovedOn(ONE)) == (GONE, released)
 
@@ -516,7 +475,7 @@ def test_a_file_on_a_pid_another_session_holds_attaches_beside_it_the_sweep_deci
 
 @pytest.mark.parametrize("dialog", [None, HELD])
 @pytest.mark.parametrize("before", LIVE)
-def test_a_session_whose_terminal_closed_is_gone_and_spoken(before: SessionState, dialog: Dialog | None) -> None:
+def test_a_session_whose_terminal_closed_is_gone_and_spoken(before: SessionState, dialog: Held | None) -> None:
     released = [] if dialog is None else [Reply(ONE.id, HELD.request, Withdraw())]
     assert reduce(holding(before, dialog=dialog), Ended(ONE.id, "other")) == (GONE, [*released, SessionGone(ONE.id)])
 
@@ -546,7 +505,7 @@ REPORTING: list[SessionEvent] = [
 ]
 
 
-def moded(state: SessionState, mode: Mode | None, dialog: Dialog | None = None) -> Registry:
+def moded(state: SessionState, mode: Mode | None, dialog: Held | None = None) -> Registry:
     return registry(Session(ONE, state, mode=mode, dialog=dialog))
 
 
@@ -669,7 +628,7 @@ def test_the_stop_of_a_turn_gone_on_under_a_flushed_id_ends_it_before_claude_ans
     assert reduce(state, Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, PromptId("q"), "Done."), LET_STOP]
 
 
-@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD), in_turn(AT_DIALOG, LetGo(BASH))])
+@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD)])
 def test_a_record_naming_another_turn_while_one_is_open_ends_nothing(before: Registry) -> None:
     """A flush's id: the turn goes on under it, and its Stop ends it."""
     after, effects = reduce(before, Taken(ONE.id, NEXT, None, 9.0))
@@ -729,7 +688,7 @@ def test_only_a_prompt_or_a_record_moves_the_turn(event: SessionEvent) -> None:
     assert live(reduce(in_turn(), event)[0]).turn == Opened(TURN)
 
 
-@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD), in_turn(AT_DIALOG, LetGo(BASH))])
+@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD)])
 def test_the_record_of_an_interrupt_of_the_turn_claude_is_answering_tells_it_whether_or_not_its_idle_was_read(before: Registry) -> None:
     """Read before the idle it follows, or with that idle never read; the idle read after it moves only the state."""
     state, tellings = told([Interrupted(ONE.id, TURN, at=10.0)], before)
@@ -813,7 +772,7 @@ PROMPT = Prompted(ONE.id, at=10.5, mode=None, prompt=NEXT)
 
 
 @pytest.mark.parametrize("at", [status.Idle(), Shell()])
-@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD), in_turn(AT_DIALOG, LetGo(BASH))])
+@pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, HELD)])
 def test_an_open_turn_claude_code_says_is_idle_is_over_at_once(before: Registry, at: status.AtPrompt) -> None:
     """However it was stopped: no Stop, no record, and no idle_prompt follow a double Escape before the flushed message
     is answered. The telling waits for the transcript to say how it ended. A shell command it left running in the
@@ -904,7 +863,7 @@ def test_a_double_escape_before_claude_answers_a_flushed_message_leaves_the_sess
     state = in_turn()
     for event in [Taken(ONE.id, NEXT, None, 9.0), said(status.Idle(), at=10.0), Read(ONE.id, WINDOW), Tick(70.0), Continued(ONE.id, was=TURN, now=NEXT), Interrupted(ONE.id, NEXT, at=71.0)]:
         state, effects = reduce(state, event)
-        heard += [effect for effect in effects if isinstance(effect, Summarise | Speak)]
+        heard += [effect for effect in effects if isinstance(effect, Summarise | Narrate)]
     assert heard == [Summarise(ONE.id, TURN, None)]
     assert live(state).state == Idle(status.Idle(), Stamp(2000), after=TURN)
 

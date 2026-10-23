@@ -251,7 +251,7 @@ class Abandoned:
 
 @dataclass(frozen=True)
 class Tick:
-    """The one clock the reducer hears: deadlines are compared against it, never against a timer."""
+    """The one clock the reducer hears: when a burst of progress has settled is read against it, never against a timer."""
 
     at: Instant
 

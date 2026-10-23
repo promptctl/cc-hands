@@ -46,7 +46,7 @@ def written(home: Home, lines: list[tuple[datetime, Entry]]) -> None:
 
 
 async def sessions_of(*names: str) -> Sessions:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     for name in names:
         await sessions.apply(Joined(member(name), "startup"))
     return sessions

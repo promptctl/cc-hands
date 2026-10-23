@@ -147,25 +147,11 @@ FinishedCall = Permission | Question | PlanApproved
 
 @dataclass(frozen=True)
 class Held:
-    """At a dialog whose PermissionRequest hook hands holds open, waiting on a reply by voice."""
+    """At a dialog whose PermissionRequest hook hands holds open, waiting on a reply by voice for as long as Claude Code
+    holds the hook: hands puts no clock of its own on it (hands.sessions.hookconfig)."""
 
     on: Blocker
     request: RequestId
-    deadline: Instant
-    # [LAW:no-ambient-temporal-coupling] the warning is spoken once because speaking it is this
-    # value changing, not a timer that could fire twice.
-    warned: bool
-
-
-@dataclass(frozen=True)
-class LetGo:
-    """At a dialog hands let go of at its deadline, so only the keyboard can answer it now."""
-
-    on: Blocker
-
-
-# The dialog the session is at, or left behind it, as its hooks tell it: Claude Code's idle ends it.
-Dialog = Held | LetGo
 
 
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and
@@ -286,7 +272,7 @@ class Session:
     # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
     mode: Mode | None
     turn: Turn = Told()
-    dialog: Dialog | None = None
+    dialog: Held | None = None
     # Every id the turns before this one went by, each told as the turn after it replaced it: a late Stop naming one ends
     # nothing, in whatever phase the turn now is. [LAW:types-are-the-program] kept here, and not on the turn, so every
     # phase answers "was this turn told" the same way, across a restart too.
@@ -346,7 +332,6 @@ class Staged:
 
 @dataclass(frozen=True)
 class Registry:
-    permission_deadline: float  # seconds from a permission request to its default deny
     sessions: Mapping[SessionId, Known]
     # [LAW:types-are-the-program] a session with no entry has nothing staged; there is no empty draft.
     drafts: Mapping[SessionId, Staged]

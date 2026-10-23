@@ -43,7 +43,7 @@ def test_every_mode_claude_code_has_is_said_by_name() -> None:
 
 
 async def test_a_mode_changed_at_the_keyboard_is_listed_at_the_sessions_next_hook() -> None:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
     await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1")))
@@ -55,7 +55,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_at_the_sessions_next_hoo
 
 
 async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(ONE, "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=PromptId("p1")))
     request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")

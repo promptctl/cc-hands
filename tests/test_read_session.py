@@ -25,7 +25,7 @@ SID = SessionId("s1")
 
 
 async def joined(transcript: Path) -> Sessions:
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _entry: None)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=transcript), "startup"))
     return sessions
 

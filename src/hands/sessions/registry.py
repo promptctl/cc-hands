@@ -12,7 +12,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Speak, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Summarise, Tell, Type, Typed, Holding, Overtaken, Unclosed, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Event, PermissionRequested, Stopped, Tick, ToolFinished
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -67,7 +67,6 @@ class Sessions:
 
     def __init__(
         self,
-        permission_deadline: float,
         clock: Callable[[], Instant],
         record: Record,
         changes: Changes | None = None,
@@ -78,7 +77,7 @@ class Sessions:
         names: Names | None = None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
-        self._registry = Registry(permission_deadline=permission_deadline, sessions={}, drafts={})
+        self._registry = Registry(sessions={}, drafts={})
         # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
         self._clock = clock
         # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
@@ -219,7 +218,7 @@ class Sessions:
             self._let_go.discard(event.request)
 
     async def ask(self, event: PermissionRequested) -> HookReply:
-        """Apply a permission request and wait for its reply: an answer, a withdrawal, or the deny at its deadline."""
+        """Apply a permission request and wait for its reply: an answer, or a withdrawal."""
         if self._released:
             # A hook that reached the socket as shutdown began would otherwise wait with nothing left to answer it.
             return Withdraw()
@@ -313,7 +312,7 @@ class Sessions:
         return Typed(effect.session, effect.input)
 
     async def keep_time(self, period: float) -> None:
-        """Tell the reducer the time once a period, until cancelled. The period is how late a deadline can be heard."""
+        """Tell the reducer the time once a period, until cancelled. The period is how late a settled burst of progress can be heard."""
         while True:
             await asyncio.sleep(period)
             await self.apply(Tick(self._clock()))
@@ -402,7 +401,7 @@ class Sessions:
                 logger.log(*_audited(record))
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
-            case Speak() | Narrate() | Progress() | Tell():
+            case Narrate() | Progress() | Tell():
                 self._heard.put_nowait(effect)
             case Summarise() | SessionGone():
                 self._story.put_nowait(effect)
@@ -466,7 +465,7 @@ def _ordered_by(effect: Effect) -> SessionId | None:
     match effect:
         case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session):
             return session
-        case Audit() | Speak() | Narrate() | Progress() | Tell():
+        case Audit() | Narrate() | Progress() | Tell():
             return None
 
 
