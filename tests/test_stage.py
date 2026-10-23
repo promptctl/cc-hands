@@ -666,8 +666,6 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     rig.stage.hear(Answering(second, 200, None))
     rig.now[0] = 1002.0
     rig.stream(second, "api is running its tests.")
-    # The wait ends as the first word goes to the speaker.
-    await rig.until(lambda: rig.out.said() == ["api is running its tests."])
     rig.now[0] = 1002.3
     rig.brain.end()
     await rig.until(lambda: bool(turns(rig.recorded)))
@@ -1787,8 +1785,8 @@ async def test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for
     assert acknowledgements(rig) == []
     [turn] = turns(rig.recorded)
     assert (turn.facts["interrupted"], turn.counts["cut_in"], turn.facts["asides"]) == (False, 1, ())
-    # The user waited until the first word went to the speaker, not until it reached hands.
-    assert turn.facts["waited_ms"] == 4000.0
+    # The user waited until the first word reached hands: the time they spent speaking after it is their own.
+    assert turn.facts["waited_ms"] == 1000.0
 
 
 async def test_words_said_over_a_tellings_silence_are_the_next_turn_and_not_answered_in_it(rig: Rig) -> None:

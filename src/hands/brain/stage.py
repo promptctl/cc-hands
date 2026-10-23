@@ -204,8 +204,8 @@ class _Turn:
     exchanges: list[str] = field(default_factory=list[str])
     # Each call the turn's replies made, by id, timed as heard.
     tools: dict[str, _Call] = field(default_factory=dict[str, _Call])
-    # When the first word of the turn's reply was handed to the speaker, by the stage's clock, as hands' own lines are told:
-    # what the user waited for, never a word held while they spoke or one said to nobody. None while none has been.
+    # When the first word of the turn's reply said to the user was heard on the wire; None while none has been. A word the
+    # floor holds while the user speaks counts from here: the time they spend speaking is theirs, not a wait for hands.
     first_word: Seconds | None = None
     # A reply of the turn's own carried words or a call: a turn none of whose replies did said nothing to the user.
     replied: bool = False
@@ -566,7 +566,7 @@ class BrainStage(FrameProcessor):
             if turn.cut is None:
                 for readback in turn.readbacks:
                     # Said by hands, as each call handed it to say.
-                    await self.push_frame(TTSSpeakFrame(readback))
+                    await self._say(TTSSpeakFrame(readback))
             else:
                 # Said to nobody: the turn's words past what the speaker played, and the readbacks. The brain judges whether
                 # to go back to any of it.
@@ -633,7 +633,13 @@ class BrainStage(FrameProcessor):
     async def _unsaid(self, unsaid: Sequence[str]) -> None:
         """What hands had for the brain to tell, said as written since the brain did not: a system fact, kept out of the replies the audit log records."""
         for line in unsaid:
-            await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
+            await self._say(TTSSpeakFrame(line, append_to_context=False))
+
+    async def _say(self, line: TTSSpeakFrame) -> None:
+        """Says a line of hands' own after a turn, once hands has the floor: never over the user. A cut after it is
+        handed on flushes it with everything else on its way to the speaker."""
+        await self._floor.wait()
+        await self.push_frame(line)
 
     def _put(self, turn: _Turn, asked: Asked) -> None:
         """Puts a permission the brain holds to the user, after what the turn has said so far."""
@@ -661,10 +667,9 @@ class BrainStage(FrameProcessor):
             match words:
                 case str():
                     turn.spoken.append(words)
+                    # The brain's own words after a refusal are its acknowledgement of it.
                     if words.strip():
-                        # The brain's own words after a refusal are its acknowledgement of it.
                         turn.unacknowledged.clear()
-                        turn.first_word = self._now() if turn.first_word is None else turn.first_word
                     await self.push_frame(LLMTextFrame(words))
                 case _Aside(line=line, since=since):
                     turn.asides.append((line, _ms(self._now() - since)))
@@ -813,6 +818,9 @@ class BrainStage(FrameProcessor):
                 turn.reply += text
                 turn.ahead, turn.between = "", "\n\n"
                 turn.replied = turn.replied or bool(text.strip())
+                # The first word the user waited for: none heard after they spoke over the turn is said to them.
+                if text.strip() and turn.first_word is None and not turn.interrupted:
+                    turn.first_word = now
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 # A block that is not text ends the one streaming, which only a retry opening with a call leaves open.
                 turn.close()
