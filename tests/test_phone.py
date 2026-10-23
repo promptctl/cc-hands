@@ -545,7 +545,7 @@ async def nobody_types(text: str) -> None:
 
 
 def no_sessions() -> Sessions:
-    return Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None)
+    return Sessions(clock=lambda: 0.0, record=lambda _: None)
 
 
 async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.MonkeyPatch) -> list[Entry]:

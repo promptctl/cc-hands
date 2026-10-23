@@ -54,7 +54,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     async def typist(effect: Type[Input]) -> None:
         typed.append(effect)
 
-    sessions = Sessions(permission_deadline=60.0, clock=lambda: 0.0, record=lambda _: None, typist=typist, keyboards=no_pane)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, typist=typist, keyboards=no_pane)
     socket = tmp_path / "f.sock"
     # Both under fritter, so either could be typed into; only the one Stop is beside ever is.
     await sessions.apply(Joined(Membership(WORKING, 4242, Path("/code/cc-hands"), tmp_path / "s1.jsonl", socket), "startup"))
