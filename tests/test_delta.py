@@ -1204,3 +1204,17 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
     repository.release.set()
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
     assert await asyncio.wait_for(sessions.story(), 2.0) == SessionGone(SID)
+
+
+async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_leaves_the_reading_running(tmp_path: Path) -> None:
+    """The narrator waits its patience and no longer, and the reading it stopped waiting on is not its to end."""
+    root = repo(tmp_path)
+    deltas = Endless(record=lambda _entry: None, inherited=os.environ, patience=0.05)
+    await deltas.snapshot(SID, root)
+    await deltas.compare(SID, again=False)
+    assert not await deltas.taken(SID)
+    [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
+    assert not reading.done()
+    reading.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reading

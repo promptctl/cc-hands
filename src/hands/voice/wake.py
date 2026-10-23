@@ -31,7 +31,7 @@ EMBEDDING = "embedding_model.onnx"
 # Long enough for the three files, about 3 MB, on a slow connection; a stalled one fails the switch rather than hang it.
 FETCH_SECONDS = 60
 # The longest header line the release may answer with, whole or as much of it as one read has brought. aiohttp's own
-# 8190 bytes is shorter than GitHub's content-security-policy alone, 9243 bytes on 2026-10-23, and GitHub only ever adds to it.
+# 8190 bytes is shorter than GitHub's content-security-policy alone, 9243 bytes on 2026-10-23; this is room for it to grow.
 HEADER_BYTES = 64 * 1024
 # openWakeWord's own default: its pretrained models are tuned to score a wake word above it and little else.
 THRESHOLD = 0.5
