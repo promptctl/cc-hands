@@ -276,3 +276,24 @@ async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_pa
         assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
     finally:
         await runner.cleanup()
+
+
+async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longer_than_githubs(tmp_path: Path) -> None:
+    # GitHub's content-security-policy alone was 9243 bytes on 2026-10-23; this is three and a half times that.
+    long = "x" * (32 * 1024)
+
+    async def model(_request: web.Request) -> web.Response:
+        return web.Response(body=b"features", headers={"Content-Security-Policy": long})
+
+    app = web.Application()
+    app.router.add_get("/{name}", model)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    try:
+        assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{port}") == (MELSPECTROGRAM, EMBEDDING, JARVIS)
+        assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == dict.fromkeys((MELSPECTROGRAM, EMBEDDING, JARVIS), b"features")
+    finally:
+        await runner.cleanup()
