@@ -14,7 +14,7 @@ from hands.core.reducer import reduce
 from hands.core.session import Gone, Membership, Registry, Session, SessionId, Unreported
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Status, Unknown, UnknownReason, Waiting
 from hands.sessions.payload import Rejected
-from hands.sessions.statusfile import Statuses, parse_report, status_file
+from hands.sessions.statusfile import UNREAD_SECONDS, Statuses, parse_report, status_file
 
 FIXTURES = Path(__file__).parent / "fixtures" / "status"
 
@@ -33,6 +33,14 @@ def member_of(raw: bytes, config: Path = Path("/config")) -> Membership:
     return Membership(session, pid=record["pid"], cwd=Path(record["cwd"]), transcript=config / "projects" / "-work" / f"{session}.jsonl")
 
 
+def report_of(member: Membership, raw: bytes) -> Report:
+    match parse_report(member, raw):
+        case Report() as report:
+            return report
+        case None:
+            raise AssertionError("the file sets no status")
+
+
 @pytest.mark.parametrize(
     ("name", "status"),
     [
@@ -44,12 +52,12 @@ def member_of(raw: bytes, config: Path = Path("/config")) -> Membership:
 )
 def test_each_status_a_session_wrote_is_read_as_itself_with_its_stamp(name: str, status: Status) -> None:
     raw = written(name)
-    assert parse_report(member_of(raw), raw) == Report(status, Stamp(json.loads(raw)["statusUpdatedAt"]))
+    assert report_of(member_of(raw), raw) == Report(status, Stamp(json.loads(raw)["statusUpdatedAt"]))
 
 
 def test_the_shell_status_seen_on_2_1_280_is_read_as_shell() -> None:
     raw = edited("idle", status="shell")
-    assert parse_report(member_of(raw), raw).status == Shell()
+    assert report_of(member_of(raw), raw).status == Shell()
 
 
 @pytest.mark.parametrize(
@@ -61,7 +69,7 @@ def test_the_shell_status_seen_on_2_1_280_is_read_as_shell() -> None:
 )
 def test_a_status_or_reason_this_version_does_not_know_is_unknown_never_idle(fields: dict[str, object], status: Status) -> None:
     raw = edited("idle", **fields)
-    assert parse_report(member_of(raw), raw).status == status
+    assert report_of(member_of(raw), raw).status == status
 
 
 @pytest.mark.parametrize(
@@ -69,7 +77,7 @@ def test_a_status_or_reason_this_version_does_not_know_is_unknown_never_idle(fie
     [
         {"pid": 4242},  # another process's file
         {"sessionId": "another-session"},  # the process has moved on to another session
-        {"status": None},
+        {"status": 7},
         {"statusUpdatedAt": "soon"},
         {"status": "waiting", "waitingFor": None},
     ],
@@ -80,10 +88,32 @@ def test_a_file_that_is_not_this_sessions_status_is_refused(fields: dict[str, ob
         parse_report(member_of(raw), edited("idle", **fields))
 
 
+def unset(name: str, **fields: object) -> bytes:
+    """The file as Claude Code first writes it, as its session starts: no status set in it yet (2.1.299)."""
+    record = json.loads(written(name))
+    return json.dumps({**{key: value for key, value in record.items() if key not in ("status", "statusUpdatedAt")}, **fields}).encode()
+
+
+@pytest.mark.parametrize("fields", [{}, {"status": None}], ids=["absent", "null"])
+def test_a_file_that_sets_no_status_yet_is_no_status_not_a_refusal(fields: dict[str, object]) -> None:
+    raw = unset("idle", **fields)
+    assert parse_report(member_of(raw), raw) is None
+
+
 def test_the_file_is_found_in_the_config_directory_the_session_keeps_its_transcript_in(tmp_path: Path) -> None:
     raw = written("busy")
     member = member_of(raw, tmp_path / "claude-other")
     assert status_file(member) == tmp_path / "claude-other" / "sessions" / f"{member.pid}.json"
+
+
+class Clock:
+    """The registry's clock, moved on by hand."""
+
+    def __init__(self) -> None:
+        self.now = 5.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class Live:
@@ -101,7 +131,7 @@ class Live:
     def sets(self, name: str, stamp: int, **fields: object) -> Report:
         raw = edited(name, statusUpdatedAt=stamp, **fields)
         status_file(self.member).write_bytes(raw)
-        return parse_report(self.member, raw)
+        return report_of(self.member, raw)
 
     def writes(self, raw: bytes) -> None:
         status_file(self.member).write_bytes(raw)
@@ -173,10 +203,14 @@ def logged(read: Callable[[], object]) -> list[str]:
     return warnings
 
 
-def test_why_a_status_cannot_be_read_is_said_once_not_every_read(tmp_path: Path) -> None:
-    live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
+def test_a_status_unread_for_unread_seconds_is_said_once_with_how_long_not_every_read(tmp_path: Path) -> None:
+    live, clock = Live(tmp_path), Clock()
+    statuses = Statuses(clock)
+    assert logged(lambda: live.heard(statuses)) == []
+    clock.now += UNREAD_SECONDS
     warnings = logged(lambda: [live.heard(statuses) for _ in range(3)])
-    assert len(warnings) == 1 and "keeps no status" in warnings[0] and "transcript is read only when a Stop tells a turn" in warnings[0]
+    assert len(warnings) == 1 and "in 2.0s" in warnings[0] and "keeps no status" in warnings[0]
+    assert "transcript is read only when a Stop tells a turn" in warnings[0]
 
 
 def test_a_status_file_removed_as_its_session_exits_is_not_said(tmp_path: Path) -> None:
@@ -190,15 +224,60 @@ def test_a_status_file_removed_as_its_session_exits_is_not_said(tmp_path: Path) 
     assert live.heard(statuses) == [busy]
 
 
-def test_a_read_that_fails_once_neither_hears_the_status_again_nor_goes_unsaid(tmp_path: Path) -> None:
+def test_a_read_that_fails_once_is_neither_heard_again_nor_said(tmp_path: Path) -> None:
     live, statuses = Live(tmp_path), Statuses(clock=lambda: 5.0)
     live.sets("busy", 1000)
     live.heard(statuses)
     live.writes(written("busy")[:40])  # caught half rewritten
-    warnings = logged(lambda: live.heard(statuses))
-    assert len(warnings) == 1 and "refused" in warnings[0]
+    heard: list[Report] = []
+    assert logged(lambda: heard.extend(live.heard(statuses))) == [] and heard == []
     live.sets("busy", 1000)
-    assert live.heard(statuses) == []
+    assert logged(lambda: heard.extend(live.heard(statuses))) == [] and heard == []
+
+
+def test_a_status_unread_for_unread_seconds_is_said_whatever_the_reason_on_each_read(tmp_path: Path) -> None:
+    live, clock = Live(tmp_path), Clock()
+    statuses = Statuses(clock)
+    live.writes(written("busy")[:40])
+    live.heard(statuses)
+    clock.now += UNREAD_SECONDS
+    live.writes(edited("idle", statusUpdatedAt=1000, sessionId="another-session"))
+    warnings = logged(lambda: live.heard(statuses))
+    assert len(warnings) == 1 and "for session another-session now" in warnings[0]
+
+
+def test_a_status_read_in_between_starts_the_wait_again(tmp_path: Path) -> None:
+    live, clock = Live(tmp_path), Clock()
+    statuses = Statuses(clock)
+    live.writes(written("busy")[:40])
+    live.heard(statuses)
+    clock.now += UNREAD_SECONDS / 2
+    live.sets("busy", 1000)
+    live.heard(statuses)
+    live.writes(written("busy")[:40])
+    live.heard(statuses)
+    clock.now += UNREAD_SECONDS / 2
+    assert logged(lambda: live.heard(statuses)) == []
+
+
+def test_a_session_whose_file_sets_no_status_yet_says_nothing_and_is_heard_once_set(tmp_path: Path) -> None:
+    live, clock = Live(tmp_path), Clock()
+    statuses = Statuses(clock)
+    live.writes(unset("idle"))
+    heard: list[Report] = []
+    assert logged(lambda: [heard.extend(live.heard(statuses)) for _ in range(3)]) == [] and heard == []
+    idle = live.sets("idle", 1000)
+    assert live.heard(statuses) == [idle]
+
+
+def test_a_file_that_never_sets_a_status_is_said(tmp_path: Path) -> None:
+    live, clock = Live(tmp_path), Clock()
+    statuses = Statuses(clock)
+    live.writes(unset("idle"))
+    live.heard(statuses)
+    clock.now += UNREAD_SECONDS
+    warnings = logged(lambda: live.heard(statuses))
+    assert len(warnings) == 1 and "sets no status" in warnings[0]
 
 
 def test_a_status_this_version_does_not_know_is_passed_on_and_said(tmp_path: Path) -> None:
