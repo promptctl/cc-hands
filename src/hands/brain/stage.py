@@ -652,12 +652,15 @@ class BrainStage(FrameProcessor):
             await self._unsaid(unsaid)
             await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failure.error
-        # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is told it
-        # with its next turn, unless the reply asked again opened with it.
-        # A turn stopped before Claude Code held any of its reply is gone from the brain's history, the note typed with it
-        # too: the words asked in it are told it with its next turn, and the note again beside them, never quoted in them.
-        unkept = _notes(_stopped_unkept(text), note) if stopped and not turn.held_reply else ""
-        self._broken_off = _notes(*(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated), over, unkept)
+        match stopped and not turn.held_reply:
+            case True:
+                # Stopped before Claude Code held any of its reply, the turn is gone from the brain's history, every reply
+                # asked again and the note typed with it included: what was asked in it, and that note, are told it again.
+                self._broken_off = _notes(over, _stopped_unkept(asker, text, note))
+            case False:
+                # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is
+                # told it with its next turn, unless the reply asked again opened with it.
+                self._broken_off = _notes(*(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated), over)
         return None
 
     def _account(self, turn: _Turn, asker: Asker, arrived: Seconds, released: Seconds | None, taken: Seconds, ended: Seconds) -> None:
@@ -991,10 +994,16 @@ def _seen(asker: Asker) -> str:
             return ""
 
 
-def _stopped_unkept(asked: str) -> str:
+def _stopped_unkept(asker: Asker, asked: str, carried: str) -> str:
     """The note that tells the brain of a turn stopped before Claude Code held any of its reply, which its history keeps
-    nothing of: what was asked in it, so nothing the user said is lost."""
-    return f'[hands] The user stopped your last turn before you replied, so your history does not hold what was asked in it: "{asked}". Do not act on it unless the user asks.'
+    nothing of: what was asked in it, by whom, and the note hands typed with it, which speaks of the turn before it."""
+    match asker:
+        case UserAsked():
+            lost = f'what the user asked in it: "{asked}"'
+        case HandsAsked():
+            lost = f'what hands told you in it: "{asked}"'
+    told = f" Hands also told you this with it, of the turn before it: {carried}" if carried else ""
+    return f"[hands] The user stopped your last turn before you replied, so your history does not hold {lost}. Do not act on it unless the user asks.{told}"
 
 
 def _broken_off(spoken: str) -> str:

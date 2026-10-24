@@ -49,7 +49,7 @@ class Stopping:
 
 @dataclass(frozen=True)
 class NotWorking:
-    """There was no turn of the brain's in flight to stop."""
+    """There was no turn of the brain's in flight to stop: none, or one asked that the brain had not yet begun."""
 
 
 @dataclass(frozen=True)

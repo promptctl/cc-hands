@@ -2093,7 +2093,7 @@ async def test_a_turn_that_ends_while_its_acknowledgement_still_plays_tells_it(r
 
 
 # What the next turn carries of a turn stopped before Claude Code held any of its reply.
-UNKEPT = "your history does not hold what was asked in it"
+UNKEPT = "your history does not hold what the user asked in it"
 
 
 def turn_of(rig: Rig) -> str:
@@ -2174,19 +2174,36 @@ async def test_a_turn_stopped_before_any_of_its_reply_was_held_is_told_the_brain
     rig.brain.end()
 
 
-async def test_turns_stopped_one_after_another_before_any_reply_are_each_told_by_their_words_never_one_quoted_in_another(rig: Rig) -> None:
+async def test_turns_stopped_one_after_another_before_any_reply_are_each_told_by_their_words_and_the_older_as_of_the_turn_before(rig: Rig) -> None:
     for words in ("write me a long story", "something shorter"):
         await rig.say(words)
         rig.stream(rig.request()[0], "Once upon")
         assert rig.stage.stop(turn_of(rig)) == Stopping()
         rig.brain.end(BrainStopped("p1"))
         await rig.until(lambda: rig.stage.work() == Idle())
+    # What the user could see as they asked, typed beside each turn's words: the same screen for every turn here.
+    seen = rig.brain.asked[0].removeprefix("write me a long story\n\n")
+    assert seen and seen != rig.brain.asked[0]
     await rig.say("just a poem")
     told = rig.brain.asked[-1]
-    # The second stopped turn was typed with the first's note, which its history lost with it: both are told, side by side.
-    assert (told.count(f'{UNKEPT}: "something shorter"'), told.count(f'{UNKEPT}: "write me a long story"')) == (1, 1)
-    # Each quote is the words asked, never what was typed beside them.
-    assert all("[hands]" not in quote for quote in told.split('"')[1::2])
+    # Each stopped turn is told by its words alone, never by the screen typed beside them, which this turn says once.
+    assert told.count(seen) == 1
+    # The second stopped turn was typed with the first's note, which its history lost with it: told again, as of the
+    # turn before it, after the turn it was lost with.
+    last, before = told.index(f'{UNKEPT}: "something shorter"'), told.index(f'{UNKEPT}: "write me a long story"')
+    assert last < told.index("of the turn before it") < before
+    rig.brain.end()
+
+
+async def test_a_telling_of_hands_stopped_before_any_reply_is_told_the_brain_as_hands_words_never_the_user_s(rig: Rig) -> None:
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), ()))
+    await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
+    rig.stream(rig.request()[0], "api opened")
+    assert rig.stage.stop(turn_of(rig)) == Stopping()
+    rig.brain.end(BrainStopped("p1"))
+    await rig.until(lambda: rig.stage.work() == Idle())
+    await rig.say("what happened")
+    assert 'what hands told you in it: "[hands] api finished a turn."' in rig.brain.asked[-1] and UNKEPT not in rig.brain.asked[-1]
     rig.brain.end()
 
 
