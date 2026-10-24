@@ -217,7 +217,8 @@ class Following:
                 return None
 
     def restart(self) -> None:
-        """Read the transcript again from its start: it is shorter than what was read of it, so nothing read says anything about it."""
+        """Read the transcript again from its start: it is another file than the one read so far, or shorter than what was
+        read of it, so nothing read says anything about it."""
         # Numbered on from the turn that was, so a telling made before any of this marks nothing after it.
         self.reading = Reading(self.reading.number + 1)
         self.ended = []
@@ -276,8 +277,9 @@ class Tails:
                 try:
                     await asyncio.to_thread(self._read, member.id, following, member.transcript)
                 except FileNotFoundError:
-                    # Claude Code creates the transcript with its first record, which a session may not have written yet.
-                    logger.debug(f"session {member.id} has not written {member.transcript} yet")
+                    # Claude Code creates the transcript with its first record, which a session may not have written yet,
+                    # and renames it as the session enters a worktree, which the hook after says, landing in moments.
+                    logger.debug(f"session {member.id} has no transcript at {member.transcript}: not written yet, or moved where its next hook will say")
                 except OSError as error:
                     # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
                     logger.error(f"cannot read the transcript of session {member.id} from {member.transcript}: {error}")

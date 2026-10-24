@@ -2,27 +2,15 @@
 
 import asyncio
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
-from pathlib import Path
 
 from loguru import logger
 
 from hands.core.events import Attached, Died, MovedOn, Observed
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.membership import Recorded, holders, parse_membership, remove_ended_membership, running
-from hands.sessions.payload import Rejected
+from hands.sessions.membership import Recorded, Unreadable, holders, recorded, remove_ended_membership, running
 from hands.sessions.processes import process_starts
 from hands.sessions.registry import Sessions
-
-
-@dataclass(frozen=True)
-class Unreadable:
-    """A membership file that does not parse, as it was read: it names no session hands can reach."""
-
-    path: Path
-    raw: bytes
-    error: Rejected
 
 
 # Sessions listed while their files were missing at one sweep, which the next one may conclude have ended.
@@ -93,25 +81,6 @@ def _observed(membership: Membership, holder: Membership | None) -> Observed:
             return Attached(membership)
         case Membership():
             return MovedOn(membership)
-
-
-def recorded(home: Home) -> tuple[list[Recorded], list[Unreadable]]:
-    """Every membership file that parses, and every one that does not; nothing is removed here."""
-    records: list[Recorded] = []
-    unreadable: list[Unreadable] = []
-    # A shim's staging file ends in .tmp until it is renamed into place.
-    for path in sorted(home.memberships.glob("*.json")):
-        try:
-            written_at = path.stat().st_mtime
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            # The session ended between the listing and the read.
-            continue
-        try:
-            records.append(Recorded(parse_membership(SessionId(path.stem), raw), written_at))
-        except Rejected as error:
-            unreadable.append(Unreadable(path, raw, error))
-    return records, unreadable
 
 
 def _remove_unreadable(file: Unreadable) -> None:

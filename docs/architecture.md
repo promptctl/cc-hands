@@ -655,10 +655,12 @@ A session running before the plugin was installed, or reloaded with `/reload-plu
 never fires `SessionStart`. So every other hook writes the file when no membership file
 names the shim's parent process, and the daemon takes the session its file names
 (`Located`) before it applies the hook: such a session joins on whatever it fires first.
-A hook of the session the process holds rewrites the file's `transcript_path` with its
-own: Claude Code (2.1.299) renames the transcript, subagents and all, into the worktree's
-project as the session enters one (`EnterWorktree`), and every hook after names it there.
-Only the transcript follows hooks; a hook's `cwd` is the shell's, which a `cd` moves too,
+The file's `transcript_path` follows the transcript: Claude Code (2.1.299) renames it,
+subagents and all, into the worktree's project as the session enters one
+(`EnterWorktree`), and every hook after names it there. A hook of the session the process
+holds rewrites the path when the file's no longer exists and its own does; PostToolUse
+runs in the background, so a hook fired before the rename can land after it, naming the
+path the rename left, and writes nothing. Only the transcript follows hooks; a hook's `cwd` is the shell's, which a `cd` moves too,
 so the session's `cwd` stays the start's. Keying on the process keeps a late hook from a
 session the process has moved on from (a `/clear`, a resume, a `/branch`) from writing a
 file that would outrank the new session's: which session a process holds is the sweep's
@@ -1455,7 +1457,7 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
 
 - **Membership** is the set of files in `~/.hands/sessions/`. The shim writes one at
   `SessionStart`, or at the first hook of a session that fired none, rewrites its
-  transcript at every hook after, and removes it at `SessionEnd`. The daemon sweeps the directory once
+  transcript when a hook names where Claude Code moved it, and removes it at `SessionEnd`. The daemon sweeps the directory once
   before its models load and every 2 seconds after (`hands.sessions.liveness`). A file
   whose process is running becomes `Attached`, which registers a session the registry
   has never heard of in `Idle` and changes nothing for one it knows: a hook heard first

@@ -13,10 +13,10 @@ from hands.core.effects import SessionGone
 from hands.core.events import Attached, Died, Joined, MovedOn, Observed
 from hands.core.session import Gone, Membership, SessionId, Unreported
 from hands.sessions.home import Home
-from hands.sessions.liveness import Recorded, observations, recorded, sweep
+from hands.sessions.liveness import observations, sweep
 from hands.sessions.payload import Rejected
 from hands.sessions.processes import START_SLACK_SECONDS, parse_pid, process_starts
-from hands.sessions.membership import remove_ended_membership, write_membership
+from hands.sessions.membership import Recorded, recorded, remove_ended_membership, write_membership
 from hands.sessions.registry import Sessions
 
 

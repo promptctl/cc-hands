@@ -1,5 +1,5 @@
 """The membership file: written by the shim at SessionStart, or at the first hook of a session that never fired one, and
-its transcript rewritten by every hook after, since Claude Code moves the transcript when the session enters a worktree;
+its transcript rewritten by the hook that names where Claude Code moved it, as the session enters a worktree;
 read by the daemon.
 
 The file's name is the session id, so the id is not repeated inside it.
@@ -76,15 +76,37 @@ def running(record: Recorded, started: Mapping[int, float]) -> bool:
 
 def holder(home: Home, pid: int) -> Membership | None:
     """The session the process holds, as its files say; None when no file written while it ran names it."""
-    records: list[Recorded] = []
-    for path in home.memberships.glob("*.json"):
-        try:
-            records.append(Recorded(parse_membership(SessionId(path.stem), path.read_bytes()), path.stat().st_mtime))
-        # Ended since the listing, or unreadable, which the daemon's sweep reports and removes: either way it names
-        # no process.
-        except (FileNotFoundError, Rejected):
-            continue
+    # An unreadable file, which the daemon's sweep reports and removes, names no process.
+    records, _ = recorded(home)
     return holders([record for record in records if record.membership.pid == pid], process_starts({pid})).get(pid)
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A membership file that does not parse, as it was read: it names no session hands can reach."""
+
+    path: Path
+    raw: bytes
+    error: Rejected
+
+
+def recorded(home: Home) -> tuple[list[Recorded], list[Unreadable]]:
+    """Every membership file that parses, and every one that does not; nothing is removed here."""
+    records: list[Recorded] = []
+    unreadable: list[Unreadable] = []
+    # A shim's staging file ends in .tmp until it is renamed into place.
+    for path in sorted(home.memberships.glob("*.json")):
+        try:
+            written_at = path.stat().st_mtime
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            # The session ended between the listing and the read.
+            continue
+        try:
+            records.append(Recorded(parse_membership(SessionId(path.stem), raw), written_at))
+        except Rejected as error:
+            unreadable.append(Unreadable(path, raw, error))
+    return records, unreadable
 
 
 def recorded_membership(home: Home, session: SessionId) -> Membership | None:

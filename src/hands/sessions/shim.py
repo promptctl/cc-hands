@@ -83,11 +83,16 @@ def record(home: Home, payload: Payload) -> None:
                     # hook but a start or an end [LAW:one-source-of-truth], so it is written before the post. A file left
                     # by a dead process under this session's id names another pid, so it is replaced.
                     write_membership(home, heard)
-                case Membership(id=heard.id) as recorded:
-                    # Claude Code moves the transcript when the session enters a worktree, and every hook after names
-                    # where it is now, so the file follows it. Only the transcript: a hook's cwd is the shell's, which a
+                case Membership(id=heard.id) as recorded if not recorded.transcript.exists() and heard.transcript.exists():
+                    # Claude Code renames the transcript when the session enters a worktree, and every hook after names
+                    # where it is now, so the file follows it: to the transcript that is there. A background hook that
+                    # fired before the rename lands late naming the path it left, which is gone, so the file names
+                    # where it is however the hooks land. Only the transcript: a hook's cwd is the shell's, which a
                     # `cd` moves, and the session's project is where it started.
                     write_membership(home, replace(recorded, transcript=heard.transcript))
+                case Membership(id=heard.id):
+                    # The file names the transcript that is there, or nothing is there yet to name.
+                    pass
                 case Membership():
                     # Keyed on the process, not the session: a late hook of a session this process has since moved on
                     # from (a /clear, a resume, a /branch) writes nothing, since the newest file naming a process is the
