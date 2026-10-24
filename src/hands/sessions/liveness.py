@@ -8,7 +8,7 @@ from loguru import logger
 from hands.core.events import Attached, Died, MovedOn, Observed
 from hands.core.session import Membership, SessionId
 from hands.sessions.home import Home
-from hands.sessions.membership import Recorded, Unreadable, holders, recorded, remove_ended_membership, running
+from hands.sessions.membership import Recorded, Unreadable, holders, naming, recorded, remove_ended_membership, running
 from hands.sessions.processes import process_starts
 from hands.sessions.registry import Sessions
 
@@ -49,8 +49,7 @@ def observed(home: Home, membership: Membership) -> Observed:
     """What the files and the OS say of one session now, judged as a sweep judges it."""
     # [LAW:single-enforcer] the sweep's own judgement, of only the files naming the session's pid: they alone say which
     # session that process holds. Judged as a session already unfiled, so a file that is gone says so now.
-    records, _ = recorded(home)
-    seen, _ = observations([membership], [record for record in records if record.membership.pid == membership.pid], process_starts({membership.pid}), frozenset({membership.id}))
+    seen, _ = observations([membership], *naming(home, membership.pid), frozenset({membership.id}))
     return next(observation for observation in seen if observation.membership.id == membership.id)
 
 
@@ -58,14 +57,13 @@ def observations(
     listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float], unfiled_before: Unfiled
 ) -> tuple[list[Observed], Unfiled]:
     """What each file, and each listed session whose file stayed gone, says about its session; and which listed sessions have no file now."""
-    alive = [record for record in records if running(record, started)]
     # One process holds one session.
     held = holders(records, started)
     on_file = {record.membership.id for record in records}
     unfiled = [membership for membership in listed if membership.id not in on_file]
     return [
         # A file whose own process is not running holds nothing, even when a later session took its pid.
-        *(_observed(record.membership, held.get(record.membership.pid) if record in alive else None) for record in records),
+        *(_observed(record.membership, held.get(record.membership.pid) if running(record, started) else None) for record in records),
         # The shim removes a session's file before it posts SessionEnd, so a listed session with no file has ended. It is
         # judged only once its file was also gone a sweep ago, so the end hook, which lands in milliseconds, says how.
         *(_observed(membership, held.get(membership.pid)) for membership in unfiled if membership.id in unfiled_before),

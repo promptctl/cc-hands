@@ -76,9 +76,14 @@ def running(record: Recorded, started: Mapping[int, float]) -> bool:
 
 def holder(home: Home, pid: int) -> Membership | None:
     """The session the process holds, as its files say; None when no file written while it ran names it."""
+    return holders(*naming(home, pid)).get(pid)
+
+
+def naming(home: Home, pid: int) -> tuple[list[Recorded], Mapping[int, float]]:
+    """The files naming the process, and when it started: all that says which session it holds."""
     # An unreadable file, which the daemon's sweep reports and removes, names no process.
     records, _ = recorded(home)
-    return holders([record for record in records if record.membership.pid == pid], process_starts({pid})).get(pid)
+    return [record for record in records if record.membership.pid == pid], process_starts({pid})
 
 
 @dataclass(frozen=True)
