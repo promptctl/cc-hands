@@ -1943,27 +1943,24 @@ holds on the last word until hands says the sentence is done, and strikes throug
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
 lines told beside the marks.
 
-**The phone's page lists the running sessions, each with a Stop** (`hands.voice.sessionspage`).
-Below the Conversation link, each live session is a row: its name, its state line, and a Stop that
-presses Escape at that session's keyboard. The rows are `standing` (`hands.voice.tools`), the
-listing the brain's briefing reads, and a Stop answers with `interrupt`, what the brain's
-`interrupt_session` returns, so the page and the brain stop a session and say what came of it one
-way. Both routes are served beside the phone's page under its key (`hands.voice.keyed`):
-`GET /sessions?seen=<mark>` and `POST /sessions/<id>/interrupt`. Escape is typed only into a session
-running a turn (`hands.core.keyboard`), and the readback, shown under the row for 30 s, says when
-there was nothing to stop. A row's Stop is disabled until it is answered, and its state line turns
-idle once hands hears the turn stop. Each row is kept from read to read and redrawn in place, so the
-Stop under a finger is never swapped for another mid-tap. A read that has seen the rows waits until
-one of them changes: its mark is a digest of the rows, so a session streaming text, which leaves its
-state line as it was, does not wake it, and a rename does. Each look reads a transcript only past
-where it was last read (`hands.sessions.transcript.Titles`, owned by the registry), so a listing of
-sessions with transcripts of tens of megabytes costs a few small reads. The wait is the conversation
-page's too, one loop in `hands.voice.longpoll`: up to 25 s, looking every quarter second. A read
-hands refuses is said in the section and ends the reading; one that never reached hands is said and
-made again after 3 s. Each read is one `sessions.read` event,
-with how many sessions it gave, the mark it had seen, how long it waited, how many looks it took,
-and whether the rows had changed; each Stop one `sessions.interrupt`, with the session and its
-readback, or its error, which fails the event.
+**The phone's page shows what the brain is doing, and stops its turn** (`hands.voice.brainpage`).
+Below the Conversation link, one line says Idle, Thinking, or the call the brain runs, with how long
+it has run, and each call it is running now with its input; beside it, one Stop. Nothing on the page
+reaches a working session. What the brain is doing is its stage's to say (`BrainStage.work`), from
+what it already heard on the wire: the turn in flight, and each call a reply of it made whole that
+no request has yet carried a result of. A call's input is read by the wire's one reader
+(`hands.core.wire.tool_input`); one that is not a JSON object is shown as unreadable, never as an
+input. The Stop posts the turn it was shown, and `BrainStage.stop` stops only that turn, through the
+brain's one stop (`Brain.interrupt`, Escape then Ctrl-C with its input held), which ends it as
+`BrainStopped`: never said as a failure, and an `AlreadyEnded` for a turn the brain has moved on
+from. A turn stopped before any block of its reply ended is gone from the brain's history (Escape
+gives the prompt back to the input, and the Ctrl-C empties it), so what it asked is told the brain
+with its next turn. Both routes are served beside the phone's page under its key
+(`hands.voice.keyed`): `GET /brain?seen=<mark>` and `POST /brain/stop`. A read that has seen the
+work waits until it changes, by the conversation page's loop in `hands.voice.longpoll`, a look being
+a digest of what the stage holds in memory; its answer carries the Mac's clock, by which the page
+times the work. Each read is one `brain.read` event, with what the brain was doing, how many calls
+it ran, and the wait's facts; each Stop one `brain.stop`, with the turn it named and what came of it.
 
 **The conversation page is the log's conversation, with a box to type in**
 (`hands.voice.conversationpage`). It is served beside the phone's page, on its port and

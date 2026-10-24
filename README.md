@@ -402,7 +402,7 @@ hands update                            # install hands from the current master 
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
-                                        # the talk page also lists the running sessions, each with its state and a Stop that presses Escape at that session's keyboard
+                                        # the talk page also shows what the brain is doing, its running tool call live, and a Stop that ends the brain's turn
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
                                         # with /backlog?project=<directory> before the # it is the backlog page: every open ticket of that project's lit
                                         # backlog under its epic, with hands' sentence for it; a ticket dragged among its siblings is ranked there with `lit rank`
