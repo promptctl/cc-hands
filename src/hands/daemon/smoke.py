@@ -299,10 +299,12 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> Exit:
         smoked.read()
         said = errors(smoked.lines)
         annotate(failed_at=missed.stage, daemon_errors=tuple(said))
-        print(f"FAILED {missed.stage}: {missed.why}", flush=True)
+        # [LAW:one-source-of-truth] what the run printed is what its event says it failed with.
+        failed = f"{missed.stage}: {missed.why}"
+        print(f"FAILED {failed}", flush=True)
         for error in said:
             print(f"  hands logged: {error}", flush=True)
-        return Failed(1, f"{missed.stage}: {missed.why}")
+        return Failed(1, failed)
     print("passed: every part of the pipeline did its share.", flush=True)
     return 0
 
