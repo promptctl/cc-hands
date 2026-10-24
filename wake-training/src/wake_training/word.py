@@ -33,10 +33,10 @@ class Word:
     @property
     def near_misses(self) -> tuple[str, ...]:
         """What is said that is not the word but shares its sound: each part of it said alone ("hey", "hands"), and
-        its words after the first, led by another word ("okay hands", "my hands")."""
+        each of its endings led by another word ("okay hands", "my hands"). A word of one word has neither."""
         said = self.spoken.split()
         parts = {" ".join(said[start:end]) for start in range(len(said)) for end in range(start + 1, len(said) + 1)}
-        led = {" ".join((lead, *said[1:])) for lead in LEADS}
+        led = {" ".join((lead, *said[start:])) for lead in LEADS for start in range(1, len(said))}
         return tuple(sorted((parts | led) - {self.spoken}))
 
     @property

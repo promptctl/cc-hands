@@ -4,6 +4,7 @@ that lets it drive the piper-sample-generator this corpus carries. Both are text
 
 import hashlib
 import json
+from itertools import cycle, islice
 from pathlib import Path
 
 from wake_training.corpus import BACKGROUND, IMPULSES, PIPER, TRAINING_FEATURES, VALIDATION_FEATURES, Corpus
@@ -23,10 +24,9 @@ NEAR_MISSES = SAMPLES // 4
 
 def clips(word: Word, corpus: Corpus) -> dict[str, object]:
     """What the trainer makes `word`'s clips and features from, as its config's keys."""
-    near = word.near_misses
     return {
         "target_phrase": [word.spoken],
-        "custom_negative_phrases": [miss for _ in range(NEAR_MISSES // len(near)) for miss in near],
+        "custom_negative_phrases": list(islice(cycle(word.near_misses), NEAR_MISSES)),
         "n_samples": SAMPLES,
         "n_samples_val": VALIDATION_SAMPLES,
         "rir_paths": [str(corpus.at(IMPULSES))],

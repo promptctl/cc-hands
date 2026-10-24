@@ -51,8 +51,8 @@ that was cut short starts over, and training and evaluation run again.
 
 A word's clips and features live in a run directory named for the word plus a digest of what they are made from:
 the phrase, its near-miss phrases, the sample counts, the background and room data, and the voice generator. For
-Hey Hands that is `words/hey_hands-4e2fca3a`. Change any of those and the next run makes a fresh directory and generates every clip
-again. Change only how the model is trained (steps, width, weights) and the clips are reused.
+Hey Hands that is `words/hey_hands-1107d071`. Change any of those and the next run makes a fresh directory and
+generates every clip again. Change only how the model is trained (steps, width, weights) and the clips are reused.
 
 Old run directories are never deleted for you, and each holds about 1.5–1.7 GB. Remove the ones you no longer
 need by hand.

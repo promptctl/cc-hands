@@ -104,3 +104,7 @@ def test_a_run_made_with_another_generator_is_a_run_of_its_own(tmp_path: Path, m
     hey = recipe.made(word("Hey Hands"), corpus)
     monkeypatch.setattr(corpus_module, "GENERATOR", "another.pt")
     assert recipe.made(word("Hey Hands"), corpus) != hey
+
+
+def test_a_word_without_near_misses_leaves_the_negatives_to_the_trainer(tmp_path: Path) -> None:
+    assert recipe.clips(word("Computer"), Corpus(tmp_path))["custom_negative_phrases"] == []

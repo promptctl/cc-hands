@@ -66,6 +66,9 @@ def _curl(files: list[tuple[str, Path]]) -> None:
 def _listing(dataset: str, revision: str, folder: str) -> list[str]:
     """The paths of the files in `folder` of a Hugging Face dataset at `revision`."""
     with urllib.request.urlopen(f"https://huggingface.co/api/datasets/{dataset}/tree/{revision}/{folder}") as response:
+        # The listing is one page; a folder of more would be fetched as complete with only its first.
+        if response.headers.get("Link"):
+            raise RuntimeError(f"{dataset}@{revision} lists {folder} in more than one page")
         entries = cast(list[dict[str, str]], json.load(response))
     files = [entry["path"] for entry in entries if entry["type"] == "file"]
     if not files:

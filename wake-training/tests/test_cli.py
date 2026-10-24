@@ -80,7 +80,7 @@ def test_the_install_stage_puts_the_model_where_it_says(tmp_path: Path) -> None:
     model = tmp_path / "wake" / "hey_hands.onnx"
 
     assert cli._install(word("Hey Hands"), run, model) == {"model": str(model)}  # pyright: ignore[reportPrivateUsage]
-    assert model.read_bytes() == b"model"
+    assert model.read_bytes() == b"model" and [path.name for path in model.parent.iterdir()] == ["hey_hands.onnx"]
 
 
 def test_a_relative_destination_is_printed_as_hands_can_find_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

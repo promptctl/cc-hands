@@ -12,7 +12,8 @@ from openwakeword.model import Model
 
 from wake_training.stage import Fact
 
-# hands.voice.wake.THRESHOLD: the score at which hands takes the wake word as said. This package does not import hands.
+# hands.voice.wake.THRESHOLD: the score at which hands takes the wake word as said. This package does not import hands;
+# hands' tests/test_wake.py holds the copy to it.
 THRESHOLD = 0.5
 # openWakeWord makes one feature frame of each 80 ms of audio.
 FRAME_SECONDS = 0.08

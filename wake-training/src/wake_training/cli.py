@@ -6,6 +6,7 @@ over, and training itself, the model's own stage, runs again.
 """
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -64,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
     stage("evaluate", lambda: _evaluate(chosen, corpus, run))
     model = to / f"{chosen.name}.onnx"
     stage("install", lambda: _install(chosen, run, model))
-    print(f'[talk]\nwake_word = "{chosen.phrase}"\nwake_word_model = "{model}"')
+    # A JSON string is a TOML basic string, escaped as TOML escapes.
+    print(f"[talk]\nwake_word = {json.dumps(chosen.phrase)}\nwake_word_model = {json.dumps(str(model))}")
     return 0
 
 
@@ -119,8 +121,11 @@ def _evaluate(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
 
 
 def _install(chosen: Word, run: Path, model: Path) -> dict[str, Fact]:
+    # Copied whole, then renamed into place: hands never loads a model half copied.
+    partial = model.with_name(model.name + ".partial")
     model.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(run / f"{chosen.name}.onnx", model)
+    shutil.copyfile(run / f"{chosen.name}.onnx", partial)
+    partial.replace(model)
     return {"model": str(model)}
 
 
