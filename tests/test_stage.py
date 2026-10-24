@@ -2170,7 +2170,23 @@ async def test_a_turn_stopped_before_any_of_its_reply_was_held_is_told_the_brain
     await rig.until(lambda: bool(turns(rig.recorded)))
     await rig.say("something shorter")
     assert rig.brain.asked[-1].startswith("something shorter")
-    assert f'{UNKEPT}: "{rig.brain.asked[0]}"' in rig.brain.asked[-1]
+    assert f'{UNKEPT}: "write me a long story"' in rig.brain.asked[-1]
+    rig.brain.end()
+
+
+async def test_turns_stopped_one_after_another_before_any_reply_are_each_told_by_their_words_never_one_quoted_in_another(rig: Rig) -> None:
+    for words in ("write me a long story", "something shorter"):
+        await rig.say(words)
+        rig.stream(rig.request()[0], "Once upon")
+        assert rig.stage.stop(turn_of(rig)) == Stopping()
+        rig.brain.end(BrainStopped("p1"))
+        await rig.until(lambda: rig.stage.work() == Idle())
+    await rig.say("just a poem")
+    told = rig.brain.asked[-1]
+    # The second stopped turn was typed with the first's note, which its history lost with it: both are told, side by side.
+    assert (told.count(f'{UNKEPT}: "something shorter"'), told.count(f'{UNKEPT}: "write me a long story"')) == (1, 1)
+    # Each quote is the words asked, never what was typed beside them.
+    assert all("[hands]" not in quote for quote in told.split('"')[1::2])
     rig.brain.end()
 
 

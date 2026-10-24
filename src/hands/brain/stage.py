@@ -527,7 +527,7 @@ class BrainStage(FrameProcessor):
             match waiting:
                 case (str() as text, reading):
                     asker = await reading
-                    await self._ask(f"{text}\n\n{beside(asker.front, asker.modality)}", asker, (), (), arrived, released, taken)
+                    await self._ask(text, asker, (), (), arrived, released, taken)
                 case Narrated(text=text, unsaid=unsaid, session=session, utterances=utterances):
                     # [LAW:no-ambient-temporal-coupling] moved as the telling is taken, with the user's last turn ended and
                     # none waiting, since they go first, and before the brain is asked, so its request reads the new focus.
@@ -589,9 +589,9 @@ class BrainStage(FrameProcessor):
     ) -> str | None:
         note, self._broken_off = self._broken_off, ""
         # After the words, so a turn of the user's never opens with [hands], which marks a message as hands' own.
-        text = _notes(text, note)
+        typed = _notes(text, _seen(asker), note)
         # What is typed into the brain for the turn, as it is typed.
-        annotate(asked=text)
+        annotate(asked=typed)
         said: asyncio.Queue[str | _Point | _Aside | None] = asyncio.Queue()
         spoken: list[str] = []
         turn = self._turn = _Turn(said, spoken, asker, utterances, here(), _since(arrived, released), Epoch(time.time()))
@@ -603,7 +603,7 @@ class BrainStage(FrameProcessor):
         over = ""
         try:
             try:
-                asked = asyncio.ensure_future(self._brain.ask(text, lambda permission: self._put(turn, permission)))
+                asked = asyncio.ensure_future(self._brain.ask(typed, lambda permission: self._put(turn, permission)))
                 await asyncio.wait({asked})
             finally:
                 self._turn = None
@@ -654,9 +654,9 @@ class BrainStage(FrameProcessor):
             return failure.error
         # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is told it
         # with its next turn, unless the reply asked again opened with it.
-        # A turn stopped before Claude Code held any of its reply is gone from the brain's history: what it asked is told it
-        # with its next turn.
-        unkept = _stopped_unkept(text) if stopped and not turn.held_reply else ""
+        # A turn stopped before Claude Code held any of its reply is gone from the brain's history, the note typed with it
+        # too: the words asked in it are told it with its next turn, and the note again beside them, never quoted in them.
+        unkept = _notes(_stopped_unkept(text), note) if stopped and not turn.held_reply else ""
         self._broken_off = _notes(*(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated), over, unkept)
         return None
 
@@ -980,6 +980,15 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failu
         # refused once, ends heard as failed rather than as silence the user takes for nothing done.
         return _Failure("the brain acted and said nothing of it", ModelActedUntold(), ACTED_UNTOLD)
     return None
+
+
+def _seen(asker: Asker) -> str:
+    """What the brain is told beside a turn of what the user could see as they asked it; nothing beside hands' own."""
+    match asker:
+        case UserAsked(front=front, modality=modality):
+            return beside(front, modality)
+        case HandsAsked():
+            return ""
 
 
 def _stopped_unkept(asked: str) -> str:

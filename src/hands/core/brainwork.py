@@ -16,7 +16,8 @@ Epoch = NewType("Epoch", float)
 
 @dataclass(frozen=True)
 class Running:
-    """A call the brain's turn made that is running now: its tool as the model called it, its input, and when it began."""
+    """A call the brain's turn made that is running now: its tool as the user knows it, one of hands' own by its own name,
+    its input, and when it began."""
 
     tool: str
     input: Mapping[str, object] | Unreadable
@@ -48,7 +49,7 @@ class Stopping:
 
 @dataclass(frozen=True)
 class NotWorking:
-    """There was no turn of the brain's to stop: none in flight, or the brain had not yet taken it."""
+    """There was no turn of the brain's in flight to stop."""
 
 
 @dataclass(frozen=True)
