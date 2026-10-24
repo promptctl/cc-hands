@@ -1438,7 +1438,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
     summarise = aside(ask, "Sum it up.", 0.1)
     assert await summarise("the tests ran") == "The tests ran."
     # The summary's own time is the side question's deadline, over the ones asked before it and its answer alike.
-    assert asked == [("Sum it up.\n\nSummarize this:\n\nthe tests ran", Deadline(0.1))]
+    assert asked == [("Sum it up.\n\nthe tests ran", Deadline(0.1))]
     with pytest.raises(SummaryFailed, match="no answer by its deadline"):
         await summarise("fail")
 

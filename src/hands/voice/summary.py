@@ -18,7 +18,7 @@ def aside(ask: Callable[[str, Within], Awaitable[str]], instruction: str, timeou
 
     async def from_an_aside(turn: str) -> str:
         try:
-            return _spoken(await ask(f"{instruction}\n\nSummarize this:\n\n{turn}", Deadline(timeout)))
+            return _spoken(await ask(f"{instruction}\n\n{turn}", Deadline(timeout)))
         except AsideFailed as error:
             raise SummaryFailed(f"the side question had no answer: {error}") from error
 
