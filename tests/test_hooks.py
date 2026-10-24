@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.core.events import Attached, Ended, Event, Joined, PermissionRequested, Prompted, Stopped, ToolFinished
+from hands.core.events import Ended, Event, Joined, Located, PermissionRequested, Prompted, Stopped, ToolFinished
 from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
 from hands.sessions.hooks import Hook, parse_hook
@@ -73,7 +73,7 @@ def test_a_hook_whose_session_has_no_file_joins_nothing_and_still_says_what_happ
 )
 def test_every_hook_of_a_running_session_brings_the_session_so_one_that_never_started_here_joins_on_it(home: Home, hook: dict[str, object]) -> None:
     """/reload-plugins in a session already running fires no start hook, so whatever it fires first is where it joins."""
-    assert parse_hook(body(**hook), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST).joining == Attached(MEMBER)
+    assert parse_hook(body(**hook), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST).joining == Located(MEMBER)
 
 
 def test_an_end_needs_no_membership_file_the_shim_has_already_removed(home: Home) -> None:

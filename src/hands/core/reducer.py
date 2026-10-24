@@ -46,6 +46,7 @@ from hands.core.events import (
     Closed,
     Taken,
     Joined,
+    Located,
     Launched,
     Read,
     ReportedBack,
@@ -85,9 +86,11 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             # A Stop held in the process before is let go: its transcript is read afresh from here, as history.
             held = previous.unnamed if isinstance(previous, Session) else ()
             return joined, [*_unsettled(membership.id, [stop for stop in held if stop not in started.unnamed]), *effects, *_said_at_start(membership.id, source)]
-        case Attached(membership=membership) if membership.id not in registry.sessions:
+        case Attached(membership=membership) | Located(membership=membership) if membership.id not in registry.sessions:
             # A membership file says nothing of the mode; the session's next hook will.
             return registry.put(Session(membership, Unreported(), mode=None)), []
+        case Located(membership=membership):
+            return _located(registry, membership), []
         case Attached():
             # [LAW:no-ambient-temporal-coupling] a session the registry already knows was heard from its hooks, which
             # know more than its file: a sweep that read the file before a hook landed never overwrites it.
@@ -103,6 +106,15 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
             return _ticked(registry, at)
         case _:
             return _enter(registry, event)
+
+
+def _located(registry: Registry, membership: Membership) -> Registry:
+    """A session the registry holds, where its own hook's file says it works now; one that ended stays ended."""
+    match registry.sessions[membership.id]:
+        case Session() as session:
+            return registry.put(replace(session, membership=membership))
+        case Gone():
+            return registry
 
 
 def _started(membership: Membership, source: StartSource, previous: Known | None) -> Session:

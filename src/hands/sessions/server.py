@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from aiohttp import web
-from hands.core.events import Attached, PermissionRequested, Prompted, Stopped
+from hands.core.events import Located, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
 from hands.sessions.audit import Record
@@ -38,7 +38,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
             return web.Response(status=400, text=str(error))
         annotate(hook=said.name, session=said.session)
         match said.joining:
-            case Attached() as joining:
+            case Located() as joining:
                 await sessions.apply(joining)
             case None:
                 pass

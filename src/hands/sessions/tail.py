@@ -10,7 +10,7 @@ import os
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from loguru import logger
 
@@ -21,7 +21,7 @@ from hands.core.status import Stamp
 from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Continuing, Interruption, Opening, Said, Step, Turn
 from hands.core.steps import Call
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.subagents import started_from, subagents_of, transcript_of
+from hands.sessions.subagents import meta_of, started_from, subagents_of, transcript_of
 from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_of, turn_record, written_of
 from hands.sessions.turning import Turning
 
@@ -87,15 +87,26 @@ class Reading:
         return made
 
 
+# Why a transcript is read again from its start, in the words its warning says it in.
+Restarted = Literal["is not the file read so far", "is shorter than what was read of it"]
+
+
+@dataclass(frozen=True)
+class Position:
+    """How far a transcript has been read: an offset into one file, known by its device and inode, which Claude Code's
+    rename of the transcript into a worktree's project keeps and a new file under the session's id does not. No file
+    before the first read: a file read from where it ends then is bound to that offset as it is first read."""
+
+    offset: int = 0
+    file: tuple[int, int] | None = None
+
+
 @dataclass
 class Delegate:
     """A subagent's own transcript, followed from where it was last read, for the calls it makes while it works."""
 
     id: AgentId
-    path: Path
-    offset: int
-    # The file Claude Code writes beside the transcript as it starts the subagent, naming the job it gave it.
-    meta: Path
+    at: Position
     # Whether the record its transcript starts from is still to be read: the job it was given, which is no call of its
     # own, though a fork's is the parent's call that launched it, copied in ahead of the fork's own work.
     job: bool
@@ -122,10 +133,13 @@ def _doings(calls: Iterable[Call]) -> list[Doing]:
 
 @dataclass
 class Following:
-    """One transcript as far as it has been read: the turn open in it, and the ones before it that may not be told yet."""
+    """One transcript as far as it has been read: the turn open in it, and the ones before it that may not be told yet.
 
-    path: Path
-    offset: int = 0
+    [LAW:one-source-of-truth] where the transcript is, is the registry's to say, at every read: Claude Code moves it,
+    subagents and all, when the session enters a worktree, and what was read of it is still read.
+    """
+
+    at: Position = Position()
     reading: Reading = field(default_factory=lambda: Reading(0))
     # [LAW:no-ambient-temporal-coupling] turns that ended, kept past the next prompt's record: the narrator can be
     # seconds behind, and a turn is told as itself however much has been read since it ended. Oldest first; let go of
@@ -203,11 +217,11 @@ class Following:
                 return None
 
     def restart(self) -> None:
-        """Read this file again from its start: nothing read of the file it was says anything about the file it is."""
+        """Read the transcript again from its start: it is shorter than what was read of it, so nothing read says anything about it."""
         # Numbered on from the turn that was, so a telling made before any of this marks nothing after it.
         self.reading = Reading(self.reading.number + 1)
         self.ended = []
-        self.offset = 0
+        self.at = Position()
         self.asked = self.answering = None
         self.held = []
         self.printed = False
@@ -258,21 +272,15 @@ class Tails:
             # [LAW:no-ambient-temporal-coupling] a session is read once Claude Code has said whether it runs, so the
             # turn its transcript is in when hands begins following it lands on a status that decides whether it runs.
             for member in [member for member in members if self._known.status_read(member.id)]:
-                following = self._following.setdefault(member.id, Following(member.transcript))
-                if following.path != member.transcript:
-                    # [LAW:one-source-of-truth] where a session's transcript is, is the registry's to say. A
-                    # session registered again writes a new one, and nothing read of the old file says anything
-                    # about the new: it is read from its start, and the turn it opens is the turn that is told.
-                    following.path = member.transcript
-                    following.restart()
+                following = self._following.setdefault(member.id, Following())
                 try:
-                    await asyncio.to_thread(self._read, member.id, following)
+                    await asyncio.to_thread(self._read, member.id, following, member.transcript)
                 except FileNotFoundError:
                     # Claude Code creates the transcript with its first record, which a session may not have written yet.
-                    logger.debug(f"session {member.id} has not written {following.path} yet")
+                    logger.debug(f"session {member.id} has not written {member.transcript} yet")
                 except OSError as error:
                     # [LAW:no-silent-failure] the offset does not move, so the same bytes are read again at the next catch-up.
-                    logger.error(f"cannot read the transcript of session {member.id} from {following.path}: {error}")
+                    logger.error(f"cannot read the transcript of session {member.id} from {member.transcript}: {error}")
             transcribed, self._transcribed = self._transcribed, []
             return transcribed
 
@@ -284,18 +292,19 @@ class Tails:
         reply's own record 46 to 77 ms after the hook fires, so the hook's copy stands in until the record lands.
         """
         async with self._reading:
-            following = self._follow(session)
-            if following is None:
+            followed = self._follow(session)
+            if followed is None:
                 # A Stop from a session the registry does not list: there is no transcript to tell it from.
                 return None
+            transcript, following = followed
             # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
             # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
-            await asyncio.to_thread(self._read, session, following)
+            await asyncio.to_thread(self._read, session, following, transcript)
             reading = following.find(turn)
             if reading is None:
                 # [LAW:no-silent-failure] the whole transcript was just read, so its turn is not in it: read again from
                 # the start of another file since, or let go of after its telling. Nothing is told rather than another turn.
-                logger.warning(f"no turn kept from {following.path} carries prompt {turn}, so there is nothing to tell of it")
+                logger.warning(f"no turn kept from {transcript} carries prompt {turn}, so there is nothing to tell of it")
                 return None
             if reading.turn.opening is None:
                 return None
@@ -319,7 +328,7 @@ class Tails:
             # report than a fresh one, and saying which it is here is what keeps the opening from being asked twice.
             standing = Answering() if heard == 0 else Continuing(heard)
             through = reading.turn.forgotten + len(untold)
-            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, through, ending if stand_in is None else StoodIn(stand_in), following.path)
+            return Telling(session, Turn(reading.turn.opening, tuple(shown), standing), reading.number, through, ending if stand_in is None else StoodIn(stand_in), transcript)
 
     async def spoken(self, telling: Telling) -> None:
         """Mark what a telling held as told, on the turn it was made of, whatever has opened since, and let go of it.
@@ -347,36 +356,34 @@ class Tails:
             # A turn that ended has no more records coming, so told is all of it.
             following.ended = [held for held in following.ended if held is not reading]
 
-    def _follow(self, session: SessionId) -> Following | None:
-        """The session's transcript, followed from now if the catch-up has not reached it yet.
+    def _follow(self, session: SessionId) -> tuple[Path, Following] | None:
+        """Where the session's transcript is now, and how far it has been read: followed from now if the catch-up has
+        not reached it yet.
 
         A session's last turn is told after the session has ended — `claude -p` exits the moment its turn stops —
         so this asks the registry for any session it has heard of, not only for the ones still live.
         """
-        following = self._following.get(session)
-        if following is not None:
-            return following
         membership = self._known.membership(session)
-        return None if membership is None else self._following.setdefault(session, Following(membership.transcript))
+        return None if membership is None else (membership.transcript, self._following.setdefault(session, Following()))
 
-    def _read(self, session: SessionId, following: Following) -> None:
+    def _read(self, session: SessionId, following: Following, transcript: Path) -> None:
         """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read."""
         # Before the file is opened, so every record Claude Code had written by then is in what is read.
         through = self._known.stamp()
         try:
-            read = _appended(following.path, following.offset)
+            read = _appended(transcript, following.at)
         except OSError:
             # Nothing written yet is nothing left unread, and a transcript that cannot be read gives nothing more to wait
             # for: the turn is told, and its telling says why it could not read it [LAW:no-silent-failure].
             self._transcribed.append(Read(session, through))
             raise
-        if read.restarted:
+        if read.restarted is not None:
             # Reset in place: the narrator may be holding this very following while a summary comes back.
-            logger.warning(f"the transcript of session {session} is shorter than what was read of it, so it is read again from its start")
+            logger.warning(f"the transcript of session {session} at {transcript} {read.restarted}, so it is read again from its start")
             following.restart()
         # Read from its start: every turn before the one the file ends in is over by now.
-        history = following.offset == 0
-        following.offset = read.offset
+        history = following.at.offset == 0
+        following.at = read.at
         # What each record says that no hook does, by the turn it was read into.
         heard: list[tuple[int, Transcribed]] = []
         went_on, carried = False, following.printed
@@ -405,7 +412,7 @@ class Tails:
         made = following.reading.made()
         if made and not history:
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
-        heard += [(following.reading.number, event) for event in self._delegated(session, following, history)]
+        heard += [(following.reading.number, event) for event in self._delegated(session, following, transcript, history)]
         current, ended = following.current(), following.reading.turn.ended is not None
         if went_on and following.held:
             # [LAW:nothing-unseen] the turn held back as ended is running after all, unless a turn after it opened: so not
@@ -431,30 +438,29 @@ class Tails:
         if not read.unfinished:
             self._transcribed.append(Read(session, through))
 
-    def _delegated(self, session: SessionId, following: Following, history: bool) -> list[Progressed]:
+    def _delegated(self, session: SessionId, following: Following, transcript: Path, history: bool) -> list[Progressed]:
         """What each subagent of the session set out to do since its transcript was last read, said as its own.
 
         A subagent is known by the file Claude Code writes beside its transcript as it starts it. One started before
         hands began following its session is followed from where its transcript ends then: its work so far is history.
         """
-        for meta in subagents_of(following.path).glob("agent-*.meta.json"):
+        for meta in subagents_of(transcript).glob("agent-*.meta.json"):
             id = AgentId(meta.name.removeprefix("agent-").removesuffix(".meta.json"))
             if id not in following.delegates:
-                path = transcript_of(following.path, id)
-                offset = _whole(path) if history else 0
+                offset = _whole(transcript_of(transcript, id)) if history else 0
                 if offset:
                     # [LAW:nothing-unseen] where its work starts being heard from, and how much of it is history.
                     logger.info(f"subagent {id} of session {session} was working before hands followed the session, so it is heard from where its transcript ends: {offset} bytes of it are history")
-                following.delegates[id] = Delegate(id, path, offset, meta, job=offset == 0)
+                following.delegates[id] = Delegate(id, Position(offset), job=offset == 0)
         progressed = list[Progressed]()
         for delegate in following.delegates.values():
-            if _size(delegate.path) == delegate.offset:
+            if _size(transcript_of(transcript, delegate.id)) == delegate.at.offset:
                 # A subagent that has done nothing new, as one that reported back long since has: its file is not opened.
                 continue
             try:
                 # Named before its calls are read, so a meta that cannot be read yet leaves them to be read with it.
-                agent = _attributed(session, delegate, following)
-                made = _read_delegate(session, delegate)
+                agent = _attributed(session, delegate, following, transcript)
+                made = _read_delegate(session, delegate, transcript)
                 if made and agent is not None:
                     progressed.append(Progressed(session, agent, tuple(made), self._known.now()))
             except (OSError, Rejected) as error:
@@ -537,24 +543,27 @@ class Appended:
     """The whole records a transcript gained since it was last read, and where it is read from next."""
 
     lines: list[bytes]
-    offset: int
-    # Whether the file is shorter than what was read of it, and so was read again from its start.
-    restarted: bool
+    at: Position
+    # Why it was read again from its start, if it was.
+    restarted: Restarted | None
     # Whether a record past the last whole one is half written.
     unfinished: bool
 
 
-def _appended(path: Path, offset: int) -> Appended:
-    """What the transcript gained past `offset`. Raises OSError for one that cannot be read, one not written yet among them."""
+def _appended(path: Path, at: Position) -> Appended:
+    """What the transcript gained past `at`. Raises OSError for one that cannot be read, one not written yet among them."""
     with path.open("rb") as file:
+        found = os.fstat(file.fileno())
+        identity = (found.st_dev, found.st_ino)
         size = file.seek(0, os.SEEK_END)
-        start = 0 if size < offset else offset
+        restarted: Restarted | None = "is not the file read so far" if at.file not in (None, identity) else "is shorter than what was read of it" if size < at.offset else None
+        start = at.offset if restarted is None else 0
         file.seek(start)
         raw = file.read()
     # [LAW:no-ambient-temporal-coupling] a record is whole only once its newline is written, so the bytes after the last
     # newline stay unread until the write that ends them.
     *complete, unfinished = raw.split(b"\n")
-    return Appended(complete, start + len(raw) - len(unfinished), size < offset, bool(unfinished))
+    return Appended(complete, Position(start + len(raw) - len(unfinished), identity), restarted, bool(unfinished))
 
 
 def _records(lines: Iterable[bytes], whose: str) -> Iterator[Payload]:
@@ -570,13 +579,13 @@ def _records(lines: Iterable[bytes], whose: str) -> Iterator[Payload]:
             yield record
 
 
-def _read_delegate(session: SessionId, delegate: Delegate) -> list[Doing]:
+def _read_delegate(session: SessionId, delegate: Delegate, transcript: Path) -> list[Doing]:
     """What each call the subagent's transcript gained sets out to do. Raises OSError for a transcript that cannot be read."""
-    read = _appended(delegate.path, delegate.offset)
-    if read.restarted:
-        logger.warning(f"the transcript of subagent {delegate.id} of session {session} is shorter than what was read of it, so it is read again from its start")
+    read = _appended(transcript_of(transcript, delegate.id), delegate.at)
+    if read.restarted is not None:
+        logger.warning(f"the transcript of subagent {delegate.id} of session {session} {read.restarted}, so it is read again from its start")
         delegate.job, delegate.turn = True, Turning()
-    delegate.offset = read.offset
+    delegate.at = read.at
     for record in _records(read.lines, f"subagent {delegate.id} of session {session}"):
         if delegate.job:
             job = started_from(record)
@@ -588,19 +597,19 @@ def _read_delegate(session: SessionId, delegate: Delegate) -> list[Doing]:
     return delegate.made()
 
 
-def _attributed(session: SessionId, delegate: Delegate, following: Following) -> AgentTask | None:
+def _attributed(session: SessionId, delegate: Delegate, following: Following, transcript: Path) -> AgentTask | None:
     """Who the subagent's calls are the work of; None for one nothing says the start of, which is said once, and whose
     calls are never told as another's. Raises OSError and Rejected, as `_started` does, to be asked again."""
     if delegate.agent is None:
         try:
-            delegate.agent = _started(session, delegate, following)
+            delegate.agent = _started(session, delegate, following, transcript)
         except Unstarted as error:
             delegate.agent = error
             logger.error(f"what subagent {delegate.id} of session {session} sets out to do is never told: Unstarted: {error}")
     return delegate.agent if isinstance(delegate.agent, AgentTask) else None
 
 
-def _started(session: SessionId, delegate: Delegate, following: Following) -> AgentTask:
+def _started(session: SessionId, delegate: Delegate, following: Following, transcript: Path) -> AgentTask:
     """The call that started the subagent, by the job it gave it: as Claude Code names it beside the transcript, or, for
     a skill run in a subagent of its own, which it names no job for, as the parent's call that invoked it: the one whose
     result names this subagent, as a fork run in the background has at once, and else the one skill the parent is
@@ -611,18 +620,19 @@ def _started(session: SessionId, delegate: Delegate, following: Following) -> Ag
 
     Raises OSError for a file that cannot be read, Rejected for one that is not JSON, and Unstarted where nothing says.
     """
-    fields = Payload.parse(delegate.meta.read_bytes()).fields
+    meta = meta_of(transcript, delegate.id)
+    fields = Payload.parse(meta.read_bytes()).fields
     match fields.get("parentAgentId"), fields.get("description"):
         case str() as parent, _:
             ancestor = following.delegates.get(AgentId(parent))
-            task = None if ancestor is None else _attributed(session, ancestor, following)
+            task = None if ancestor is None else _attributed(session, ancestor, following, transcript)
             if task is None:
-                raise Unstarted(f"{delegate.meta} names subagent {parent} as its parent, whose work is told as nobody's")
+                raise Unstarted(f"{meta} names subagent {parent} as its parent, whose work is told as nobody's")
             # [LAW:nothing-unseen] which said who started it.
             logger.info(f"subagent {delegate.id} was started by subagent {parent}, so it is heard as the work of that one's job: {task.description!r}")
             return task
         case _, str() as description if description.strip():
-            logger.info(f"subagent {delegate.id} is heard as the work of the job {delegate.meta.name} names: {description.strip()!r}")
+            logger.info(f"subagent {delegate.id} is heard as the work of the job {meta.name} names: {description.strip()!r}")
             return AgentTask(delegate.id, description.strip())
         case _:
             parent = following.reading.turn
@@ -638,7 +648,7 @@ def _started(session: SessionId, delegate: Delegate, following: Following) -> Ag
                     logger.info(f"subagent {delegate.id} names no job, so it is heard as the work of the one skill its parent is running: {invoked!r}")
                     return AgentTask(delegate.id, invoked)
                 case _:
-                    raise Unstarted(f"{delegate.meta} names no job, and its parent is running {len(running)} skills")
+                    raise Unstarted(f"{meta} names no job, and its parent is running {len(running)} skills")
 
 
 def _backgrounded(session: SessionId, record: Payload) -> tuple[Launched | None, ReportedBack | None]:

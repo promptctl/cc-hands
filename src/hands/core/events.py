@@ -30,6 +30,17 @@ class Attached:
 
 
 @dataclass(frozen=True)
+class Located:
+    """A hook's session as the file its shim wrote just before posting names it: where the session works now.
+
+    [LAW:types-are-the-program] a sweep's Attached may have read the file before a hook landed, so it never moves a
+    session the registry holds; this is never older than the hook it came with, so it does: Claude Code moves a
+    session's transcript when it enters a worktree."""
+
+    membership: Membership
+
+
+@dataclass(frozen=True)
 class Died:
     """A session's process is no longer running, and no hook said the session ended."""
 
@@ -265,4 +276,4 @@ SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
 Transcribed = Taken | Interrupted | CarriedOut | Continued | Launched | ReportedBack | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
-Event = Joined | Observed | SessionEvent | Abandoned | Tick
+Event = Joined | Located | Observed | SessionEvent | Abandoned | Tick

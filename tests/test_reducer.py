@@ -25,7 +25,7 @@ from hands.core.effects import (
     Unregistered,
     Withdraw,
 )
-from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
+from hands.core.events import Abandoned, Attached, CarriedOut, Closed, Died, Ended, EndReason, MovedOn, Event, Interrupted, Continued, Taken, Joined, Launched, Located, Read, ReportedBack, PermissionRequested, Prompted, Progressed, SessionEvent, StartSource, StatusReported, Stopped, Tick, ToolFinished
 from hands.core import progress
 from hands.core.reducer import UNTOLD, reduce
 from hands.core.session import (
@@ -438,6 +438,22 @@ def test_a_file_for_a_session_never_heard_of_attaches_it_to_be_read() -> None:
 def test_a_file_for_a_session_already_known_changes_nothing(before: Registry) -> None:
     moved = replace(ONE, cwd=Path("/code/elsewhere"))
     assert reduce(before, Attached(moved)) == (before, [])
+
+
+def test_a_hook_s_file_for_a_session_never_heard_of_joins_it_as_a_sweep_s_does() -> None:
+    assert reduce(registry(), Located(ONE)) == reduce(registry(), Attached(ONE))
+
+
+@pytest.mark.parametrize("state", LIVE)
+def test_a_hook_s_file_naming_a_moved_transcript_moves_the_session_and_nothing_else(state: SessionState) -> None:
+    """Claude Code renames the transcript into a worktree's project as the session enters one, and the hooks after name it there."""
+    moved = replace(ONE, transcript=Path("/projects/-code-a--claude-worktrees-lane/one.jsonl"))
+    before = holding(state, dialog=HELD)
+    assert reduce(before, Located(moved)) == (before.put(replace(before.sessions[ONE.id], membership=moved)), [])
+
+
+def test_a_hook_s_file_for_a_session_that_ended_leaves_it_ended() -> None:
+    assert reduce(GONE, Located(replace(ONE, transcript=Path("/elsewhere.jsonl")))) == (GONE, [])
 
 
 @pytest.mark.parametrize("ended", [Died(ONE), MovedOn(ONE)])

@@ -521,6 +521,38 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
 
 
+async def test_a_turn_whose_transcript_moved_into_a_worktree_is_told_from_where_it_is_as_if_it_never_moved(tmp_path: Path) -> None:
+    """Claude Code 2.1.299 renames the transcript into the worktree's project as the session enters one, mid-turn, and
+    the Stop names it there. The turn is told from the moved file before any catch-up has read past the move, and told
+    as it would have been had it stayed: the turn told before it is not told again."""
+
+    async def told_through(transcript: Path, moved: Path) -> Telling | None:
+        transcript.parent.mkdir()
+        transcript.write_text(lines(PROMPT, DONE))
+        registry = Registry([member(transcript)])
+        tails = Tails(registry)
+        first = await tails.tell(SID, None, None)
+        assert first is not None
+        await tails.spoken(first)
+        with transcript.open("a") as more:
+            more.write(lines('{"type":"user","message":{"role":"user","content":"again"}}', CALL))
+        await tails.catch_up()
+        if moved != transcript:
+            moved.parent.mkdir()
+            transcript.rename(moved)
+            registry.members[:] = registry.heard[:] = [member(moved)]
+        with moved.open("a") as more:
+            more.write(lines(DONE))
+        return await tails.tell(SID, None, None)
+
+    stayed = tmp_path / "stayed" / "t.jsonl"
+    moved = tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    telling, control = await told_through(tmp_path / "repo" / "t.jsonl", moved), await told_through(stayed, stayed)
+    assert telling is not None and control is not None
+    assert (telling.turn, telling.transcript) == (control.turn, moved)
+    assert telling.turn.opening == Asked(None, "again")
+
+
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"

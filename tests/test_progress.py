@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ from pipecat.frames.frames import Frame, TTSSpeakFrame
 
 from hands.core.attention import Amount, Attention, Level, Overlay, Route, Switch, progress_route
 from hands.core.effects import Progress
-from hands.core.events import Displayed, Progressed, StatusReported, Tick
+from hands.core.events import Displayed, Progressed, Read, StatusReported, Tick
 from hands.core.pending import Finished, News, Pending, Unread, Working, coalesce
 from hands.core.progress import EDITING, READING, WRITING, LONGEST, RUNNING, SETTLE, Doing, Gathering, doing, explained, said
 from hands.core.reducer import reduce
@@ -677,6 +678,31 @@ async def test_a_subagent_s_transcript_written_again_shorter_is_read_again_from_
     with own.open("a") as file:
         file.write(lines(RUNS))
     assert await progressed(tails) == [Progressed(SID, REVIEW, (TESTS,), 7.0)]
+
+
+async def test_a_session_moved_into_a_worktree_is_read_on_from_where_it_was_subagents_and_all(tmp_path: Path) -> None:
+    """Claude Code 2.1.299 renames a session's transcript, its subagents' folder with it, into the worktree's project as
+    the session enters one, and its hooks name the new path from then on: what was read of it still is, so its prompt
+    is not taken again and the calls made after the move are heard, its subagent's among them."""
+    transcript = tmp_path / "repo" / "t.jsonl"
+    transcript.parent.mkdir()
+    transcript.write_text(lines(ASKED))
+    known = Known(transcript)
+    tails = Tails(known)
+    await tails.catch_up()
+    own = subagent(transcript, {"description": "Review the parser change"}, JOB, READS)
+    assert await progressed(tails) == [Progressed(SID, REVIEW, (READ_TAIL,), 7.0)]
+    moved = tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    moved.parent.mkdir()
+    transcript.rename(moved)
+    transcript.with_suffix("").rename(moved.with_suffix(""))
+    known.member = replace(known.member, transcript=moved)
+    with moved.open("a") as file:
+        file.write(lines(CALL))
+    with (moved.with_suffix("") / own.relative_to(transcript.with_suffix(""))).open("a") as file:
+        file.write(lines(RUNS))
+    heard = [event for event in await tails.catch_up() if not isinstance(event, Read)]
+    assert sorted(heard, key=str) == sorted([Progressed(SID, (TURN,), (TESTS,), 7.0), Progressed(SID, REVIEW, (TESTS,), 7.0)], key=str)
 
 
 async def test_a_subagent_nothing_says_the_start_of_is_said_in_the_log_and_never_told_as_another_s(tmp_path: Path) -> None:

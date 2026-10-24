@@ -24,7 +24,7 @@ from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
 from hands.sessions.membership import read_membership, write_membership
 from hands.sessions.registry import Sessions
-from hands.core.events import StatusReported
+from hands.core.events import Located, StatusReported
 from hands.core.status import Busy, Report, Stamp
 from hands.sessions.audit import Entry
 from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
@@ -211,6 +211,27 @@ async def test_a_later_hook_leaves_the_membership_its_start_wrote(home: Home, se
     await shim(home, {**PROMPT, "cwd": "/code/a/sub"})
     assert read_membership(home, SID).fritter == Path("/tmp/fritter-abc.sock")
     assert read_membership(home, SID).cwd == Path("/code/a")
+
+
+async def test_a_hook_naming_the_transcript_claude_code_moved_moves_the_session_there_and_says_so(home: Home) -> None:
+    """Claude Code 2.1.299 renames the transcript into the worktree's project as a session enters one, and every hook
+    after names it there, the EnterWorktree call's own PostToolUse first. The file and the registry follow it; the cwd
+    stays the start's, since a hook's cwd is the shell's, which a `cd` moves too."""
+    recorded: list[Entry] = []
+    registry = Sessions(clock=lambda: 10.0, record=recorded.append)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    moved = "/projects/-code-a--claude-worktrees-lane/t.jsonl"
+    entered = {**COMMON, "hook_event_name": "PostToolUse", "tool_name": "EnterWorktree", "tool_input": {"name": "lane"}, "transcript_path": moved, "cwd": "/code/a/.claude/worktrees/lane"}
+    try:
+        await shim(home, START, fritter="/tmp/fritter-abc.sock")
+        assert await shim(home, entered, fritter="/tmp/fritter-abc.sock") == (0, "", "")
+    finally:
+        await runner.cleanup()
+    membership = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path(moved), fritter=Path("/tmp/fritter-abc.sock"))
+    assert read_membership(home, SID) == membership
+    assert [listing.session.membership for listing in registry.live()] == [membership]
+    # [LAW:nothing-unseen] the move is applied as its own event, naming where the session's transcript is now.
+    assert [entry.facts["applied"] for entry in recorded if isinstance(entry, WideEvent) and isinstance(entry.facts.get("applied"), Located)] == [Located(membership)]
 
 
 async def test_a_late_hook_of_a_session_its_process_has_moved_on_from_writes_nothing(home: Home, sessions: Sessions) -> None:
