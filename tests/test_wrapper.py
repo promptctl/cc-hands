@@ -193,7 +193,8 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
     assert shutil.which("go", path=tools) is None
 
     monkeypatch.setenv("PATH", tools)
-    assert main(["--home", str(home.root), "install-fritter"]) == 1
+    # Installed, on a PATH that finds another claude first: the PATH's fix, and its own exit.
+    assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.UNFOUND == 1
     said = capsys.readouterr().err
     assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in said
     assert f'export PATH="{home.bin}:$PATH"' in said and "install-fritter" not in said
@@ -221,13 +222,30 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     monkeypatch.setattr(wrapper, "PACKAGED", root / "package" / "bin" / "fritter")
-    assert main(["--home", str(home.root), "install-fritter"]) == 1
+    assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.BROKEN
     assert f"hands install-fritter: hands' package carries no fritter at {root / 'package' / 'bin' / 'fritter'}: install hands again" in capsys.readouterr().err
     # Refused before anything is written: not even the home's bin.
     assert not home.bin.exists()
     [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     assert (event["event"], event["outcome"], event["facts"]) == ("fritter.install", "failed", {"packaged": str(root / "package" / "bin" / "fritter")})
     assert event["error"].startswith("hands' package carries no fritter at")
+
+
+def test_an_install_whose_claude_does_not_work_even_first_on_path_fails_saying_what_was_found(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    home = Home(root / "home")
+    executable(root / "real" / "claude", RECORDER)
+    monkeypatch.setenv("PATH", f"{root / 'real'}:/usr/bin:/bin")
+    # An install that says it wrote the fritter and its claude, and wrote neither.
+    def install(home: Home) -> wrapper.Installed:
+        return wrapper.Installed(home.shim, home.fritter)
+
+    monkeypatch.setattr(wrapper, "install", install)
+
+    assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.BROKEN
+
+    assert f"hands install-fritter: `claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in capsys.readouterr().err
+    [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
+    assert event["outcome"] == "failed" and "path_finds_it" not in event["facts"]
 
 
 def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,7 +258,7 @@ def test_a_relative_home_is_this_directory_s(root: Path, monkeypatch: pytest.Mon
         raise wrapper.Uninstallable("enough")
 
     monkeypatch.setattr(wrapper, "install", install)
-    assert main(["--home", "h", "install-fritter"]) == 1
+    assert main(["--home", "h", "install-fritter"]) == wrapper.Installing.BROKEN
     assert homes == [Home(root / "h")]
 
 
