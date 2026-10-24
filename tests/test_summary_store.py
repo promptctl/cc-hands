@@ -30,7 +30,7 @@ SID = SessionId("s1")
 
 
 def ticket(id: str, rank: str, title: str, description: str = "", status: str | None = "open", kind: str = "task") -> dict[str, object]:
-    issue: dict[str, object] = {"id": id, "title": title, "description": description, "issue_type": kind, "rank": rank}
+    issue: dict[str, object] = {"id": id, "title": title, "description": description, "issue_type": kind, "topic": "voice", "rank": rank}
     return issue if status is None else {**issue, "status": status}
 
 

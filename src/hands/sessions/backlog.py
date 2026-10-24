@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from hands.core.sentences import Thing
 from hands.sessions.child import run
@@ -29,6 +29,21 @@ Status = Literal["open", "in_progress", "closed"]
 
 # The id of the whole backlog, as a thing to be said, beside the ids lit gives its tickets.
 BACKLOG = "backlog"
+
+# [LAW:one-source-of-truth] the levels a ticket is put at, highest first: each topic has an epic for each, and the
+# order Brandon ranks those epics in is the order their tickets are pulled in. lit's own priority is not touched.
+Level = Literal["high", "normal", "low"]
+LEVELS: tuple[Level, ...] = get_args(Level)
+
+
+def parse_level(named: str) -> Level | None:
+    """The level `named` names, None where it names none."""
+    return next((level for level in LEVELS if level == named), None)
+
+
+def level_title(topic: str, level: Level) -> str:
+    """The title of `topic`'s epic for `level`: the slug's words, then the level, as in `wake word - high`."""
+    return f"{topic.replace('-', ' ')} - {level}"
 
 
 class LitFailed(Exception):
@@ -67,6 +82,7 @@ class Ticket:
     title: str
     description: str
     kind: str
+    topic: str
     # None for an epic: lit exports no status for one, since an epic's state is its children's.
     status: Status | None
 
@@ -104,6 +120,36 @@ class Move:
 
     ticket: str
     place: Place
+
+
+@dataclass(frozen=True)
+class Standing:
+    """Where a ticket stands among its topic's levels: the epic it is inside, and the level that epic is its topic's
+    epic for, None where it is none of them."""
+
+    epic: str
+    level: Level | None
+
+
+@dataclass(frozen=True)
+class NewEpic:
+    """A topic's epic for a level that lit holds none of yet: made inside the parent of the ticket's epic, and put at
+    `place`, so the topic's levels stay in their order."""
+
+    topic: str
+    title: str
+    parent: str | None
+    place: Place
+
+
+@dataclass(frozen=True)
+class Leveling:
+    """A ticket moved into its topic's epic for a level: one lit holds, by its id, or one it is to make first. Made by
+    `Backlog.leveling`."""
+
+    ticket: str
+    level: Level
+    epic: str | NewEpic
 
 
 @dataclass(frozen=True)
@@ -163,6 +209,65 @@ class Backlog:
             case "below":
                 return frame[at + 1 : at + 2] == (move.ticket,)
 
+    def level_of(self, epic: str) -> Level | None:
+        """The level an epic is its topic's epic for, read off its exact title; None for an epic of no level."""
+        return next((level for level in LEVELS if self.tickets[epic].title == level_title(self.tickets[epic].topic, level)), None)
+
+    def level_epics(self, topic: str, frame: str | None) -> Mapping[Level, str]:
+        """`topic`'s epic for each level it has one for inside `frame` (None for the roots): the epic lit lists and ranks
+        there of that topic titled exactly so, finished or not, the first ranked where there are more.
+
+        [LAW:one-source-of-truth] the one way a level's epic is found: by its frame, title, and topic in lit, read fresh.
+        A topic has one epic for a level in a frame, ever: one whose tickets are all closed is used again, never made a
+        second time.
+        """
+        epics: dict[Level, str] = {}
+        for id, ticket in self.tickets.items():  # rank order, so the first ranked is kept
+            if ticket.kind == "epic" and ticket.topic == topic and self.inside.get(id) == frame and (level := self.level_of(id)) is not None:
+                epics.setdefault(level, id)
+        return epics
+
+    def standing(self, id: str) -> Standing | None:
+        """Where a ticket stands among its topic's levels, read off the title and topic of the epic it is inside; None
+        for one no level holds: an epic, a ticket inside no epic lit lists, or one whose epic lit ranks inside an epic it
+        archived, which the tree does not draw, so no level's epic can be made beside it."""
+        match self.parent.get(id):
+            case str(epic) if self.tickets[id].kind != "epic" and self.tickets[epic].kind == "epic" and self.inside.get(epic) == self.parent.get(epic):
+                return Standing(epic, self.level_of(epic))
+            case _:
+                return None
+
+    def leveling(self, ticket: str, level: Level) -> Leveling:
+        """`ticket` moved into its epic's topic's epic for `level`, in the frame of its epic; raises Rejected naming why
+        it cannot be.
+
+        [LAW:single-enforcer] the one check of a leveling, as `move` is of a rank. Where lit holds no epic for the level
+        there, one is made, and ranked so the topic's levels stay in their order, high over normal over low: directly
+        above the first of its epics for a lower level, or else directly below the last for a higher one, or else beside
+        the ticket's epic itself, above it for high and below it otherwise.
+        """
+        if ticket not in self.tickets:
+            raise Rejected(f"the backlog has no ticket {ticket}")
+        match self.standing(ticket):
+            case None:
+                raise Rejected(f"{ticket} is an epic, inside no epic lit lists, or inside an epic lit ranks under one it archived, so it has no level")
+            case Standing(epic=epic, level=at) if at == level:
+                raise Rejected(f"{ticket} is already in {epic}, its topic's {level} epic")
+            case Standing(epic=epic):
+                pass
+        topic, parent, frame = self.tickets[epic].topic, self.parent.get(epic), self.frame(epic)
+        epics = self.level_epics(topic, parent)
+        # The topic's level epics beside the ticket's epic, in rank order, each by how far down the levels it is.
+        ladder = sorted(((id, LEVELS.index(at)) for at, id in epics.items()), key=lambda rung: frame.index(rung[0]))
+        rung = LEVELS.index(level)
+        place = (
+            next((Place("above", id) for id, at in ladder if at > rung), None)
+            or next((Place("below", id) for id, at in reversed(ladder) if at < rung), None)
+            or Place("above" if level == "high" else "below", epic)
+        )
+        found = epics.get(level)
+        return Leveling(ticket, level, NewEpic(topic, level_title(topic, level), parent, place) if found is None else found)
+
     def done(self, id: str) -> bool:
         """Whether a ticket is finished: closed, or for an epic, every child done."""
         match self.tickets[id].status:
@@ -214,6 +319,17 @@ async def rank(project: Path, move: Move) -> str:
     return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target)).decode(errors="replace").strip()
 
 
+async def make_epic(project: Path, new: NewEpic) -> None:
+    """Have lit in `project` make `new`, at the bottom of its frame; raises LitFailed when it fails. It is found after by
+    its title and topic, as every level's epic is (`Backlog.level_epic`)."""
+    await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)))
+
+
+async def adopt(project: Path, ticket: str, epic: str) -> None:
+    """Have lit in `project` move `ticket` inside `epic`, keeping its id; raises LitFailed when it fails."""
+    await _lit(project, "parent", "set", "--child", ticket, "--parent", epic)
+
+
 async def _lit(project: Path, *arguments: str) -> bytes:
     """What lit run in `project` with `arguments` wrote out; raises LitFailed when it could not run, did not answer, or exited non-zero.
 
@@ -263,7 +379,7 @@ def _listed(issue: Payload) -> bool:
 
 
 def _ticket(issue: Payload) -> Ticket:
-    return Ticket(issue.text("id"), issue.text("title"), issue.text("description"), issue.text("issue_type"), _status(issue.optional_text("status")))
+    return Ticket(issue.text("id"), issue.text("title"), issue.text("description"), issue.text("issue_type"), issue.text("topic"), _status(issue.optional_text("status")))
 
 
 def _status(status: str | None) -> Status | None:
