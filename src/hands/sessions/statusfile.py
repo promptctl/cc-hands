@@ -63,21 +63,31 @@ def _status(record: Payload, name: str) -> Status:
             return Unknown(other)
 
 
+# How long a session's status may go unread before that is said. Claude Code sets a status within a second of writing the
+# file (91 ms on 2.1.299, 793 ms seen on earlier versions), and runs the end hook 330 to 640 ms after removing it as its
+# process exits (2.1.283): a status unread for longer is a status hands does not have.
+UNREAD_SECONDS = 2.0
+
+
 @dataclass(frozen=True)
 class _Unread:
-    """Why a session's status could not be read, and how many reads in a row have found it so."""
+    """A session whose status has not been read since `since`, not yet said."""
 
-    why: str
-    reads: int
+    since: Instant
+
+
+@dataclass(frozen=True)
+class _Said:
+    """A session whose status went unread for UNREAD_SECONDS and was said, not said again until its status is read."""
 
 
 class Statuses:
-    """Why each live session's status could not be read, so a reason is said once it outlives a read, not every read."""
+    """Since when each live session's status has not been read, so that is said once it outlives UNREAD_SECONDS."""
 
     def __init__(self, clock: Callable[[], Instant]) -> None:
         # [LAW:effects-at-boundaries] the registry's one clock, as a hook is stamped from when it arrives.
         self._clock = clock
-        self._unread: dict[SessionId, _Unread] = {}
+        self._unread: dict[SessionId, _Unread | _Said] = {}
 
     def read(self, live: Collection[SessionId], session: Callable[[SessionId], Session | None]) -> Iterator[StatusReported]:
         """A report for each live session whose status was set since the one the registry holds.
@@ -106,31 +116,32 @@ class Statuses:
                 # 640 ms later (2.1.283); a process killed before its hook runs is found dead by the sweep. Only a file
                 # never read is a status hands cannot have.
                 return None
-            return self._unreadable(member, f"Claude Code keeps no status for it at {status_file(member)}")
+            return self._unheard(member, f"Claude Code keeps no status for it at {status_file(member)}")
         except (Rejected, OSError) as error:
-            return self._unreadable(member, f"its status file is refused: {error}")
+            return self._unheard(member, f"its status file is refused: {error}")
+        if report is None:
+            return self._unheard(member, f"its status file at {path} sets no status")
         self._unread.pop(member.id, None)
-        match report:
-            case None:
-                return None
-            # [LAW:one-source-of-truth] edge-triggered on the stamp the registry holds, not a copy kept here: a status the
-            # registry let go of is heard again. [LAW:no-ambient-temporal-coupling] the stamp, not the status, so an idle,
-            # busy, idle between two reads is still a status set, and still heard.
-            case Report(stamp=stamp) if stamp == status_stamp(session.state):
-                return None
-            case Report():
-                _unknown(member, report.status)
-                return StatusReported(member.id, report, self._clock())
+        # [LAW:one-source-of-truth] edge-triggered on the stamp the registry holds, not a copy kept here: a status the
+        # registry let go of is heard again. [LAW:no-ambient-temporal-coupling] the stamp, not the status, so an idle,
+        # busy, idle between two reads is still a status set, and still heard.
+        if status_stamp(session.state) == report.stamp:
+            return None
+        _unknown(member, report.status)
+        return StatusReported(member.id, report, self._clock())
 
-    def _unreadable(self, member: Membership, why: str) -> None:
+    def _unheard(self, member: Membership, why: str) -> None:
         # [LAW:no-silent-failure] said as an error, since the status is what ends a turn no Stop ends: without it a turn
-        # stopped at the keyboard runs on until one does. Said on the second read in a row to find it, not the first: a
-        # file caught half rewritten is whole by the next read, and costs nothing. Said once until the reason changes.
-        held = self._unread.get(member.id)
-        unread = _Unread(why, held.reads + 1 if held is not None and held.why == why else 1)
-        self._unread[member.id] = unread
-        if unread.reads == 2:
-            logger.error(f"no status for session {member.id}: {why}, so its transcript is read only when a Stop tells a turn, and a turn stopped with Escape or gone on under a queued message is not heard")
+        # stopped at the keyboard runs on until one does. [LAW:no-ambient-temporal-coupling] said once it has gone unread
+        # for UNREAD_SECONDS by the clock, whatever the reason on each read, not after a count of reads: a file caught
+        # half rewritten or not yet set is whole well within it, at any period. Said once, with the reason that outlived it.
+        now = self._clock()
+        match self._unread.setdefault(member.id, _Unread(now)):
+            case _Unread(since=since) if now - since >= UNREAD_SECONDS:
+                self._unread[member.id] = _Said()
+                logger.error(f"no status for session {member.id} in {now - since:.1f}s: {why}, so its transcript is read only when a Stop tells a turn, and a turn stopped with Escape or gone on under a queued message is not heard")
+            case _Unread() | _Said():
+                pass
 
 
 def _unknown(member: Membership, status: Status) -> None:
