@@ -154,8 +154,8 @@ closes.
   start and watches it; a liveness sweep moves dead pids to `Gone` and speaks it.
   Done when a daemon restart lists the same sessions it listed before, and closing a
   session's terminal is spoken within the sweep interval.
-- **Audit log.** Every effect and every failure is one JSONL line; `hands log`
-  tails it. Done when a dictation can be traced in the log from the transcribed
+- **Audit log.** Every effect, every warning, and every failure is one JSONL line; `hands log`
+  tails it, and `hands file-tickets` files a ticket for each kind of warning and error in it. Done when a dictation can be traced in the log from the transcribed
   words to the readback.
 - **Screen path.** A hands menu-bar status item, a process of its own that `hands
   run` starts and that outlives the daemon long enough to announce it, reads `status.json` and shows the verdict as its icon, and

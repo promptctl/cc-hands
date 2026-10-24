@@ -6,7 +6,8 @@ import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
+from unittest.mock import patch
 
 import pytest
 from loguru import logger
@@ -147,3 +148,34 @@ def test_a_command_on_a_home_whose_log_cannot_be_made_still_runs(tmp_path: Path,
     assert capsys.readouterr().out.startswith("hands has not run")
     assert [("cannot be made" in warning, "failed at a WideEvent line" in warning) for warning in warnings] == [(True, False), (False, True)]
     assert not home.audit.exists()
+
+
+def sinks() -> set[int]:
+    """The ids of loguru's sinks now: it has no public way to list them."""
+    handlers = cast(dict[int, object], getattr(getattr(logger, "_core"), "handlers"))
+    return set(handlers)
+
+
+def warned(home: Home) -> Literal[0]:
+    """`hands status`, standing in as a command that warns."""
+    logger.warning("warned inside the command")
+    return 0
+
+
+def test_a_command_logs_to_every_sink_there_was_before_it_and_leaves_them_as_they_were(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path / "home")
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(message.record["message"]), level="WARNING")
+    before = sinks()
+    try:
+        with patch("hands.daemon.cli.report", warned):
+            assert main(["--home", str(home.root), "status"]) == 0
+        after = sinks()
+    finally:
+        logger.remove(sink)
+    capsys.readouterr()
+    # [LAW:no-ambient-temporal-coupling] the command lets go of what it added, and of nothing it found.
+    assert after == before and warnings == ["warned inside the command"]
+    # The command's own audit sink kept it while it ran.
+    logged = [line for line in map(json.loads, segment(home.audit, 0).read_text().splitlines()) if line["type"] == "Logged"]
+    assert [(line["level"], line["message"]) for line in logged] == [("warning", "warned inside the command")]

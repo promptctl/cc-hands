@@ -16,7 +16,7 @@ from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
-from hands.sessions.audit import Entry, Failure, failures_to
+from hands.sessions.audit import Entry, Logged, logged_to
 from hands.sessions.wide import WideEvent, begun
 from hands.sessions.registry import Sessions
 from hands.sessions.home import Home
@@ -305,9 +305,9 @@ async def test_a_setting_that_cannot_be_read_is_logged(tmp_path: Path) -> None:
     home = Home(tmp_path)
     home.attention.write_text("yes\n")
     transcript = said_turn(tmp_path, "Fixed it. Want me to push it?")
-    failed: asyncio.Queue[Failure] = asyncio.Queue()
+    failed: asyncio.Queue[Logged] = asyncio.Queue()
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
-    sink = logger.add(failures_to(lambda entry: failed.put_nowait(entry) if isinstance(entry, Failure) else None), level="ERROR", filter="hands")
+    sink = logged_to(lambda entry: failed.put_nowait(entry) if isinstance(entry, Logged) and entry.level == "error" else None, lambda _: True)
     narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), asyncio.Queue[Frame]().put, lambda: attention(home), Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
@@ -349,7 +349,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
 
 async def test_a_missing_transcript_is_said_to_have_failed_and_logged(tmp_path: Path) -> None:
     recorded: list[Entry] = []
-    sink = logger.add(failures_to(recorded.append), level="ERROR", filter="hands")
+    sink = logged_to(recorded.append, lambda _: True)
     try:
         utterance = heard()
         spoken = said(await recount(tailing(tmp_path / "gone.jsonl"), SID, None, None, utterance, Delta(), Spoken("full", "finished"), Recounts()))
@@ -359,7 +359,7 @@ async def test_a_missing_transcript_is_said_to_have_failed_and_logged(tmp_path: 
     assert isinstance(spoken, TTSSpeakFrame) and spoken.text == "cc-hands finished a turn, and I could not read it."
     assert not spoken.append_to_context
     [failure] = recorded
-    assert isinstance(failure, Failure) and "FileNotFoundError" in failure.message
+    assert isinstance(failure, Logged) and "FileNotFoundError" in failure.message
 
 
 async def test_a_session_that_stops_before_any_prompt_says_nothing(tmp_path: Path) -> None:

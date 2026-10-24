@@ -290,8 +290,9 @@ def _reading(log: Path) -> str:
 Everything hands does is written to its log, the segments in {log}, one JSON object a line, oldest first: what the user said, what \
 you replied, each tool you called with its arguments and what it handed back, what was typed into the sessions, what \
 the sessions did as hands saw it, and every error. Each line has "at", the time it was written in UTC; "level", which \
-is "error" for anything that went wrong and "info" for the rest; and "type", the kind of line, with its fields after \
-it. A Failure line also says where in hands it was logged and, when an exception caused it, the frames it came up through.
+is "error" for anything that went wrong, "warning" for what hands warned of, and "info" for the rest; and "type", the \
+kind of line, with its fields after it. A Logged line is a warning or error hands logged, as its terminal showed it: it \
+also says where in hands it was logged and, when an exception caused it, the frames it came up through.
 
 When the user asks what went wrong, why something did not happen, or what hands did or heard, read the log with Bash \
 before you answer. "I can't see inside hands" and a likely-sounding guess are the two answers to catch yourself \

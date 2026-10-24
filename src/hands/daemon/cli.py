@@ -11,7 +11,8 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Callable, Coroutine, Generator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
@@ -26,7 +27,7 @@ from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edi
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
-from hands.sessions import audit, heartbeat, marketplace, recall, tmux, wide, wrapper
+from hands.sessions import audit, backlog, filing, grouping, heartbeat, marketplace, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
@@ -90,6 +91,23 @@ def to_terminal(stream: TextIO) -> tuple[int, int]:
     return lines, traces
 
 
+@contextmanager
+def logging_to(record: audit.Record) -> Generator[None]:
+    """[LAW:single-enforcer] the one logging setup of a hands process, the daemon's and each command's: the terminal, and
+    the audit log beside it keeping every warning and error the terminal shows, through `record`, for as long as it is
+    held.
+
+    [LAW:no-ambient-temporal-coupling] it lets go of exactly the sinks it added, and of no other: what logs after it is
+    as before it, whatever ran first. loguru's own default sink is `entry`'s to let go of, once a process.
+    """
+    added = (*to_terminal(sys.stderr), audit.logged_to(record, on_terminal))
+    try:
+        yield
+    finally:
+        for sink in added:
+            logger.remove(sink)
+
+
 def told_on_terminal(record: audit.Record) -> audit.Record:
     """`record`, and each unit of work it records that said it failed, rather than raised, also said on the terminal, by
     its name and its error; and each pass over a tracked backlog told there, by what it summarised.
@@ -148,6 +166,13 @@ def show_phone(home: Home) -> exits.Exit:
     return 0
 
 
+def entry() -> int:
+    """The `hands` script: loguru's default sink, DEBUG on stderr, let go of once as the process starts, so what it prints
+    is the terminal's that `logging_to` sets up; then the command its arguments name."""
+    logger.remove(0)
+    return main()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
@@ -171,6 +196,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
+    filing_tickets = commands.add_parser("file-tickets", help="file a ticket, at the top of EPIC in the lit backlog of the directory it runs in, for each warning and error in the audit log no open ticket there has, grouped by cause, and comment on the ticket that has one seen again; files nothing twice, however often it runs; exits 0 only when every ticket and comment was filed")
+    filing_tickets.add_argument("epic", help="the epic the tickets are filed under")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
     recalling = commands.add_parser("recall", help="print what was said, sent to a session, and answered for one, oldest first, from the audit log: the newest moments that hold every word given, or the newest of all with none")
@@ -211,44 +238,47 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
     run_start.heard(model_flag=model)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     audit_log = audit_log_of(home)
-    # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
-    # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
-    # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
-    # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
-    held: heartbeat.Heart | None = None
-    with run_start.ending(audit_log.record):
-        try:
-            hold(home)
-            held = None if restarted is None else heart
-            # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
-            # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
-            after_crash = restarted is None and crashed_before(home)
-            run_start.heard(after_crash=after_crash)
-            settings = door(home, run_start, model)
-        except CannotStart as cannot:
-            run_start.ended(audit_log.record, cannot)
-            refuse(cannot, held)
-            return 1
-        try:
-            ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
-        except* CannotStart as cannot:
-            # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
-            # refused once, and said so even where another error raised with it is raised on past this block.
-            match cannot.exceptions:
-                case (CannotStart() as reason,):
-                    refuse(reason, heart)
-                    ran = reason
-                case _:
-                    raise
-        match ran:
-            case CannotStart():
+    # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs: the
+    # run's start, its refusal, the indicator it retires and reaps.
+    with logging_to(audit_log.record):
+        # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
+        # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
+        # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
+        # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+        held: heartbeat.Heart | None = None
+        with run_start.ending(audit_log.record):
+            try:
+                hold(home)
+                held = None if restarted is None else heart
+                # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
+                # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
+                after_crash = restarted is None and crashed_before(home)
+                run_start.heard(after_crash=after_crash)
+                settings = door(home, run_start, model)
+            except CannotStart as cannot:
+                run_start.ended(audit_log.record, cannot)
+                refuse(cannot, held)
                 return 1
-            case ("quit", _):
-                return 0
-            case ("restart", shown):
-                # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
-                # one argument, so an id that begins with a dash is never read as an option.
-                again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
+            try:
+                ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+            except* CannotStart as cannot:
+                # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
+                # refused once, and said so even where another error raised with it is raised on past this block.
+                match cannot.exceptions:
+                    case (CannotStart() as reason,):
+                        refuse(reason, heart)
+                        ran = reason
+                    case _:
+                        raise
+            match ran:
+                case CannotStart():
+                    return 1
+                case ("quit", _):
+                    return 0
+                case ("restart", shown):
+                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
+                    # one argument, so an id that begins with a dash is never read as an option.
+                    again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(home: Home, arguments: argparse.Namespace) -> int:
@@ -261,7 +291,7 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     collector, or on a config.toml the daemon has yet to accept.
     """
     record = audit_log_of(home).record
-    with wide.unit("hands.command", record):
+    with logging_to(record), wide.unit("hands.command", record):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
         ended = dispatch(home, arguments, record)
@@ -300,13 +330,11 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
         case "check":
             from hands.voice import talkkey
 
-            # In place of loguru's DEBUG default, so the debug lines of the tmux and process reads a check makes do not print
-            # over its findings; a read that broke still prints, as an error.
-            logger.remove()
-            to_terminal(sys.stderr)
             return check(home, talkkey.granted(), arguments.verbose)
         case "log":
             return tail_log(home, arguments.lines)
+        case "file-tickets":
+            return file_tickets(home, Path.cwd(), arguments.epic, record)
         case "recall":
             return recall_moments(home, record, arguments.words, arguments.most)
         case "phone":
@@ -333,9 +361,6 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
             # in that second would leave this process watching its new one, pid 1, forever.
             parent = os.getppid() if arguments.parent is None else arguments.parent
-            # It shares the run's terminal, so its lines reach it through the run's sink.
-            logger.remove()
-            to_terminal(sys.stderr)
             from hands.daemon.menubar import show
 
             return show(home, parent)
@@ -447,9 +472,6 @@ def holder(descriptor: int) -> int | None:
 def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
-    # In place of loguru's DEBUG default, so a run's terminal is hands' to read.
-    logger.remove()
-    to_terminal(sys.stderr)
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
     # seconds of silence in which the file would otherwise still name the process that died.
     heart.beat("starting", None, 0, listening=False, degraded=())
@@ -940,6 +962,68 @@ def tail_log(home: Home, lines: int) -> Literal[0]:
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
     raise AssertionError("following the audit log ends only when interrupted")
+
+
+# What a pass of file-tickets counts: the log's lines, those that were no JSON object, the warning and error lines whose
+# fields this hands cannot read, each warning and error sighted, their groups, and what came of each group.
+FILED_COUNTS = ("lines", "unreadable", "unparsed", "sightings", "groups", "filed", "commented", "unchanged")
+
+
+def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
+    """`hands file-tickets`: a ticket in `project`'s backlog for each group of warnings and errors in the audit log that
+    no open ticket has, under `epic`, and a comment on the ticket that has one seen again since it was last told.
+
+    A command, not a step of the daemon: hands runs from a uv tool environment and keeps no path to the project whose
+    backlog its warnings belong in, so it is run in that project, as lit is.
+    """
+    # [LAW:nothing-unseen] one unit a pass, every count zero included, and how far back the log reached: a pass with
+    # nothing new and one run after its lines rolled off the log read differently.
+    with wide.unit("tickets.file", record, FILED_COUNTS):
+        wide.annotate(project=project, epic=epic)
+        found = grouping.read(audit.forwards(home.audit))
+        wide.annotate(oldest=found.oldest, newest=found.newest)
+        wide.count(
+            lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed,
+            sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
+        )
+        ended = asyncio.run(_filed(project, epic, found.groups))
+        if isinstance(ended, exits.Failed):
+            wide.fail(ended.why)
+    return ended
+
+
+async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group]) -> exits.Exit:
+    """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
+    stops the pass, and what was filed before it stays filed, which the next pass reads back."""
+    try:
+        read = await backlog.read_backlog(project)
+    except (backlog.LitFailed, Rejected) as failed:
+        return exits.Failed(1, f"cannot read the backlog: {failed}")
+    match read:
+        case backlog.Untracked():
+            return exits.Failed(1, f"{project} has no lit backlog to file tickets in")
+        case backlog.Backlog() as held:
+            pass
+    under = held.tickets.get(epic)
+    if under is None or under.kind != "epic":
+        return exits.Failed(1, f"the backlog in {project} lists no epic {epic}")
+    planned = filing.filings(groups, held)
+    wide.count(unchanged=len(groups) - len(planned))
+    for each in planned:
+        try:
+            match each:
+                case filing.New(group=group):
+                    said = await backlog.file_ticket(project, epic, under.topic, filing.title(group), filing.description(group), group.label)
+                    wide.count(filed=1)
+                    print(f"filed {said.splitlines()[0]}".translate(VISIBLE))
+                case filing.Again(ticket=ticket, group=group):
+                    await backlog.comment(project, ticket, filing.comment(group))
+                    wide.count(commented=1)
+                    print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
+        except backlog.LitFailed as failed:
+            return exits.Failed(1, str(failed))
+    print(f"{len(groups)} groups of warnings and errors: {len(planned)} filed or commented, {len(groups) - len(planned)} with nothing new")
+    return 0
 
 
 def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most: int) -> Literal[0]:

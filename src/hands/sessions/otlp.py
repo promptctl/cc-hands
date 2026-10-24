@@ -52,8 +52,8 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _STATUS: Mapping[Outcome, int] = {"cancelled": 0, "ok": 1, "failed": 2}
 # OTLP's SPAN_KIND_INTERNAL: a unit of work inside hands, neither serving a request nor making one.
 _INTERNAL = 1
-# OTLP's SeverityNumber of each audit level: INFO and ERROR.
-_SEVERITY: Mapping[Level, int] = {"info": 9, "error": 17}
+# OTLP's SeverityNumber of each audit level: INFO, WARN, and ERROR.
+_SEVERITY: Mapping[Level, int] = {"info": 9, "warning": 13, "error": 17}
 # Straight to the address the settings name, past every proxy: the environment's, which in a session fritter taps is the
 # tap (hands.sessions.untap), and the system's.
 _DIRECT = build_opener(ProxyHandler({}))

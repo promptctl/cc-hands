@@ -45,7 +45,7 @@ type Fact = None | bool | int | float | str | datetime | timedelta | Path | StrE
 class WideEvent:
     """One run of one unit of work: what it was, when it began and how long it took, how it ended, and every count and
     fact the run annotated it with. `trace_id` is shared by every unit opened inside another, so a run's parts are one
-    trace, and `span_id` is this run's own within it, named as `parent_id` by each unit opened inside it. `error` and `trace` say what a failed run raised, as a Failure line does. `counts` holds every count the unit
+    trace, and `span_id` is this run's own within it, named as `parent_id` by each unit opened inside it. `error` and `trace` say what a failed run raised, as a Logged line does. `counts` holds every count the unit
     declared, 0 for one the run never counted: ran and did nothing is a count of zero, where never ran is no event at all."""
 
     event: str

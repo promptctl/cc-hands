@@ -22,7 +22,7 @@ from hands.core.events import Joined, Prompted, StatusReported, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Idle, Report, Stamp
 from hands.sessions.hookconfig import LAUNCHER
-from hands.sessions.audit import Entry, Failure, Refocused, failures_to
+from hands.sessions.audit import Entry, Logged, Refocused, logged_to
 from hands.sessions.wide import WideEvent
 from hands.sessions.focus import focused, set_focus
 from hands.sessions.home import Home
@@ -168,7 +168,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     entries: list[Entry] = []
     sessions = Sessions(clock=lambda: 0.0, record=entries.append)
     await sessions.apply(Joined(member, "startup"))
-    sink = logger.add(failures_to(entries.append), level="ERROR", filter="hands")
+    sink = logged_to(entries.append, lambda _: True)
     utterances = Utterances(entries.append)
     keeping = asyncio.create_task(utterances.keep())
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), asyncio.Queue[Frame]().put, Attention, Overlays(home), Recounts()))
@@ -183,7 +183,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
         keeping.cancel()
         logger.remove(sink)
     assert noted(entries) == [(member.id, Withheld("off"))]
-    assert any(isinstance(entry, Failure) and "cannot read the overlay of session unreadable" in entry.message and "loud" in entry.message for entry in entries)
+    assert any(isinstance(entry, Logged) and "cannot read the overlay of session unreadable" in entry.message and "loud" in entry.message for entry in entries)
 
 
 async def test_a_turn_asked_for_moves_the_focus_to_its_session_as_a_turn_told_as_it_finishes_does(tmp_path: Path) -> None:
