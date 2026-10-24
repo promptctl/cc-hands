@@ -506,7 +506,7 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt() is True
-        assert await asyncio.wait_for(asking, 10) == BrainStopped("p1")
+        assert await asyncio.wait_for(asking, 10) == BrainStopped()
         assert brain.interrupt() is False
         # Escape, then Ctrl-C, which empties whatever Escape put back in the input: read by the fake as it reads them.
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])

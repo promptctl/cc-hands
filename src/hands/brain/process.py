@@ -484,9 +484,8 @@ class BrainAnswered:
 @dataclass(frozen=True)
 class BrainStopped:
     """The end of a brain turn by the Escape hands pressed when it was asked to stop it (`Brain.interrupt`): Claude Code
-    posts no hook for it."""
-
-    prompt: str
+    posts no hook for it. It carries no prompt id: a turn taken as a queued prompt is stopped before its id comes, and
+    the ids that did come are on the turn's event."""
 
 
 # How a turn of the brain's ended.
@@ -766,7 +765,7 @@ class Brain:
         if turn.answered.done():
             # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
             return
-        self._over(turn, BrainStopped(turn.prompts[-1]))
+        self._over(turn, BrainStopped())
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""

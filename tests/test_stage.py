@@ -2150,7 +2150,7 @@ async def test_a_stop_of_the_turn_shown_ends_it_as_the_user_asked_and_never_as_a
     rig.call(exchange, "t1", "Bash", '{"command": "sleep 30"}')
     assert rig.stage.stop(turn_of(rig)) == Stopping() and rig.brain.interrupts == 1
     # Stopped mid-call, as Escape stops it: a turn that acted and said nothing of it, which the user asked for.
-    rig.brain.end(BrainStopped("p1"))
+    rig.brain.end(BrainStopped())
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     assert (turn.facts["stopped"], turn.facts["held_reply"], turn.facts["failed"], turn.outcome, rig.errors) == (True, True, None, "ok", [])
@@ -2166,7 +2166,7 @@ async def test_a_turn_stopped_before_any_of_its_reply_was_held_is_told_the_brain
     # Text streaming: no block of the reply has ended, so Claude Code holds none of it, and Escape gives the prompt back.
     rig.stream(exchange, "Once upon")
     assert rig.stage.stop(turn_of(rig)) == Stopping()
-    rig.brain.end(BrainStopped("p1"))
+    rig.brain.end(BrainStopped())
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     assert (turn.facts["stopped"], turn.facts["held_reply"]) == (True, False)
@@ -2181,7 +2181,7 @@ async def test_turns_stopped_one_after_another_before_any_reply_tell_the_last_by
         await rig.say(words)
         rig.request()
         assert rig.stage.stop(turn_of(rig)) == Stopping()
-        rig.brain.end(BrainStopped("p1"))
+        rig.brain.end(BrainStopped())
         await rig.until(lambda: rig.stage.work() == Idle())
     # What the user could see as they asked, typed beside each turn's words: the same screen for every turn here.
     seen = rig.brain.asked[0].removeprefix("write me a long story\n\n")
@@ -2200,7 +2200,7 @@ async def test_a_telling_of_hands_stopped_before_any_reply_is_told_the_brain_as_
     await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
     rig.stream(rig.request()[0], "api opened")
     assert rig.stage.stop(turn_of(rig)) == Stopping()
-    rig.brain.end(BrainStopped("p1"))
+    rig.brain.end(BrainStopped())
     await rig.until(lambda: rig.stage.work() == Idle())
     await rig.say("what happened")
     assert f'{UNKEPT} what hands told you in it: "[hands] api finished a turn."' in rig.brain.asked[-1]
