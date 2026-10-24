@@ -1,8 +1,8 @@
 """`train-wake-word "Hey Hands"`: train a wake word, from the corpus to a model in place for hands.
 
-Every stage runs on every run, in order. A run cut short resumes: the corpus keeps what it fetched (wake_training.
-fetch), and the clips and features of each of the trainer's steps that finished are kept; a step cut short starts
-over, and training itself, the model's own stage, runs again.
+Every stage runs on every run, in order, and says what it made as it ends. A run cut short resumes: the corpus keeps
+what it fetched (wake_training.fetch), and a trainer step that finished keeps its clips or features; a step cut short
+starts over, and training itself, the model's own stage, runs again.
 """
 
 import argparse
@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -20,10 +21,10 @@ import openwakeword.utils
 import yaml
 
 from wake_training import recipe
-from wake_training.corpus import ASSETS, VALIDATION_FEATURES, Corpus
+from wake_training.corpus import ASSETS, VALIDATION_FEATURES, Asset, Corpus
 from wake_training.evaluate import FRAME_SECONDS, evaluation, peaks, scores, wakes
 from wake_training.fetch import fetch
-from wake_training.stage import Fact, Stage, record
+from wake_training.stage import Fact, Stage, line, record
 from wake_training.word import Rejected, Word, word
 
 CLIPS = ("positive_train", "positive_test", "negative_train", "negative_test")
@@ -51,17 +52,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"train-wake-word: {chosen.phrase}: {name}", file=sys.stderr, flush=True)
         began = time.monotonic()
         facts = done()
-        record(log, chosen, Stage(name, time.monotonic() - began, facts), datetime.now(UTC))
+        ended = Stage(name, time.monotonic() - began, facts)
+        at = datetime.now(UTC)
+        record(log, chosen, ended, at)
+        print(line(chosen, ended, at), file=sys.stderr, flush=True)
 
-    stage("corpus", lambda: _corpus(corpus))
+    for asset in ASSETS:
+        stage("corpus", partial(_fetch, corpus, asset))
+    stage("feature_models", _feature_models)
     stage("recipe", lambda: _recipe(chosen, corpus, run))
     # openWakeWord's trainer (wake_training.trainer), one stage per step, each step by its own flag and what it made.
     made = run / chosen.name
     clips = [made / name for name in CLIPS]
     features = [made / f"{name}.npy" for name in FEATURES]
-    stage("generate_clips", lambda: _train(run, "generate_clips", clips, lambda: _clips(clips)))
-    stage("augment_clips", lambda: _train(run, "augment_clips", features, lambda: _features(features)))
-    stage("train_model", lambda: _train(run, "train_model", [], lambda: {"model_bytes": (run / f"{chosen.name}.onnx").stat().st_size}))
+    stage("generate_clips", lambda: _finished(run, "generate_clips", clips, lambda: _clips(clips)))
+    stage("augment_clips", lambda: _finished(run, "augment_clips", features, lambda: _features(features)))
+    stage("train_model", lambda: _trained(run, chosen))
     stage("evaluate", lambda: _evaluate(chosen, corpus, run))
     model = to / f"{chosen.name}.onnx"
     stage("install", lambda: _install(chosen, run, model))
@@ -70,11 +76,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _corpus(corpus: Corpus) -> dict[str, Fact]:
-    fetched = sum(fetch(corpus, asset) for asset in ASSETS)
+def _fetch(corpus: Corpus, asset: Asset) -> dict[str, Fact]:
+    fetched = fetch(corpus, asset)
+    at = corpus.at(asset)
+    return {"asset": asset.path, "fetched": int(fetched), "bytes": sum(path.stat().st_size for path in (at, *at.rglob("*")) if path.is_file())}
+
+
+def _feature_models() -> dict[str, Fact]:
     # The trainer computes features with the melspectrogram and embedding models installed beside openwakeword.
     openwakeword.utils.download_models()  # pyright: ignore[reportUnknownMemberType]  (untyped in openWakeWord)
-    return {"assets": len(ASSETS), "fetched": fetched}
+    return {}
 
 
 def _recipe(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
@@ -84,10 +95,10 @@ def _recipe(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
     return {"samples": recipe.SAMPLES, "validation_samples": recipe.VALIDATION_SAMPLES, "steps": recipe.STEPS}
 
 
-def _train(run: Path, step: str, outputs: Sequence[Path], made: Callable[[], dict[str, Fact]]) -> dict[str, Fact]:
-    """Run the trainer's `step`, whose clips or features are `outputs`. The trainer skips a step whose outputs it finds,
-    finished or cut short, so [LAW:one-source-of-truth] what says they are finished is the step's mark, made once it
-    exits cleanly: a step without one starts over from none."""
+def _finished(run: Path, step: str, outputs: Sequence[Path], made: Callable[[], dict[str, Fact]]) -> dict[str, Fact]:
+    """The trainer's `step` finished, its clips or features `outputs`. The trainer would keep outputs it finds, finished
+    or cut short, so [LAW:one-source-of-truth] what says they are finished is the step's mark, made once it exits
+    cleanly: a step with one is not run again, and a step without one starts over from none."""
     done = run / f"{step}.done"
     if not done.exists():
         for output in outputs:
@@ -95,9 +106,18 @@ def _train(run: Path, step: str, outputs: Sequence[Path], made: Callable[[], dic
                 shutil.rmtree(output)
             else:
                 output.unlink(missing_ok=True)
-    subprocess.run([sys.executable, "-m", "wake_training.trainer", "--training_config", str(run / "training.yaml"), f"--{step}"], check=True)
-    done.touch()
+        _train(run, step)
+        done.touch()
     return made()
+
+
+def _trained(run: Path, chosen: Word) -> dict[str, Fact]:
+    _train(run, "train_model")
+    return {"model_bytes": (run / f"{chosen.name}.onnx").stat().st_size}
+
+
+def _train(run: Path, step: str) -> None:
+    subprocess.run([sys.executable, "-m", "wake_training.trainer", "--training_config", str(run / "training.yaml"), f"--{step}"], check=True)
 
 
 def _clips(made: Sequence[Path]) -> dict[str, Fact]:

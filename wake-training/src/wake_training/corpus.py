@@ -63,6 +63,7 @@ _IMPULSES = "b824a1ef2821f112fda0b9cb26e4278c62b425bb"
 _AUDIOSET = "0c609e8302cf139307f639c57652032af0a88041"
 _PIPER = "2971426a55072f7d22fec416ca7800df8bd23207"
 GENERATOR = "en_US-libritts_r-medium.pt"
+_VOICES = "v2.0.0"  # the piper-sample-generator release GENERATOR is fetched from
 
 # About 2,000 hours of speech, music and noise from ACAV100M, already openWakeWord features: the negatives that teach
 # a model what is not the wake word.
@@ -85,10 +86,10 @@ BACKGROUND = Asset(
 # piper-sample-generator's source, which carries `piper_train` (its wheel does not, and the generator needs it to
 # load), and the LibriTTS-R generator, 904 voices the synthetic clips are said in.
 PIPER = Asset(
-    f"piper-sample-generator-{_PIPER[:8]}",
+    f"piper-sample-generator-{_PIPER[:8]}-{_VOICES}-{GENERATOR.removesuffix('.pt')}",
     Source(
         f"https://codeload.github.com/rhasspy/piper-sample-generator/tar.gz/{_PIPER}",
-        ((f"models/{GENERATOR}", f"https://github.com/rhasspy/piper-sample-generator/releases/download/v2.0.0/{GENERATOR}"),),
+        ((f"models/{GENERATOR}", f"https://github.com/rhasspy/piper-sample-generator/releases/download/{_VOICES}/{GENERATOR}"),),
     ),
 )
 

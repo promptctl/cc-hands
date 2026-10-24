@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Train a wake word for hands: one phrase in, an openWakeWord ONNX model out"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    # openWakeWord's own trainer, `openwakeword.train`, which hands' runtime release (0.6 on PyPI) does not carry.
+    # openWakeWord's own trainer, `openwakeword.train`, as this commit has it. 0.6 on PyPI carries one too, but it
+    # converts every model to TFLite, with no switch to turn it off, and takes the model's input shape from the clips'
+    # length rather than from the features it computed.
     "openwakeword @ git+https://github.com/dscripka/openWakeWord@368c03716d1e92591906a84949bc477f3a834455",
     # What openwakeword.train and openwakeword.data import, which openwakeword's own dependencies leave out.
     "torch==2.8.*",

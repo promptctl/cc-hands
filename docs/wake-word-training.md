@@ -30,19 +30,20 @@ The pipeline never writes `config.toml` itself. Add the lines, then restart hand
 
 The stages run in this order:
 
-1. `corpus` fetches the assets every word shares, once: openWakeWord's ACAV100M training features (~16 GB) and
-   its ~10.7-hour validation features, the MIT room impulse responses, 4 AudioSet shards decoded to 16 kHz WAVs,
-   and piper-sample-generator's source at a pinned commit with its LibriTTS-R voice model.
-2. `recipe` writes the trainer's YAML.
-3. `generate_clips` makes the word's clips.
-4. `augment_clips` adds background noise and room sound to them and computes their features.
-5. `train_model` runs openWakeWord's own `train.py`, unchanged. What the Mac needs done differently from Linux
+1. `corpus`, once for each asset every word shares, fetches it the first time: openWakeWord's ACAV100M training
+   features (~16 GB) and its ~10.7-hour validation features, the MIT room impulse responses, 4 AudioSet shards
+   decoded to 16 kHz WAVs, and piper-sample-generator's source at a pinned commit with its LibriTTS-R voice model.
+2. `feature_models` fetches the melspectrogram and embedding models the trainer computes features with.
+3. `recipe` writes the trainer's YAML.
+4. `generate_clips` makes the word's clips.
+5. `augment_clips` adds background noise and room sound to them and computes their features.
+6. `train_model` runs openWakeWord's own `train.py`, unchanged. What the Mac needs done differently from Linux
    is in the docstring of `wake-training/src/wake_training/trainer.py`.
-6. `evaluate` scores the model, as described under [How good the models are](#how-good-the-models-are).
-7. `install` puts the ONNX model in `--to`.
+7. `evaluate` scores the model, as described under [How good the models are](#how-good-the-models-are).
+8. `install` puts the ONNX model in `--to`, in place of any model there of the same name.
 
-Each stage writes one JSON line, with its seconds and counts, to `<work>/runs/<name>.jsonl`. Every time below is
-read from those logs.
+Each stage writes one JSON line, with its seconds and what it made, to `<work>/runs/<name>.jsonl`, and prints the
+same line as it ends. Every time below is read from those logs.
 
 A rerun resumes. Fetched assets are kept, and so are the clips or features of a trainer step that finished. A step
 that was cut short starts over, and training and evaluation run again.
@@ -51,7 +52,7 @@ that was cut short starts over, and training and evaluation run again.
 
 A word's clips and features live in a run directory named for the word plus a digest of what they are made from:
 the phrase, its near-miss phrases, the sample counts, the background and room data, and the voice generator. For
-Hey Hands that is `words/hey_hands-1107d071`. Change any of those and the next run makes a fresh directory and
+Hey Hands that is `words/hey_hands-c24f5cb5`. Change any of those and the next run makes a fresh directory and
 generates every clip again. Change only how the model is trained (steps, width, weights) and the clips are reused.
 
 Old run directories are never deleted for you, and each holds about 1.5–1.7 GB. Remove the ones you no longer
@@ -128,4 +129,5 @@ worse: 1.7 per hour.
 
 Two runs of one recipe can differ by more than any of those changes. Retrained from the same clips, Hey Hands came
 out at 91.4% recall and 0.28 false wakes per hour, and Okay Hands at 87.1% recall, on the same held-out clips the
-shipped models score 94.7% and 94.6% on with no false wakes. Train a word more than once and keep the best model.
+shipped models score 94.7% and 94.6% on with no false wakes. Train a word more than once and keep the best model:
+each run installs over the model in `--to`, so give each run its own `--to` and compare their `evaluate` lines.
