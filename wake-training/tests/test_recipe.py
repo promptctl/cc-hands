@@ -1,11 +1,14 @@
 import importlib.util
+from collections import Counter
 import sys
 import wave
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 
+from wake_training import corpus as corpus_module
 from wake_training import recipe
 from wake_training.corpus import BACKGROUND, IMPULSES, PIPER, TRAINING_FEATURES, VALIDATION_FEATURES, Corpus
 from wake_training.word import word
@@ -86,3 +89,18 @@ def test_the_adapter_binds_the_corpus_generator_and_brings_clips_to_16_khz(tmp_p
             assert (heard.getframerate(), heard.getnframes()) == (16_000, 16_000)
             samples = np.frombuffer(heard.readframes(heard.getnframes()), dtype=np.int16)
         assert np.median(samples) == 0x1000
+
+
+def test_the_held_out_negatives_say_every_near_miss_alike(tmp_path: Path) -> None:
+    # The trainer says the phrases from the first, and holds out the first tenth it says.
+    hey = word("Hey Hands")
+    said = cast(list[str], recipe.clips(hey, Corpus(tmp_path))["custom_negative_phrases"])
+    held_out = Counter(said[: recipe.VALIDATION_SAMPLES])
+    assert set(held_out) == set(hey.near_misses) and max(held_out.values()) - min(held_out.values()) <= 1
+
+
+def test_a_run_made_with_another_generator_is_a_run_of_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    corpus = Corpus(tmp_path / "corpus")
+    hey = recipe.made(word("Hey Hands"), corpus)
+    monkeypatch.setattr(corpus_module, "GENERATOR", "another.pt")
+    assert recipe.made(word("Hey Hands"), corpus) != hey

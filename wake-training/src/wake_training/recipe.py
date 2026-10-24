@@ -15,7 +15,9 @@ SAMPLES = 20_000
 VALIDATION_SAMPLES = 2_000
 STEPS = 50_000
 # How many of the negative clips are said as the word's near misses: a quarter, the rest being the trainer's own
-# adversarial phrases. The trainer says the phrases it is given in turn, so each near miss is given its share of times.
+# adversarial phrases. The trainer says the phrases it is given in turn, from the first, and takes as many as it wants
+# clips: its held-out set, a tenth the size, is the list's first tenth. So the near misses are dealt in rounds, each
+# round every one of them, and every share of the list holds them all in equal parts.
 NEAR_MISSES = SAMPLES // 4
 
 
@@ -24,7 +26,7 @@ def clips(word: Word, corpus: Corpus) -> dict[str, object]:
     near = word.near_misses
     return {
         "target_phrase": [word.spoken],
-        "custom_negative_phrases": [miss for miss in near for _ in range(NEAR_MISSES // len(near))],
+        "custom_negative_phrases": [miss for _ in range(NEAR_MISSES // len(near)) for miss in near],
         "n_samples": SAMPLES,
         "n_samples_val": VALIDATION_SAMPLES,
         "rir_paths": [str(corpus.at(IMPULSES))],
@@ -36,9 +38,11 @@ def clips(word: Word, corpus: Corpus) -> dict[str, object]:
 
 def made(word: Word, corpus: Corpus) -> str:
     """The name of the run that makes `word`'s clips and features: the word's, and a digest of what they are made
-    from. [LAW:one-source-of-truth] the trainer keeps clips and features it finds and does not ask what they were made
-    from, so a run's name is what says it: a change to any of it is a run of its own, made fresh."""
-    digest = hashlib.sha256(json.dumps(clips(word, corpus), sort_keys=True).encode()).hexdigest()
+    from, the trainer's config for them and the generator that says them. [LAW:one-source-of-truth] the trainer keeps
+    clips and features it finds and does not ask what they were made from, so a run's name is what says it: a change
+    to any of it is a run of its own, made fresh."""
+    made_from = {"clips": clips(word, corpus), "generator": adapter(corpus)}
+    digest = hashlib.sha256(json.dumps(made_from, sort_keys=True).encode()).hexdigest()
     return f"{word.name}-{digest[:8]}"
 
 
@@ -73,27 +77,18 @@ def adapter(corpus: Corpus) -> str:
     return f'''"""Written by wake_training.recipe.adapter; see there."""
 
 import sys
-from math import gcd
-import hashlib
-import json
 from pathlib import Path
 
-import numpy as np
 import soundfile as sf
-from scipy.signal import resample_poly
+
+from wake_training import audio
 
 sys.path.insert(0, {str(corpus.at(PIPER))!r})
 from piper_sample_generator.__main__ import generate_samples as _generate  # noqa: E402
-
-RATE = 16_000
 
 
 def generate_samples(output_dir, **settings):
     _generate(output_dir=output_dir, model={str(corpus.generator)!r}, **settings)
     for clip in Path(output_dir).glob("*.wav"):
-        if (rate := sf.info(clip).samplerate) != RATE:
-            samples, _ = sf.read(clip, dtype="int16")
-            common = gcd(RATE, rate)
-            resampled = resample_poly(samples.astype(np.float32), RATE // common, rate // common)
-            sf.write(clip, np.clip(resampled, -32768, 32767).astype(np.int16), RATE, subtype="PCM_16")
+        audio.write(clip, *sf.read(clip))
 '''

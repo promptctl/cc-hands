@@ -16,6 +16,10 @@ from wake_training.stage import Fact
 THRESHOLD = 0.5
 # openWakeWord makes one feature frame of each 80 ms of audio.
 FRAME_SECONDS = 0.08
+# The frames after a reset that openWakeWord's `Model.predict` scores 0 (openwakeword/model.py, "< 5"): hands resets
+# its model on each wake, so it wakes again no sooner. The frames after them hands scores on windows still partly the
+# noise its reset filled them with; they are counted here on the clean windows the features hold, each able to wake.
+DEAF = 5
 
 
 def peaks(model: Path, clips: Sequence[Path]) -> list[float]:
@@ -29,9 +33,9 @@ def peaks(model: Path, clips: Sequence[Path]) -> list[float]:
     return scores
 
 
-def scores(model: Path, features: NDArray[np.float32]) -> tuple[list[float], int]:
+def scores(model: Path, features: NDArray[np.float32]) -> list[float]:
     """The model's score on each window of `features` as the window slides on one frame at a time, as it slides over
-    the microphone's; and how many frames a window is."""
+    the microphone's."""
     session = onnxruntime.InferenceSession(str(model))
     given = session.get_inputs()[0]  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in onnxruntime)
     name = cast(str, given.name)  # pyright: ignore[reportUnknownMemberType]
@@ -39,18 +43,17 @@ def scores(model: Path, features: NDArray[np.float32]) -> tuple[list[float], int
     run = cast(Callable[[None, dict[str, NDArray[np.float32]]], list[NDArray[np.float32]]], session.run)  # pyright: ignore[reportUnknownMemberType]  (untyped in onnxruntime)
     # The trainer exports the model for one window at a time.
     windows = np.lib.stride_tricks.sliding_window_view(features, frames, axis=0).transpose(0, 2, 1)
-    said = [float(run(None, {name: windows[n][None]})[0].item()) for n in range(len(windows))]
-    return said, frames
+    return [float(run(None, {name: windows[n][None]})[0].item()) for n in range(len(windows))]
 
 
-def wakes(said: Sequence[float], deaf: int) -> int:
-    """How many times hands wakes on these scores: at each score at its threshold, after which it is deaf for `deaf`
-    frames, as hands' reset of the model after a wake refills its window."""
+def wakes(said: Sequence[float]) -> int:
+    """How many times hands wakes on these scores: at each score at its threshold, after which it is deaf for `DEAF`
+    frames."""
     woken, frame = 0, 0
     while frame < len(said):
         heard = said[frame] >= THRESHOLD
         woken += heard
-        frame += deaf if heard else 1
+        frame += 1 + DEAF if heard else 1
     return woken
 
 

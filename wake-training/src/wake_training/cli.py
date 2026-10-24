@@ -1,8 +1,8 @@
 """`train-wake-word "Hey Hands"`: train a wake word, from the corpus to a model in place for hands.
 
 Every stage runs on every run, in order. A run cut short resumes: the corpus keeps what it fetched (wake_training.
-fetch), and openWakeWord's trainer keeps the clips it generated and the features it computed; training itself, the
-model's own stage, runs again.
+fetch), and the clips and features of each of the trainer's steps that finished are kept; a step cut short starts
+over, and training itself, the model's own stage, runs again.
 """
 
 import argparse
@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,8 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         chosen = word(args.phrase)
     except Rejected as rejected:
         parser.error(str(rejected))
-    work: Path = args.work.expanduser()
-    to: Path = args.to.expanduser()
+    # Absolute, as the printed model path must be for hands, and the corpus's path in the run's digest is.
+    work: Path = args.work.expanduser().resolve()
+    to: Path = args.to.expanduser().resolve()
     corpus = Corpus(work / "corpus")
     run = work / "words" / recipe.made(chosen, corpus)
     log = work / "runs" / f"{chosen.name}.jsonl"
@@ -55,9 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     stage("recipe", lambda: _recipe(chosen, corpus, run))
     # openWakeWord's trainer (wake_training.trainer), one stage per step, each step by its own flag and what it made.
     made = run / chosen.name
-    stage("generate_clips", lambda: _train(run, "generate_clips", lambda: {clips: sum(1 for _ in (made / clips).glob("*.wav")) for clips in CLIPS}))
-    stage("augment_clips", lambda: _train(run, "augment_clips", lambda: {features: int(np.load(made / f"{features}.npy", mmap_mode="r").shape[0]) for features in FEATURES}))
-    stage("train_model", lambda: _train(run, "train_model", lambda: {"model_bytes": (run / f"{chosen.name}.onnx").stat().st_size}))
+    clips = [made / name for name in CLIPS]
+    features = [made / f"{name}.npy" for name in FEATURES]
+    stage("generate_clips", lambda: _train(run, "generate_clips", clips, lambda: _clips(clips)))
+    stage("augment_clips", lambda: _train(run, "augment_clips", features, lambda: _features(features)))
+    stage("train_model", lambda: _train(run, "train_model", [], lambda: {"model_bytes": (run / f"{chosen.name}.onnx").stat().st_size}))
     stage("evaluate", lambda: _evaluate(chosen, corpus, run))
     model = to / f"{chosen.name}.onnx"
     stage("install", lambda: _install(chosen, run, model))
@@ -79,20 +82,38 @@ def _recipe(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
     return {"samples": recipe.SAMPLES, "validation_samples": recipe.VALIDATION_SAMPLES, "steps": recipe.STEPS}
 
 
-def _train(run: Path, step: str, made: Callable[[], dict[str, Fact]]) -> dict[str, Fact]:
+def _train(run: Path, step: str, outputs: Sequence[Path], made: Callable[[], dict[str, Fact]]) -> dict[str, Fact]:
+    """Run the trainer's `step`, whose clips or features are `outputs`. The trainer skips a step whose outputs it finds,
+    finished or cut short, so [LAW:one-source-of-truth] what says they are finished is the step's mark, made once it
+    exits cleanly: a step without one starts over from none."""
+    done = run / f"{step}.done"
+    if not done.exists():
+        for output in outputs:
+            if output.is_dir():
+                shutil.rmtree(output)
+            else:
+                output.unlink(missing_ok=True)
     subprocess.run([sys.executable, "-m", "wake_training.trainer", "--training_config", str(run / "training.yaml"), f"--{step}"], check=True)
+    done.touch()
     return made()
+
+
+def _clips(made: Sequence[Path]) -> dict[str, Fact]:
+    return {clips.name: sum(1 for _ in clips.glob("*.wav")) for clips in made}
+
+
+def _features(made: Sequence[Path]) -> dict[str, Fact]:
+    return {features.stem: int(np.load(features, mmap_mode="r").shape[0]) for features in made}
 
 
 def _evaluate(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
     model = run / f"{chosen.name}.onnx"
     made = run / chosen.name
     validation = np.load(corpus.at(VALIDATION_FEATURES))
-    said, frames = scores(model, validation)
     return evaluation(
         peaks(model, sorted((made / "positive_test").glob("*.wav"))),
         peaks(model, sorted((made / "negative_test").glob("*.wav"))),
-        wakes(said, frames),
+        wakes(scores(model, validation)),
         len(validation) * FRAME_SECONDS / 3600,
     )
 

@@ -2,7 +2,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from wake_training.evaluate import THRESHOLD, evaluation, wakes
+from wake_training.evaluate import DEAF, THRESHOLD, evaluation, wakes
 from wake_training.stage import Stage, line, record
 from wake_training.word import word
 
@@ -34,8 +34,8 @@ def test_an_evaluation_counts_wakes_at_hands_threshold() -> None:
     }
 
 
-def test_a_wake_leaves_hands_deaf_for_a_window_as_its_reset_does() -> None:
-    # Five frames over the threshold in a row are one wake; the next is heard once the window has refilled.
-    assert wakes([0.1, 0.9, 0.9, 0.9, 0.9, 0.9, 0.1, 0.1, THRESHOLD, 0.1], 4) == 2
-    assert wakes([0.9, 0.9, 0.9], 1) == 3
-    assert wakes([0.1] * 10, 4) == 0
+def test_a_wake_leaves_hands_deaf_for_the_frames_its_reset_scores_zero() -> None:
+    # Six frames over the threshold in a row are one wake: the five after it are deaf. The next is heard after them.
+    assert wakes([0.1, *[0.9] * 6, 0.1, THRESHOLD, 0.1]) == 2
+    assert wakes([0.9] * (2 * (1 + DEAF))) == 2
+    assert wakes([0.1] * 10) == 0

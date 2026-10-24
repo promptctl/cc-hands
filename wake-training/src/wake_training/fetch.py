@@ -8,7 +8,6 @@ import json
 import shutil
 import subprocess
 import urllib.request
-from math import gcd
 from pathlib import Path
 from typing import cast
 
@@ -16,11 +15,9 @@ import numpy as np
 import pyarrow.parquet as pq
 import soundfile as sf
 from numpy.typing import NDArray
-from scipy.signal import resample_poly  # pyright: ignore[reportUnknownVariableType]  (untyped in scipy)
 
+from wake_training import audio
 from wake_training.corpus import Asset, Clips, Corpus, Download, Folder, Source
-
-RATE = 16_000  # what openWakeWord hears, and the only rate its trainer takes
 
 
 def fetch(corpus: Corpus, asset: Asset) -> bool:
@@ -81,8 +78,6 @@ def _decode(parquet: Path, into: Path) -> None:
     table = pq.read_table(parquet, columns=["video_id", "audio"])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in pyarrow)
     rows = cast(list[dict[str, object]], table.to_pylist())  # pyright: ignore[reportUnknownMemberType]  (untyped in pyarrow)
     for row in rows:
-        audio = cast(dict[str, bytes], row["audio"])
-        samples, rate = cast(tuple[NDArray[np.float64], int], sf.read(io.BytesIO(audio["bytes"]), always_2d=True))  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
-        common = gcd(RATE, rate)
-        mono = cast(NDArray[np.float64], resample_poly(samples.mean(axis=1), RATE // common, rate // common))
-        sf.write(into / f"{row['video_id']}.wav", (np.clip(mono, -1, 1) * 32767).astype(np.int16), RATE, subtype="PCM_16")  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
+        encoded = cast(dict[str, bytes], row["audio"])
+        samples, rate = cast(tuple[NDArray[np.float64], int], sf.read(io.BytesIO(encoded["bytes"]), always_2d=True))  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
+        audio.write(into / f"{row['video_id']}.wav", samples.mean(axis=1), rate)
