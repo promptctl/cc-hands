@@ -1628,7 +1628,15 @@ surface above is the whole surface `[LAW:no-mode-explosion]`.
 
 `stay_silent` is how the model declines to answer words that were not addressed to
 it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
-which opens the mic without a hand, does.
+which opens the mic without a hand, does. It does not end a turn that did something, because by voice silence after
+work reads as nothing done, or as a crash. A turn the user asked and did not speak over has acted when it called a tool
+the model goes on from, such as `send_draft`, or one that is not hands' own, such as Bash. If its closing reply has no
+words and calls only `stay_silent`, and no readback of hands' is to follow, the brain's stage (`src/hands/brain/stage.py`) does not hold it: it sends the
+request on with a note that the brain acted, that the user has heard nothing since, and that it is to say in a sentence
+what it did. It does this once; a second `stay_silent` in that turn is held, and the turn ends failed. The brain's
+history keeps neither the note nor the failure, only its silence, so its next turn is told what the user heard instead. A turn hands
+itself asked the brain to tell, such as a session's finished turn, and a turn the user spoke over may still close on
+`stay_silent`. The turn's `voice.turn` event counts each refusal as `silence_refused`.
 
 **The prompt.** The brain's prompt is `voice/intermediary_instruction.py`. It says when to
 reach for a tool, and the tool's docstring says how to use what comes back; it names only
@@ -2053,8 +2061,10 @@ thing that failed `[LAW:no-silent-failure]`:
    under UNKNOWN, so "unreachable" is recognised from the exception type. A model reply
    with no words and no call in it is the model's failure too, "sent back nothing": the
    API services read it off the frames they push (`EmptyReplyFails`), excusing the reply to a call's result, and
-   the brain's stage off the wire across all of a turn's replies; a turn the model ends with stay_silent made a call, so it stays silent,
-   and a reply cancelled mid-stream was abandoned, not empty. An Anthropic request that times out, which Pipecat
+   the brain's stage off the wire across all of a turn's replies; a turn the model ends with stay_silent made a call,
+   so if it did nothing else it stays silent, and a reply cancelled mid-stream was abandoned, not empty. A turn that acted and closes on nothing,
+   by an empty reply or by the second stay_silent after it was sent on to say what it did, is said as "the language model
+   did not say how that went" (`ModelActedUntold`), because "sent back nothing" would tell the user nothing happened. An Anthropic request that times out, which Pipecat
    drops with only an event, is said as unreachable. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
    it"), only logged, and so neither is a muted microphone, whose every turn comes back

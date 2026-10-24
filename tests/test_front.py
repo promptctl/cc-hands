@@ -45,10 +45,10 @@ def test_an_app_that_cannot_say_its_front_tab_and_holds_several_sessions_is_left
 def test_the_brain_is_told_the_session_in_front_or_that_none_is_and_nothing_of_a_screen_left_unread() -> None:
     assert told(SessionInFront("iTerm2", SessionId("s1"), "hands, docs")) == (
         '[hands] As the user said this, iTerm2 was in front on the Mac\'s screen, showing the session "hands, docs" (id s1). '
-        "Say nothing about this unless it bears on what they said."
+        "Mention it only if it bears on what they said."
     )
     assert told(NoSessionInFront("Safari")) == (
-        "[hands] As the user said this, Safari was in front on the Mac's screen, showing no session. Say nothing about this unless it bears on what they said."
+        "[hands] As the user said this, Safari was in front on the Mac's screen, showing no session. Mention it only if it bears on what they said."
     )
     assert told(FrontUnread("no window is on screen")) == ""
 

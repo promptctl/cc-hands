@@ -261,7 +261,8 @@ it says is spoken from its requests on the wire, never from its screen; each tur
 exchanges its words came from. A barge-in stops what is said of the turn and nothing of the brain's: the turn runs to
 its own end unheard, and your next words reach the brain with a note of what you did not hear of it, so the brain judges
 whether to go back to it. After `stay_silent`, hands answers the brain's next request itself, so the model is not asked
-to go on. A turn the brain ends in error is said as a failure of the model.
+to go on. A turn you asked that did something is not let end that way: hands sends it on once to say what it did, and
+if it still says nothing, the turn is said as a failure. A turn the brain ends in error is said as a failure of the model.
 The run's audit log says which backend, model, and account it reached. The gate is push-to-talk: the key is the voice activity detector and the microphone mute,
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first

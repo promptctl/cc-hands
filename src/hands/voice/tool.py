@@ -16,6 +16,11 @@ import docstring_parser
 Result = Mapping[str, object]
 Body = Callable[..., Awaitable[Result]]
 JsonSchema = Mapping[str, object]
+# What a call means to the conversation. "reply": the model is asked to go on once it has the result. "silence": the call
+# is the whole reply and hands says something for it: a draft read back, playback resumed, the model switched. "nothing":
+# the call is the whole reply and nothing is said for it, which only words not said to the model may end in. Either whole
+# reply that hands back an error is the model's to answer: a refused call did nothing, and only the model can retry it.
+Then = Literal["reply", "silence", "nothing"]
 
 
 @dataclass(frozen=True)
@@ -27,17 +32,15 @@ class Tool:
     properties: Mapping[str, JsonSchema]
     required: tuple[str, ...]
     body: Body
-    # "reply": the model is asked to go on once it has the result. "silence": the call is the whole reply, unless it
-    # hands back an error, which the model is asked to answer: a refused call did nothing, and only the model can retry it.
     # A result {"says": text} is said by hands, as written, whichever the model does.
-    then: Literal["reply", "silence"]
+    then: Then
 
     @property
     def input_schema(self) -> JsonSchema:
         return {"type": "object", "properties": dict(self.properties), "required": list(self.required)}
 
 
-def tool(body: Body, *, then: Literal["reply", "silence"] = "reply") -> Tool:
+def tool(body: Body, *, then: Then = "reply") -> Tool:
     """The body as a tool, its schema read once from its signature and docstring: the name, the text, and each argument's type and line."""
     # [LAW:parse-dont-validate] a signature with a type no schema says is refused here, as the daemon builds its tools.
     docstring = docstring_parser.parse(inspect.getdoc(body) or "")
@@ -130,5 +133,5 @@ def whole(silences: Sequence[bool]) -> bool:
 
 
 def silent(tool: Tool, result: Result) -> bool:
-    """Whether the call is the whole reply: a silence tool's, unless it was refused."""
-    return tool.then == "silence" and "error" not in result
+    """Whether the call is the whole reply: a silence or nothing tool's, unless it was refused."""
+    return tool.then != "reply" and "error" not in result

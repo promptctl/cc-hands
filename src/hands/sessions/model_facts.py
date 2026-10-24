@@ -23,7 +23,13 @@ class ModelReplyEmpty:
     """The model answered with nothing: no words, and no call that would say or do something for it."""
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty
+@dataclass(frozen=True)
+class ModelActedUntold:
+    """The model acted on the user's words and ended its turn with nothing said after it: not even once told to say how it
+    went. Whether what it did worked is the model's to know, never this fact's."""
+
+
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelActedUntold
 
 
 class ModelFault(Exception):

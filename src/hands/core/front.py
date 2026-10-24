@@ -75,4 +75,4 @@ def told(front: InFront) -> str:
             shown = "no session"
         case FrontUnread():
             return ""
-    return f"[hands] As the user said this, {app} was in front on the Mac's screen, showing {shown}. Say nothing about this unless it bears on what they said."
+    return f"[hands] As the user said this, {app} was in front on the Mac's screen, showing {shown}. Mention it only if it bears on what they said."

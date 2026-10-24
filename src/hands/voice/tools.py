@@ -198,15 +198,17 @@ def playback_tools(player: Player) -> list[Tool]:
 
 def stay_silent_tool() -> Tool:
     async def stay_silent() -> Result:
-        """Say nothing in reply to what was just heard, because it was not said to you.
+        """End your turn with nothing said, because what was just heard was not said to you.
 
-        Calling it is the whole reply: add no words of your own.
+        In a turn the user asked and did not speak over, if you acted and they have heard nothing since, hands refuses the
+        silence once, and you say what you did.
         """
         # [LAW:no-silent-failure] the choice not to answer is still a tool's event in the audit log, and with the model
         # not run on the result, nothing follows it to the speaker.
         return {"silent": True}
 
-    return tool(stay_silent, then="silence")
+    # [LAW:types-are-the-program] the one whole reply nothing is said for: the stage refuses it to a turn that acted.
+    return tool(stay_silent, then="nothing")
 
 
 def defaulting_to_focus(tool: Tool, home: Home) -> Tool:
