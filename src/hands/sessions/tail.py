@@ -375,13 +375,24 @@ class Tails:
 
         [LAW:no-ambient-temporal-coupling] `through` is stamped before the registry was asked where the transcript is, so
         every record Claude Code had written by then is in what is read, and a move any hook had said by then is read
-        where it went: no file there is nothing written by then, never a file moved before it.
+        where it went.
         """
         try:
             read = _appended(transcript, following.at)
+        except FileNotFoundError:
+            # [LAW:types-are-the-program] whether a file was read here says which absence this is, not when hooks land.
+            match following.at.file:
+                case None:
+                    # Nothing written yet is nothing left unread.
+                    self._transcribed.append(Read(session, through))
+                case _:
+                    # The file read so far has gone from here: Claude Code renamed it as the session entered a worktree,
+                    # before any hook says where, and it holds what was not read of it. It is read once a hook says.
+                    pass
+            raise
         except OSError:
-            # Nothing written yet is nothing left unread, and a transcript that cannot be read gives nothing more to wait
-            # for: the turn is told, and its telling says why it could not read it [LAW:no-silent-failure].
+            # A transcript that cannot be read gives nothing more to wait for: the turn is told, and its telling says why
+            # it could not read it [LAW:no-silent-failure].
             self._transcribed.append(Read(session, through))
             raise
         if read.restarted is not None:

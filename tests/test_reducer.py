@@ -452,6 +452,13 @@ def test_a_hook_s_file_naming_a_moved_transcript_moves_the_session_and_nothing_e
     assert reduce(before, Located(moved)) == (before.put(replace(before.sessions[ONE.id], membership=moved)), [])
 
 
+def test_a_hook_s_file_moves_a_known_session_s_transcript_and_not_its_process_or_project() -> None:
+    """A late hook of a process the session has since left writes that process's whole file, its shell's cwd with it."""
+    left = replace(ONE, pid=ONE.pid + 1, cwd=Path("/code/a/sub"), transcript=Path("/projects/moved/s1.jsonl"))
+    before = holding(IDLE)
+    assert reduce(before, Located(left)) == (before.put(replace(before.sessions[ONE.id], membership=replace(ONE, transcript=left.transcript))), [])
+
+
 def test_a_hook_s_file_for_a_session_that_ended_leaves_it_ended() -> None:
     assert reduce(GONE, Located(replace(ONE, transcript=Path("/elsewhere.jsonl")))) == (GONE, [])
 

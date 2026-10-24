@@ -574,6 +574,24 @@ async def test_a_move_heard_as_a_catch_up_begins_is_read_where_it_went(tmp_path:
     assert await Tails(Relocating(tmp_path / "repo" / "t.jsonl", moved)).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Read(SID, Stamp(5000))]
 
 
+async def test_a_transcript_moved_before_any_hook_says_where_is_read_through_only_once_one_does(tmp_path: Path) -> None:
+    """Claude Code renames the transcript as the session enters a worktree, before any hook names where it went: a
+    reading that found no file where one was read would let a held Stop or an untold turn go with its records unread."""
+    transcript, moved = tmp_path / "repo" / "t.jsonl", tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    transcript.parent.mkdir()
+    moved.parent.mkdir()
+    transcript.write_text(lines(PROMPT))
+    registry = Registry([member(transcript)])
+    tails = Tails(registry)
+    await tails.catch_up()
+    transcript.rename(moved)
+    with moved.open("a") as more:
+        more.write(lines('{"type":"user","promptId":"p2","message":{"role":"user","content":"again"}}'))
+    assert await tails.catch_up() == []
+    registry.members[:] = registry.heard[:] = [member(moved)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p2"), None, 7.0), Read(SID, Stamp(5000))]
+
+
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"

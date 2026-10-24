@@ -109,10 +109,14 @@ def reduce(registry: Registry, event: Event) -> tuple[Registry, list[Effect]]:
 
 
 def _located(registry: Registry, membership: Membership) -> Registry:
-    """A session the registry holds, where its own hook's file says it works now; one that ended stays ended."""
+    """A session the registry holds, with the transcript its own hook's file names now; one that ended stays ended.
+
+    Only the transcript: the process and the project are the start's, and a late hook of a process the session has since
+    left, which writes its own whole file, does not take the session back to it.
+    """
     match registry.sessions[membership.id]:
         case Session() as session:
-            return registry.put(replace(session, membership=membership))
+            return registry.put(replace(session, membership=replace(session.membership, transcript=membership.transcript)))
         case Gone():
             return registry
 
