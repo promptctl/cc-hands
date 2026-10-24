@@ -43,8 +43,8 @@ naming fix
 # The last thing the model reads: the session's closing is often a markdown summary, and a model whose last words
 # are a summary goes on summarising.
 NAME_ASKED = (
-    "The session's words end there. Reply with its name alone, not a summary of them: the name it has now, exactly as "
-    "given, if that still fits the work, or else a new one of at most three words."
+    "Reply with the session's name alone, not a summary of what it said: the name it has, exactly as given, if it has "
+    "one that still fits the work, or else a new one of at most three words."
 )
 
 NAME_TIMEOUT_SECONDS = 60.0
@@ -126,7 +126,7 @@ def asked(before: str | None, beside: Sequence[str], closing: str) -> str:
     has = f"Its name now: {before}" if before is not None else "It has no name yet."
     others = f"The other sessions in its project: {'; '.join(beside)}" if beside else "No other session is in its project."
     shown = closing if len(closing) <= CLOSING_SHOWN else f"(the start cut) ...{closing[-CLOSING_SHOWN:]}"
-    return f"{has}\n\n{others}\n\nThe last thing it said:\n\n{shown}\n\n{NAME_ASKED}"
+    return f"{has}\n\n{others}\n\nThe last thing it said, between <said> and </said>:\n\n<said>\n{shown}\n</said>\n\n{NAME_ASKED}"
 
 
 def parsed(reply: str, before: str | None) -> str:

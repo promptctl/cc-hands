@@ -153,7 +153,7 @@ async def test_the_model_is_shown_the_names_of_the_other_sessions_in_the_project
 
 def test_the_model_is_shown_the_end_of_a_long_closing_where_the_overview_is_then_asked_for_the_name() -> None:
     shown = asked(None, [], "detail " * 400 + "Where it stands: the naming fix is merged.")
-    assert shown.endswith("Where it stands: the naming fix is merged.\n\n" + NAME_ASKED) and "(the start cut)" in shown
+    assert shown.endswith("Where it stands: the naming fix is merged.\n</said>\n\n" + NAME_ASKED) and "(the start cut)" in shown
 
 
 # The last three are replies the naming model gave in the audit: two summaries of the session's closing, and its status.
