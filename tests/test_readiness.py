@@ -972,6 +972,9 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
     # The command's event carries every step's finding, in the same order.
     [event] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
     assert [finding["type"] for finding in event["facts"]["findings"]] == ["Missing" if each == step else "Ready" for each in STEPS]
+    # It fails saying why: the missing step, and the first line of what was found of it.
+    [missing] = [finding for finding in event["facts"]["findings"] if finding["type"] == "Missing"]
+    assert event["error"] == f"exited 1: {missing['step']}: {missing['detail'].partition('\n')[0]}"
 
 
 def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
@@ -983,6 +986,11 @@ def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: False)
     assert main(["--home", str(home.root), "check"]) == 1
     assert marks(capsys) == {**dict.fromkeys(STEPS, "✓"), "plugin": "?", "grant": "✗"}
+    # Each event's reason names the steps that decided its exit: the one not looked at, then the missing one alone.
+    events = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
+    decided = [[finding for finding in event["facts"]["findings"] if finding["type"] == kind] for event, kind in zip(events, ("Unknown", "Missing"), strict=True)]
+    assert [len(each) for each in decided] == [1, 1]
+    assert [event["error"] for event in events] == [f"exited {code}: {each['step']}: {each['detail'].partition('\n')[0]}" for code, [each] in zip((2, 1), decided, strict=True)]
 
 
 def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_beneath_it(

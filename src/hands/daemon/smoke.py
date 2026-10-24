@@ -37,6 +37,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
 from hands.core.session import Membership, SessionId
+from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
@@ -285,8 +286,8 @@ async def until[T](stage: Stage, seconds: float, found: Callable[[], Awaitable[T
     return seen
 
 
-async def smoke(home: Home, environment: Mapping[str, str]) -> int:
-    """Run the test, printing each stage as it is reached; 0 once every stage is, 1 at the first that is not."""
+async def smoke(home: Home, environment: Mapping[str, str]) -> Exit:
+    """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
     word = random.choice(WORDS)
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
@@ -297,12 +298,11 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> int:
     except NotReached as missed:
         smoked.read()
         said = errors(smoked.lines)
-        # [LAW:nothing-unseen] why, as a fact: the command's failure is its exit code, which the CLI's layer sets after this.
-        annotate(failed_at=missed.stage, why=missed.why, daemon_errors=tuple(said))
+        annotate(failed_at=missed.stage, daemon_errors=tuple(said))
         print(f"FAILED {missed.stage}: {missed.why}", flush=True)
         for error in said:
             print(f"  hands logged: {error}", flush=True)
-        return 1
+        return Failed(1, f"{missed.stage}: {missed.why}")
     print("passed: every part of the pipeline did its share.", flush=True)
     return 0
 
@@ -493,6 +493,6 @@ async def _synthesized(text: str) -> bytes:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(home: Home) -> int:
+def run_smoke(home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
     return asyncio.run(smoke(home, os.environ))

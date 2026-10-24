@@ -200,6 +200,10 @@ def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_pa
     done = restart(plugin, home, tmp_path)
     assert (done.returncode, done.stdout) == (1, "")
     assert done.stderr == f"hands was not restarted: hands has not run: there is no heartbeat at {home.status}.\n"
+    # The command's event fails with what it said, not its exit code alone.
+    [command] = [line for line in map(json.loads, audit.tail(home.audit, 10_000)[0]) if line.get("event") == "hands.command"]
+    assert (command["outcome"], command["facts"]["outcome"]["type"]) == ("failed", "NotRunning")
+    assert command["error"] == f"exited 1: hands was not restarted: hands has not run: there is no heartbeat at {home.status}."
 
 
 def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, plugin: Path) -> None:

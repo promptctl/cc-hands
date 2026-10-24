@@ -25,11 +25,13 @@ def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_eve
     home = Home(tmp_path / "home")
     # No heartbeat: hands has never run here, which `hands status` says by exiting 1.
     assert main(["--home", str(home.root), "status"]) == 1
+    said = capsys.readouterr().out.rstrip()
     assert main(["--home", str(home.root), "plugin"]) == 0
     capsys.readouterr()
 
     status, render, plugin = events(home)
-    assert (status["event"], status["outcome"], status["error"]) == ("hands.command", "failed", "exited 1")
+    # The failure says why, in the words the command said it.
+    assert (status["event"], status["outcome"], status["error"]) == ("hands.command", "failed", f"exited 1: {said}")
     # [LAW:nothing-unseen] what the exit code was decided by, beside it.
     assert status["facts"] == {"command": "status", "home": str(home.root), "arguments.home": str(home.root), "verdict": {"type": "NeverRan", "path": str(home.status)}, "exit_code": 1}
     assert (plugin["event"], plugin["outcome"], plugin["error"]) == ("hands.command", "ok", None)

@@ -2292,7 +2292,9 @@ batch is taken or the collector is unset. The `hands.start` event names the coll
 that tmux repeats every `status-interval` and that would bury the log in copies of it, is one
 `hands.command` event, written by the dispatcher those commands pass through (`hands.daemon.cli.commanded`), carrying the command,
 the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command
-exits nonzero, and the unit of work the command ran, such as `plugin.render`, is in its trace.
+exits nonzero, its error the code and the reason the command gave (`exited 1: hands has not run: ...`): each command
+returns a `hands.daemon.exits.Exit`, whose nonzero arm carries that reason, so no command can exit nonzero without one.
+The unit of work the command ran, such as `plugin.render`, is in its trace.
 Those events are in the log alone: Claude Code waits on `hands plugin` before a session starts,
 and `hands status` must answer whatever the config says, so no command waits on a collector or
 reads a config.toml to find one. hands names only the collector; which stores sit behind it is

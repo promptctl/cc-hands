@@ -194,9 +194,9 @@ def test_with_hands_not_running_the_run_stops_at_up_and_its_event_says_so(tmp_pa
     assert capsys.readouterr().out == f"FAILED up: hands has not run: there is no heartbeat at {home.status}; start it with `hands run`\n"
     [command] = events(home)
     assert (command["event"], command["outcome"], command["facts"]["command"], command["facts"]["failed_at"]) == ("hands.command", "failed", "smoke", "up")
-    assert command["error"] == "exited 1"
+    # The event says why, as the run said it: the stage it stopped at, and what it found there.
+    assert command["error"] == f"exited 1: up: hands has not run: there is no heartbeat at {home.status}; start it with `hands run`"
     assert "reached" not in command["facts"] and "model" not in command["facts"]
-    assert command["facts"]["why"] == f"hands has not run: there is no heartbeat at {home.status}; start it with `hands run`"
 
 
 def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_stopped(
@@ -213,7 +213,8 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     facts = command["facts"]
     assert facts["word"] in WORDS and facts["folder"] == str((home.root / FOLDER).resolve())
     assert facts["model"] == transcription.MODEL
-    assert (facts["reached"], facts["failed_at"], facts["why"], facts["daemon_errors"]) == ("up", "joined", "there is no `claude` on PATH", [])
+    assert (facts["reached"], facts["failed_at"], facts["daemon_errors"]) == ("up", "joined", [])
+    assert command["error"] == "exited 1: joined: there is no `claude` on PATH"
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
 
 

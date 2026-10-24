@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.daemon import indicator, readiness, update
+from hands.daemon import exits, indicator, readiness, update
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
@@ -119,7 +119,7 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
     return both
 
 
-def show_phone(home: Home) -> int:
+def show_phone(home: Home) -> exits.Exit:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
 
@@ -138,12 +138,13 @@ def show_phone(home: Home) -> int:
     except Rejected as error:
         wide.annotate(phone_key=str(error))
         print(f"hands: {error}", file=sys.stderr)
-        return 1
+        return exits.Failed(1, str(error))
     urls = page_urls(name, lan_addresses(), key)
     wide.annotate(addresses=len(urls))
     if not urls:
-        print("hands: this machine has no address a phone can reach.", file=sys.stderr)
-        return 1
+        unreached = "this machine has no address a phone can reach."
+        print(f"hands: {unreached}", file=sys.stderr)
+        return exits.Failed(1, unreached)
     segno.make(urls[0]).terminal(compact=True)
     print("\n".join(urls))
     print("The page is served while `hands run` is up. Anyone with one of these addresses can talk to hands: keep them to yourself.")
@@ -258,7 +259,7 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
     event: the command, its arguments as parsed, its exit code, and how long it took. It ends failed where the command
-    exits nonzero, as the exit code says it did, and the unit of work a command runs inside it is in its trace. Written
+    exits nonzero, with the code and the reason the command gave, and the unit of work a command runs inside it is in its trace. Written
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
     collector, or on a config.toml the daemon has yet to accept.
     """
@@ -266,11 +267,14 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     with wide.unit("hands.command", record):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        code = dispatch(home, arguments, record)
-        wide.annotate(exit_code=code)
-        if code != 0:
-            wide.fail(f"exited {code}")
-    return code
+        ended = dispatch(home, arguments, record)
+        wide.annotate(exit_code=exits.code_of(ended))
+        match ended:
+            case exits.Failed(code=code, why=why):
+                wide.fail(f"exited {code}: {why}")
+            case 0:
+                pass
+    return exits.code_of(ended)
 
 
 def as_facts(arguments: argparse.Namespace) -> dict[str, wide.Fact]:
@@ -291,7 +295,7 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> int:
+def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     match arguments.command:
         case "status":
@@ -636,20 +640,22 @@ def said_exited(status: int) -> None:
     logger.error(f"the menu-bar indicator exited ({os.waitstatus_to_exitcode(status)}) while hands runs; hands is not shown in the menu bar")
 
 
-def report(home: Home) -> int:
+def report(home: Home) -> exits.Exit:
     now = datetime.now(UTC)
     verdict = heartbeat.look(home.status, now)
     # [LAW:nothing-unseen] what the exit code was decided by.
     wide.annotate(verdict=verdict)
+    said = heartbeat.describe(verdict, now)
+    ended: exits.Exit
     match verdict:
         case heartbeat.Up():
-            out, code = sys.stdout, 0
+            out, ended = sys.stdout, 0
         case heartbeat.NeverRan() | heartbeat.Unresponsive() | heartbeat.Down() | heartbeat.Stopped() | heartbeat.Refused():
-            out, code = sys.stdout, 1
+            out, ended = sys.stdout, exits.Failed(1, said)
         case heartbeat.Unreadable():
-            out, code = sys.stderr, 2
-    print(heartbeat.describe(verdict, now), file=out)
-    return code
+            out, ended = sys.stderr, exits.Failed(2, said)
+    print(said, file=out)
+    return ended
 
 
 def show_segment(home: Home) -> int:
@@ -664,14 +670,27 @@ def show_segment(home: Home) -> int:
     return 0
 
 
-def check(home: Home, granted: bool, verbose: bool) -> int:
+def check(home: Home, granted: bool, verbose: bool) -> exits.Exit:
     reached = readiness.configured(home, os.environ)
     findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
-    kinds = {type(finding) for finding in findings}
+    missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
+    unknown = [finding for finding in findings if isinstance(finding, readiness.Unknown)]
     # A piece known to be missing outranks one that could not be looked at: hands is not set up, whatever that one is.
-    return 1 if readiness.Missing in kinds else 2 if readiness.Unknown in kinds else 0
+    # [LAW:one-source-of-truth] the findings that decide the exit are the ones its reason names.
+    match missing, unknown:
+        case [], []:
+            return 0
+        case [], _:
+            return exits.Failed(2, undone(unknown))
+        case _:
+            return exits.Failed(1, undone(missing))
+
+
+def undone(findings: Sequence[readiness.Finding]) -> str:
+    """The steps that decided a check's exit, each with the first line of what was found."""
+    return "; ".join(f"{finding.step}: {finding.detail.partition("\n")[0]}" for finding in findings)
 
 
 def keyboards(pids: Sequence[int]) -> list[Keyboard]:
@@ -714,21 +733,22 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "?", "WARNING"
 
 
-def asked_to_restart(home: Home) -> int:
+def asked_to_restart(home: Home) -> exits.Exit:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
     outcome = restarted(home)
-    out, code = answered(outcome)
-    print(said(outcome, datetime.now(UTC)), file=out)
-    return code
+    line = said(outcome, datetime.now(UTC))
+    out, ended = answered(outcome, line)
+    print(line, file=out)
+    return ended
 
 
-def answered(outcome: Outcome) -> tuple[TextIO, int]:
-    """Where a restart's outcome is said, and the exit that says it: 0 only when hands is running again."""
+def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
+    """Where a restart's outcome, said as `line`, is said, and the exit that says it: 0 only when hands is running again."""
     match outcome:
         case Restarted():
             return sys.stdout, 0
         case NotRunning() | NotBack():
-            return sys.stderr, 1
+            return sys.stderr, exits.Failed(1, line)
 
 
 def restarted(home: Home) -> Outcome:
@@ -739,7 +759,7 @@ def restarted(home: Home) -> Outcome:
     return outcome
 
 
-def updated(home: Home) -> int:
+def updated(home: Home) -> exits.Exit:
     """`hands update`: install master, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
     prefix = Path(sys.prefix)
     # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on.
@@ -755,12 +775,14 @@ def updated(home: Home) -> int:
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
             wide.annotate(steps=ran, failed=step)
-            print(f"hands update: {step} failed, so hands was not restarted and runs as it did: {why}", file=sys.stderr)
-            return 1
+            unrestarted = f"{step} failed, so hands was not restarted and runs as it did: {why}"
+            print(f"hands update: {unrestarted}", file=sys.stderr)
+            return exits.Failed(1, unrestarted)
         case update.Unfinished(sha=sha, step=step, said=why, ran=ran):
             wide.annotate(steps=ran, sha=sha, failed=step)
-            print(f"hands update: {step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}", file=sys.stderr)
-            return 1
+            unfinished = f"{step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}"
+            print(f"hands update: {unfinished}", file=sys.stderr)
+            return exits.Failed(1, unfinished)
         case update.Installed(sha=sha, ran=ran, advised=advised):
             wide.annotate(steps=ran, sha=sha, went_past=advised)
             for each in advised:
@@ -768,17 +790,19 @@ def updated(home: Home) -> int:
     print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
     answer = update.detach()
     outcome = restarted(home)
-    line, (out, code) = said(outcome, datetime.now(UTC)), answered(outcome)
+    line = said(outcome, datetime.now(UTC))
+    out, ended = answered(outcome, line)
     match outcome:
         # [LAW:one-source-of-truth] the run's own word on where it runs from, so the commit is said only of a run on it.
         case Restarted(status=heartbeat.Status(runs_from=Path() as runs_from)) if runs_from.resolve() == prefix.resolve():
             line = f"{line} It runs master at {sha}."
         case Restarted(status=heartbeat.Status(runs_from=runs_from)):
             # A hands started from elsewhere, a checkout's `uv run hands run`, restarts on what it ran, not on master.
-            line, out, code = f"{line} It runs from {runs_from or 'an environment it does not name'}, not from {prefix}, where master at {sha} is installed.", sys.stderr, 1
+            line = f"{line} It runs from {runs_from or 'an environment it does not name'}, not from {prefix}, where master at {sha} is installed."
+            out, ended = sys.stderr, exits.Failed(1, line)
         case NotRunning() | NotBack():
             pass
-    wide.annotate(runs_master=code == 0)
+    wide.annotate(runs_master=ended == 0)
     try:
         print(line, file=out, flush=True)
     except OSError as error:
@@ -789,8 +813,8 @@ def updated(home: Home) -> int:
     else:
         wide.annotate(told=True)
     # Whether the caller was still waiting to exit with it: one the restart ended was not.
-    wide.annotate(exit_taken=answer(code))
-    return code
+    wide.annotate(exit_taken=answer(exits.code_of(ended)))
+    return ended
 
 
 def audit_log_of(home: Home) -> audit.AuditLog:
@@ -798,7 +822,7 @@ def audit_log_of(home: Home) -> audit.AuditLog:
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
 
 
-def login(home: Home, method: "Method", record: audit.Record) -> int:
+def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
@@ -815,18 +839,18 @@ def login(home: Home, method: "Method", record: audit.Record) -> int:
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             print(f"hands login: {error}", file=sys.stderr)
-            return 1
+            return exits.Failed(1, str(error))
         except KeyboardInterrupt:
             wide.fail("interrupted")
             print("hands login: interrupted", file=sys.stderr)
-            return 1
+            return exits.Failed(1, "interrupted")
         wide.annotate(first_run=signed.first_run, account=signed.account)
     print(f"the brain at {home.brain} is logged in as {signed.account}")
     print("a hands already running started its brain on the login before: restart it to start the brain on this one")
     return 0
 
 
-def install_fritter(home: Home, record: audit.Record) -> int:
+def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
     # beside it, and whether PATH finds that claude.
     with wide.unit("fritter.install", record):
@@ -836,7 +860,7 @@ def install_fritter(home: Home, record: audit.Record) -> int:
         except (wrapper.Uninstallable, wrapper.Unpackaged) as error:
             wide.fail(str(error))
             print(f"hands install-fritter: {error}", file=sys.stderr)
-            return wrapper.Installing.BROKEN
+            return exits.Failed(wrapper.Installing.BROKEN, str(error))
         wide.annotate(fritter=installed.fritter, shim=installed.shim)
         print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
         print(f"wrote {installed.shim}")
@@ -850,7 +874,7 @@ def install_fritter(home: Home, record: audit.Record) -> int:
                 said = f"the claude it wrote does not work with {home.bin} first on PATH: {detail}"
                 wide.fail(said)
                 print(f"hands install-fritter: {said}", file=sys.stderr)
-                return wrapper.Installing.BROKEN
+                return exits.Failed(wrapper.Installing.BROKEN, said)
         found = readiness.shim(home, path)
         wide.annotate(path_finds_it=isinstance(found, readiness.Ready))
         match found:
@@ -859,10 +883,10 @@ def install_fritter(home: Home, record: audit.Record) -> int:
                 return wrapper.Installing.FOUND
             case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 print(said, file=sys.stderr)
-                return wrapper.Installing.UNFOUND
+                return exits.Failed(wrapper.Installing.UNFOUND, said)
 
 
-def install_brain(home: Home, record: audit.Record) -> int:
+def install_brain(home: Home, record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads what the fetch needs.
     from hands.brain import pinned
 
@@ -876,17 +900,17 @@ def install_brain(home: Home, record: audit.Record) -> int:
         except pinned.Uninstallable as error:
             wide.fail(str(error))
             print(f"hands install-brain: {error}", file=sys.stderr)
-            return 1
+            return exits.Failed(1, str(error))
         except KeyboardInterrupt:
             wide.fail("interrupted")
             print("hands install-brain: interrupted", file=sys.stderr)
-            return 1
+            return exits.Failed(1, "interrupted")
         wide.annotate(claude=installed.path, fetched=installed.fetched, unpinned=installed.unpinned)
         print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
         return 0
 
 
-def render_plugin(home: Home, record: audit.Record) -> int:
+def render_plugin(home: Home, record: audit.Record) -> Literal[0]:
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
     # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
     # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
@@ -904,7 +928,7 @@ def render_plugin(home: Home, record: audit.Record) -> int:
 LOG_POLL_SECONDS = 0.25
 
 
-def tail_log(home: Home, lines: int) -> int:
+def tail_log(home: Home, lines: int) -> Literal[0]:
     newest, offset = audit.tail(home.audit, lines)
     # [LAW:nothing-unseen] how many lines the log had to print first, and the log offset following began at.
     wide.annotate(tailed=len(newest), followed_from=offset)
@@ -924,7 +948,7 @@ def tail_log(home: Home, lines: int) -> int:
     raise AssertionError("following the audit log ends only when interrupted")
 
 
-def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most: int) -> int:
+def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most: int) -> Literal[0]:
     """Print the moments `hands recall` found, one a line, each at the time it happened here."""
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
     # zeros included.

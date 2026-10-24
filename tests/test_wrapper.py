@@ -217,6 +217,9 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
         ("fritter.install", "ok", {**facts, "path_finds_it": False}),
         ("fritter.install", "ok", {**facts, "path_finds_it": True}),
     ]
+    # The command that found another claude first fails saying so, in the words it printed.
+    commands = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "hands.command"]
+    assert [command.get("error") for command in commands] == [f"exited 3: {said.rstrip()}", None]
 
 
 def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,6 +232,8 @@ def test_install_without_a_packaged_fritter_fails_naming_where_it_looked(root: P
     [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     assert (event["event"], event["outcome"], event["facts"]) == ("fritter.install", "failed", {"packaged": str(root / "package" / "bin" / "fritter")})
     assert event["error"].startswith("hands' package carries no fritter at")
+    [command] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "hands.command"]
+    assert command["error"] == f"exited 1: {event['error']}"
 
 
 def test_an_install_whose_claude_does_not_work_even_first_on_path_fails_saying_what_was_found(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
