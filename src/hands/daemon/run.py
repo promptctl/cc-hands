@@ -30,7 +30,6 @@ from uuid import uuid4
 from loguru import logger
 from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
-from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.daemon.config import OwnModel, Settings
@@ -162,7 +161,7 @@ class Watch:
 class Mind:
     """The pipeline's LLM stage, what the brain runs beside the pipeline, and what answers hands' side questions."""
 
-    llm: FrameProcessor
+    llm: BrainStage
     watches: Sequence[Watch]
     # A summariser, given what it is for, its instruction, and how long it has.
     summariser: Callable[[AsideKind, str, float], Summariser]
@@ -452,7 +451,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, sessions, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

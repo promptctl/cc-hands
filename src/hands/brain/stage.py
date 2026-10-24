@@ -43,7 +43,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
-from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered
+from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, BrainEnded, BrainStopped
+from hands.core.brainwork import AlreadyEnded, BrainWork, Epoch, Idle, NotWorking, Running, StopOutcome, Stopping, Working
 from hands.core.effects import Deny
 from hands.core.beside import beside
 from hands.core.place import Modality
@@ -59,6 +60,7 @@ from hands.core.wire import (
     Exchanged,
     Heard,
     Hold,
+    JsonDelta,
     MainTurn,
     Observed,
     Route,
@@ -68,9 +70,11 @@ from hands.core.wire import (
     Tail,
     TextDelta,
     ToolAnswer,
+    Unreadable,
     Unreached,
     streams,
     tool_answers,
+    tool_input,
 )
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
@@ -86,13 +90,15 @@ from hands.voice.tool import Result, Tool, silent, whole
 
 
 class Asking(Protocol):
-    """What the stage needs of the brain: the session its requests carry, and a turn asked, told of each permission it
-    holds for the user."""
+    """What the stage needs of the brain: the session its requests carry, a turn asked, told of each permission it holds
+    for the user, and the turn in flight stopped, saying whether there was one."""
 
     @property
     def session(self) -> SessionId: ...
 
-    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainAnswered: ...
+    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
+
+    def interrupt(self) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -172,12 +178,22 @@ COUNTS = ("round_trips", "tools", "refused", "cut_in", "silence_refused")
 
 
 @dataclass
+class _Opening:
+    """A call block of the reply streaming now, not yet whole: its call's id and tool, and the pieces of its input so far."""
+
+    call: str
+    tool: str
+    json: str = ""
+
+
+@dataclass
 class _Call:
-    """A call one of a turn's replies made: its tool, when its block was whole and Claude Code ran it, by the stage's clock
-    and the wall's, its span in the turn's trace, and when the request carrying its result left, and whether that result
-    was an error."""
+    """A call one of a turn's replies made: its tool and its input, when its block was whole and Claude Code ran it, by the
+    stage's clock and the wall's, its span in the turn's trace, and when the request carrying its result left, and whether
+    that result was an error."""
 
     tool: str
+    input: Mapping[str, object] | Unreadable
     ran: Seconds
     at: datetime
     span: Span
@@ -215,6 +231,8 @@ class _Turn:
     # When the user's wait for the turn began: the end of their words where they spoke them, and when hands handed it
     # over where not.
     since: Seconds
+    # When the turn was asked, by the wall's clock: what the phone's page counts the turn's time from.
+    started_at: Epoch
     # The requests on the wire that are this turn's own, in the order they left.
     exchanges: list[str] = field(default_factory=list[str])
     # Each call the turn's replies made, by id, timed as heard.
@@ -235,7 +253,11 @@ class _Turn:
     # Each of the turn's replies that broke and was asked again whole, oldest first.
     broken: list[Broken] = field(default_factory=list[Broken])
     # The call blocks the reply streaming now has opened and not yet closed, by index: a call is not run until it is whole.
-    opening: dict[int, tuple[str, str]] = field(default_factory=dict[int, tuple[str, str]])
+    opening: dict[int, _Opening] = field(default_factory=dict[int, _Opening])
+    # A block of one of the turn's replies has ended, so Claude Code holds a message of its reply and its history keeps
+    # the turn's prompt, an Escape then recording the turn as interrupted. Until then an Escape puts the prompt back in
+    # the brain's input, which the Ctrl-C after it empties (`hands.brain.process.Brain._clear`), and nothing of it is kept.
+    held_reply: bool = False
     # The calls the turn's last reply made whole, by id, which run until its next request leaves.
     calls: dict[str, str] = field(default_factory=dict[str, str])
     # What hands says for the turn's calls once its own words are said: what each handed hands to say.
@@ -572,7 +594,7 @@ class BrainStage(FrameProcessor):
         annotate(asked=text)
         said: asyncio.Queue[str | _Point | _Aside | None] = asyncio.Queue()
         spoken: list[str] = []
-        turn = self._turn = _Turn(said, spoken, asker, utterances, here(), _since(arrived, released))
+        turn = self._turn = _Turn(said, spoken, asker, utterances, here(), _since(arrived, released), Epoch(time.time()))
         turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
         turn.acknowledging = asyncio.create_task(self._acknowledge(turn), name="the turn's acknowledgement")
         # When the brain ended the turn, or it was stopped: set before anything reads it, however the turn ends.
@@ -607,8 +629,9 @@ class BrainStage(FrameProcessor):
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
         # A brain that failed the turn itself has no answer to read.
-        failure = None if asked.exception() is not None else _failed(turn, asked.result().error, self._tools)
-        annotate(failed=None if failure is None else failure.fact)
+        failure = None if asked.exception() is not None else _failed(turn, asked.result(), self._tools)
+        stopped = asked.exception() is None and isinstance(asked.result(), BrainStopped)
+        annotate(failed=None if failure is None else failure.fact, stopped=stopped)
         if (error := asked.exception()) is not None:
             failed = f"the brain failed a turn: {error}"
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
@@ -631,7 +654,10 @@ class BrainStage(FrameProcessor):
             return failure.error
         # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is told it
         # with its next turn, unless the reply asked again opened with it.
-        self._broken_off = _notes(*(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated), over)
+        # A turn stopped before Claude Code held any of its reply is gone from the brain's history: what it asked is told it
+        # with its next turn.
+        unkept = _stopped_unkept(text) if stopped and not turn.held_reply else ""
+        self._broken_off = _notes(*(_asked_again(broken.heard) for broken in turn.broken if broken.heard and not broken.repeated), over, unkept)
         return None
 
     def _account(self, turn: _Turn, asker: Asker, arrived: Seconds, released: Seconds | None, taken: Seconds, ended: Seconds) -> None:
@@ -832,11 +858,37 @@ class BrainStage(FrameProcessor):
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 
+    def work(self) -> BrainWork:
+        """What the brain is doing now: the turn in flight, if any, and each call its replies made that is still running,
+        as heard on the wire. [LAW:effects-at-boundaries] read from what the stage holds; nothing is asked of the brain."""
+        match self._turn:
+            case None:
+                return Idle()
+            case turn:
+                running = (Running(self._called(call.tool), call.input, Epoch(call.at.timestamp())) for call in turn.tools.values() if call.answered is None)
+                return Working(turn.span.span_id, turn.started_at, tuple(running))
+
+    def stop(self, turn: str) -> StopOutcome:
+        """Stops the turn in flight if it is `turn`, the one whose work was shown: never another the brain went on to."""
+        match self._turn:
+            case None:
+                return NotWorking()
+            case _Turn(span=span) if span.span_id != turn:
+                return AlreadyEnded()
+            case _:
+                return Stopping() if self._brain.interrupt() else NotWorking()
+
+    def _called(self, tool: str) -> str:
+        """A tool as the user knows it: one of hands' own by its own name, any other as the model called it."""
+        return self._tools[tool].name if tool in self._tools else tool
+
     def hear(self, observed: Observed) -> None:
         turn = self._turn
         if turn is None:
             return
         now = self._now()
+        # [LAW:dataflow-not-control-flow] any block of the turn's own reply ending, whatever block it is.
+        turn.held_reply = turn.held_reply or (isinstance(observed, Heard) and isinstance(observed.event, BlockStopped) and observed.exchange in turn.exchanges)
         match observed:
             # Said as it arrives. A reply the API breaks once a block of it is finished is not asked for again; the turn
             # ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
@@ -863,8 +915,10 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 # A block that is not text ends the one streaming, which only a retry opening with a call leaves open.
                 turn.close()
-                turn.opening[index] = (call, name)
+                turn.opening[index] = _Opening(call, name)
                 turn.replied = True
+            case Heard(exchange=exchange, event=JsonDelta(index=index, partial_json=partial)) if exchange in turn.exchanges and index in turn.opening:
+                turn.opening[index].json += partial
             case Heard(exchange=exchange, event=BlockStarted(block={"type": "thinking" | "redacted_thinking"})) if exchange in turn.exchanges:
                 # Thinking opens a reply, ahead of what it says: a retry's text after it goes on with the block left open.
                 pass
@@ -873,10 +927,10 @@ class BrainStage(FrameProcessor):
             # Claude Code runs a call once its block is whole, before the reply's last byte, and hands hears each byte
             # before Claude Code does: the call is running from here on.
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
-                call, name = turn.opening.pop(index)
-                turn.calls[call] = name
-                ran = turn.tools[call] = _Call(name, now, datetime.now(UTC), within(turn.span))
-                self._spans.opened(call, ran.span)
+                opened = turn.opening.pop(index)
+                turn.calls[opened.call] = opened.tool
+                ran = turn.tools[opened.call] = _Call(opened.tool, tool_input(opened.tool, opened.json), now, datetime.now(UTC), within(turn.span))
+                self._spans.opened(opened.call, ran.span)
                 turn.working.set()
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):
                 turn.close()
@@ -909,10 +963,15 @@ class _Failure:
     note: str
 
 
-def _failed(turn: _Turn, error: str | None, tools: Mapping[str, Tool]) -> _Failure | None:
-    """What a turn the brain finished failed of; None for one that did not."""
-    if error is not None:
-        return _Failure(f"the brain's turn ended in error: {error}", turn.failure, _broken_off("".join(turn.spoken)))
+def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failure | None:
+    """What a turn the brain finished failed of; None for one that did not, or one the user stopped, which ends as they asked."""
+    match ended:
+        case BrainStopped():
+            return None
+        case BrainAnswered(error=str() as error):
+            return _Failure(f"the brain's turn ended in error: {error}", turn.failure, _broken_off("".join(turn.spoken)))
+        case BrainAnswered():
+            pass
     if turn.empty():
         # An empty reply is a whole one, kept in the brain's history: there is nothing broken off to tell it of.
         return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
@@ -921,6 +980,12 @@ def _failed(turn: _Turn, error: str | None, tools: Mapping[str, Tool]) -> _Failu
         # refused once, ends heard as failed rather than as silence the user takes for nothing done.
         return _Failure("the brain acted and said nothing of it", ModelActedUntold(), ACTED_UNTOLD)
     return None
+
+
+def _stopped_unkept(asked: str) -> str:
+    """The note that tells the brain of a turn stopped before Claude Code held any of its reply, which its history keeps
+    nothing of: what was asked in it, so nothing the user said is lost."""
+    return f'[hands] The user stopped your last turn before you replied, so your history does not hold what was asked in it: "{asked}". Do not act on it unless the user asks.'
 
 
 def _broken_off(spoken: str) -> str:

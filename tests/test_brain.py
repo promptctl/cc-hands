@@ -25,7 +25,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -495,6 +495,25 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
         ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p1",)),
         ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p2",)),
     ]
+
+
+async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        assert brain.interrupt() is False
+        # A turn that runs until Escape stops it.
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
+        assert brain.interrupt() is True
+        assert await asyncio.wait_for(asking, 10) == BrainStopped("p1")
+        assert brain.interrupt() is False
+        # Escape, then Ctrl-C, which empties whatever Escape put back in the input: read by the fake as it reads them.
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
+    finally:
+        await brain.stop()
+    [turn] = events(recorded, "brain.turn")
+    assert (turn.outcome, turn.facts["stopped"], turn.facts["prompts"]) == ("ok", True, ("p1",))
 
 
 async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:

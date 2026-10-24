@@ -475,11 +475,22 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
 
 @dataclass(frozen=True)
 class BrainAnswered:
-    """The end of a brain turn: its Stop hook, its StopFailure hook with what failed it, or the Escape hands pressed to
-    stop it. Its words are on the wire."""
+    """The end of a brain turn by itself: its Stop hook, or its StopFailure hook with what failed it. Its words are on the wire."""
 
     prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
     error: str | None
+
+
+@dataclass(frozen=True)
+class BrainStopped:
+    """The end of a brain turn by the Escape hands pressed when it was asked to stop it (`Brain.interrupt`): Claude Code
+    posts no hook for it."""
+
+    prompt: str
+
+
+# How a turn of the brain's ended.
+BrainEnded = BrainAnswered | BrainStopped
 
 
 # Compared by identity: each is its own request, however alike two calls are.
@@ -512,7 +523,7 @@ class _Posted:
 
 @dataclass
 class _Turn:
-    answered: asyncio.Future[BrainAnswered]
+    answered: asyncio.Future[BrainEnded]
     taken: asyncio.Future[None]  # resolved when Claude Code first took the turn
     # Resolved once the turn's typing is over, however it went: then it is taken, or never will be.
     tried: asyncio.Future[None]
@@ -592,7 +603,7 @@ class Brain:
     def pid(self) -> int:
         return self._claude.pid
 
-    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainAnswered:
+    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
@@ -604,6 +615,18 @@ class Brain:
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(turn), turn)
         return await asyncio.shield(turn.answered)
+
+    def interrupt(self) -> bool:
+        """Stops the turn in flight, as Escape at the brain's keyboard stops it, and says whether there was one to stop.
+
+        [LAW:single-enforcer] the one way a turn is stopped, a broken one's included: `_stop`, with the input held, so its
+        keys go in alone, and what breaks it is `_broke`'s. The turn ends BrainStopped, unless it ended by itself first.
+        """
+        turn = self._turn
+        if turn is None or turn.answered.done():
+            return False
+        self._keep(self._stop(turn), turn)
+        return True
 
     def _keep(self, work: Coroutine[None, None, None], turn: _Turn | None) -> None:
         """Runs on in a task of the brain's own, whoever asked for it, for `turn`, the turn in flight it was begun in."""
@@ -653,10 +676,13 @@ class Brain:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
             annotate(prompts=turn.prompts, typings=turn.typings, offered=turn.offered, others=turn.others, queued=turn.queued)
-            match turn.answered.exception():
-                case None:
-                    if (error := turn.answered.result().error) is not None:
-                        fail(f"the brain's turn ended in error: {error}")
+            match turn.answered.exception() or turn.answered.result():
+                case BrainAnswered(error=None):
+                    pass
+                case BrainAnswered(error=error):
+                    fail(f"the brain's turn ended in error: {error}")
+                case BrainStopped():
+                    annotate(stopped=True)
                 case failed:
                     fail(f"the brain failed the turn: {failed}")
 
@@ -740,7 +766,7 @@ class Brain:
         if turn.answered.done():
             # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
             return
-        self._over(turn, BrainAnswered(turn.prompts[-1], None))
+        self._over(turn, BrainStopped(turn.prompts[-1]))
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
@@ -950,15 +976,15 @@ class Brain:
             case _:
                 logger.warning(f"the brain's {event} hook for prompt {prompt} does not fit the turn in flight (prompts {turn.prompts})")
 
-    def _over(self, turn: _Turn, outcome: BrainAnswered | BaseException) -> None:
+    def _over(self, turn: _Turn, outcome: BrainEnded | BaseException) -> None:
         if self._turn is turn:
             self._turn = None
         if turn.answered.done():
             return
         # A broken turn ends with what broke it, whatever ended it: its Stop, its stop's Escape, or the brain's exit.
         match outcome if turn.broken is None else turn.broken:
-            case BrainAnswered() as answered:
-                turn.answered.set_result(answered)
+            case BrainAnswered() | BrainStopped() as ended:
+                turn.answered.set_result(ended)
             case failed:
                 turn.answered.set_exception(failed)
                 # Said already, by the turn's own event or by `_broke`: not again by asyncio for an asker that stopped waiting.

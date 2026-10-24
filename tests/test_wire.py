@@ -7,6 +7,12 @@ from typing import cast
 
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import (
+    BlockStopped,
+    JsonDelta,
+    MessageDelta,
+    MessageStopped,
+    Unreadable,
+    tool_input,
     ToolAnswer,
     tool_answers,
     COMPACTION_INSTRUCTIONS,
@@ -368,6 +374,25 @@ def test_a_stream_out_of_order_is_garbled_not_a_message_missing_a_part() -> None
     assert garbled(STREAM + sse("ping", {"type": "ping"})) == "a Ping after message_stop"
     late = sse("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "late"}})
     assert garbled(STREAM.replace(b"event: message_delta", late + b"event: message_delta")) == "a Text delta for block 1, which is not an open Text block"
+
+
+def test_a_calls_input_is_read_one_way_for_a_reply_and_for_the_brains_stage() -> None:
+    assert tool_input("Bash", '{"command": "ls"}') == {"command": "ls"}
+    # A call with no arguments streams no input at all.
+    assert tool_input("Bash", "") == {}
+    assert tool_input("Bash", "[1]") == Unreadable("tool call Bash's input is not a JSON object")
+    unread = tool_input("Bash", '{"command": ')
+    assert isinstance(unread, Unreadable) and unread.reason.startswith("tool call Bash's input is not JSON")
+    # A reply carrying that call is garbled, for the same reason.
+    reply: list[WireEvent] = [
+        MessageStarted("m1", "claude-sonnet-5", {}),
+        BlockStarted(0, {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}),
+        JsonDelta(0, '{"command": '),
+        BlockStopped(0),
+        MessageDelta("tool_use", {}),
+        MessageStopped(),
+    ]
+    assert assemble(reply, streamed=True) == Garbled(unread.reason)
 
 
 def test_a_frame_whose_number_json_cannot_hold_is_unparsed() -> None:

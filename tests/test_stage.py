@@ -32,7 +32,8 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import running
-from hands.brain.process import NOBODY, SPOKEN_OVER, UNANSWERED, Asked, BrainAnswered, Untaken
+from hands.brain.process import NOBODY, SPOKEN_OVER, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken
+from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
 from hands.core.effects import Allow, Deny
 from hands.core import place
 from hands.core.place import Modality
@@ -52,6 +53,7 @@ from hands.core.wire import (
     Garbled,
     Heard,
     Hold,
+    JsonDelta,
     Kind,
     MainTurn,
     Reached,
@@ -63,6 +65,7 @@ from hands.core.wire import (
     TextDelta,
     Unknown,
     Unreached,
+    Unreadable,
     UsageLimitReached,
     unstreamed,
 )
@@ -126,11 +129,13 @@ class FakeBrain:
 
     session: SessionId = BRAIN
     asked: list[str] = field(default_factory=list[str])
-    turns: list[asyncio.Future[BrainAnswered]] = field(default_factory=list[asyncio.Future[BrainAnswered]])
+    turns: list[asyncio.Future[BrainEnded]] = field(default_factory=list[asyncio.Future[BrainEnded]])
+    # How many times the stage asked the brain to stop the turn in flight.
+    interrupts: int = 0
     # Each turn's teller of the permissions it holds.
     tellers: list[Callable[[Asked], None]] = field(default_factory=list[Callable[[Asked], None]])
 
-    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainAnswered:
+    async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         self.asked.append(text)
         self.tellers.append(asks)
         turn = asyncio.get_running_loop().create_future()
@@ -143,7 +148,12 @@ class FakeBrain:
         self.tellers[-1](asked)
         return asked
 
-    def end(self, answered: BrainAnswered = ANSWERED) -> None:
+    def interrupt(self) -> bool:
+        """Asked to stop the turn in flight, as the real brain is: whether there was one. The test ends it, as Escape would."""
+        self.interrupts += 1
+        return bool(self.turns) and not self.turns[-1].done()
+
+    def end(self, answered: BrainEnded = ANSWERED) -> None:
         self.turns[-1].set_result(answered)
 
     def fail(self, error: Exception) -> None:
@@ -289,6 +299,15 @@ class Rig:
             index = self.block(exchange)
             self.stage.hear(Heard(exchange, BlockStarted(index, {"type": "tool_use", "id": call, "name": name, "input": {}})))
             self.stage.hear(Heard(exchange, BlockStopped(index)))
+
+    def call(self, exchange: str, call: str, name: str, *pieces: str) -> None:
+        """The reply making one whole call block, its input streamed in `pieces`, as the wire carries a call's input."""
+        self.voicing.pop(exchange, None)
+        index = self.block(exchange)
+        self.stage.hear(Heard(exchange, BlockStarted(index, {"type": "tool_use", "id": call, "name": name, "input": {}})))
+        for piece in pieces:
+            self.stage.hear(Heard(exchange, JsonDelta(index, piece)))
+        self.stage.hear(Heard(exchange, BlockStopped(index)))
 
     def block(self, exchange: str) -> int:
         """The index of the next block the exchange's reply opens."""
@@ -2071,3 +2090,97 @@ async def test_a_turn_that_ends_while_its_acknowledgement_still_plays_tells_it(r
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     assert turn.facts["asides"] == (("One moment.", 2000.0),)
+
+
+# What the next turn carries of a turn stopped before Claude Code held any of its reply.
+UNKEPT = "your history does not hold what was asked in it"
+
+
+def turn_of(rig: Rig) -> str:
+    """The turn the stage has in flight, as the phone's page is shown it."""
+    match rig.stage.work():
+        case Working(turn=turn):
+            return turn
+        case idle:
+            raise AssertionError(f"no turn in flight: {idle}")
+
+
+async def test_the_work_shown_is_the_call_the_turn_runs_with_its_input_until_its_result_leaves(rig: Rig) -> None:
+    assert rig.stage.work() == Idle()
+    await rig.say("wait thirty seconds")
+    match rig.stage.work():
+        case Working(calls=()):
+            pass
+        case other:
+            raise AssertionError(f"a turn the model is still replying to runs no call: {other}")
+    exchange, _ = rig.request()
+    rig.call(exchange, "t1", "Bash", '{"command": "sl', 'eep 30"}')
+    rig.call(exchange, "t2", "mcp__hands__read_session", '{"session": "api"}')
+    match rig.stage.work():
+        case Working(calls=(Running(tool="Bash", input={"command": "sleep 30"}), Running(tool="read_session", input={"session": "api"}))):
+            pass
+        case other:
+            raise AssertionError(f"each call is shown by the name the user knows, with its input: {other}")
+    # The request carrying a result is the end of that call's run: only the other runs on.
+    rig.request(answering("Bash", {"output": ""}, "t1"))
+    match rig.stage.work():
+        case Working(calls=(Running(tool="read_session"),)):
+            pass
+        case other:
+            raise AssertionError(f"a call whose result left is not running: {other}")
+    rig.brain.end()
+    await rig.until(lambda: rig.stage.work() == Idle())
+
+
+async def test_a_call_whose_input_is_not_json_is_shown_as_unreadable_never_as_an_input(rig: Rig) -> None:
+    await rig.say("run it")
+    exchange, _ = rig.request()
+    rig.call(exchange, "t1", "Bash", '{"command": ')
+    match rig.stage.work():
+        case Working(calls=(Running(tool="Bash", input=Unreadable(reason=reason)),)):
+            assert "Bash" in reason
+        case other:
+            raise AssertionError(f"an input the wire cannot read is said to be unreadable: {other}")
+    rig.brain.end()
+
+
+async def test_a_stop_of_the_turn_shown_ends_it_as_the_user_asked_and_never_as_a_failure(rig: Rig) -> None:
+    await rig.say("wait thirty seconds")
+    exchange, _ = rig.request()
+    rig.call(exchange, "t1", "Bash", '{"command": "sleep 30"}')
+    assert rig.stage.stop(turn_of(rig)) == Stopping() and rig.brain.interrupts == 1
+    # Stopped mid-call, as Escape stops it: a turn that acted and said nothing of it, which the user asked for.
+    rig.brain.end(BrainStopped("p1"))
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["stopped"], turn.facts["failed"], turn.outcome, rig.errors) == (True, None, "ok", [])
+    # Claude Code held the call's block, so its history keeps the turn: the next carries nothing of it.
+    await rig.say("never mind")
+    assert rig.brain.asked[-1].startswith("never mind") and UNKEPT not in rig.brain.asked[-1]
+    rig.brain.end()
+
+
+async def test_a_turn_stopped_before_any_of_its_reply_was_held_is_told_the_brain_with_the_next(rig: Rig) -> None:
+    await rig.say("write me a long story")
+    exchange, _ = rig.request()
+    # Text streaming: no block of the reply has ended, so Claude Code holds none of it, and Escape gives the prompt back.
+    rig.stream(exchange, "Once upon")
+    assert rig.stage.stop(turn_of(rig)) == Stopping()
+    rig.brain.end(BrainStopped("p1"))
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    await rig.say("something shorter")
+    assert rig.brain.asked[-1].startswith("something shorter")
+    assert f'{UNKEPT}: "{rig.brain.asked[0]}"' in rig.brain.asked[-1]
+    rig.brain.end()
+
+
+async def test_a_stop_of_a_turn_that_has_ended_or_of_no_turn_stops_nothing(rig: Rig) -> None:
+    assert rig.stage.stop("any") == NotWorking()
+    await rig.say("hello")
+    shown = turn_of(rig)
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    await rig.say("and again")
+    # The turn shown has ended, and the brain is on another: that one goes on.
+    assert rig.stage.stop(shown) == AlreadyEnded() and rig.brain.interrupts == 0
+    rig.brain.end()

@@ -1,5 +1,5 @@
 """A page's read that waits for what the page shows to change before it answers: the conversation page's
-(`hands.voice.conversationpage`) and the sessions on the phone's page (`hands.voice.sessionspage`) alike.
+(`hands.voice.conversationpage`) and the brain on the phone's page (`hands.voice.brainpage`) alike.
 
 [LAW:one-type-per-behavior] each page marks what it shows, and says with each read the mark it was last given; the one
 loop here waits on any mark.

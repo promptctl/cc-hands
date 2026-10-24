@@ -722,13 +722,33 @@ def _closed(blocks: Mapping[int, _Open | Block], index: int) -> Block:
         raise _Broken(f"content_block_stop for block {index}, which is not open")
     if not isinstance(building.block, ToolUse):
         return building.block
+    match tool_input(building.block.name, building.json):
+        case Unreadable(reason=reason):
+            raise _Broken(reason)
+        case given:
+            return replace(building.block, input=given)
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A tool call's input that is not a JSON object, and why: never passed off as an input with no arguments."""
+
+    reason: str
+
+
+def tool_input(name: str, streamed: str) -> Mapping[str, object] | Unreadable:
+    """A tool call's input from the pieces its block streamed, joined.
+
+    [LAW:one-source-of-truth] the one reading of a call's input: a reply put back together, and the brain's stage showing
+    the call it runs, read the same bytes one way and fail them one way.
+    """
     try:
-        parsed = json.loads(building.json or "{}")
+        parsed = json.loads(streamed or "{}")
     except json.JSONDecodeError as error:
-        raise _Broken(f"tool call {building.block.name}'s input is not JSON: {error}") from error
+        return Unreadable(f"tool call {name}'s input is not JSON: {error}")
     if not isinstance(parsed, dict):
-        raise _Broken(f"tool call {building.block.name}'s input is not a JSON object")
-    return replace(building.block, input=cast(dict[str, object], parsed))
+        return Unreadable(f"tool call {name}'s input is not a JSON object")
+    return cast(dict[str, object], parsed)
 
 
 def unstreamed(data: bytes) -> tuple[WireEvent, ...] | Answered | Garbled:
