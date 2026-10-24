@@ -43,11 +43,11 @@ def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_
     told = tail([AUTH], None)
     assert told.startswith("[hands] ")
     assert f'"cc-hands, auth refactor" (id {AUTH["id"]}), idle, permission mode: manual mode' in told
-    assert "as this message is sent" in told and "Say nothing about this unless the user asks." in told
+    assert "as this message is sent" in told and "Mention this only if the user asks." in told
 
 
 def test_the_tail_with_nothing_running_says_so() -> None:
-    assert tail([], None) == "[hands] No Claude Code sessions are running now. No session is focused. Say nothing about this unless the user asks."
+    assert tail([], None) == "[hands] No Claude Code sessions are running now. No session is focused. Mention this only if the user asks."
 
 
 def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:

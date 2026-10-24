@@ -39,7 +39,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.session import Permission
 from hands.brain.mcp import CallSpans
-from hands.brain.stage import FAILED_AFTER, SILENT, BrainStage, HandsAsked, UserAsked, Broken
+from hands.brain.stage import FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -66,7 +66,7 @@ from hands.core.wire import (
     UsageLimitReached,
     unstreamed,
 )
-from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
@@ -78,6 +78,7 @@ from hands.voice.utterance import Uttered, Uttering
 
 from test_narrator import heard as unasked
 from hands.voice.tool import Result, Tool, tool
+from hands.voice.tools import stay_silent_tool
 
 BRAIN = SessionId("brain-session")
 PATIENCE_SECS = 2.0
@@ -105,11 +106,6 @@ async def amend_draft(session: str, text: str) -> Result:
     return {"says": f"amended for {session}: {text}"}
 
 
-async def stay_silent() -> Result:
-    """Say nothing."""
-    return {"silent": True}
-
-
 async def read_session(session: str) -> Result:
     """Read a session."""
     return {"steps": []}
@@ -118,7 +114,8 @@ async def read_session(session: str) -> Result:
 TOOLS: Sequence[Tool] = (
     tool(stage_draft),
     tool(amend_draft, then="silence"),
-    tool(stay_silent, then="silence"),
+    # hands' own: whether a turn may close on it is read off its `then`, so the rig's must be the real one's.
+    stay_silent_tool(),
     tool(read_session),
 )
 
@@ -671,7 +668,7 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     events = [entry for entry in rig.recorded if isinstance(entry, WideEvent)]
-    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1, "refused": 0, "cut_in": 0})
+    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1, "refused": 0, "cut_in": 0, "silence_refused": 0})
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
@@ -715,7 +712,7 @@ async def test_a_turn_stopped_mid_way_still_says_what_it_did(rig: Rig) -> None:
     rig.asking.cancel()
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
-    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1, "refused": 0, "cut_in": 0}, (exchange,))
+    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1, "refused": 0, "cut_in": 0, "silence_refused": 0}, (exchange,))
     [call] = [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "tool.call"]
     assert (call.outcome, call.parent_id) == ("cancelled", turn.span_id)
 
@@ -768,7 +765,7 @@ async def test_a_turn_the_brain_failed_is_a_failed_event_saying_why(rig: Rig) ->
     [turn] = turns(rig.recorded)
     assert (turn.outcome, turn.error) == ("failed", "the brain's turn ended in error: server_error: API Error: 529 Overloaded")
     # Nothing was said, so there is no wait to a first word: absent, not zero.
-    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0, "refused": 0, "cut_in": 0})
+    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0, "refused": 0, "cut_in": 0, "silence_refused": 0})
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -852,6 +849,118 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     rig.stream(exchange, "I am.")
     await rig.until(lambda: rig.out.said() == ["I am."])
     rig.brain.end()
+
+
+async def acted_then_silent(rig: Rig, act: tuple[str, object], *closing: str) -> tuple[str, Route]:
+    """The user's turn: one call that acts, answered, then a reply of `closing` words calling stay_silent; the request
+    answering that stay_silent, and where it goes."""
+    await rig.say("file a ticket for the flaky mic test")
+    exchange, _ = rig.request()
+    name, result = act
+    rig.calls(exchange, ("t1", name))
+    exchange, _ = rig.request(answering(name, result))
+    rig.stream(exchange, *closing)
+    rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
+    return rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
+
+
+async def test_a_stay_silent_closing_a_turn_that_acted_is_refused_and_the_brain_says_what_it_did(rig: Rig) -> None:
+    exchange, route = await acted_then_silent(rig, ("Bash", "filed"))
+    # Sent on, told it acted and was heard saying nothing since: not held.
+    assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)
+    rig.stream(exchange, "Filed it.")
+    rig.brain.end()
+    await rig.until(lambda: rig.out.said() == ["Filed it."])
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (None, 1)
+    assert rig.errors == []
+
+
+async def test_a_stay_silent_after_a_readback_handed_to_the_brain_is_refused(rig: Rig) -> None:
+    """A result the brain is to say, as send_draft's readback is, is not said by hands: closing on stay_silent drops it."""
+    _, route = await acted_then_silent(rig, ("mcp__hands__stage_draft", {"readback": "Sent the draft to api."}))
+    assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)
+
+
+async def test_a_stay_silent_beside_whitespace_closes_on_nothing_and_is_refused(rig: Rig) -> None:
+    _, route = await acted_then_silent(rig, ("Bash", "filed"), "\n\n")
+    assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)
+
+
+async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_said_as_acted_untold(rig: Rig) -> None:
+    exchange, _ = await acted_then_silent(rig, ("Bash", "filed"))
+    rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
+    _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
+    # Once refused is enough: the model's obedience is not what ends the turn.
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (ModelActedUntold(), 1)
+
+
+async def test_a_stay_silent_closing_a_turn_that_acted_is_held_where_something_is_heard_after_the_act(rig: Rig) -> None:
+    """Words in the closing reply are heard after every act before it."""
+    _, route = await acted_then_silent(rig, ("Bash", "filed"), "Filed it.")
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (None, 0)
+
+
+async def test_a_turn_that_acted_and_closes_on_a_reply_hands_says_is_held(rig: Rig) -> None:
+    """A Bash that found what a draft needs, then the draft, read back by hands: the readback is heard after the act."""
+    await rig.say("tell api to fix the parser")
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "Bash"))
+    exchange, _ = rig.request(answering("Bash", "parser.py"))
+    rig.calls(exchange, ("t2", "mcp__hands__amend_draft"))
+    _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: fix the parser"}, "t2"))
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: "amended for api: fix the parser" in rig.out.said())
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (None, 0)
+
+
+async def test_a_turn_hands_asked_may_close_on_stay_silent_after_it_read(rig: Rig) -> None:
+    """What hands hands the brain to tell says whether to speak of it: the user did not ask, so nothing is owed them."""
+    await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), ()))
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"))
+    exchange, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
+    rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
+    _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    await asyncio.sleep(0.1)
+    assert rig.errors == []
+
+
+async def test_a_turn_the_user_spoke_over_may_close_on_stay_silent_after_it_acted(rig: Rig) -> None:
+    """Nothing of a turn spoken over is said from then on, and the user's words are already the next turn: a word owed
+    them would be heard by nobody, and keep their words waiting."""
+    await rig.say("file a ticket for the flaky mic test")
+    exchange, _ = rig.request()
+    rig.stream(exchange, "Filing it now. ")
+    await rig.until(lambda: rig.out.said() == ["Filing it now. "])
+    rig.out.playing = Bookmark(("Filing it now.",), 0)
+    await rig.interrupt()
+    await rig.worker.queue_frame(UserWords("actually wait"))
+    rig.calls(exchange, ("t1", "Bash"))
+    exchange, _ = rig.request(answering("Bash", "filed"))
+    rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
+    _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    [turn, *_] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (None, 0)
 
 
 async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end(rig: Rig) -> None:
@@ -1055,17 +1164,22 @@ async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_
     assert rig.brain.asked[-1] == heard("hello?")
 
 
-async def test_a_turn_that_called_a_tool_and_then_answered_nothing_is_no_empty_reply(rig: Rig) -> None:
-    """Claude often ends a turn with an empty reply to a tool's result: the call already did what the turn was for."""
+async def test_a_turn_that_acted_and_then_answered_nothing_is_said_as_acted_untold(rig: Rig) -> None:
+    """Claude often ends a turn with an empty reply to a tool's result, and the user, who heard only what came before the
+    call, hears nothing of what it found or did: the turn fails aloud, never as an empty reply, since something was done."""
     await rig.say("what is api doing?")
     exchange, _ = rig.request()
     rig.stream(exchange, "Let me look.")
     rig.calls(exchange, ("t1", "mcp__hands__read_session"))
     rig.request(answering("mcp__hands__read_session", {"steps": []}))
     rig.brain.end()
-    await rig.until(lambda: bool(turns(rig.recorded)))
-    await asyncio.sleep(0.1)
-    assert rig.errors == []
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (ModelActedUntold(), 0)
+    # Whole in the brain's history: its next turn is not told anything was broken off.
+    await rig.say("hello?")
+    assert rig.brain.asked[-1] == heard("hello?")
 
 
 async def test_a_turn_ending_on_a_call_that_lands_is_no_empty_reply(rig: Rig) -> None:
@@ -1148,7 +1262,7 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
     assert rig.brain.asked[1:] == [
         f"{heard('what were you saying?')}\n\n"
         '[hands] Your last turn was broken off. The user heard you say "1. Lighthouses stand on rocky coasts and h", then that it failed. '
-        "Say nothing about this unless the user asks.",
+        "Mention this only if the user asks.",
         heard("thanks"),
     ]
 
@@ -1217,7 +1331,7 @@ async def test_a_reply_asked_again_that_opens_otherwise_is_said_whole_and_the_br
     await rig.say("what were you saying?")
     rig.brain.end()
     await rig.say("thanks")
-    note = '[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "Lighthouses stand on rocky". Say nothing about this unless the user asks.'
+    note = '[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "Lighthouses stand on rocky". Mention this only if the user asks.'
     # Told once: the turn after it broke nothing.
     assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}", heard("thanks")]
 
@@ -1245,7 +1359,7 @@ async def test_a_turn_that_fails_after_a_reply_was_asked_again_tells_the_brain_a
     await rig.say("what were you saying?")
     # The turn's failure says all of it, the broken reply's words with the rest: one note, not one more for the break.
     spoken = "Lighthouses stand on rocky\n\nMost lighthouses stand on rocky coasts."
-    note = f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.'
+    note = f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Mention this only if the user asks.'
     assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}"]
     rig.brain.end()
 
@@ -1260,7 +1374,7 @@ async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_
     rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
     await rig.until(lambda: len(rig.errors) == 2)
     await rig.say("again")
-    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
+    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Mention this only if the user asks.'
     assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}", f"{heard('again')}\n\n{note}"]
     rig.brain.end()
 
@@ -1273,7 +1387,7 @@ async def test_a_turn_that_breaks_after_the_brain_spoke_tells_the_next_where_the
     rig.brain.fail(RuntimeError("no voice"))
     await rig.until(lambda: len(rig.errors) == 1)
     await rig.say("what were you saying?")
-    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Say nothing about this unless the user asks.'
+    note = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Mention this only if the user asks.'
     assert rig.brain.asked[1:] == [f"{heard('what were you saying?')}\n\n{note}"]
     rig.brain.end()
 

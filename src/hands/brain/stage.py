@@ -6,7 +6,9 @@ wire as the proxy hears them, never from its stdout [the design's rule: primary 
 main turn under the brain's own session, and of no other request.
 
 Claude Code sends every tool result back for another response, so a turn that called stay_silent has its next request
-answered by hands with a line that records why: nothing more is said, and the model is not asked to go on. A barge-in,
+answered by hands with a line that records why: nothing more is said, and the model is not asked to go on. Not so for
+the user's turn that acted and has said nothing since: it is asked on once, told to say what it did, and a turn that still
+closes on nothing is said as failed, never left to silence the user takes for nothing done. A barge-in,
 the user cutting in while something the brain said or asked is still to be heard, stops the turn being said, and nothing
 of the brain's: its turn runs to its own end unheard, and what the user did not hear of it is told the brain with their
 words, so the brain judges whether to go back to it. Words said while the brain works in silence stop nothing: they are
@@ -19,7 +21,7 @@ import time
 from functools import partial
 from itertools import cycle
 from collections import deque
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol, cast
@@ -70,7 +72,7 @@ from hands.core.wire import (
     streams,
     tool_answers,
 )
-from hands.sessions.model_facts import ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
@@ -115,7 +117,9 @@ Asker = UserAsked | HandsAsked
 SILENT = "(stayed silent)"
 # What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
 # the spoken-over note says what was heard, so this says only the failure.
-FAILED_AFTER = "[hands] Your last turn then failed. Say nothing about this unless the user asks."
+FAILED_AFTER = "[hands] Your last turn then failed. Mention this only if the user asks."
+# What hands adds to the request after a stay_silent that would end a turn which acted with nothing heard after what it did.
+OWED = "[hands] You acted on the user's words this turn, so they were said to you, and the user has heard nothing since you did. Say in a sentence what you did."
 
 # How long the tool work of the user's turn runs, from its first call, with nothing of the turn heard yet, before hands
 # acknowledges the turn: past a call that comes straight back with its answer said soon after, so only long work is.
@@ -150,10 +154,17 @@ def wire_name(tool: Tool) -> str:
     return f"mcp__{SERVER_NAME}__{tool.name}"
 
 
+def has_words(text: str) -> bool:
+    """Whether text the brain streamed says anything: whitespace alone is heard as nothing."""
+    # [LAW:one-source-of-truth] what counts as a word, for whether the turn replied, its first word, an acknowledgement,
+    # and whether it closes on nothing.
+    return bool(text.strip())
+
+
 _UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
 
 # What each turn's event counts: the model's round trips on the wire, and the calls its replies made.
-COUNTS = ("round_trips", "tools", "refused", "cut_in")
+COUNTS = ("round_trips", "tools", "refused", "cut_in", "silence_refused")
 
 
 @dataclass
@@ -243,6 +254,9 @@ class _Turn:
     unacknowledged: list[Permission] = field(default_factory=list[Permission])
     # How many permissions the user heard asked were refused, whoever spoke to them after.
     refused: int = 0
+    # How many times the turn closed on a stay_silent it owed a word in and was sent on, told to say what it did: at most
+    # once, since a second ends it failed.
+    silence_refused: int = 0
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
     failure: ModelFact = _UNNAMED
     # Waits out the turn's tool work to acknowledge it, which the turn's end cancels.
@@ -320,6 +334,16 @@ class _Turn:
         """The user asked the turn and has heard nothing of it: no word, no question, and they have not spoken in it, over
         it or not. Their words in it are answered instead."""
         return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted and not self.cut_in
+
+    def owes_word(self, tools: Mapping[str, Tool]) -> bool:
+        """The user is owed a word of what the turn did: they asked it and did not speak over it, it acted, and its latest
+        reply closes it on nothing, no words and no call but stay_silent. That reply's words would follow every act before
+        it, since a reply's words come ahead of its calls' runs."""
+        # A call to no tool of hands' own, Bash or Write, is an act; a whole reply hands says something for is not, and
+        # stay_silent says it did nothing. [LAW:one-source-of-truth] each read off the tool's own `then`.
+        acted = any((tool := tools.get(call.tool)) is None or tool.then == "reply" for call in self.tools.values())
+        closes_on_nothing = not has_words(self.reply) and all((tool := tools.get(name)) is not None and tool.then == "nothing" for name in self.calls.values())
+        return isinstance(self.asker, UserAsked) and not self.interrupted and acted and closes_on_nothing
 
     def asking(self) -> Asked | None:
         """The permission the user's next words answer: the one they heard asked, while it is still open."""
@@ -576,7 +600,7 @@ class BrainStage(FrameProcessor):
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
         # A brain that failed the turn itself has no answer to read.
-        failure = None if asked.exception() is not None else _failed(turn, asked.result().error)
+        failure = None if asked.exception() is not None else _failed(turn, asked.result().error, self._tools)
         annotate(failed=None if failure is None else failure.fact)
         if (error := asked.exception()) is not None:
             failed = f"the brain failed a turn: {error}"
@@ -623,7 +647,7 @@ class BrainStage(FrameProcessor):
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
-        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused, cut_in=turn.cut_in)
+        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused, cut_in=turn.cut_in, silence_refused=turn.silence_refused)
         self._spans.ended(turn.tools)
         for call, ran in turn.tools.items():
             # A call whose result never left ran until the turn ended without it.
@@ -668,7 +692,7 @@ class BrainStage(FrameProcessor):
                 case str():
                     turn.spoken.append(words)
                     # The brain's own words after a refusal are its acknowledgement of it.
-                    if words.strip():
+                    if has_words(words):
                         turn.unacknowledged.clear()
                     await self.push_frame(LLMTextFrame(words))
                 case _Aside(line=line, since=since):
@@ -772,7 +796,12 @@ class BrainStage(FrameProcessor):
         answers = [(self._tools.get(turn.calls[answer.call]), _result(answer)) for answer in carried if answer.call in turn.calls]
         # Said by hands once the brain's own words are, whatever the model does next: what a call hands hands to say.
         turn.readbacks.extend(says for _, result in answers if result is not None and isinstance(says := result.get("says"), str))
-        if not whole([tool is not None and result is not None and silent(tool, result) for tool, result in answers]):
+        held = whole([tool is not None and result is not None and silent(tool, result) for tool, result in answers])
+        # [LAW:single-enforcer] a turn that acted is not let close on stay_silent with nothing heard after what it did: the
+        # model is asked on, told to say what it did. Once: a second time, it is held, and the turn's end fails it.
+        refused = held and turn.owes_word(self._tools) and not turn.silence_refused
+        if not held or refused:
+            turn.silence_refused += refused
             turn.exchanges.append(sent.exchange)
             # [LAW:no-ambient-temporal-coupling] the reply it asks again for is all heard by now: the proxy tells each byte
             # before Claude Code reads it, and Claude Code asks again only once it has read the break.
@@ -782,7 +811,7 @@ class BrainStage(FrameProcessor):
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
-            return Send((Tail(self._tail()),), refusal="final", span=within(turn.span))
+            return Send((*[Tail(OWED)] * refused, Tail(self._tail())), refusal="final", span=within(turn.span))
         return Hold(SILENT, within(turn.span))
 
     async def _acknowledge(self, turn: _Turn) -> None:
@@ -817,9 +846,9 @@ class BrainStage(FrameProcessor):
                         turn.said.put_nowait(turn.ahead + text)
                 turn.reply += text
                 turn.ahead, turn.between = "", "\n\n"
-                turn.replied = turn.replied or bool(text.strip())
+                turn.replied = turn.replied or has_words(text)
                 # The first word the user waited for: none heard after they spoke over the turn is said to them.
-                if text.strip() and turn.first_word is None and not turn.interrupted:
+                if has_words(text) and turn.first_word is None and not turn.interrupted:
                     turn.first_word = now
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "tool_use", "id": str() as call, "name": str() as name})) if exchange in turn.exchanges:
                 # A block that is not text ends the one streaming, which only a retry opening with a call leaves open.
@@ -870,19 +899,24 @@ class _Failure:
     note: str
 
 
-def _failed(turn: _Turn, error: str | None) -> _Failure | None:
+def _failed(turn: _Turn, error: str | None, tools: Mapping[str, Tool]) -> _Failure | None:
     """What a turn the brain finished failed of; None for one that did not."""
     if error is not None:
         return _Failure(f"the brain's turn ended in error: {error}", turn.failure, _broken_off("".join(turn.spoken)))
     if turn.empty():
         # An empty reply is a whole one, kept in the brain's history: there is nothing broken off to tell it of.
         return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
+    if turn.owes_word(tools):
+        # [LAW:no-silent-failure] a turn that acted and closed on nothing, by an empty reply or a stay_silent it was already
+        # refused once, ends heard as failed rather than as silence the user takes for nothing done. Whole in the brain's
+        # history, as an empty reply is.
+        return _Failure("the brain acted and said nothing of it", ModelActedUntold(), "")
     return None
 
 
 def _broken_off(spoken: str) -> str:
     """The note that tells the brain what the user heard of a turn broken off before its end; none when nothing of it was said."""
-    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Say nothing about this unless the user asks.' if spoken else ""
+    return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Mention this only if the user asks.' if spoken else ""
 
 
 def _spoken_over(cut: Bookmark, words: str, readbacks: Sequence[str]) -> str:
@@ -924,7 +958,7 @@ def _notes(*notes: str) -> str:
 def _asked_again(heard: str) -> str:
     """The note that tells the brain what the user heard of a reply that broke and was asked again, which its history holds
     only as the reply asked again: true however the turn went on from there."""
-    return f'[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "{heard}". Say nothing about this unless the user asks.'
+    return f'[hands] A reply of yours last turn broke off and was asked for again; your history holds only the reply asked again. Before it broke, the user heard you say "{heard}". Mention this only if the user asks.'
 
 
 def _result(answer: ToolAnswer) -> Result | None:

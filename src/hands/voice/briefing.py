@@ -19,10 +19,10 @@ def tail(listed: Sequence[Mapping[str, str]], focus: Focus) -> str:
     """How the sessions stand as a request leaves, in list_sessions' words, and the focus: what hands appends to its
     newest message."""
     if not listed:
-        return f"[hands] No Claude Code sessions are running now. {_focus_said(listed, focus)} Say nothing about this unless the user asks."
+        return f"[hands] No Claude Code sessions are running now. {_focus_said(listed, focus)} Mention this only if the user asks."
     return (
         f"[hands] The Claude Code sessions running now: {_running(listed)}. {_focus_said(listed, focus)} "
-        "That is how they stand as this message is sent. Say nothing about this unless the user asks."
+        "That is how they stand as this message is sent. Mention this only if the user asks."
     )
 
 

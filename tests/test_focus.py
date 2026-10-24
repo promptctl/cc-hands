@@ -59,6 +59,15 @@ async def test_every_call_is_heard_acting_but_staying_silent(tmp_path: Path) -> 
     assert len(acted) == 2
 
 
+async def test_only_stay_silent_ends_a_reply_on_nothing_and_each_reply_hands_says_is_whole(tmp_path: Path) -> None:
+    """The brain's stage reads `then` to tell a turn that acted from one closing on nothing, so the tools as the daemon
+    gives them carry it: a turn closing on any of these but stay_silent is heard."""
+    given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
+    whole = {"stage_draft", "amend_draft", "resume", "skip", "repeat", "use_model"}
+    assert {name: tool.then for name, tool in given.items() if tool.then != "reply"} == {"stay_silent": "nothing", **dict.fromkeys(whole, "silence")}
+    assert given["send_draft"].then == "reply"
+
+
 async def say(given: dict[str, Tool], text: str, **session: str) -> dict[str, object]:
     """One dictated turn, staged and sent, naming the session only where `session` does."""
     staged = await given["stage_draft"].body(text=text, resolutions=[], **session)
