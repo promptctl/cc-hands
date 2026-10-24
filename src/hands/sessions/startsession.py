@@ -37,8 +37,8 @@ SESSION_GIVEN = (
 
 # The settings a started session is launched with. Claude Code's dialog for a project's new MCP servers holds the session
 # before its first hook, so it never joins: hands trusts them as the dialog's "use this and all future MCP servers in this
-# project" does, and one the user turned down stays down, since that is read first (2.1.299: the dialog measured without
-# this and gone with it).
+# project" does, and one the user turned down stays down, since that is read first (2.1.299, measured: the dialog shows
+# without this and is gone with it; with it, a server in disabledMcpjsonServers is still not run).
 SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
 # How long a started session has to join hands: Claude Code's start and its first hook. A folder it has never been
