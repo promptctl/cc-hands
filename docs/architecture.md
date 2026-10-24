@@ -1633,7 +1633,8 @@ work reads as nothing done, or as a crash. A turn the user asked and did not spe
 the model goes on from, such as `send_draft`, or one that is not hands' own, such as Bash. If its closing reply has no
 words and calls only `stay_silent`, the brain's stage (`src/hands/brain/stage.py`) does not hold it: it sends the
 request on with a note that the brain acted, that the user has heard nothing since, and that it is to say in a sentence
-what it did. It does this once; a second `stay_silent` in that turn is held, and the turn ends failed. A turn hands
+what it did. It does this once; a second `stay_silent` in that turn is held, and the turn ends failed. The brain's
+history keeps neither the note nor the failure, only its silence, so its next turn is told what the user heard instead. A turn hands
 itself asked the brain to tell, such as a session's finished turn, and a turn the user spoke over may still close on
 `stay_silent`. The turn's `voice.turn` event counts each refusal as `silence_refused`.
 

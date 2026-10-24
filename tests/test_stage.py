@@ -39,7 +39,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.session import Permission
 from hands.brain.mcp import CallSpans
-from hands.brain.stage import FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
+from hands.brain.stage import ACTED_UNTOLD, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -899,6 +899,8 @@ async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_sa
     assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
     [turn] = turns(rig.recorded)
     assert (turn.facts["failed"], turn.counts["silence_refused"]) == (ModelActedUntold(), 1)
+    await rig.say("what happened?")
+    assert rig.brain.asked[-1] == f"{heard('what happened?')}\n\n{ACTED_UNTOLD}"
 
 
 async def test_a_stay_silent_closing_a_turn_that_acted_is_held_where_something_is_heard_after_the_act(rig: Rig) -> None:
@@ -1177,9 +1179,9 @@ async def test_a_turn_that_acted_and_then_answered_nothing_is_said_as_acted_unto
     assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
     [turn] = turns(rig.recorded)
     assert (turn.facts["failed"], turn.counts["silence_refused"]) == (ModelActedUntold(), 0)
-    # Whole in the brain's history: its next turn is not told anything was broken off.
+    # Its history ends in silence: the next turn is told the user heard the failure in its place.
     await rig.say("hello?")
-    assert rig.brain.asked[-1] == heard("hello?")
+    assert rig.brain.asked[-1] == f"{heard('hello?')}\n\n{ACTED_UNTOLD}"
 
 
 async def test_a_turn_ending_on_a_call_that_lands_is_no_empty_reply(rig: Rig) -> None:

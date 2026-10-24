@@ -200,7 +200,8 @@ def stay_silent_tool() -> Tool:
     async def stay_silent() -> Result:
         """End your turn with nothing said, because what was just heard was not said to you.
 
-        In a turn where you did anything else, hands refuses the silence, and you say what you did.
+        In a turn the user asked and did not speak over, if you acted and they have heard nothing since, hands refuses the
+        silence once, and you say what you did.
         """
         # [LAW:no-silent-failure] the choice not to answer is still a tool's event in the audit log, and with the model
         # not run on the result, nothing follows it to the speaker.

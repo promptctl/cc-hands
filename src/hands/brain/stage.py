@@ -76,6 +76,7 @@ from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed,
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
+from hands.voice.system import system_text
 from hands.voice.player import Mark
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import HoldDiscarded
@@ -120,6 +121,9 @@ SILENT = "(stayed silent)"
 FAILED_AFTER = "[hands] Your last turn then failed. Mention this only if the user asks."
 # What hands adds to the request after a stay_silent that would end a turn which acted with nothing heard after what it did.
 OWED = "[hands] You acted on the user's words this turn, so they were said to you, and the user has heard nothing since you did. Say in a sentence what you did."
+# What the next turn tells the brain of a turn that acted and closed on nothing: its history holds the silence as its last
+# word, never the refusal nor the failure the user heard in its place.
+ACTED_UNTOLD = f'[hands] You acted on the user\'s words last turn and said nothing of it, so instead of your silence the user heard "{system_text(ModelActedUntold())}" Mention this only if the user asks.'
 
 # How long the tool work of the user's turn runs, from its first call, with nothing of the turn heard yet, before hands
 # acknowledges the turn: past a call that comes straight back with its answer said soon after, so only long work is.
@@ -799,9 +803,9 @@ class BrainStage(FrameProcessor):
         held = whole([tool is not None and result is not None and silent(tool, result) for tool, result in answers])
         # [LAW:single-enforcer] a turn that acted is not let close on stay_silent with nothing heard after what it did: the
         # model is asked on, told to say what it did. Once: a second time, it is held, and the turn's end fails it.
-        refused = held and turn.owes_word(self._tools) and not turn.silence_refused
-        if not held or refused:
-            turn.silence_refused += refused
+        owed = held and turn.owes_word(self._tools) and not turn.silence_refused
+        if not held or owed:
+            turn.silence_refused += owed
             turn.exchanges.append(sent.exchange)
             # [LAW:no-ambient-temporal-coupling] the reply it asks again for is all heard by now: the proxy tells each byte
             # before Claude Code reads it, and Claude Code asks again only once it has read the break.
@@ -811,7 +815,7 @@ class BrainStage(FrameProcessor):
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
-            return Send((*[Tail(OWED)] * refused, Tail(self._tail())), refusal="final", span=within(turn.span))
+            return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(turn.span))
         return Hold(SILENT, within(turn.span))
 
     async def _acknowledge(self, turn: _Turn) -> None:
@@ -908,9 +912,8 @@ def _failed(turn: _Turn, error: str | None, tools: Mapping[str, Tool]) -> _Failu
         return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
     if turn.owes_word(tools):
         # [LAW:no-silent-failure] a turn that acted and closed on nothing, by an empty reply or a stay_silent it was already
-        # refused once, ends heard as failed rather than as silence the user takes for nothing done. Whole in the brain's
-        # history, as an empty reply is.
-        return _Failure("the brain acted and said nothing of it", ModelActedUntold(), "")
+        # refused once, ends heard as failed rather than as silence the user takes for nothing done.
+        return _Failure("the brain acted and said nothing of it", ModelActedUntold(), ACTED_UNTOLD)
     return None
 
 
