@@ -10,7 +10,7 @@ from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.names import Due, Finished, Names
-from hands.voice.naming import Judged, NotAName, asked, judge, parsed
+from hands.voice.naming import NAME_ASKED, Judged, NotAName, asked, judge, parsed
 from hands.voice.summary import SummaryFailed
 
 SID = SessionId("s1")
@@ -151,16 +151,29 @@ async def test_the_model_is_shown_the_names_of_the_other_sessions_in_the_project
     assert "The other sessions in its project: naming fix; hook tests\n" in heard[0]
 
 
-def test_the_model_is_shown_the_end_of_a_long_closing_where_the_overview_is() -> None:
+def test_the_model_is_shown_the_end_of_a_long_closing_where_the_overview_is_then_asked_for_the_name() -> None:
     shown = asked(None, [], "detail " * 400 + "Where it stands: the naming fix is merged.")
-    assert shown.endswith("Where it stands: the naming fix is merged.") and "(the start cut)" in shown
+    assert shown.endswith("Where it stands: the naming fix is merged.\n</said>\n\n" + NAME_ASKED) and "(the start cut)" in shown
 
 
-@pytest.mark.parametrize("reply", ["", "   ", '""', "one two three four"])
+# The last three are replies the naming model gave in the audit: two summaries of the session's closing, and its status.
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "",
+        "   ",
+        '""',
+        "one two three four",
+        "The session is fixing a bug where a landing could wind the mirror ref backward.\n\n- **Plan review:** The first reviewer raised three objections",
+        "The session's work on the snapshot retention ceiling is finished and waiting on review.\n\n- **State:** PR #791 is open",
+        "waiting on knq merge",
+    ],
+)
 def test_what_is_not_a_name_of_one_to_three_words_is_refused(reply: str) -> None:
     with pytest.raises(NotAName):
         parsed(reply, "auth refactor")
 
 
-def test_a_name_is_its_words_without_the_quotes_or_stop_around_them() -> None:
+def test_a_name_is_its_words_without_the_quotes_emphasis_or_stop_around_them() -> None:
     assert parsed("  'naming   fix'.\n", None) == "naming fix"
+    assert parsed("**naming fix**", None) == "naming fix"

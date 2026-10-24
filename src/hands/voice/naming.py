@@ -33,10 +33,16 @@ Do not reply like these:
 - "Name: naming fix"  (a label before the name)
 - "fixing the session naming bug in hands"  (more than three words, and names the project)
 - "work"  (says nothing about the work)
+- "The session is fixing a bug where a landing could wind the mirror ref backward."  (a summary of what it said, not a name)
+- "waiting on knq merge"  (where the work stands, not what it is)
 
 A good reply:
 naming fix
 """
+
+# The last thing the model reads: the session's closing is often a markdown summary, and a model whose last words
+# are a summary goes on summarising.
+NAME_ASKED = "Reply with the session's name alone, not a summary of what it said."
 
 NAME_TIMEOUT_SECONDS = 60.0
 
@@ -113,21 +119,21 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
 
 def asked(before: str | None, beside: Sequence[str], closing: str) -> str:
     """What the model is shown: the name the session has, the names beside it in its project, and the end of the last
-    thing it said."""
+    thing it said, then what it is asked for."""
     has = f"Its name now: {before}" if before is not None else "It has no name yet."
     others = f"The other sessions in its project: {'; '.join(beside)}" if beside else "No other session is in its project."
     shown = closing if len(closing) <= CLOSING_SHOWN else f"(the start cut) ...{closing[-CLOSING_SHOWN:]}"
-    return f"{has}\n\n{others}\n\nThe last thing it said:\n\n{shown}"
+    return f"{has}\n\n{others}\n\nThe last thing it said, between <said> and </said>:\n\n<said>\n{shown}\n</said>\n\n{NAME_ASKED}"
 
 
 def parsed(reply: str, before: str | None) -> str:
-    """The name in the model's reply: its words, without quotes or a closing stop around them.
+    """The name in the model's reply: its words, without quotes, markdown emphasis, or a closing stop around them.
 
     Raises NotAName for a reply of no words, or of more than three that is not the name the session already has, which
     the user may have given it with /rename at any length.
     """
     # [LAW:parse-dont-validate] the one place a reply becomes a name.
-    words = reply.strip().strip("\"'`.").split()
+    words = reply.strip().strip("\"'`.*").split()
     named = " ".join(words)
     if named != before and not 0 < len(words) <= NAME_WORDS:
         raise NotAName(f"{reply!r} is {len(words)} words, and a new name is 1 to {NAME_WORDS}")

@@ -27,4 +27,5 @@ Do not write lines like these:
 
 A good line:
 hands-a1b: Keeps a spoken summary of each finished turn so a listener can ask what a session did without hearing the whole transcript.
-"""
+
+Summarize this:"""

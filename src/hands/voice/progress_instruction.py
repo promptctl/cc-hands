@@ -17,7 +17,8 @@ Good replies:
 explain how DNS resolution works
 say the tests pass and plan the next fix
 ask whether to keep the old config
-"""
+
+Summarize this:"""
 
 # Progress is worth hearing while the session is still doing it: a phrase later than this is not worth waiting for.
 EXPLAIN_TIMEOUT_SECONDS = 10.0
