@@ -197,8 +197,9 @@ wake_word = "Hey Mycroft"     # what the wake word trigger listens for
 spoken, and hands does only what you tell it to. Leave it out and hands talks in its own plain way.
 
 `wake_word` is one of openWakeWord's own: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa. For
-any other phrase, train a model on it with [openWakeWord](https://github.com/dscripka/openWakeWord#training-new-models),
-export it as ONNX, and name it beside the phrase: `wake_word_model = "~/wake/hey_computer.onnx"`.
+any other phrase, train an ONNX model on it with `uv run --project wake-training train-wake-word "Hey Computer"`
+([docs/wake-word-training.md](docs/wake-word-training.md)), and name it beside the phrase:
+`wake_word_model = "~/wake/hey_computer.onnx"`.
 
 hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
 playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control
