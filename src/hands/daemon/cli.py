@@ -166,12 +166,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
     logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
-    commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH")
+    commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH, 3 when it is installed but PATH finds another claude first, 1 when it installed nothing that works")
     commands.add_parser("install-brain", help="fetch the Claude Code release the brain is pinned to into the brain's directory, checked against the checksum hands carries for it, unless it is there already; exits 0 only when it is there")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
-    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted (the brain's hands:update skill runs this)")
+    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -761,8 +761,10 @@ def updated(home: Home) -> int:
             wide.annotate(steps=ran, sha=sha, failed=step)
             print(f"hands update: {step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}", file=sys.stderr)
             return 1
-        case update.Installed(sha=sha, ran=ran):
-            wide.annotate(steps=ran, sha=sha)
+        case update.Installed(sha=sha, ran=ran, advised=advised):
+            wide.annotate(steps=ran, sha=sha, went_past=advised)
+            for each in advised:
+                print(f"hands update: {each.step}: {each.said}", file=sys.stderr)
     print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
     answer = update.detach()
     outcome = restarted(home)
@@ -834,19 +836,30 @@ def install_fritter(home: Home, record: audit.Record) -> int:
         except (wrapper.Uninstallable, wrapper.Unpackaged) as error:
             wide.fail(str(error))
             print(f"hands install-fritter: {error}", file=sys.stderr)
-            return 1
+            return wrapper.Installing.BROKEN
         wide.annotate(fritter=installed.fritter, shim=installed.shim)
         print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
         print(f"wrote {installed.shim}")
-        found = readiness.shim(home, os.environ.get("PATH", ""))
+        path = os.environ.get("PATH", "")
+        # The install judged on a PATH that finds it first: whatever the caller's PATH finds after that is its shell's.
+        match readiness.shim(home, os.pathsep.join(filter(None, (str(home.bin), path)))):
+            case readiness.Ready():
+                pass
+            case readiness.Missing(detail=detail) | readiness.Unknown(detail=detail):
+                # What was found, not its PATH fix: hands' bin was first already, so it is the install that does not work.
+                said = f"the claude it wrote does not work with {home.bin} first on PATH: {detail}"
+                wide.fail(said)
+                print(f"hands install-fritter: {said}", file=sys.stderr)
+                return wrapper.Installing.BROKEN
+        found = readiness.shim(home, path)
         wide.annotate(path_finds_it=isinstance(found, readiness.Ready))
         match found:
             case readiness.Ready(said=said):
                 print(said)
-                return 0
+                return wrapper.Installing.FOUND
             case readiness.Missing(said=said) | readiness.Unknown(said=said):
                 print(said, file=sys.stderr)
-                return 1
+                return wrapper.Installing.UNFOUND
 
 
 def install_brain(home: Home, record: audit.Record) -> int:

@@ -26,6 +26,7 @@ from hands.daemon.starting import invocation
 from hands.daemon.update import Done, Failed, Installed, Ran, Step
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
+from hands.sessions.wrapper import Installing
 from hands.voice.intermediary_instruction import brain_instruction
 
 STANDIN = Path(__file__).resolve().parent / "fixtures" / "standin_daemon.py"
@@ -41,15 +42,16 @@ def tools_of_this_hands(tmp_path: Path) -> Path:
 
 
 class Commands:
-    """The commands an update runs, each answered as it would be: each exits 0 unless it is the one told to fail."""
+    """The commands an update runs, each answered as it would be: each exits 0 unless it is the one told to fail, which
+    exits as `failed` says, or 1 saying it broke, as any crash does."""
 
-    def __init__(self, tools: Path, failing: Step | None = None) -> None:
-        self.tools, self.failing, self.ran = tools, failing, list[tuple[tuple[str, ...], Path]]()
+    def __init__(self, tools: Path, failing: Step | None = None, failed: Done | None = None) -> None:
+        self.tools, self.failing, self.failed, self.ran = tools, failing, failed, list[tuple[tuple[str, ...], Path]]()
 
     def __call__(self, argv: Sequence[str], cwd: Path) -> Done:
         self.ran.append((tuple(argv), cwd))
         if self.failing is not None and len(self.ran) - 1 == list(Step).index(self.failing):
-            return Done(1, "", f"{self.failing} broke\n")
+            return self.failed or Done(1, "", f"{self.failing} broke\n")
         # A warning on a command's errors is no part of what the update reads from its output.
         match tuple(argv[:3]):
             case ("uv", "tool", "dir"):
@@ -88,7 +90,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
     assert commands.ran == expected(home, work)
-    assert installed == Installed(SHA, tuple(Ran(step, argv, 0) for step, (argv, _cwd) in zip(Step, expected(home, work), strict=True)))
+    assert installed == Installed(SHA, tuple(Ran(step, argv, 0) for step, (argv, _cwd) in zip(Step, expected(home, work), strict=True)), ())
 
 
 @pytest.mark.parametrize("failing", list(Step))
@@ -356,6 +358,45 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     assert err.endswith(f" It runs from {runs_from or 'an environment it does not name'}, not from {sys.prefix}, where master at {SHA} is installed.\n")
     [event] = events(home)
     assert (event["facts"]["exit_code"], event["facts"]["runs_master"], event["facts"]["told"]) == (1, False, True)
+
+
+def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the_caller_s_path_is_said_and_gone_past(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    home = Home(tmp_path / "home")
+    # What install-fritter says from a shell whose PATH does not have hands' bin first, as the brain's Bash tool's has not.
+    said = f"`claude` on this PATH is /Users/someone/.local/bin/claude, not hands' shim, so no session started from it can be typed into: export PATH=\"{home.bin}:$PATH\""
+    unfound = Done(Installing.UNFOUND, f"copied fritter to {home.fritter}\nwrote {home.shim}\n", f"{said}\n")
+    commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, unfound)
+    monkeypatch.setattr(update, "run", commands)
+    monkeypatch.setattr(update, "detach", lambda: answering([]))
+    restarting_from(monkeypatch, Path(sys.prefix))
+
+    assert cli.main(["--home", str(home.root), "update"]) == 0
+
+    # Every step ran, the brain's Claude Code installed after the fritter, and hands restarted onto master.
+    assert [argv[:3] for argv, _cwd in commands.ran] == [argv[:3] for argv, _cwd in expected(home, Path("/"))]
+    out, err = capsys.readouterr()
+    assert out.endswith(f" It runs master at {SHA}.\n")
+    assert err == f"hands update: install-fritter: {said}\n"
+    # [LAW:nothing-unseen] the event says the step it went past, and what that step found.
+    [event] = events(home)
+    facts = event["facts"]
+    assert (event["outcome"], facts["exit_code"], facts["runs_master"]) == ("ok", 0, True)
+    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), Installing.UNFOUND if step is Step.INSTALL_FRITTER else 0) for step in Step]
+    assert facts["went_past"] == [{"type": "Advised", "step": "install-fritter", "said": said}]
+
+
+def test_an_install_fritter_whose_install_does_not_work_stops_the_update(tmp_path: Path) -> None:
+    home = Home(tmp_path / "home")
+    broken = Done(Installing.BROKEN, "", "hands install-fritter: hands' package carries no fritter\n")
+    commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, broken)
+
+    work = tmp_path / "work"
+
+    installed = update.install(home, Path(sys.prefix), None, work, commands)
+
+    # Anything but the one exit it goes past is the step failing, the brain's Claude Code left uninstalled.
+    assert isinstance(installed, update.Unfinished) and (installed.sha, installed.step) == (SHA, Step.INSTALL_FRITTER)
+    assert commands.ran == expected(home, work)[:-1]
 
 
 class HungUp(io.TextIOWrapper):

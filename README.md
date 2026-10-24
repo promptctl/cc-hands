@@ -345,7 +345,8 @@ script, `claude update`, and `claude -p` run the real claude exactly as before. 
 argument that is one bare lowercase word is read as a subcommand, so an opening prompt
 of one such word runs outside fritter: `claude review` is not a session hands can type
 into, and `claude "review this"` is. `hands install-fritter` exits 0 only when `claude`
-on the current `PATH` is the one it wrote, and says what to add when it is not. The
+on the current `PATH` is the one it wrote; 3 when it installed but that `PATH` finds
+another `claude` first, saying what to add; and 1 when it installed nothing that works. The
 fritter it copies is the one hands' package carries, built when that package was, so no
 Go is needed to run it. Run it again after hands is upgraded, or in a checkout after
 fritter's source changes: `hands run` refuses to start on a copy that is not the one
@@ -396,6 +397,7 @@ uv run hands restart                    # start the running hands again on what 
 hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from, then
                                         # install-fritter and install-brain, then restart onto it as `hands restart` does and say the commit it runs;
                                         # exits 0 only once hands runs master; a step that fails stops it, naming the step, and hands is not restarted;
+                                        # install-fritter finding another claude first on the caller's PATH is said, and gone past;
                                         # it builds hands, so Go is needed
 uv run hands log                        # the audit log: what hands heard, said, called, and failed at
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it

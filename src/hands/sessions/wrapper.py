@@ -15,6 +15,7 @@ import string
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import IntEnum
 from fnmatch import fnmatchcase
 from itertools import takewhile
 from pathlib import Path
@@ -124,6 +125,15 @@ def copy_of(home: Home) -> Copy:
 class Installed:
     shim: Path
     fritter: Path
+
+
+class Installing(IntEnum):
+    """What `hands install-fritter` exits: [LAW:one-source-of-truth] the contract it and `hands update` both read.
+    UNFOUND is a code no crash, argparse refusal, or Rejected exits with, so nothing but this finding can be gone past."""
+
+    FOUND = 0  # installed, and this PATH finds its claude first
+    BROKEN = 1  # nothing installed, or what it installed does not work: what Python exits on a crash, which is the same
+    UNFOUND = 3  # installed, and this PATH finds another claude first: a fact of the caller's shell, not the install
 
 
 @dataclass(frozen=True)

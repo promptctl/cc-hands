@@ -17,7 +17,8 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
 6. install-fritter and install-brain, each run by the hands just installed, so the fritter and the brain's Claude Code
    are the ones master carries and pins. One of them failing leaves master installed without it: the running hands
    is not restarted, while what starts from the environment from then on, its hooks and its own next start, is
-   master's (Unfinished).
+   master's (Unfinished). install-fritter finding the claude it installed not first on the caller's PATH is no failure:
+   it is the caller's shell, the brain's never has hands' bin first, so the update says it and goes on (Advised).
 """
 
 import os
@@ -33,6 +34,7 @@ from typing import cast
 
 from hands.daemon.starting import invocation
 from hands.sessions.home import Home
+from hands.sessions.wrapper import Installing
 
 REPOSITORY = "https://github.com/promptctl/cc-hands.git"
 BRANCH = "master"
@@ -75,11 +77,22 @@ class Ran:
 
 
 @dataclass(frozen=True)
+class Advised:
+    """A step that did what it is for and found something of its caller's beside it, which the update says and goes on
+    past: the step, and what it said of it."""
+
+    step: Step
+    said: str
+
+
+@dataclass(frozen=True)
 class Installed:
-    """Every step ran and exited 0: hands, its fritter, and the brain's Claude Code are master's at `sha`."""
+    """Every step ran and did what it is for: hands, its fritter, and the brain's Claude Code are master's at `sha`;
+    `advised` is what any of them found of its caller's and went on past."""
 
     sha: str
     ran: tuple[Ran, ...]
+    advised: tuple[Advised, ...]
 
 
 @dataclass(frozen=True)
@@ -114,13 +127,17 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, work: Path, ru
     failed. `restarts_from` is the environment the running hands starts again on, by its own word: None with none
     running, or one from before its heartbeat said."""
     ran: list[Ran] = []
+    advised: list[Advised] = []
     # The commit installed, once the install step has put it in hands' environment: a failure from then on is Unfinished.
     installed: str | None = None
 
-    def step(name: Step, argv: Sequence[str], cwd: Path) -> str:
+    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset()) -> str:
+        """The step's output; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
         done = run(argv, cwd)
         ran.append(Ran(name, tuple(argv), done.code))
-        if done.code != 0:
+        if done.code in past:
+            advised.append(Advised(name, done.errors.strip()))
+        elif done.code != 0:
             said = f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}"
             raise _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
         return done.output
@@ -146,11 +163,11 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, work: Path, ru
         step(Step.INSTALL, ("uv", "tool", "install", "--reinstall-package", TOOL, "--python", made_from(), "--constraints", str(constraints), f"{TOOL} @ git+{REPOSITORY}@{sha}"), work)
         installed = sha
         # Run by the interpreter the install just filled, so each is master's own command.
-        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work)
+        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
     except _Stopped as stopped:
         return stopped.stopped
-    return Installed(sha, tuple(ran))
+    return Installed(sha, tuple(ran), tuple(advised))
 
 
 def made_from() -> str:
