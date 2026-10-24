@@ -145,8 +145,8 @@ function item(ticket) {
   const id = document.createElement("small");
   id.textContent = ticket.id;
   title.append(ticket.title, id);
-  // An epic, which lit gives no status, is drawn shut until it is tapped, saying how many open tickets it holds.
-  if (ticket.status === null) {
+  // An epic is drawn shut until it is tapped, saying how many open tickets it holds.
+  if (ticket.kind === "epic") {
     const held = document.createElement("span");
     held.className = "held";
     held.textContent = `${tickets(ticket.children)} open`;
@@ -186,7 +186,7 @@ function item(ticket) {
 
 // How many open tickets are under these, at every depth, epics not counted.
 function tickets(children) {
-  return children.reduce((n, child) => n + (child.status === null ? 0 : 1) + tickets(child.children), 0);
+  return children.reduce((n, child) => n + (child.kind === "epic" ? 0 : 1) + tickets(child.children), 0);
 }
 
 function toggled(row, card) {
