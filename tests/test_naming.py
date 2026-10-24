@@ -174,5 +174,6 @@ def test_what_is_not_a_name_of_one_to_three_words_is_refused(reply: str) -> None
         parsed(reply, "auth refactor")
 
 
-def test_a_name_is_its_words_without_the_quotes_or_stop_around_them() -> None:
+def test_a_name_is_its_words_without_the_quotes_emphasis_or_stop_around_them() -> None:
     assert parsed("  'naming   fix'.\n", None) == "naming fix"
+    assert parsed("**naming fix**", None) == "naming fix"

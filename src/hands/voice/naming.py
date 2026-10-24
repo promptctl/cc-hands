@@ -42,10 +42,7 @@ naming fix
 
 # The last thing the model reads: the session's closing is often a markdown summary, and a model whose last words
 # are a summary goes on summarising.
-NAME_ASKED = (
-    "Reply with the session's name alone, not a summary of what it said: the name it has, exactly as given, if it has "
-    "one that still fits the work, or else a new one of at most three words."
-)
+NAME_ASKED = "Reply with the session's name alone, not a summary of what it said."
 
 NAME_TIMEOUT_SECONDS = 60.0
 
@@ -130,13 +127,13 @@ def asked(before: str | None, beside: Sequence[str], closing: str) -> str:
 
 
 def parsed(reply: str, before: str | None) -> str:
-    """The name in the model's reply: its words, without quotes or a closing stop around them.
+    """The name in the model's reply: its words, without quotes, markdown emphasis, or a closing stop around them.
 
     Raises NotAName for a reply of no words, or of more than three that is not the name the session already has, which
     the user may have given it with /rename at any length.
     """
     # [LAW:parse-dont-validate] the one place a reply becomes a name.
-    words = reply.strip().strip("\"'`.").split()
+    words = reply.strip().strip("\"'`.*").split()
     named = " ".join(words)
     if named != before and not 0 < len(words) <= NAME_WORDS:
         raise NotAName(f"{reply!r} is {len(words)} words, and a new name is 1 to {NAME_WORDS}")
