@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
@@ -69,3 +71,21 @@ def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_o
     }
     users = {"PATH": "/Users/me/.hands/bin:/usr/bin", "CLAUDE_CONFIG_DIR": "/Users/me/.claude.work", "ANTHROPIC_API_KEY": "sk-mine", "HANDS_HOME": "/elsewhere"}
     assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}
+
+
+def test_a_session_is_started_trusting_its_projects_mcp_servers_whose_dialog_would_hold_it_unjoined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = home_in(tmp_path)
+    folder = tmp_path / "billing"
+    folder.mkdir()
+    # A tmux that writes down what it was asked to run, then refuses it.
+    asked = tmp_path / "asked"
+    tmux = tmp_path / "bin" / "tmux"
+    tmux.parent.mkdir()
+    tmux.write_text(f"#!/bin/sh\nprintf '%s\\0' \"$@\" > {asked}\necho 'no server' >&2\nexit 1\n")
+    tmux.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmux.parent}:{os.environ['PATH']}")
+    assert "tmux could not make session billing: no server" in start(home, folder, "opus")["error"]
+    command = asked.read_text().split("\0")
+    given = command[command.index("claude") + 1:-1]
+    assert given == ["--settings", '{"enableAllProjectMcpServers": true}', "--model=opus"]
+    assert [event["facts"]["settings"] for event in started(home)] == ['{"enableAllProjectMcpServers": true}']

@@ -1660,7 +1660,9 @@ brain's, without the user's credentials, so a session started from it would not 
 `claude`, the shim in its bin, in a new window of the tmux session named for the folder, made when there is none, through
 `/bin/sh` that leaves out what fritter's tap and a Claude Code session give the processes they run, since a tmux server
 already running gives a window its own environment, which holds a session's when the server was started inside one; the
-home the session reports to is given its window by name. The tool returns once the registry holds a session whose
+home the session reports to is given its window by name. It is launched trusting the folder's project MCP servers
+(`--settings` with `enableAllProjectMcpServers`), as the dialog's "use this and all future MCP servers" would, since that
+dialog holds a session before it can join; one the user turned down stays down. The tool returns once the registry holds a session whose
 process the window started, so it can be staged for at once, with its id and pane, or an error saying why: the folder is
 no whole path, no tmux, `claude` ended first, it has not joined in 30 seconds (usually a dialog, whose pane it shows), or
 it joined outside fritter. A session started has been told nothing: what the user wants of it is staged and sent as any

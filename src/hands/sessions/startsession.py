@@ -8,6 +8,7 @@ inside gave it is left out. The start returns once the session joined hands, nam
 """
 
 import asyncio
+import json
 import shlex
 import shutil
 import time
@@ -33,6 +34,12 @@ SESSION_GIVEN = (
     "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
     "CLAUDE_CODE_TMUX_TRUECOLOR",
 )
+
+# The settings a started session is launched with. Claude Code's dialog for a project's new MCP servers holds the session
+# before its first hook, so it never joins: hands trusts them as the dialog's "use this and all future MCP servers in this
+# project" does, and one the user turned down stays down, since that is read first (2.1.299: the dialog measured without
+# this and gone with it).
+SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
 # How long a started session has to join hands: Claude Code's start and its first hook. A folder it has never been
 # trusted in holds it at the trust dialog, which no hook outlasts.
@@ -99,7 +106,7 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
     # [LAW:nothing-unseen] a start is one unit of work: where, on what, in which tmux session and pane, which session
     # joined, and whether tmux's session was made for it.
     with wide.unit("session.start", record):
-        wide.annotate(folder=folder, model=model)
+        wide.annotate(folder=folder, model=model, settings=SETTINGS)
         where = _folder(folder)
         terminal = as_from_a_terminal(environment)
         tmux = shutil.which("tmux", path=terminal.get("PATH"))
@@ -111,7 +118,7 @@ async def start(home: Home, record: audit.Record, folder: Path, model: str | Non
         # session holds that session's in. Through sh, never the user's shell, whose startup files would set a PATH of
         # their own. hands' own `claude`, its shim, whatever comes first on the window's PATH: the session runs under
         # fritter, so hands can type into it.
-        claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", *(() if model is None else (f"--model={model}",))]
+        claude = ["/bin/sh", "-c", as_from_a_terminal_script(home.bin / "claude"), "claude", "--settings", SETTINGS, *(() if model is None else (f"--model={model}",))]
         made, window = await _opened(tmux, terminal, name, where, ("-e", f"HANDS_HOME={home.root}", "--", *claude))
         wide.annotate(tmux_session=name, made_tmux_session=made, pane=window.pane, tmux_socket=window.socket)
         member = await _joined(members, where, tmux, terminal, window)
