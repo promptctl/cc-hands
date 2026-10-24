@@ -521,6 +521,77 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
 
 
+async def test_a_turn_whose_transcript_moved_into_a_worktree_is_told_from_where_it_is_as_if_it_never_moved(tmp_path: Path) -> None:
+    """Claude Code 2.1.299 renames the transcript into the worktree's project as the session enters one, mid-turn, and
+    the Stop names it there. The turn is told from the moved file before any catch-up has read past the move, and told
+    as it would have been had it stayed: the turn told before it is not told again."""
+
+    async def told_through(transcript: Path, moved: Path) -> Telling | None:
+        transcript.parent.mkdir()
+        transcript.write_text(lines(PROMPT, DONE))
+        registry = Registry([member(transcript)])
+        tails = Tails(registry)
+        first = await tails.tell(SID, None, None)
+        assert first is not None
+        await tails.spoken(first)
+        with transcript.open("a") as more:
+            more.write(lines('{"type":"user","message":{"role":"user","content":"again"}}', CALL))
+        await tails.catch_up()
+        if moved != transcript:
+            moved.parent.mkdir()
+            transcript.rename(moved)
+            registry.members[:] = registry.heard[:] = [member(moved)]
+        with moved.open("a") as more:
+            more.write(lines(DONE))
+        return await tails.tell(SID, None, None)
+
+    stayed = tmp_path / "stayed" / "t.jsonl"
+    moved = tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    telling, control = await told_through(tmp_path / "repo" / "t.jsonl", moved), await told_through(stayed, stayed)
+    assert telling is not None and control is not None
+    assert (telling.turn, telling.transcript) == (control.turn, moved)
+    assert telling.turn.opening == Asked(None, "again")
+
+
+class Relocating(Registry):
+    """A registry the hook naming where Claude Code moved the transcript lands in as a reading is stamped."""
+
+    def __init__(self, transcript: Path, moved: Path) -> None:
+        super().__init__([member(transcript)])
+        self.moved = moved
+
+    def stamp(self) -> Stamp:
+        self.members[:] = self.heard[:] = [member(self.moved)]
+        return super().stamp()
+
+
+async def test_a_move_heard_as_a_catch_up_begins_is_read_where_it_went(tmp_path: Path) -> None:
+    """No file at the path a session had is said to be read through only a stamp from before the move was heard: a
+    reading through a stamp that a held Stop or an untold turn waits on would let it go with the moved records unread."""
+    moved = tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    moved.parent.mkdir()
+    moved.write_text(lines('{"type":"user","promptId":"p1","message":{"role":"user","content":"first"}}'))
+    assert await Tails(Relocating(tmp_path / "repo" / "t.jsonl", moved)).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Read(SID, Stamp(5000))]
+
+
+async def test_a_transcript_moved_before_any_hook_says_where_is_read_through_only_once_one_does(tmp_path: Path) -> None:
+    """Claude Code renames the transcript as the session enters a worktree, before any hook names where it went: a
+    reading that found no file where one was read would let a held Stop or an untold turn go with its records unread."""
+    transcript, moved = tmp_path / "repo" / "t.jsonl", tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    transcript.parent.mkdir()
+    moved.parent.mkdir()
+    transcript.write_text(lines(PROMPT))
+    registry = Registry([member(transcript)])
+    tails = Tails(registry)
+    await tails.catch_up()
+    transcript.rename(moved)
+    with moved.open("a") as more:
+        more.write(lines('{"type":"user","promptId":"p2","message":{"role":"user","content":"again"}}'))
+    assert await tails.catch_up() == []
+    registry.members[:] = registry.heard[:] = [member(moved)]
+    assert await tails.catch_up() == [Taken(SID, PromptId("p2"), None, 7.0), Read(SID, Stamp(5000))]
+
+
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"

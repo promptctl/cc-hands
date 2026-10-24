@@ -1,10 +1,14 @@
-"""The membership file: written by the shim at SessionStart, or at the first hook of a session that never fired one; read by the daemon.
+"""The membership file: written by the shim at SessionStart, or at the first hook of a session that never fired one, and
+its transcript rewritten by the hook that names where Claude Code moved it, as the session enters a worktree;
+read by the daemon.
 
 The file's name is the session id, so the id is not repeated inside it.
 """
 
 import json
 import os
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.session import Membership, SessionId
@@ -50,19 +54,64 @@ def remove_ended_membership(home: Home, ended: Membership) -> None:
         home.membership(ended.id).unlink(missing_ok=True)
 
 
-def held(home: Home, pid: int) -> bool:
-    """Whether any membership file names this process: one naming its pid, written while it was running."""
-    starts = process_starts({pid})
-    for path in home.memberships.glob("*.json"):
+@dataclass(frozen=True)
+class Recorded:
+    membership: Membership
+    written_at: float  # wall-clock seconds: the file's modification time
+
+
+def holders(records: Collection[Recorded], started: Mapping[int, float]) -> dict[int, Membership]:
+    """The session each running process holds, by pid: of the files naming it, the newest.
+
+    [LAW:single-enforcer] the one rule for which session a process holds, which the sweep judges by and the shim writes by.
+    """
+    alive = [record for record in records if running(record, started)]
+    return {record.membership.pid: record.membership for record in sorted(alive, key=lambda record: record.written_at)}
+
+
+def running(record: Recorded, started: Mapping[int, float]) -> bool:
+    """Whether the file's own process runs: a running pid is not enough, it must have been running when the file was written."""
+    return still_running(record.membership.pid, record.written_at, started)
+
+
+def holder(home: Home, pid: int) -> Membership | None:
+    """The session the process holds, as its files say; None when no file written while it ran names it."""
+    return holders(*naming(home, pid)).get(pid)
+
+
+def naming(home: Home, pid: int) -> tuple[list[Recorded], Mapping[int, float]]:
+    """The files naming the process, and when it started: all that says which session it holds."""
+    # An unreadable file, which the daemon's sweep reports and removes, names no process.
+    records, _ = recorded(home)
+    return [record for record in records if record.membership.pid == pid], process_starts({pid})
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A membership file that does not parse, as it was read: it names no session hands can reach."""
+
+    path: Path
+    raw: bytes
+    error: Rejected
+
+
+def recorded(home: Home) -> tuple[list[Recorded], list[Unreadable]]:
+    """Every membership file that parses, and every one that does not; nothing is removed here."""
+    records: list[Recorded] = []
+    unreadable: list[Unreadable] = []
+    # A shim's staging file ends in .tmp until it is renamed into place.
+    for path in sorted(home.memberships.glob("*.json")):
         try:
-            # A file written before the process under its pid started names a dead process whose pid it took.
-            if Payload.parse(path.read_bytes()).integer("pid") == pid and still_running(pid, path.stat().st_mtime, starts):
-                return True
-        # Ended since the listing, or unreadable, which the daemon's sweep reports and removes: either way it names
-        # no process.
-        except (FileNotFoundError, Rejected):
+            written_at = path.stat().st_mtime
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            # The session ended between the listing and the read.
             continue
-    return False
+        try:
+            records.append(Recorded(parse_membership(SessionId(path.stem), raw), written_at))
+        except Rejected as error:
+            unreadable.append(Unreadable(path, raw, error))
+    return records, unreadable
 
 
 def recorded_membership(home: Home, session: SessionId) -> Membership | None:

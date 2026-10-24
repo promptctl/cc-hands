@@ -8,7 +8,7 @@ from typing import get_args, overload
 from loguru import logger
 
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Attached, Displayed, Ended, EndReason, Event, Joined, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
+from hands.core.events import Displayed, Ended, EndReason, Event, Joined, Located, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
 from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
@@ -23,11 +23,12 @@ class Hook:
 
     name: str
     session: SessionId
-    # The session as its file names it, for a daemon that may not have heard of it: a session running since before
-    # the plugin never fired its start hook, and joins on whatever hook it fires first. One the registry holds is left
-    # as it is. None for a start, which joins by itself; for an end, whose file the shim has removed; and for a hook
-    # whose session has no file, which ended or whose process has moved on to another session.
-    joining: Attached | None
+    # The session as its file names it, written by this hook's shim just before it posted: a session running since
+    # before the plugin never fired its start hook, and joins on whatever hook it fires first, and one the registry
+    # holds takes the transcript Claude Code moved. None for a start, which joins by itself; for an end, whose file the
+    # shim has removed; and for a hook whose session has no file, which ended or whose process has moved on to another
+    # session.
+    joining: Located | None
     happened: Event
 
 
@@ -47,7 +48,7 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
         case _:
             happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
-            return Hook(name, session, None if recorded is None else Attached(recorded), happened)
+            return Hook(name, session, None if recorded is None else Located(recorded), happened)
 
 
 def parse_display(raw: bytes, *, at: Instant) -> Displayed:

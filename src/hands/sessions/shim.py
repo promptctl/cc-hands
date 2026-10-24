@@ -20,6 +20,7 @@ import os
 import socket
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
 from hands.sessions.hookconfig import post_timeout
-from hands.sessions.membership import held, remove_membership, write_membership
+from hands.sessions.membership import holder, remove_membership, write_membership
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.untap import tapped, untap_script
 
@@ -73,17 +74,30 @@ def record(home: Home, payload: Payload) -> None:
             give_back(os.environ)
         case "SessionEnd":
             remove_membership(home, payload.session_id())
-        case _ if not held(home, os.getppid()):
-            # A session running before the plugin was installed, or before `/reload-plugins`, never fires its start
-            # hook, so its first hook of any kind is where it joins. The daemon reads this file for every hook but a
-            # start or an end [LAW:one-source-of-truth], so it is written before the post.
-            # Keyed on the process, not the session: a late hook of a session this process has since moved on from
-            # (a /clear, a resume, a /branch) finds the start's file naming the process and writes nothing, since the newest
-            # file naming a process is the session it holds. A file left by a dead process under this session's id
-            # names another pid, so it is replaced.
-            write_membership(home, _membership(payload))
         case _:
-            pass
+            heard = _membership(payload)
+            match holder(home, heard.pid):
+                case None:
+                    # A session running before the plugin was installed, or before `/reload-plugins`, never fires its
+                    # start hook, so its first hook of any kind is where it joins. The daemon reads this file for every
+                    # hook but a start or an end [LAW:one-source-of-truth], so it is written before the post. A file left
+                    # by a dead process under this session's id names another pid, so it is replaced.
+                    write_membership(home, heard)
+                case Membership(id=heard.id) as recorded if not recorded.transcript.exists() and heard.transcript.exists():
+                    # Claude Code renames the transcript when the session enters a worktree, and every hook after names
+                    # where it is now, so the file follows it: to the transcript that is there. A background hook that
+                    # fired before the rename lands late naming the path it left, which is gone, so the file names
+                    # where it is however the hooks land. Only the transcript: a hook's cwd is the shell's, which a
+                    # `cd` moves, and the session's project is where it started.
+                    write_membership(home, replace(recorded, transcript=heard.transcript))
+                case Membership(id=heard.id):
+                    # The file names the transcript that is there, or nothing is there yet to name.
+                    pass
+                case Membership():
+                    # Keyed on the process, not the session: a late hook of a session this process has since moved on
+                    # from (a /clear, a resume, a /branch) writes nothing, since the newest file naming a process is the
+                    # session it holds, and a write would make the old session's the newest.
+                    pass
 
 
 def give_back(environ: Mapping[str, str]) -> None:

@@ -653,10 +653,23 @@ look like a quiet one `[LAW:no-silent-failure]`.
 
 A session running before the plugin was installed, or reloaded with `/reload-plugins`,
 never fires `SessionStart`. So every other hook writes the file when no membership file
-names the shim's parent process, and the daemon attaches the session its file names
-before it applies the hook: such a session joins on whatever it fires first. Keying on
-the process keeps a late hook from a session the process has moved on from (a `/clear`,
-a resume, a `/branch`) from writing a file that would outrank the new session's.
+names the shim's parent process, and the daemon takes the session its file names
+(`Located`) before it applies the hook: such a session joins on whatever it fires first.
+The file's `transcript_path` follows the transcript: Claude Code (2.1.299) renames it,
+subagents and all, into the worktree's project as the session enters one
+(`EnterWorktree`), and every hook after names it there. A hook of the session the process
+holds rewrites the path when the file's no longer exists and its own does; PostToolUse
+runs in the background, so a hook fired before the rename can land after it, naming the
+path the rename left, and writes nothing. Only the transcript follows hooks; a hook's `cwd` is the shell's, which a `cd` moves too,
+so the session's `cwd` stays the start's. Keying on the process keeps a late hook from a
+session the process has moved on from (a `/clear`, a resume, a `/branch`) from writing a
+file that would outrank the new session's: which session a process holds is the sweep's
+one rule, the newest file naming it (`hands.sessions.membership.holders`).
+
+The tail never keeps a transcript's path: every read takes it from the registry, and its
+read position names the file it is in by device and inode. A renamed transcript is read
+on from where it was; another file under the session's id, or one shorter than what was
+read, is read again from its start.
 
 **The constraint that will bite.** Hooks run in the agent's critical path with a
 timeout, and `MessageDisplay` and `SessionStart` dispatch synchronously. A shim that
@@ -1443,12 +1456,14 @@ Three facts about a session have three different sources, and the registry deriv
 from all three rather than storing any of them twice `[LAW:one-source-of-truth]`.
 
 - **Membership** is the set of files in `~/.hands/sessions/`. The shim writes one at
-  `SessionStart`, or at the first hook of a session that fired none, and removes it at
-  `SessionEnd`. The daemon sweeps the directory once
+  `SessionStart`, or at the first hook of a session that fired none, rewrites its
+  transcript when a hook names where Claude Code moved it, and removes it at `SessionEnd`. The daemon sweeps the directory once
   before its models load and every 2 seconds after (`hands.sessions.liveness`). A file
   whose process is running becomes `Attached`, which registers a session the registry
   has never heard of in `Idle` and changes nothing for one it knows: a hook heard first
-  knows more than the file, so a sweep and a hook can land in either order. A daemon
+  knows more than the file, so a sweep and a hook can land in either order. A hook's own
+  file, written just before it posted, is `Located`, which moves a session the registry
+  knows to the transcript it names. A daemon
   restart therefore loses nothing: its first sweep lists every session the last run
   listed, before a word is spoken.
 - **State** comes from the reducer applied to hook events since the daemon attached.

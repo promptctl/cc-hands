@@ -33,6 +33,11 @@ def transcript_of(transcript: Path, id: AgentId) -> Path:
     return subagents_of(transcript) / f"agent-{id}.jsonl"
 
 
+def meta_of(transcript: Path, id: AgentId) -> Path:
+    """The file Claude Code writes beside the subagent's transcript as it starts it, naming the job it gave it."""
+    return subagents_of(transcript) / f"agent-{id}.meta.json"
+
+
 def started_from(record: Payload) -> bool | None:
     """Whether the transcript starts from this record, which is its job then and no work of its own: the first record of
     the work names no parent. None for a record of Claude Code's own bookkeeping, as a fork's `fork-context-ref` is,
