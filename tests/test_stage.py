@@ -883,6 +883,36 @@ async def test_a_stay_silent_after_a_readback_handed_to_the_brain_is_refused(rig
     assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)
 
 
+async def test_the_request_asked_again_after_the_refusal_broke_is_told_to_say_what_it_did_too(rig: Rig) -> None:
+    """Claude Code asks again whole for a reply that broke before any block of it finished: the same request, so the
+    same note, or the one refusal is spent on a reply that never came."""
+    await acted_then_silent(rig, ("Bash", "filed"))
+    _, route = rig.request({"stream": False, **answering("mcp__hands__stay_silent", {"silent": True}, "t2")})
+    assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)
+
+
+async def test_a_stay_silent_after_an_act_beside_a_readback_hands_says_is_held(rig: Rig) -> None:
+    """A reply that read a session and amended a draft goes on, since the read is the model's to answer; the readback
+    hands says at the turn's end is heard after the read, so the stay_silent that follows is held."""
+    await rig.say("check api and fix the draft")
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "mcp__hands__read_session"), ("t2", "mcp__hands__amend_draft"))
+    both = {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": json.dumps({"steps": []})}]},
+        {"type": "tool_result", "tool_use_id": "t2", "content": [{"type": "text", "text": json.dumps({"says": "Amended it."})}]},
+    ]}
+    exchange, route = rig.request({"messages": [{"role": "user", "content": "hi"}, both]})
+    assert isinstance(route, Send)
+    rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
+    _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
+    assert route == Hold(SILENT, APART)
+    rig.brain.end()
+    await rig.until(lambda: rig.out.said() == ["Amended it."])
+    await rig.until(lambda: bool(turns(rig.recorded)))
+    [turn] = turns(rig.recorded)
+    assert (turn.facts["failed"], turn.counts["silence_refused"]) == (None, 0)
+
+
 async def test_a_stay_silent_beside_whitespace_closes_on_nothing_and_is_refused(rig: Rig) -> None:
     _, route = await acted_then_silent(rig, ("Bash", "filed"), "\n\n")
     assert route == Send((Tail(OWED), Tail(TAIL)), refusal="final", span=APART)

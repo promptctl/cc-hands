@@ -261,6 +261,8 @@ class _Turn:
     # How many times the turn closed on a stay_silent it owed a word in and was sent on, told to say what it did: at most
     # once, since a second ends it failed.
     silence_refused: int = 0
+    # Whether the turn's latest request sent on carried OWED: one asked again whole repeats it, and carries it too.
+    owing: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
     failure: ModelFact = _UNNAMED
     # Waits out the turn's tool work to acknowledge it, which the turn's end cancels.
@@ -341,12 +343,13 @@ class _Turn:
 
     def owes_word(self, tools: Mapping[str, Tool]) -> bool:
         """The user is owed a word of what the turn did: they asked it and did not speak over it, it acted, and its latest
-        reply closes it on nothing, no words and no call but stay_silent. That reply's words would follow every act before
-        it, since a reply's words come ahead of its calls' runs."""
+        reply closes it on nothing, no words and no call but stay_silent, with no readback of hands' to follow. That reply's
+        words would follow every act before it, since a reply's words come ahead of its calls' runs, and a readback follows
+        the turn's every word."""
         # A call to no tool of hands' own, Bash or Write, is an act; a whole reply hands says something for is not, and
         # stay_silent says it did nothing. [LAW:one-source-of-truth] each read off the tool's own `then`.
         acted = any((tool := tools.get(call.tool)) is None or tool.then == "reply" for call in self.tools.values())
-        closes_on_nothing = not has_words(self.reply) and all((tool := tools.get(name)) is not None and tool.then == "nothing" for name in self.calls.values())
+        closes_on_nothing = not self.readbacks and not has_words(self.reply) and all((tool := tools.get(name)) is not None and tool.then == "nothing" for name in self.calls.values())
         return isinstance(self.asker, UserAsked) and not self.interrupted and acted and closes_on_nothing
 
     def asking(self) -> Asked | None:
@@ -803,9 +806,12 @@ class BrainStage(FrameProcessor):
         held = whole([tool is not None and result is not None and silent(tool, result) for tool, result in answers])
         # [LAW:single-enforcer] a turn that acted is not let close on stay_silent with nothing heard after what it did: the
         # model is asked on, told to say what it did. Once: a second time, it is held, and the turn's end fails it.
-        owed = held and turn.owes_word(self._tools) and not turn.silence_refused
+        refusing = held and turn.owes_word(self._tools) and not turn.silence_refused
+        # A request asked again whole, after a reply that broke before any block of it finished, repeats the one before it.
+        owed = refusing or (not streams(sent.body) and turn.owing)
         if not held or owed:
-            turn.silence_refused += owed
+            turn.silence_refused += refusing
+            turn.owing = owed
             turn.exchanges.append(sent.exchange)
             # [LAW:no-ambient-temporal-coupling] the reply it asks again for is all heard by now: the proxy tells each byte
             # before Claude Code reads it, and Claude Code asks again only once it has read the break.
