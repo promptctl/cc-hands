@@ -1,0 +1,63 @@
+[project]
+name = "wake-training"
+version = "0.1.0"
+description = "Train a wake word for hands: one phrase in, an openWakeWord ONNX model out"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # openWakeWord's own trainer, `openwakeword.train`, as this commit has it. 0.6 on PyPI carries one too, but it
+    # converts every model to TFLite, with no switch to turn it off, and takes the model's input shape from the clips'
+    # length rather than from the features it computed.
+    "openwakeword @ git+https://github.com/dscripka/openWakeWord@368c03716d1e92591906a84949bc477f3a834455",
+    # What openwakeword.train and openwakeword.data import, which openwakeword's own dependencies leave out.
+    "torch==2.8.*",
+    "torchaudio==2.8.*",  # 2.9 on loads audio only through torchcodec, which the trainer's torchaudio.load does not bring
+    "torchinfo>=1.8",
+    "torchmetrics>=1.2",
+    "speechbrain>=0.5.14,<1",
+    "acoustics==0.2.6",
+    "scipy<1.15",  # acoustics imports scipy.special.sph_harm, which later scipy drops
+    "audiomentations==0.33.0",
+    "torch-audiomentations>=0.11",
+    "mutagen>=1.47",
+    "pronouncing>=0.2",
+    "deep-phonemizer==0.0.19",
+    "pyyaml>=6",
+    # The trainer's export of the model: torch.onnx writes it through onnx, which torch does not depend on.
+    "onnx>=1.16",
+    # piper-sample-generator's own dependencies: its source is a corpus asset (wake_training.corpus), not a package.
+    "piper-tts==1.3.0",
+    "webrtcvad>=2.0.10",
+    # The background audio comes as parquet shards of encoded clips.
+    "pyarrow>=17",
+    "soundfile>=0.12",
+]
+
+[project.scripts]
+train-wake-word = "wake_training.cli:main"
+
+[dependency-groups]
+dev = ["pyright>=1.1", "pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wake_training"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportMatchNotExhaustive = "error"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+# Trained on the Mac hands runs on.
+environments = ["sys_platform == 'darwin'"]

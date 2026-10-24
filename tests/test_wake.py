@@ -1,6 +1,7 @@
 """The wake word: saying it opens a turn with no key, end-of-turn detection closes it, and while hands speaks the
 detector hears silence."""
 
+import ast
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -20,7 +21,7 @@ from hands.sessions.wide import WideEvent, unit
 from hands.voice.engaged import Act, Begun, Engagement, Event, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, drive, untapped
 from hands.voice.hold import Move, Pressed, Released, Ripe
 from hands.voice.engaged import loaded as ears_loaded
-from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, WAKE, WakeWord, fetched, listening, loaded, step
+from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, WAKE, WakeWord, fetched, listening, loaded, step
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
 
 
@@ -325,3 +326,12 @@ async def test_a_long_header_line_still_arriving_when_a_read_ends_is_waited_for(
     async with await asyncio.start_server(answer, "127.0.0.1", 0) as server:
         assert await fetched(tmp_path, Pretrained(), f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}") == (JARVIS,)
     assert (tmp_path / JARVIS).read_bytes() == b"features"
+
+
+def test_wake_training_scores_its_models_at_the_threshold_hands_wakes_at() -> None:
+    # wake-training does not import hands, so it keeps hands' threshold as a copy; this is the copy's check.
+    source = Path(__file__).parent.parent / "wake-training" / "src" / "wake_training" / "evaluate.py"
+    copied = next(
+        node.value for node in ast.parse(source.read_text()).body if isinstance(node, ast.Assign) and [ast.unparse(target) for target in node.targets] == ["THRESHOLD"]
+    )
+    assert ast.literal_eval(copied) == THRESHOLD
