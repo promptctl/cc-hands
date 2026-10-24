@@ -15,7 +15,7 @@ import pytest
 
 from conftest import unedited
 from hands.daemon import indicator
-from hands.sessions import heartbeat
+from hands.sessions import audit, heartbeat
 from hands.daemon.cli import Run, launch, main
 from hands.daemon.starting import Ended, QuitKey, Start, Stop, keep_beating
 from hands.threads import off_loop
@@ -258,16 +258,25 @@ def test_a_heartbeat_that_cannot_be_read_is_its_own_verdict_and_never_raises(raw
     assert isinstance(heartbeat.look(path, NOW), heartbeat.Unreadable)
 
 
-def test_hands_status_exits_zero_only_when_the_daemon_is_up(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_hands_status_exits_zero_only_when_the_daemon_is_up_and_its_event_fails_with_what_it_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
+
+    def errors() -> list[str | None]:
+        return [line.get("error") for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.command"]
+
     assert main(["--home", str(tmp_path), "status"]) == 1
-    assert "has not run" in capsys.readouterr().out
+    said = capsys.readouterr().out
+    assert "has not run" in said
+    assert errors() == [f"exited 1: {said.rstrip()}"]
     heartbeat.write(home.status, beat(pid=os.getpid(), started_at=datetime.now(UTC), written_at=datetime.now(UTC)))
     assert main(["--home", str(tmp_path), "status"]) == 0
     assert capsys.readouterr().out.startswith(f"hands is up: pid {os.getpid()}")
+    assert errors()[1:] == [None]
     home.status.write_text("{")
     assert main(["--home", str(tmp_path), "status"]) == 2
-    assert "cannot be read" in capsys.readouterr().err
+    said = capsys.readouterr().err
+    assert "cannot be read" in said
+    assert errors()[2:] == [f"exited 2: {said.rstrip()}"]
     heartbeat.write(home.status, beat(pid=2**63))
     assert main(["--home", str(tmp_path), "status"]) == 2
     assert "not a process id" in capsys.readouterr().err

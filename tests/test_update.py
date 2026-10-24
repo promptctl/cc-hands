@@ -131,6 +131,8 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     assert (event["outcome"], facts["command"], facts["exit_code"], facts["failed"]) == ("failed", "update", 1, str(failing))
     assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), 0) for step in list(Step)[: upto - 1]] + [(str(failing), 1)]
     assert facts.get("sha") == (SHA if unfinished else None)
+    # It fails saying why, in the words it said it.
+    assert event["error"] == f"exited 1: {err.removeprefix('hands update: ').removesuffix('\n')}"
 
 
 def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> None:
@@ -316,6 +318,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     [event] = events(home)
     facts = event["facts"]
     assert (facts["command"], facts["exit_code"], facts["sha"], facts["outcome"]["type"]) == ("update", 1, SHA, "NotRunning")
+    assert event["error"] == f"exited 1: {err.removesuffix('\n')}"
 
 
 def answering(answers: list[int], *, taken: bool = True) -> Callable[[int], bool]:
@@ -358,6 +361,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     assert err.endswith(f" It runs from {runs_from or 'an environment it does not name'}, not from {sys.prefix}, where master at {SHA} is installed.\n")
     [event] = events(home)
     assert (event["facts"]["exit_code"], event["facts"]["runs_master"], event["facts"]["told"]) == (1, False, True)
+    assert event["error"] == f"exited 1: {err.removesuffix('\n')}"
 
 
 def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the_caller_s_path_is_said_and_gone_past(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

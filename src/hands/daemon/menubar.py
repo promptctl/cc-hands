@@ -13,6 +13,7 @@ import os
 import signal
 import threading
 from datetime import UTC, datetime
+from typing import Literal
 
 import AppKit
 from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer
@@ -34,7 +35,7 @@ WAKE = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_window
 )
 
 
-def show(home: Home, run: int) -> int:
+def show(home: Home, run: int) -> Literal[0]:
     """Run the status item until `run`, the process that started this one, is gone and the heartbeat has said so; then
     0, the indicator's exit code. What made it stop looking at the heartbeat first is raised."""
     app = AppKit.NSApplication.sharedApplication()
@@ -48,9 +49,9 @@ def show(home: Home, run: int) -> int:
     item.setMenu_(menu)
     before: indicator.Shown | None = None
     # How the indicator ends, set by the look that ends it: 0, the run gone and said so, or what the look raised.
-    ending: int | Exception | None = None
+    ending: Literal[0] | Exception | None = None
 
-    def end(how: int | Exception) -> None:
+    def end(how: Literal[0] | Exception) -> None:
         nonlocal ending
         # The first ending says how it went: a restart's SIGTERM after a look that raised does not make it a clean exit.
         ending = how if ending is None else ending
@@ -97,7 +98,7 @@ def show(home: Home, run: int) -> int:
     AppHelper.callAfter(look, None)
     AppHelper.runEventLoop(installInterrupt=True)
     match ending:
-        case int():
+        case 0:
             return ending
         case Exception():
             raise ending
