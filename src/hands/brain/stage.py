@@ -631,7 +631,7 @@ class BrainStage(FrameProcessor):
         # A brain that failed the turn itself has no answer to read.
         failure = None if asked.exception() is not None else _failed(turn, asked.result(), self._tools)
         stopped = asked.exception() is None and isinstance(asked.result(), BrainStopped)
-        annotate(failed=None if failure is None else failure.fact, stopped=stopped)
+        annotate(failed=None if failure is None else failure.fact, stopped=stopped, held_reply=turn.held_reply)
         if (error := asked.exception()) is not None:
             failed = f"the brain failed a turn: {error}"
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
@@ -655,8 +655,10 @@ class BrainStage(FrameProcessor):
         match stopped and not turn.held_reply:
             case True:
                 # Stopped before Claude Code held any of its reply, the turn is gone from the brain's history, every reply
-                # asked again and the note typed with it included: what was asked in it, and that note, are told it again.
-                self._broken_off = _notes(over, _stopped_unkept(asker, text, note))
+                # asked again included: what was asked in it is told it, and what the user heard of it, which the speaker
+                # says where the user spoke over it. The note typed with it spoke of the turn before, which the user's stop
+                # has left behind: it is not told again.
+                self._broken_off = _notes(over, _stopped_unkept(asker, text, "" if over else "".join(spoken)))
             case False:
                 # The brain's history holds the replies asked again, never the broken ones: what the user heard of one is
                 # told it with its next turn, unless the reply asked again opened with it.
@@ -994,16 +996,16 @@ def _seen(asker: Asker) -> str:
             return ""
 
 
-def _stopped_unkept(asker: Asker, asked: str, carried: str) -> str:
+def _stopped_unkept(asker: Asker, asked: str, heard: str) -> str:
     """The note that tells the brain of a turn stopped before Claude Code held any of its reply, which its history keeps
-    nothing of: what was asked in it, by whom, and the note hands typed with it, which speaks of the turn before it."""
+    nothing of: what was asked in it, by whom, and what the user heard of it, where anything."""
     match asker:
         case UserAsked():
             lost = f'what the user asked in it: "{asked}"'
         case HandsAsked():
             lost = f'what hands told you in it: "{asked}"'
-    told = f" Hands also told you this with it, of the turn before it: {carried}" if carried else ""
-    return f"[hands] The user stopped your last turn before you replied, so your history does not hold {lost}. Do not act on it unless the user asks.{told}"
+    said = f' The user heard you say "{heard}" before they stopped it.' if heard else ""
+    return f"[hands] The user stopped your last turn, so your history does not hold {lost}.{said} Do not act on it unless the user asks."
 
 
 def _broken_off(spoken: str) -> str:
