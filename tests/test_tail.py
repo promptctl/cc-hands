@@ -553,6 +553,27 @@ async def test_a_turn_whose_transcript_moved_into_a_worktree_is_told_from_where_
     assert telling.turn.opening == Asked(None, "again")
 
 
+class Relocating(Registry):
+    """A registry the hook naming where Claude Code moved the transcript lands in as a reading is stamped."""
+
+    def __init__(self, transcript: Path, moved: Path) -> None:
+        super().__init__([member(transcript)])
+        self.moved = moved
+
+    def stamp(self) -> Stamp:
+        self.members[:] = self.heard[:] = [member(self.moved)]
+        return super().stamp()
+
+
+async def test_a_move_heard_as_a_catch_up_begins_is_read_where_it_went(tmp_path: Path) -> None:
+    """No file at the path a session had is said to be read through only a stamp from before the move was heard: a
+    reading through a stamp that a held Stop or an untold turn waits on would let it go with the moved records unread."""
+    moved = tmp_path / "repo--claude-worktrees-lane" / "t.jsonl"
+    moved.parent.mkdir()
+    moved.write_text(lines('{"type":"user","promptId":"p1","message":{"role":"user","content":"first"}}'))
+    assert await Tails(Relocating(tmp_path / "repo" / "t.jsonl", moved)).catch_up() == [Taken(SID, PromptId("p1"), None, 7.0), Read(SID, Stamp(5000))]
+
+
 async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path: Path) -> None:
     """Both read off the loop in a thread, and a Stop reads the transcript the catch-up is already reading."""
     transcript = tmp_path / "t.jsonl"

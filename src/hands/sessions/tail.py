@@ -267,6 +267,7 @@ class Tails:
         followed by how far it read.
         """
         async with self._reading:
+            through = self._known.stamp()
             members = self._known.live_members()
             live = {member.id for member in members}
             self._following = {session: following for session, following in self._following.items() if session in live}
@@ -275,7 +276,7 @@ class Tails:
             for member in [member for member in members if self._known.status_read(member.id)]:
                 following = self._following.setdefault(member.id, Following())
                 try:
-                    await asyncio.to_thread(self._read, member.id, following, member.transcript)
+                    await asyncio.to_thread(self._read, member.id, following, member.transcript, through)
                 except FileNotFoundError:
                     # Claude Code creates the transcript with its first record, which a session may not have written yet,
                     # and renames it as the session enters a worktree, which the hook after says, landing in moments.
@@ -294,6 +295,7 @@ class Tails:
         reply's own record 46 to 77 ms after the hook fires, so the hook's copy stands in until the record lands.
         """
         async with self._reading:
+            through = self._known.stamp()
             followed = self._follow(session)
             if followed is None:
                 # A Stop from a session the registry does not list: there is no transcript to tell it from.
@@ -301,7 +303,7 @@ class Tails:
             transcript, following = followed
             # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
             # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
-            await asyncio.to_thread(self._read, session, following, transcript)
+            await asyncio.to_thread(self._read, session, following, transcript, through)
             reading = following.find(turn)
             if reading is None:
                 # [LAW:no-silent-failure] the whole transcript was just read, so its turn is not in it: read again from
@@ -368,10 +370,13 @@ class Tails:
         membership = self._known.membership(session)
         return None if membership is None else (membership.transcript, self._following.setdefault(session, Following()))
 
-    def _read(self, session: SessionId, following: Following, transcript: Path) -> None:
-        """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read."""
-        # Before the file is opened, so every record Claude Code had written by then is in what is read.
-        through = self._known.stamp()
+    def _read(self, session: SessionId, following: Following, transcript: Path, through: Stamp) -> None:
+        """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read.
+
+        [LAW:no-ambient-temporal-coupling] `through` is stamped before the registry was asked where the transcript is, so
+        every record Claude Code had written by then is in what is read, and a move any hook had said by then is read
+        where it went: no file there is nothing written by then, never a file moved before it.
+        """
         try:
             read = _appended(transcript, following.at)
         except OSError:
