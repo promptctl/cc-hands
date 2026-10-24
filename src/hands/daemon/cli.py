@@ -137,14 +137,11 @@ def show_phone(home: Home) -> exits.Exit:
         key = phone_key(home)
     except Rejected as error:
         wide.annotate(phone_key=str(error))
-        print(f"hands: {error}", file=sys.stderr)
-        return exits.Failed(1, str(error))
+        return refused("hands", 1, str(error))
     urls = page_urls(name, lan_addresses(), key)
     wide.annotate(addresses=len(urls))
     if not urls:
-        unreached = "this machine has no address a phone can reach."
-        print(f"hands: {unreached}", file=sys.stderr)
-        return exits.Failed(1, unreached)
+        return refused("hands", 1, "this machine has no address a phone can reach.")
     segno.make(urls[0]).terminal(compact=True)
     print("\n".join(urls))
     print("The page is served while `hands run` is up. Anyone with one of these addresses can talk to hands: keep them to yourself.")
@@ -645,16 +642,16 @@ def report(home: Home) -> exits.Exit:
     verdict = heartbeat.look(home.status, now)
     # [LAW:nothing-unseen] what the exit code was decided by.
     wide.annotate(verdict=verdict)
-    said = heartbeat.describe(verdict, now)
+    described = heartbeat.describe(verdict, now)
     ended: exits.Exit
     match verdict:
         case heartbeat.Up():
             out, ended = sys.stdout, 0
         case heartbeat.NeverRan() | heartbeat.Unresponsive() | heartbeat.Down() | heartbeat.Stopped() | heartbeat.Refused():
-            out, ended = sys.stdout, exits.Failed(1, said)
+            out, ended = sys.stdout, exits.Failed(1, described)
         case heartbeat.Unreadable():
-            out, ended = sys.stderr, exits.Failed(2, said)
-    print(said, file=out)
+            out, ended = sys.stderr, exits.Failed(2, described)
+    print(described, file=out)
     return ended
 
 
@@ -689,8 +686,8 @@ def check(home: Home, granted: bool, verbose: bool) -> exits.Exit:
 
 
 def undone(findings: Sequence[readiness.Finding]) -> str:
-    """The steps that decided a check's exit, each with the first line of what was found."""
-    return "; ".join(f"{finding.step}: {finding.detail.partition("\n")[0]}" for finding in findings)
+    """The steps that decided a check's exit, each with the first line of what hands says of it: a missing one's, its fix."""
+    return "; ".join(f"{finding.step}: {finding.said.partition("\n")[0]}" for finding in findings)
 
 
 def keyboards(pids: Sequence[int]) -> list[Keyboard]:
@@ -775,14 +772,10 @@ def updated(home: Home) -> exits.Exit:
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
             wide.annotate(steps=ran, failed=step)
-            unrestarted = f"{step} failed, so hands was not restarted and runs as it did: {why}"
-            print(f"hands update: {unrestarted}", file=sys.stderr)
-            return exits.Failed(1, unrestarted)
+            return refused("hands update", 1, f"{step} failed, so hands was not restarted and runs as it did: {why}")
         case update.Unfinished(sha=sha, step=step, said=why, ran=ran):
             wide.annotate(steps=ran, sha=sha, failed=step)
-            unfinished = f"{step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}"
-            print(f"hands update: {unfinished}", file=sys.stderr)
-            return exits.Failed(1, unfinished)
+            return refused("hands update", 1, f"{step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}")
         case update.Installed(sha=sha, ran=ran, advised=advised):
             wide.annotate(steps=ran, sha=sha, went_past=advised)
             for each in advised:
@@ -817,6 +810,13 @@ def updated(home: Home) -> exits.Exit:
     return ended
 
 
+def refused(speaker: str, code: Literal[1, 2, 3], why: str) -> exits.Failed:
+    """Say on stderr, as `speaker`, why a command failed, and fail it in those words: [LAW:one-source-of-truth] what it
+    printed and what its hands.command event records are one string."""
+    print(f"{speaker}: {why}", file=sys.stderr)
+    return exits.Failed(code, why)
+
+
 def audit_log_of(home: Home) -> audit.AuditLog:
     """The audit log of `home`, on the wall clock: every command's events, and a run's, land in the one log."""
     return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
@@ -838,12 +838,10 @@ def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
             signed = brain_login(home.brain, UPSTREAM, os.environ, method)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
-            print(f"hands login: {error}", file=sys.stderr)
-            return exits.Failed(1, str(error))
+            return refused("hands login", 1, str(error))
         except KeyboardInterrupt:
             wide.fail("interrupted")
-            print("hands login: interrupted", file=sys.stderr)
-            return exits.Failed(1, "interrupted")
+            return refused("hands login", 1, "interrupted")
         wide.annotate(first_run=signed.first_run, account=signed.account)
     print(f"the brain at {home.brain} is logged in as {signed.account}")
     print("a hands already running started its brain on the login before: restart it to start the brain on this one")
@@ -859,8 +857,7 @@ def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
             installed = wrapper.install(home)
         except (wrapper.Uninstallable, wrapper.Unpackaged) as error:
             wide.fail(str(error))
-            print(f"hands install-fritter: {error}", file=sys.stderr)
-            return exits.Failed(wrapper.Installing.BROKEN, str(error))
+            return refused("hands install-fritter", wrapper.Installing.BROKEN, str(error))
         wide.annotate(fritter=installed.fritter, shim=installed.shim)
         print(f"copied {wrapper.PACKAGED} to {installed.fritter}")
         print(f"wrote {installed.shim}")
@@ -873,8 +870,7 @@ def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
                 # What was found, not its PATH fix: hands' bin was first already, so it is the install that does not work.
                 said = f"the claude it wrote does not work with {home.bin} first on PATH: {detail}"
                 wide.fail(said)
-                print(f"hands install-fritter: {said}", file=sys.stderr)
-                return exits.Failed(wrapper.Installing.BROKEN, said)
+                return refused("hands install-fritter", wrapper.Installing.BROKEN, said)
         found = readiness.shim(home, path)
         wide.annotate(path_finds_it=isinstance(found, readiness.Ready))
         match found:
@@ -899,12 +895,10 @@ def install_brain(home: Home, record: audit.Record) -> exits.Exit:
             installed = asyncio.run(pinned.install(home.brain))
         except pinned.Uninstallable as error:
             wide.fail(str(error))
-            print(f"hands install-brain: {error}", file=sys.stderr)
-            return exits.Failed(1, str(error))
+            return refused("hands install-brain", 1, str(error))
         except KeyboardInterrupt:
             wide.fail("interrupted")
-            print("hands install-brain: interrupted", file=sys.stderr)
-            return exits.Failed(1, "interrupted")
+            return refused("hands install-brain", 1, "interrupted")
         wide.annotate(claude=installed.path, fetched=installed.fetched, unpinned=installed.unpinned)
         print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
         return 0

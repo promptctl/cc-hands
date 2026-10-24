@@ -15,6 +15,7 @@ from hands.daemon.cli import main
 from hands.sessions import heartbeat, marketplace
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
+from hands.voice import phoneaddress
 
 
 def events(home: Home) -> list[dict[str, Any]]:
@@ -71,6 +72,19 @@ def test_arguments_are_on_the_event_as_parsed(tmp_path: Path, capsys: pytest.Cap
     capsys.readouterr()
     [command] = [event for event in events(home) if event["event"] == "hands.command"]
     assert command["facts"] == {"command": "recall", "home": str(home.root), "arguments.home": str(home.root), "arguments.words": ["token", "helper"], "arguments.most": 3, "exit_code": 0}
+
+
+def test_a_phone_with_no_address_a_phone_reaches_fails_saying_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    async def untailed() -> phoneaddress.Untailed:
+        return phoneaddress.Untailed("a stand-in for Tailscale")
+
+    monkeypatch.setattr(phoneaddress, "tailnet_name", untailed)
+    monkeypatch.setattr(phoneaddress, "lan_addresses", list[str])
+    home = Home(tmp_path / "home")
+    assert main(["--home", str(home.root), "phone"]) == 1
+    assert capsys.readouterr().err.endswith("hands: this machine has no address a phone can reach.\n")
+    [command] = events(home)
+    assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "exited 1: this machine has no address a phone can reach.")
 
 
 def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

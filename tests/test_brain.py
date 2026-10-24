@@ -1416,6 +1416,9 @@ def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fa
     assert main(["--home", str(tmp_path), "login"]) == 1
     assert capsys.readouterr().err == f"hands login: {said}\n"
     assert logins(tmp_path) == [("failed", {"asked": "claudeai", "settings_written": not onboarded})]
+    # The command fails saying why, in the words it said it.
+    [command] = [event for event in map(json.loads, segment(tmp_path / "audit", 0).read_text().splitlines()) if event.get("event") == "hands.command"]
+    assert command["error"] == f"exited 1: {said}"
 
 
 def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:

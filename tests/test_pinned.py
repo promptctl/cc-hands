@@ -239,7 +239,8 @@ def test_install_brain_says_what_it_did_and_is_one_event_each_time(tmp_path: Pat
     target.unlink()
     monkeypatch.setattr(pinned, "RELEASES", "http://127.0.0.1:1")
     assert main(["--home", str(home.root), "install-brain"]) == 1
-    assert capsys.readouterr().err.startswith(f"hands install-brain: could not fetch http://127.0.0.1:1/{pinned.VERSION}/{built}/claude: ")
+    unfetched = capsys.readouterr().err
+    assert unfetched.startswith(f"hands install-brain: could not fetch http://127.0.0.1:1/{pinned.VERSION}/{built}/claude: ")
     # One that fetches says so, and its event why the copy there was not the pin.
     unpinned = f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`"
 
@@ -257,3 +258,6 @@ def test_install_brain_says_what_it_did_and_is_one_event_each_time(tmp_path: Pat
         ("failed", {"version": pinned.VERSION, "build": built}),
         ("ok", {"version": pinned.VERSION, "build": built, "claude": str(target), "fetched": True, "unpinned": unpinned}),
     ]
+    # The failed one's command says why, in the words it said it.
+    commands = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "hands.command"]
+    assert [command["error"] for command in commands] == [None, f"exited 1: {unfetched.removeprefix('hands install-brain: ').removesuffix('\n')}", None]
