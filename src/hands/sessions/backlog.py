@@ -128,8 +128,8 @@ class Standing:
 
 @dataclass(frozen=True)
 class NewEpic:
-    """A topic's epic for a level that lit holds none of yet: made inside the frame of the ticket's epic, and ranked
-    directly beside it."""
+    """A topic's epic for a level that lit holds none of yet: made inside the parent of the ticket's epic, and put at
+    `place`, so the topic's levels stay in their order."""
 
     topic: str
     title: str
@@ -204,22 +204,38 @@ class Backlog:
             case "below":
                 return frame[at + 1 : at + 2] == (move.ticket,)
 
+    def level_of(self, epic: str) -> Level | None:
+        """The level an epic is its topic's epic for, read off its exact title; None for an epic of no level."""
+        return next((level for level in LEVELS if self.tickets[epic].title == level_title(self.tickets[epic].topic, level)), None)
+
+    def level_epics(self, topic: str) -> tuple[tuple[str, Level], ...]:
+        """`topic`'s epics for its levels, each with its level, in rank order: the open epics of that topic titled exactly
+        so for a level.
+
+        [LAW:one-source-of-truth] the one way a level's epic is found: by its title and topic in lit, read fresh.
+        """
+        return tuple((id, level) for id, ticket in self.tickets.items() if ticket.kind == "epic" and ticket.topic == topic and not self.done(id) and (level := self.level_of(id)) is not None)
+
+    def level_epic(self, topic: str, level: Level) -> str | None:
+        """`topic`'s epic for `level`, the first ranked where there are more; None where lit holds none."""
+        return next((id for id, at in self.level_epics(topic) if at == level), None)
+
     def standing(self, id: str) -> Standing | None:
         """Where a ticket stands among its topic's levels, read off the title and topic of the epic it is inside; None
         for one no level holds: an epic, or a ticket inside no epic lit lists."""
         epic = self.parent.get(id)
         if self.tickets[id].kind == "epic" or epic is None or self.tickets[epic].kind != "epic":
             return None
-        # [LAW:one-source-of-truth] the level is the epic's exact title for its topic, so a level's epic is its own topic's too.
-        return Standing(epic, next((level for level in LEVELS if self.tickets[epic].title == level_title(self.tickets[epic].topic, level)), None))
+        return Standing(epic, self.level_of(epic))
 
     def leveling(self, ticket: str, level: Level) -> Leveling:
         """`ticket` moved into its epic's topic's epic for `level`; raises Rejected naming why it cannot be.
 
-        [LAW:single-enforcer] the one check of a leveling, as `move` is of a rank. [LAW:one-source-of-truth] which epic is a
-        topic's for a level is in lit alone, read fresh: an open epic of that topic titled exactly so, the first ranked
-        where there are more. Where there is none, one is made beside the ticket's epic: above it for high, below it
-        otherwise.
+        [LAW:single-enforcer] the one check of a leveling, as `move` is of a rank. Where lit holds no epic for the level,
+        one is made in the frame the tree draws the ticket's epic in, and ranked so the topic's levels stay in their
+        order, high over normal over low: directly above the first of its epics for a lower level ranked beside the
+        ticket's epic, or else directly below the last for a higher one, or else beside the ticket's epic itself, above it
+        for high and below it otherwise.
         """
         if ticket not in self.tickets:
             raise Rejected(f"the backlog has no ticket {ticket}")
@@ -231,10 +247,17 @@ class Backlog:
             case Standing(epic=epic):
                 pass
         topic = self.tickets[epic].topic
-        title = level_title(topic, level)
-        found = next((id for id, other in self.tickets.items() if (other.kind, other.topic, other.title) == ("epic", topic, title) and not self.done(id)), None)
-        place = Place("above" if level == "high" else "below", epic)
-        return Leveling(ticket, level, NewEpic(topic, title, self.inside.get(epic), place) if found is None else found)
+        frame = self.frame(epic)
+        # The topic's level epics lit ranks beside the ticket's epic, in rank order, each by how far down the levels it is.
+        ladder = [(id, LEVELS.index(at)) for id, at in self.level_epics(topic) if id in frame]
+        rung = LEVELS.index(level)
+        place = (
+            next((Place("above", id) for id, at in ladder if at > rung), None)
+            or next((Place("below", id) for id, at in reversed(ladder) if at < rung), None)
+            or Place("above" if level == "high" else "below", epic)
+        )
+        found = self.level_epic(topic, level)
+        return Leveling(ticket, level, NewEpic(topic, level_title(topic, level), self.parent.get(epic), place) if found is None else found)
 
     def done(self, id: str) -> bool:
         """Whether a ticket is finished: closed, or for an epic, every child done."""
@@ -287,15 +310,10 @@ async def rank(project: Path, move: Move) -> str:
     return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target)).decode(errors="replace").strip()
 
 
-async def make_epic(project: Path, new: NewEpic) -> str:
-    """Have lit in `project` make `new`, at the bottom of its frame, and the id lit gave it; raises LitFailed when it fails."""
-    out = await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)))
-    # lit names what it made first: its id, then its state and its title.
-    match out.decode(errors="replace").split():
-        case [id, *_]:
-            return id
-        case _:
-            raise LitFailed(f"lit new in {project} exited 0 and named no epic it made", None)
+async def make_epic(project: Path, new: NewEpic) -> None:
+    """Have lit in `project` make `new`, at the bottom of its frame; raises LitFailed when it fails. It is found after by
+    its title and topic, as every level's epic is (`Backlog.level_epic`)."""
+    await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)))
 
 
 async def adopt(project: Path, ticket: str, epic: str) -> None:

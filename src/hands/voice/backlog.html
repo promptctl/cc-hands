@@ -154,7 +154,16 @@ function item(ticket) {
     row.classList.add("epic");
     row.classList.toggle("open", opened.has(ticket.id));
     card.setAttribute("aria-expanded", String(opened.has(ticket.id)));
-    card.addEventListener("click", () => toggled(row, card));
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
+    // The release of a drag clicks the card it was pressed on, and opens or shuts nothing.
+    card.addEventListener("click", () => { if (!wasDragged) toggled(row, card); });
+    card.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      // Space would scroll the page as well.
+      event.preventDefault();
+      toggled(row, card);
+    });
   }
   if (ticket.status === "in_progress") {
     const status = document.createElement("span");
@@ -180,8 +189,6 @@ function tickets(children) {
 }
 
 function toggled(row, card) {
-  // The release of a drag clicks the card it was pressed on, and opens or shuts nothing.
-  if (wasDragged) return;
   const open = !opened.has(row.dataset.id);
   if (open) opened.add(row.dataset.id); else opened.delete(row.dataset.id);
   row.classList.toggle("open", open);

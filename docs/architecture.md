@@ -2022,19 +2022,26 @@ cancel, the capture lost, or the window losing focus, ends the drag dropping not
 them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
 ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 
-Each epic is drawn shut, with how many open tickets it holds, until it is tapped; which epics are open is the page's own
-state, kept across every redraw. Every ticket inside an epic has a High, a Normal, and a Low button (`Level`, the one
-vocabulary the buttons, the titles, and the parse derive from). A press moves the ticket with `lit parent set`, keeping
-its id, into its topic's epic for that level: the open epic whose lit topic is that of the ticket's epic and whose title is
-exactly `<topic> - <level>`, the topic's hyphens shown as spaces, as in `wake word - high`. lit holds which epic is which
-level, in its title and topic, read fresh; hands keeps none of it, and lit's own priority is not touched. Where there is
-none, `lit new --type epic` makes it in the frame of the ticket's epic and `lit rank` puts it directly above that epic for
-high, directly below for normal and low; the epics are then ordered by dragging, and `lit next` follows their rank. A level
-epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake word - low`. `Backlog.leveling` is the
-one check: a ticket at the level already, an epic, or a ticket in no listed epic is refused. The read after must have the
-ticket in the epic and a made epic where it was ranked, or the answer is a conflict. Each press is one `backlog.leveled`
-event, with the ticket, the level, the epic it went into, whether lit made that epic and whether it moved the ticket,
-"yes", "no", or "unknown" where lit stopped without saying why, and why it was refused or failed.
+Each epic is drawn shut, with how many open tickets it holds, until it is tapped (or, focused, Enter or Space); which
+epics are open is the page's own state, kept across every redraw. An epic with no open ticket beneath it is not drawn,
+as a finished one is not; the brain's summary still holds it. Every ticket inside an epic has a High, a Normal, and a Low
+button (`Level`, the one vocabulary the buttons, the titles, and the parse derive from). A press moves the ticket with
+`lit parent set`, keeping its id, into its topic's epic for that level: the open epic whose lit topic is that of the
+ticket's epic and whose title is exactly `<topic> - <level>`, the topic's hyphens shown as spaces, as in `wake word -
+high` (`Backlog.level_epic`, the one way it is found). lit holds which epic is which level, in its title and topic, read
+fresh; hands keeps none of it, and lit's own priority is not touched. Where there is none, `lit new --type epic` makes it
+in the parent the tree draws the ticket's epic in, the backlog is read again to find it by its title and topic, and it is
+ranked through `Backlog.move` so the topic's levels stay high over normal over low: directly above the first of its
+epics for a lower level, else directly below the last for a higher one, else above the ticket's epic for high and below
+it otherwise. The epics are then ordered by dragging, and `lit next` follows their rank. An epic made where it cannot be
+ranked as asked, or whose rank fails, is left at the bottom of its frame and the ticket is not moved; a later press finds
+and uses it as it stands. `Backlog.leveling` is the one check: a ticket at the level already, an epic, or a ticket in no
+listed epic is refused. Every drop and press runs alone, from the read it is checked against to the read that shows it,
+so two pages never both make one level's epic. The read after must have the ticket in the epic and a made epic where it
+was ranked, or the answer is a conflict. Each press is one `backlog.leveled` event, with the ticket, the level, the epic
+it went into, and whether lit made that epic, ranked it, and moved the ticket, each "yes", "no", or "unknown" where lit
+stopped without saying why, and why it was refused or failed. A level epic carries its topic, so a ticket in `wake word -
+high` pressed Low goes to `wake word - low`.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

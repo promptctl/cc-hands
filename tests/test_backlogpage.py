@@ -189,15 +189,38 @@ def test_a_level_is_the_open_epic_of_that_topic_titled_exactly_so_or_one_made_be
     backlog = parse_export(export(LEVELED, LEVELED_RELATIONS))
     assert backlog.leveling("w.a", "high") == Leveling("w.a", "high", "wh")
     # Closed, differently cased, and of another topic are none of them wake-word's epic for the level.
-    assert backlog.leveling("w.b", "low") == Leveling("w.b", "low", NewEpic("wake-word", "wake word - low", None, Place("below", "w")))
-    assert backlog.leveling("w.b", "normal") == Leveling("w.b", "normal", NewEpic("wake-word", "wake word - normal", None, Place("below", "w")))
-    # A level's epic carries its topic, so a ticket in one goes to its topic's epic for another, made beside the one it is in.
+    # Below the topic's high epic, so its levels stay in order.
+    assert backlog.leveling("w.b", "low") == Leveling("w.b", "low", NewEpic("wake-word", "wake word - low", None, Place("below", "wh")))
+    assert backlog.leveling("w.b", "normal") == Leveling("w.b", "normal", NewEpic("wake-word", "wake word - normal", None, Place("below", "wh")))
+    # A level's epic carries its topic, so a ticket in one goes to its topic's epic for another.
     assert backlog.leveling("wh.a", "normal").epic == NewEpic("wake-word", "wake word - normal", None, Place("below", "wh"))
     assert backlog.leveling("ww.a", "high").epic == NewEpic("wake-words", "wake words - high", None, Place("above", "ww"))
     refused: list[tuple[str, Level, str]] = [("wh.a", "high", "already in wh"), ("w", "low", "is an epic"), ("nope", "low", "no ticket nope")]
     for ticket, level, why in refused:
         with pytest.raises(Rejected, match=why):
             backlog.leveling(ticket, level)
+
+
+def test_a_level_epic_made_is_placed_so_its_topics_levels_stay_high_over_normal_over_low() -> None:
+    issues = [
+        issue("w", "01", "Train a new wake word", status=None, kind="epic", topic="wake-word"),
+        issue("w.a", "02", "Hey hands", topic="wake-word"),
+        issue("wl", "03", "wake word - low", status=None, kind="epic", topic="wake-word"),
+        issue("wl.a", "04", "Many wake words", topic="wake-word"),
+    ]
+    backlog = parse_export(export(issues, [inside("w", "w.a"), inside("wl", "wl.a")]))
+    # Above the first lower level, wherever the ticket's own epic is.
+    assert backlog.leveling("wl.a", "normal").epic == NewEpic("wake-word", "wake word - normal", None, Place("above", "wl"))
+    assert backlog.leveling("w.a", "high").epic == NewEpic("wake-word", "wake word - high", None, Place("above", "wl"))
+
+
+def test_drawn_leaves_out_an_epic_with_no_open_ticket_and_the_summary_keeps_it() -> None:
+    issues = [issue("e", "01", "Emptied", status=None, kind="epic"), issue("f", "02", "Full", status=None, kind="epic"), issue("f.a", "03", "A")]
+    backlog = parse_export(export(issues, [inside("f", "f.a")]))
+    with unit("backlog.read", lambda _entry: None, counts=("tickets", "summarised")):
+        page = shown(Sighted(backlog, {}))
+    assert [node["id"] for node in cast(list[dict[str, Any]], page["items"])] == ["f"]
+    assert [part.id for part in backlog.thing().parts] == ["e", "f"]
 
 
 def test_a_level_made_inside_an_epic_is_made_in_the_same_one() -> None:
@@ -561,7 +584,8 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
     # The epic stands made and empty, and the next press puts the ticket in it rather than making another.
     monkeypatch.undo()
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 200 and titled(json.loads(body)["items"]) == [("wake word - high", [hey]), ("Train a new wake word", [])]
+    # The epic it was in holds nothing open now, and is drawn no more.
+    assert status == 200 and titled(json.loads(body)["items"]) == [("wake word - high", [hey])]
     assert page.events("backlog.leveled")[1].facts["created"] == "no"
 
 
@@ -577,3 +601,83 @@ async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Pag
     assert status == 502 and body.startswith(f"whether lit moved {hey} into ") and "is not known" in body
     [event] = page.events("backlog.leveled")
     assert event.outcome == "failed" and event.facts["moved"] == "unknown"
+
+
+@real_lit
+async def test_a_level_epic_made_keeps_its_topics_levels_in_order_whatever_epic_the_ticket_is_in(page: Page, workspace: Workspace) -> None:
+    _, first, second, third = epic(workspace, "Train a new wake word", "Hey hands", "Many wake words", "Train your own", topic="wake-word")
+    assert (await leveled(page, workspace, first, "low"))[0] == 200
+    # From the low epic, normal goes above it, not below.
+    status, body = await leveled(page, workspace, first, "normal")
+    assert status == 200 and [title for title, _ in titled(json.loads(body)["items"])] == ["Train a new wake word", "wake word - normal"]
+    assert (await leveled(page, workspace, second, "low"))[0] == 200
+    # From the topic's own epic, high goes above the normal one, not above the topic's epic.
+    status, body = await leveled(page, workspace, third, "high")
+    assert status == 200
+    titles = [title for title, _ in titled(json.loads(body)["items"])]
+    assert titles == ["wake word - high", "wake word - normal", "wake word - low"]
+    exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
+    epics = [entry["title"] for entry in sorted(exported["issues"], key=lambda entry: entry["rank"]) if entry["issue_type"] == "epic"]
+    assert epics == ["Train a new wake word", "wake word - high", "wake word - normal", "wake word - low"]
+
+
+@real_lit
+async def test_a_level_epic_made_from_a_topics_high_one_goes_between_it_and_the_topics_epic(page: Page, workspace: Workspace) -> None:
+    train, first, second = epic(workspace, "Train a new wake word", "Hey hands", "Many wake words", topic="wake-word")
+    assert (await leveled(page, workspace, first, "high"))[0] == 200
+    assert (await leveled(page, workspace, second, "low"))[0] == 200
+    status, body = await leveled(page, workspace, first, "normal")
+    assert status == 200
+    items = json.loads(body)["items"]
+    assert [title for title, _ in titled(items)] == ["wake word - normal", "wake word - low"]
+    ids = {node["title"]: node["id"] for node in items}
+    exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
+    high = next(entry["id"] for entry in exported["issues"] if entry["title"] == "wake word - high")
+    assert workspace.order(high, ids["wake word - normal"], ids["wake word - low"], train) == [high, ids["wake word - normal"], ids["wake word - low"], train]
+
+
+@real_lit
+async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_page(page: Page, workspace: Workspace) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    status, body = await leveled(page, workspace, hey, "normal")
+    assert status == 200 and titled(json.loads(body)["items"]) == [("wake word - normal", [hey])]
+    [event] = page.events("backlog.leveled")
+    assert event.counts == {"tickets": 2, "summarised": 0}
+
+
+@real_lit
+@pytest.mark.parametrize(
+    "before_rank, ranked, said",
+    [
+        ('echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5', "no", "and left it at the bottom of its frame, so"),
+        ('{lit} "$@" >/dev/null\nkill -9 $$', "unknown", "or left it at the bottom of its frame is not known, so"),
+    ],
+)
+async def test_a_rank_that_fails_after_the_epic_is_made_says_the_epic_is_made_and_the_ticket_not_moved(
+    page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, ranked: str, said: str
+) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    workspace.shim(tmp_path / "bin", before_rank.replace("{lit}", str(LIT)))
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/bin:/usr/bin")
+    status, body = await leveled(page, workspace, hey, "high")
+    assert status == 502 and body.startswith("not leveled: lit made ") and "wake word - high" in body and said in body and f"{hey} was not moved" in body
+    [event] = page.events("backlog.leveled")
+    assert event.outcome == "failed" and event.error == body
+    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", ranked, "no")
+    assert str(event.facts["epic"]) in body
+
+
+@real_lit
+async def test_an_epic_lit_makes_outside_the_frame_it_is_to_be_ranked_in_is_a_failure_and_nothing_is_ranked_or_moved(page: Page, workspace: Workspace) -> None:
+    room, *_ = epic(workspace, "Room", "Keep it", topic="room")
+    wake = workspace.lit("new", "--type", "epic", "--parent", room, "--title", "Train a new wake word", "--topic", "wake-word")
+    hey = workspace.lit("new", "--parent", wake, "--title", "Hey hands", "--topic", "wake-word")
+    # Archived, the room still frames the wake word epic's rank, and the tree draws it as a root: the high epic is made a root.
+    workspace.lit("archive", room, "--reason", "Later.")
+    status, body = await leveled(page, workspace, hey, "high")
+    assert status == 409 and body.startswith("not leveled: lit made ") and "cannot be ranked above" in body and "not inside the same parent" in body
+    [event] = page.events("backlog.leveled")
+    assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", "no", "no")
+    response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
+    # The ticket stays where it was; the epic made, empty, is not drawn.
+    assert titled((await response.json())["items"]) == [("Keep it", []), ("Train a new wake word", [hey])]
