@@ -33,12 +33,20 @@
   .card { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; background: var(--card);
     border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; cursor: grab; user-select: none; }
   main > ol > li > .card { border-color: var(--mark); }
-  .grip { grid-row: span 2; color: var(--muted); touch-action: none; padding: 0 2px; font-size: 18px; line-height: 1.1; }
+  .grip { grid-row: span 3; color: var(--muted); touch-action: none; padding: 0 2px; font-size: 18px; line-height: 1.1; }
   .title { font-weight: 600; overflow-wrap: anywhere; }
   .title small { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 12px; }
   .title .status { font-weight: 500; font-size: 12px; margin-left: 6px; padding: 0 6px; border: 1px solid var(--ring); border-radius: 9px; }
   .summary { color: var(--fg); overflow-wrap: anywhere; }
   .summary.unsaid { color: var(--muted); font-style: italic; }
+  .title .held { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 12px; white-space: nowrap; }
+  .title .held::before { content: "▸ "; }
+  .open > .card .held::before { content: "▾ "; }
+  .epic:not(.open) > ol { display: none; }
+  .levels { display: flex; gap: 8px; margin-top: 8px; }
+  .levels button { flex: 1; max-width: 7rem; min-height: 40px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--ring); border-radius: 8px; cursor: pointer; touch-action: manipulation; }
+  .levels button[aria-pressed="true"] { background: var(--mark); color: var(--bg); border-color: var(--mark); cursor: default; }
   .dragged > .card { opacity: .45; }
   body.busy .card { cursor: progress; }
   body.dragging, body.dragging .card { cursor: grabbing; }
@@ -52,7 +60,7 @@
   <span id="project"></span>
   <a id="phone" href="/">Phone</a>
 </header>
-<p id="how">Every open ticket in lit's rank order, top first: each epic, with the tickets inside it beneath it. The line under a title is hands' one-sentence summary of the ticket. To rank a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse.</p>
+<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into its topic's epic of that name, such as "wake word - high", made beside the ticket's epic the first time; then rank those epics like any other.</p>
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
@@ -70,6 +78,11 @@ document.getElementById("project").textContent = project || "";
 const SLOP_PX = 4;
 // How close to the window's top or bottom a drag scrolls it, and how far each move does.
 const EDGE_PX = 48, SCROLL_PX = 24;
+
+// The levels a ticket is put at, as hands' last answer named them, highest first [LAW:one-source-of-truth].
+let levels = [];
+// The epics shown open, by id: the page's own state, kept across every redraw.
+const opened = new Set();
 
 function say(line, bad = false) { state.textContent = line; state.classList.toggle("bad", bad); }
 
@@ -104,6 +117,7 @@ async function drawnFrom(path, init, unanswered) {
   if (!response.ok) throw new Error(await response.text());
   const read = await response.json();
   if (!read.tracked) { tree.replaceChildren(); throw new Error(`lit has no workspace in ${project}.`); }
+  levels = read.levels;
   tree.replaceChildren(listed(read.items));
 }
 
@@ -131,6 +145,17 @@ function item(ticket) {
   const id = document.createElement("small");
   id.textContent = ticket.id;
   title.append(ticket.title, id);
+  // An epic, which lit gives no status, is drawn shut until it is tapped, saying how many open tickets it holds.
+  if (ticket.status === null) {
+    const held = document.createElement("span");
+    held.className = "held";
+    held.textContent = `${tickets(ticket.children)} open`;
+    title.append(held);
+    row.classList.add("epic");
+    row.classList.toggle("open", opened.has(ticket.id));
+    card.setAttribute("aria-expanded", String(opened.has(ticket.id)));
+    card.addEventListener("click", () => toggled(row, card));
+  }
   if (ticket.status === "in_progress") {
     const status = document.createElement("span");
     status.className = "status";
@@ -142,10 +167,44 @@ function item(ticket) {
   summary.className = ticket.summary === null ? "summary unsaid" : "summary";
   summary.textContent = ticket.summary ?? "Not summarised yet.";
   card.append(grip, title, summary);
+  if (ticket.standing !== null) card.append(leveler(ticket));
   card.addEventListener("pointerdown", event => pressed(event, row));
   row.append(card);
   if (ticket.children.length) row.append(listed(ticket.children));
   return row;
+}
+
+// How many open tickets are under these, at every depth, epics not counted.
+function tickets(children) {
+  return children.reduce((n, child) => n + (child.status === null ? 0 : 1) + tickets(child.children), 0);
+}
+
+function toggled(row, card) {
+  // The release of a drag clicks the card it was pressed on, and opens or shuts nothing.
+  if (wasDragged) return;
+  const open = !opened.has(row.dataset.id);
+  if (open) opened.add(row.dataset.id); else opened.delete(row.dataset.id);
+  row.classList.toggle("open", open);
+  card.setAttribute("aria-expanded", String(open));
+}
+
+// A button for each level; the one the ticket is at already is shown pressed, and does nothing.
+function leveler(ticket) {
+  const buttons = document.createElement("div");
+  buttons.className = "levels";
+  buttons.append(...levels.map(level => {
+    const button = document.createElement("button");
+    const at = ticket.standing.level === level;
+    button.type = "button";
+    button.textContent = level[0].toUpperCase() + level.slice(1);
+    button.disabled = at;
+    button.setAttribute("aria-pressed", String(at));
+    // A press on a button is never the start of a drag of its card.
+    button.addEventListener("pointerdown", event => event.stopPropagation());
+    button.addEventListener("click", () => wrote("/backlog/level", {project, ticket: ticket.id, level}, "Moving…", `hands did not answer, so whether lit moved ${ticket.id} is not known; lit's backlog is read again.`));
+    return button;
+  }));
+  return buttons;
 }
 
 function read() {
@@ -159,18 +218,19 @@ function read() {
   });
 }
 
-function moved(ticket, place) {
+// A change asked of lit: a drop's rank or a ticket's level, answered with the backlog lit holds after it.
+function wrote(path, sent, doing, unanswered) {
   return inTurn(async () => {
-    say("Ranking…");
+    say(doing);
     try {
-      await drawnFrom("/backlog/rank", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, ...place})}, "hands did not answer the move, so whether lit ranked it is not known; lit's order is read again.");
+      await drawnFrom(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(sent)}, unanswered);
       say("");
       return;
     } catch (error) {
-      // hands' answer says whether lit ranked anything.
+      // hands' answer says whether lit changed anything.
       say(error.message, true);
     }
-    // [LAW:no-silent-failure] a move that failed is shown, and the backlog drawn again as lit has it.
+    // [LAW:no-silent-failure] a change that failed is shown, and the backlog drawn again as lit has it.
     try {
       await drawnFrom(TICKETS, {}, "hands is out of reach.");
     } catch (error) {
@@ -182,8 +242,11 @@ function moved(ticket, place) {
 // A drag: a press on a card that moves past the slop. While it lasts a line shows where the ticket would land among the
 // tickets drawn beside it in its frame; nothing moves until lit has answered the drop.
 let drag = null;
+// Whether the last press on a card became a drag.
+let wasDragged = false;
 
 function pressed(event, row) {
+  wasDragged = false;
   if (waiting > 0 || drag !== null || event.button !== 0) return;
   const siblings = [...row.parentElement.children].filter(other => other.dataset.frame === row.dataset.frame);
   if (siblings.length < 2) return;
@@ -230,13 +293,15 @@ function ended(event) {
   if (drag === null || (event.pointerId !== undefined && event.pointerId !== drag.pointer)) return;
   const done = drag;
   drag = null;
+  wasDragged = done.started;
   drop.style.display = "none";
   done.row.classList.remove("dragged");
   document.body.classList.remove("dragging");
   // The drop's move is queued while the drag still holds its turn: a read asked for during the drag redraws first, and
   // the move, which names tickets by id, is made after it.
   if (event.type === "pointerup" && done.started && done.place !== null && !still(done)) {
-    moved(done.row.dataset.id, done.place.above !== undefined ? {above: done.place.above} : {below: done.place.below});
+    const place = done.place.above !== undefined ? {above: done.place.above} : {below: done.place.below};
+    wrote("/backlog/rank", {project, ticket: done.row.dataset.id, ...place}, "Ranking…", "hands did not answer the move, so whether lit ranked it is not known; lit's order is read again.");
   }
   done.release();
 }

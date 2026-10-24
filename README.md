@@ -405,7 +405,8 @@ uv run hands phone                      # the addresses a phone opens the talk p
                                         # the talk page also shows what the brain is doing, its running tool call live, and a Stop that ends the brain's turn
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
                                         # with /backlog?project=<directory> before the # it is the backlog page: every open ticket of that project's lit
-                                        # backlog under its epic, with hands' sentence for it; a ticket dragged among its siblings is ranked there with `lit rank`
+                                        # backlog under its epic, shut until tapped, with hands' sentence for it; a ticket dragged among its siblings is ranked
+                                        # there with `lit rank`; its High, Normal, and Low move it into its topic's `<topic> - high/normal/low` epic
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails

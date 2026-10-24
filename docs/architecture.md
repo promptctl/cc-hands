@@ -2022,6 +2022,20 @@ cancel, the capture lost, or the window losing focus, ends the drag dropping not
 them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
 ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 
+Each epic is drawn shut, with how many open tickets it holds, until it is tapped; which epics are open is the page's own
+state, kept across every redraw. Every ticket inside an epic has a High, a Normal, and a Low button (`Level`, the one
+vocabulary the buttons, the titles, and the parse derive from). A press moves the ticket with `lit parent set`, keeping
+its id, into its topic's epic for that level: the open epic whose lit topic is that of the ticket's epic and whose title is
+exactly `<topic> - <level>`, the topic's hyphens shown as spaces, as in `wake word - high`. lit holds which epic is which
+level, in its title and topic, read fresh; hands keeps none of it, and lit's own priority is not touched. Where there is
+none, `lit new --type epic` makes it in the frame of the ticket's epic and `lit rank` puts it directly above that epic for
+high, directly below for normal and low; the epics are then ordered by dragging, and `lit next` follows their rank. A level
+epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake word - low`. `Backlog.leveling` is the
+one check: a ticket at the level already, an epic, or a ticket in no listed epic is refused. The read after must have the
+ticket in the epic and a made epic where it was ranked, or the answer is a conflict. Each press is one `backlog.leveled`
+event, with the ticket, the level, the epic it went into, whether lit made that epic and whether it moved the ticket,
+"yes", "no", or "unknown" where lit stopped without saying why, and why it was refused or failed.
+
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts
 as it is; under a LAN address it shows a self-signed one, which the phone is asked
