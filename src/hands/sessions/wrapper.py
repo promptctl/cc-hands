@@ -128,11 +128,12 @@ class Installed:
 
 
 class Installing(IntEnum):
-    """What `hands install-fritter` exits: [LAW:one-source-of-truth] the contract it and `hands update` both read."""
+    """What `hands install-fritter` exits: [LAW:one-source-of-truth] the contract it and `hands update` both read.
+    UNFOUND is a code no crash, argparse refusal, or Rejected exits with, so nothing but this finding can be gone past."""
 
     FOUND = 0  # installed, and this PATH finds its claude first
-    UNFOUND = 1  # installed, and this PATH finds another claude first: a fact of the caller's shell, not the install
-    BROKEN = 2  # nothing installed, or what it installed does not work
+    BROKEN = 1  # nothing installed, or what it installed does not work: what Python exits on a crash, which is the same
+    UNFOUND = 3  # installed, and this PATH finds another claude first: a fact of the caller's shell, not the install
 
 
 @dataclass(frozen=True)

@@ -166,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
     logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
-    commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH, 1 when it is installed but PATH finds another claude first, 2 when it installed nothing that works")
+    commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH, 3 when it is installed but PATH finds another claude first, 1 when it installed nothing that works")
     commands.add_parser("install-brain", help="fetch the Claude Code release the brain is pinned to into the brain's directory, checked against the checksum hands carries for it, unless it is there already; exits 0 only when it is there")
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
@@ -845,7 +845,9 @@ def install_fritter(home: Home, record: audit.Record) -> int:
         match readiness.shim(home, f"{home.bin}{os.pathsep}{path}"):
             case readiness.Ready():
                 pass
-            case readiness.Missing(said=said) | readiness.Unknown(said=said):
+            case readiness.Missing(detail=detail) | readiness.Unknown(detail=detail):
+                # What was found, not its PATH fix: hands' bin was first already, so it is the install that does not work.
+                said = f"the claude it wrote does not work with {home.bin} first on PATH: {detail}"
                 wide.fail(said)
                 print(f"hands install-fritter: {said}", file=sys.stderr)
                 return wrapper.Installing.BROKEN

@@ -43,7 +43,7 @@ def tools_of_this_hands(tmp_path: Path) -> Path:
 
 class Commands:
     """The commands an update runs, each answered as it would be: each exits 0 unless it is the one told to fail, which
-    exits as `failed` says, or 2 saying it broke."""
+    exits as `failed` says, or 1 saying it broke, as any crash does."""
 
     def __init__(self, tools: Path, failing: Step | None = None, failed: Done | None = None) -> None:
         self.tools, self.failing, self.failed, self.ran = tools, failing, failed, list[tuple[tuple[str, ...], Path]]()
@@ -51,7 +51,7 @@ class Commands:
     def __call__(self, argv: Sequence[str], cwd: Path) -> Done:
         self.ran.append((tuple(argv), cwd))
         if self.failing is not None and len(self.ran) - 1 == list(Step).index(self.failing):
-            return self.failed or Done(2, "", f"{self.failing} broke\n")
+            return self.failed or Done(1, "", f"{self.failing} broke\n")
         # A warning on a command's errors is no part of what the update reads from its output.
         match tuple(argv[:3]):
             case ("uv", "tool", "dir"):
@@ -118,7 +118,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     assert asked == []
     out, err = capsys.readouterr()
     assert out == ""
-    why = f"`{' '.join(commands.ran[-1][0])}` exited 2:\n{failing} broke\n"
+    why = f"`{' '.join(commands.ran[-1][0])}` exited 1:\n{failing} broke\n"
     # A step after the install leaves master installed: what hands runs now is as it was, and its next start is not.
     unfinished = failing in (Step.INSTALL_FRITTER, Step.INSTALL_BRAIN)
     if unfinished:
@@ -129,7 +129,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     [event] = events(home)
     facts = event["facts"]
     assert (event["outcome"], facts["command"], facts["exit_code"], facts["failed"]) == ("failed", "update", 1, str(failing))
-    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), 0) for step in list(Step)[: upto - 1]] + [(str(failing), 2)]
+    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), 0) for step in list(Step)[: upto - 1]] + [(str(failing), 1)]
     assert facts.get("sha") == (SHA if unfinished else None)
 
 
@@ -381,7 +381,7 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     [event] = events(home)
     facts = event["facts"]
     assert (event["outcome"], facts["exit_code"], facts["runs_master"]) == ("ok", 0, True)
-    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), 1 if step is Step.INSTALL_FRITTER else 0) for step in Step]
+    assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), Installing.UNFOUND if step is Step.INSTALL_FRITTER else 0) for step in Step]
     assert facts["went_past"] == [{"type": "Advised", "step": "install-fritter", "said": said}]
 
 

@@ -194,7 +194,7 @@ def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_fi
 
     monkeypatch.setenv("PATH", tools)
     # Installed, on a PATH that finds another claude first: the PATH's fix, and its own exit.
-    assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.UNFOUND == 1
+    assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.UNFOUND
     said = capsys.readouterr().err
     assert f"`claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in said
     assert f'export PATH="{home.bin}:$PATH"' in said and "install-fritter" not in said
@@ -243,7 +243,10 @@ def test_an_install_whose_claude_does_not_work_even_first_on_path_fails_saying_w
 
     assert main(["--home", str(home.root), "install-fritter"]) == wrapper.Installing.BROKEN
 
-    assert f"hands install-fritter: `claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim" in capsys.readouterr().err
+    # Said as the install's failure, with no PATH to add: hands' bin was first already.
+    said = capsys.readouterr().err
+    assert said.startswith(f"hands install-fritter: the claude it wrote does not work with {home.bin} first on PATH: `claude` on this PATH is {root / 'real' / 'claude'}, not hands' shim")
+    assert "export PATH" not in said
     [event] = [line for line in (json.loads(line) for line in segment(home.audit, 0).read_text().splitlines()) if line.get("event") == "fritter.install"]
     assert event["outcome"] == "failed" and "path_finds_it" not in event["facts"]
 

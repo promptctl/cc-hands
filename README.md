@@ -345,8 +345,8 @@ script, `claude update`, and `claude -p` run the real claude exactly as before. 
 argument that is one bare lowercase word is read as a subcommand, so an opening prompt
 of one such word runs outside fritter: `claude review` is not a session hands can type
 into, and `claude "review this"` is. `hands install-fritter` exits 0 only when `claude`
-on the current `PATH` is the one it wrote; 1 when it installed but that `PATH` finds
-another `claude` first, saying what to add; and 2 when it installed nothing that works. The
+on the current `PATH` is the one it wrote; 3 when it installed but that `PATH` finds
+another `claude` first, saying what to add; and 1 when it installed nothing that works. The
 fritter it copies is the one hands' package carries, built when that package was, so no
 Go is needed to run it. Run it again after hands is upgraded, or in a checkout after
 fritter's source changes: `hands run` refuses to start on a copy that is not the one
