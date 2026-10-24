@@ -60,7 +60,7 @@
   <span id="project"></span>
   <a id="phone" href="/">Phone</a>
 </header>
-<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into its topic's epic of that name, such as "wake word - high", made beside the ticket's epic the first time; then rank those epics like any other.</p>
+<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into the epic of its epic's topic for that level, such as "wake word - high", made the first time it is needed; then rank those epics like any other.</p>
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
@@ -156,8 +156,9 @@ function item(ticket) {
     card.setAttribute("aria-expanded", String(opened.has(ticket.id)));
     card.setAttribute("role", "button");
     card.tabIndex = 0;
-    // The release of a drag clicks the card it was pressed on, and opens or shuts nothing.
-    card.addEventListener("click", () => { if (!wasDragged) toggled(row, card); });
+    // A pointer's click belongs to the press on this card before it, and a press that became a drag opens or shuts
+    // nothing. A click no press made (detail 0: a screen reader's, say) always does.
+    card.addEventListener("click", event => { if (event.detail === 0 || !card.dragged) toggled(row, card); });
     card.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
       // Space would scroll the page as well.
@@ -249,11 +250,10 @@ function wrote(path, sent, doing, unanswered) {
 // A drag: a press on a card that moves past the slop. While it lasts a line shows where the ticket would land among the
 // tickets drawn beside it in its frame; nothing moves until lit has answered the drop.
 let drag = null;
-// Whether the last press on a card became a drag.
-let wasDragged = false;
 
 function pressed(event, row) {
-  wasDragged = false;
+  // Whether this press on the card became a drag, for the click its release makes.
+  event.currentTarget.dragged = false;
   if (waiting > 0 || drag !== null || event.button !== 0) return;
   const siblings = [...row.parentElement.children].filter(other => other.dataset.frame === row.dataset.frame);
   if (siblings.length < 2) return;
@@ -283,6 +283,7 @@ function dragging(event) {
   if (!drag.started) {
     if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < SLOP_PX) return;
     drag.started = true;
+    drag.card.dragged = true;
     drag.row.classList.add("dragged");
     document.body.classList.add("dragging");
   }
@@ -300,7 +301,6 @@ function ended(event) {
   if (drag === null || (event.pointerId !== undefined && event.pointerId !== drag.pointer)) return;
   const done = drag;
   drag = null;
-  wasDragged = done.started;
   drop.style.display = "none";
   done.row.classList.remove("dragged");
   document.body.classList.remove("dragging");

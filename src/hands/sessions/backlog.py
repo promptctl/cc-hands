@@ -209,12 +209,13 @@ class Backlog:
         return next((level for level in LEVELS if self.tickets[epic].title == level_title(self.tickets[epic].topic, level)), None)
 
     def level_epics(self, topic: str) -> tuple[tuple[str, Level], ...]:
-        """`topic`'s epics for its levels, each with its level, in rank order: the open epics of that topic titled exactly
-        so for a level.
+        """`topic`'s epics for its levels, each with its level, in rank order: every epic lit lists of that topic titled
+        exactly so for a level, finished or not.
 
-        [LAW:one-source-of-truth] the one way a level's epic is found: by its title and topic in lit, read fresh.
+        [LAW:one-source-of-truth] the one way a level's epic is found: by its title and topic in lit, read fresh. A topic
+        has one epic for a level, ever: one whose tickets are all closed is used again, never made a second time.
         """
-        return tuple((id, level) for id, ticket in self.tickets.items() if ticket.kind == "epic" and ticket.topic == topic and not self.done(id) and (level := self.level_of(id)) is not None)
+        return tuple((id, level) for id, ticket in self.tickets.items() if ticket.kind == "epic" and ticket.topic == topic and (level := self.level_of(id)) is not None)
 
     def level_epic(self, topic: str, level: Level) -> str | None:
         """`topic`'s epic for `level`, the first ranked where there are more; None where lit holds none."""
@@ -246,17 +247,21 @@ class Backlog:
                 raise Rejected(f"{ticket} is already in {epic}, its topic's {level} epic")
             case Standing(epic=epic):
                 pass
+        if self.inside.get(epic) != self.parent.get(epic):
+            # lit ranks the ticket's epic among the children of a parent it no longer lists, which nothing can be made in.
+            raise Rejected(f"{ticket}'s epic {epic} is inside {self.inside.get(epic)}, which lit archived, so no epic can be made beside it")
         topic = self.tickets[epic].topic
         frame = self.frame(epic)
+        epics = self.level_epics(topic)
         # The topic's level epics lit ranks beside the ticket's epic, in rank order, each by how far down the levels it is.
-        ladder = [(id, LEVELS.index(at)) for id, at in self.level_epics(topic) if id in frame]
+        ladder = [(id, LEVELS.index(at)) for id, at in epics if id in frame]
         rung = LEVELS.index(level)
         place = (
             next((Place("above", id) for id, at in ladder if at > rung), None)
             or next((Place("below", id) for id, at in reversed(ladder) if at < rung), None)
             or Place("above" if level == "high" else "below", epic)
         )
-        found = self.level_epic(topic, level)
+        found = next((id for id, at in epics if at == level), None)
         return Leveling(ticket, level, NewEpic(topic, level_title(topic, level), self.parent.get(epic), place) if found is None else found)
 
     def done(self, id: str) -> bool:

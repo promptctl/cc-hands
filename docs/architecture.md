@@ -2026,17 +2026,18 @@ Each epic is drawn shut, with how many open tickets it holds, until it is tapped
 epics are open is the page's own state, kept across every redraw. An epic with no open ticket beneath it is not drawn,
 as a finished one is not; the brain's summary still holds it. Every ticket inside an epic has a High, a Normal, and a Low
 button (`Level`, the one vocabulary the buttons, the titles, and the parse derive from). A press moves the ticket with
-`lit parent set`, keeping its id, into its topic's epic for that level: the open epic whose lit topic is that of the
-ticket's epic and whose title is exactly `<topic> - <level>`, the topic's hyphens shown as spaces, as in `wake word -
-high` (`Backlog.level_epic`, the one way it is found). lit holds which epic is which level, in its title and topic, read
+`lit parent set`, keeping its id, into the epic of its epic's topic for that level: the epic, finished or not, whose lit
+topic is that of the ticket's epic and whose title is exactly `<topic> - <level>`, the topic's hyphens shown as spaces, as in `wake word -
+high` (`Backlog.level_epic`, the one way it is found; a topic has one epic for a level, ever). lit holds which epic is which level, in its title and topic, read
 fresh; hands keeps none of it, and lit's own priority is not touched. Where there is none, `lit new --type epic` makes it
 in the parent the tree draws the ticket's epic in, the backlog is read again to find it by its title and topic, and it is
 ranked through `Backlog.move` so the topic's levels stay high over normal over low: directly above the first of its
 epics for a lower level, else directly below the last for a higher one, else above the ticket's epic for high and below
-it otherwise. The epics are then ordered by dragging, and `lit next` follows their rank. An epic made where it cannot be
-ranked as asked, or whose rank fails, is left at the bottom of its frame and the ticket is not moved; a later press finds
-and uses it as it stands. `Backlog.leveling` is the one check: a ticket at the level already, an epic, or a ticket in no
-listed epic is refused. Every drop and press runs alone, from the read it is checked against to the read that shows it,
+it otherwise. The epics are then ordered by dragging, and `lit next` follows their rank. An epic made whose rank lit
+refuses, or that cannot be ranked as asked, is left at the bottom of its frame and the ticket is not moved; a later press finds
+and uses it as it stands. `Backlog.leveling` is the one check: a ticket at the level already, an epic, a ticket in no
+listed epic, or one whose epic is inside an archived epic, where nothing can be made beside it, is refused before lit
+writes anything. Every drop and press runs alone, from the read it is checked against to the read that shows it,
 so two pages never both make one level's epic. The read after must have the ticket in the epic and a made epic where it
 was ranked, or the answer is a conflict. Each press is one `backlog.leveled` event, with the ticket, the level, the epic
 it went into, and whether lit made that epic, ranked it, and moved the ticket, each "yes", "no", or "unknown" where lit
