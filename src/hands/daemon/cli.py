@@ -171,7 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
-    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted (the brain's hands:update skill runs this)")
+    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     log = commands.add_parser("log", help="print the newest audit log lines, then each new one as it is written, until Ctrl-C")
     log.add_argument("-n", "--lines", type=int, default=20, help="how many of the newest lines to print first")
@@ -842,7 +842,7 @@ def install_fritter(home: Home, record: audit.Record) -> int:
         print(f"wrote {installed.shim}")
         path = os.environ.get("PATH", "")
         # The install judged on a PATH that finds it first: whatever the caller's PATH finds after that is its shell's.
-        match readiness.shim(home, f"{home.bin}{os.pathsep}{path}"):
+        match readiness.shim(home, os.pathsep.join(filter(None, (str(home.bin), path)))):
             case readiness.Ready():
                 pass
             case readiness.Missing(detail=detail) | readiness.Unknown(detail=detail):
