@@ -2,6 +2,8 @@
 that lets it drive the piper-sample-generator this corpus carries. Both are text, made here and written by the run.
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 from wake_training.corpus import BACKGROUND, IMPULSES, PIPER, TRAINING_FEATURES, VALIDATION_FEATURES, Corpus
@@ -12,32 +14,53 @@ from wake_training.word import Word
 SAMPLES = 20_000
 VALIDATION_SAMPLES = 2_000
 STEPS = 50_000
+# How many of the negative clips are said as the word's near misses: a quarter, the rest being the trainer's own
+# adversarial phrases. The trainer says the phrases it is given in turn, so each near miss is given its share of times.
+NEAR_MISSES = SAMPLES // 4
+
+
+def clips(word: Word, corpus: Corpus) -> dict[str, object]:
+    """What the trainer makes `word`'s clips and features from, as its config's keys."""
+    near = word.near_misses
+    return {
+        "target_phrase": [word.spoken],
+        "custom_negative_phrases": [miss for miss in near for _ in range(NEAR_MISSES // len(near))],
+        "n_samples": SAMPLES,
+        "n_samples_val": VALIDATION_SAMPLES,
+        "rir_paths": [str(corpus.at(IMPULSES))],
+        "background_paths": [str(corpus.at(BACKGROUND))],
+        "background_paths_duplication_rate": [1],
+        "augmentation_rounds": 1,
+    }
+
+
+def made(word: Word, corpus: Corpus) -> str:
+    """The name of the run that makes `word`'s clips and features: the word's, and a digest of what they are made
+    from. [LAW:one-source-of-truth] the trainer keeps clips and features it finds and does not ask what they were made
+    from, so a run's name is what says it: a change to any of it is a run of its own, made fresh."""
+    digest = hashlib.sha256(json.dumps(clips(word, corpus), sort_keys=True).encode()).hexdigest()
+    return f"{word.name}-{digest[:8]}"
 
 
 def config(word: Word, corpus: Corpus, run: Path) -> dict[str, object]:
     """The trainer's config for `word`, its clips, features and model made under `run`. The keys are those of
-    openWakeWord's examples/custom_model.yml; the values not about this word or this corpus are that file's own."""
+    openWakeWord's examples/custom_model.yml; the values not about this word or this corpus are that file's own, but
+    for the model's width and its weight on negatives, which are doubled: on "Hey Hands", that took false wakes from
+    1.1 an hour to 0.4, under Hey Jarvis's 0.5, for recall 98% to 97% (docs/wake-word-training.md)."""
     return {
+        **clips(word, corpus),
         "model_name": word.name,
-        "target_phrase": [word.spoken],
-        "custom_negative_phrases": [],
-        "n_samples": SAMPLES,
-        "n_samples_val": VALIDATION_SAMPLES,
         "tts_batch_size": 50,
         "augmentation_batch_size": 16,
         "piper_sample_generator_path": str(run / "piper"),
         "output_dir": str(run),
-        "rir_paths": [str(corpus.at(IMPULSES))],
-        "background_paths": [str(corpus.at(BACKGROUND))],
-        "background_paths_duplication_rate": [1],
         "false_positive_validation_data_path": str(corpus.at(VALIDATION_FEATURES)),
-        "augmentation_rounds": 1,
         "feature_data_files": {"ACAV100M_sample": str(corpus.at(TRAINING_FEATURES))},
         "batch_n_per_class": {"ACAV100M_sample": 1024, "adversarial_negative": 50, "positive": 50},
         "model_type": "dnn",
-        "layer_size": 32,
+        "layer_size": 64,
         "steps": STEPS,
-        "max_negative_weight": 1500,
+        "max_negative_weight": 3000,
         "target_false_positives_per_hour": 0.2,
     }
 
@@ -51,6 +74,8 @@ def adapter(corpus: Corpus) -> str:
 
 import sys
 from math import gcd
+import hashlib
+import json
 from pathlib import Path
 
 import numpy as np

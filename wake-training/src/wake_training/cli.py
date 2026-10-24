@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     work: Path = args.work.expanduser()
     to: Path = args.to.expanduser()
     corpus = Corpus(work / "corpus")
-    run = work / "words" / chosen.name
+    run = work / "words" / recipe.made(chosen, corpus)
     log = work / "runs" / f"{chosen.name}.jsonl"
 
     def stage(name: str, done: Callable[[], dict[str, Fact]]) -> None:

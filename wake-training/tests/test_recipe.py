@@ -17,6 +17,8 @@ def test_the_trainer_is_told_the_word_and_where_the_corpus_is(tmp_path: Path) ->
     config = recipe.config(word("Okay Hands"), corpus, run)
     assert config["model_name"] == "okay_hands"
     assert config["target_phrase"] == ["okay hands"]
+    near = config["custom_negative_phrases"]
+    assert isinstance(near, list) and set(near) == set(word("Okay Hands").near_misses) and len(near) <= recipe.NEAR_MISSES  # pyright: ignore[reportUnknownArgumentType]
     assert config["output_dir"] == str(run)
     assert config["piper_sample_generator_path"] == str(run / "piper")
     assert config["rir_paths"] == [str(corpus.at(IMPULSES))]
@@ -24,6 +26,19 @@ def test_the_trainer_is_told_the_word_and_where_the_corpus_is(tmp_path: Path) ->
     assert config["false_positive_validation_data_path"] == str(corpus.at(VALIDATION_FEATURES))
     assert config["feature_data_files"] == {"ACAV100M_sample": str(corpus.at(TRAINING_FEATURES))}
     assert set(config["batch_n_per_class"]) == {"ACAV100M_sample", "adversarial_negative", "positive"}  # type: ignore[arg-type]
+
+
+def test_a_run_is_named_for_what_its_clips_are_made_from(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    corpus = Corpus(tmp_path / "corpus")
+    hey = recipe.made(word("Hey Hands"), corpus)
+    assert hey.startswith("hey_hands-") and hey == recipe.made(word("hey  hands"), corpus)
+    assert recipe.made(word("Okay Hands"), corpus) != hey
+    assert recipe.made(word("Hey Hands"), Corpus(tmp_path / "elsewhere")) != hey
+    # How the model is trained is not what its clips are made from: the run, and its clips, stay.
+    monkeypatch.setattr(recipe, "STEPS", recipe.STEPS * 2)
+    assert recipe.made(word("Hey Hands"), corpus) == hey
+    monkeypatch.setattr(recipe, "SAMPLES", recipe.SAMPLES * 2)
+    assert recipe.made(word("Hey Hands"), corpus) != hey
 
 
 FAKE_GENERATOR = '''
