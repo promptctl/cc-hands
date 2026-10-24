@@ -19,8 +19,8 @@ import openwakeword.utils
 import yaml
 
 from wake_training import recipe
-from wake_training.corpus import ASSETS, Corpus
-from wake_training.evaluate import evaluation, peaks
+from wake_training.corpus import ASSETS, VALIDATION_FEATURES, Corpus
+from wake_training.evaluate import FRAME_SECONDS, evaluation, peaks, scores, wakes
 from wake_training.fetch import fetch
 from wake_training.stage import Fact, Stage, record
 from wake_training.word import Rejected, Word, word
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     stage("generate_clips", lambda: _train(run, "generate_clips", lambda: {clips: sum(1 for _ in (made / clips).glob("*.wav")) for clips in CLIPS}))
     stage("augment_clips", lambda: _train(run, "augment_clips", lambda: {features: int(np.load(made / f"{features}.npy", mmap_mode="r").shape[0]) for features in FEATURES}))
     stage("train_model", lambda: _train(run, "train_model", lambda: {"model_bytes": (run / f"{chosen.name}.onnx").stat().st_size}))
-    stage("evaluate", lambda: _evaluate(chosen, run))
+    stage("evaluate", lambda: _evaluate(chosen, corpus, run))
     model = to / f"{chosen.name}.onnx"
     stage("install", lambda: _install(chosen, run, model))
     print(f'[talk]\nwake_word = "{chosen.phrase}"\nwake_word_model = "{model}"')
@@ -84,10 +84,17 @@ def _train(run: Path, step: str, made: Callable[[], dict[str, Fact]]) -> dict[st
     return made()
 
 
-def _evaluate(chosen: Word, run: Path) -> dict[str, Fact]:
+def _evaluate(chosen: Word, corpus: Corpus, run: Path) -> dict[str, Fact]:
     model = run / f"{chosen.name}.onnx"
     made = run / chosen.name
-    return evaluation(peaks(model, sorted((made / "positive_test").glob("*.wav"))), peaks(model, sorted((made / "negative_test").glob("*.wav"))))
+    validation = np.load(corpus.at(VALIDATION_FEATURES))
+    said, frames = scores(model, validation)
+    return evaluation(
+        peaks(model, sorted((made / "positive_test").glob("*.wav"))),
+        peaks(model, sorted((made / "negative_test").glob("*.wav"))),
+        wakes(said, frames),
+        len(validation) * FRAME_SECONDS / 3600,
+    )
 
 
 def _install(chosen: Word, run: Path, model: Path) -> dict[str, Fact]:
