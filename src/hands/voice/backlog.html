@@ -18,11 +18,17 @@
     font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
   }
-  header { position: sticky; top: 0; z-index: 1; background: var(--bg); display: flex; align-items: baseline; gap: 12px;
-    padding: 12px 16px; border-bottom: 1px solid var(--ring); }
+  header { position: sticky; top: 0; z-index: 1; background: var(--bg); display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 6px 12px; padding: 12px 16px 6px; border-bottom: 1px solid var(--ring); }
   header h1 { font-size: 17px; margin: 0; }
   header #project { flex: 1; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   header a { color: var(--muted); }
+  /* One line of fixed height, there whether it says anything or not, so what it says never moves the list. */
+  #bar { flex-basis: 100%; display: flex; align-items: center; gap: 10px; height: 28px; font-size: 13px; color: var(--muted); }
+  #sending { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #reload { visibility: hidden; height: 26px; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--ring);
+    border-radius: 7px; padding: 0 10px; cursor: pointer; }
+  #reload.offered { visibility: visible; }
   #how { margin: 10px 16px 0; max-width: 52rem; font-size: 13px; color: var(--muted); }
   #state { min-height: 1.2em; margin: 8px 16px 0; font-size: 13px; color: var(--muted); white-space: pre-wrap; }
   #state.bad { color: var(--bad); }
@@ -30,7 +36,7 @@
   ol { list-style: none; margin: 0; padding: 0; }
   li > ol { margin: 6px 0 0 22px; display: flex; flex-direction: column; gap: 6px; }
   main > ol { display: flex; flex-direction: column; gap: 14px; }
-  .card { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; background: var(--card);
+  .card { position: relative; display: grid; grid-template-columns: auto 1fr; column-gap: 8px; background: var(--card);
     border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; cursor: grab; user-select: none; }
   main > ol > li > .card { border-color: var(--mark); }
   .grip { grid-row: span 3; color: var(--muted); touch-action: none; padding: 0 2px; font-size: 18px; line-height: 1.1; }
@@ -47,14 +53,17 @@
   .levels button { flex: 1; max-width: 7rem; min-height: 40px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
     border: 1px solid var(--ring); border-radius: 8px; cursor: pointer; touch-action: manipulation; }
   .levels button[aria-pressed="true"] { background: var(--mark); color: var(--bg); border-color: var(--mark); cursor: default; }
-  .failed { color: var(--bad); font-size: 13px; white-space: pre-wrap; }
+  /* Over the card's top, never in its flow: what went wrong with a press or a note moves no card. A tap puts it away. */
+  .alarm { position: absolute; top: 0; left: 0; right: 0; max-height: calc(3.9em + 10px); overflow: auto; padding: 5px 10px 5px 30px;
+    font-size: 13px; line-height: 1.3; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--bad); background: var(--card);
+    border: 1px solid var(--bad); border-radius: 8px; cursor: pointer; }
+  .alarm:empty { display: none; }
   .note { grid-column: 2; margin-top: 8px; }
   .noting { display: flex; gap: 8px; align-items: flex-start; }
   .noting textarea { flex: 1; min-height: 36px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
     border: 1px solid var(--ring); border-radius: 8px; padding: 7px 9px; resize: vertical; field-sizing: content; cursor: text; user-select: text; }
   .noting button { min-height: 36px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
     border: 1px solid var(--ring); border-radius: 8px; padding: 0 14px; cursor: pointer; touch-action: manipulation; }
-  .failed:empty { display: none; }
   .dragged > .card { opacity: .45; }
   body.busy .card { cursor: progress; }
   body.dragging, body.dragging .card { cursor: grabbing; }
@@ -67,8 +76,9 @@
   <h1>backlog</h1>
   <span id="project"></span>
   <a id="phone" href="/">Phone</a>
+  <div id="bar"><span id="sending" role="status"></span><button id="reload" type="button">Reload</button></div>
 </header>
-<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into the epic of its epic's topic for that level, such as "wake word - high", made the first time it is needed; a press shows at once and the page stays still, so go down the list pressing, then reload to see the tickets in their new epics and rank those epics like any other. A note under a ticket, saved with Save or ⌘/Ctrl+Enter, is kept by lit as a comment on it, for whoever changes the ticket next.</p>
+<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into the epic of its epic's topic for that level, such as "wake word - high", made the first time it is needed; a press shows at once and the page stays still, so go down the list pressing, then press Reload at the top to see the tickets in their new epics and rank those epics like any other. A note under a ticket, saved with Save or ⌘/Ctrl+Enter, is kept by lit as a comment on it, for whoever changes the ticket next.</p>
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
@@ -91,6 +101,16 @@ const EDGE_PX = 48, SCROLL_PX = 24;
 let levels = [];
 // The epics shown open, by id: the page's own state, kept across every redraw.
 const opened = new Set();
+// Each ticket's level presses still sending, by id, and what went wrong with any of them: the page's own state.
+const presses = new Map();
+// Each ticket's note, by id, kept across every redraw: its unsaved draft, how many saves are sending, and the last note
+// lit kept.
+const notes = new Map();
+// Whether a press has moved a ticket since the tree was drawn, so the tree no longer shows where lit holds it; and
+// whether a drag was refused for that.
+let stale = false, refusedDrag = false;
+const sendingLine = document.getElementById("sending");
+const reload = document.getElementById("reload");
 
 function say(line, bad = false) { state.textContent = line; state.classList.toggle("bad", bad); }
 
@@ -116,17 +136,56 @@ function inTurn(work) {
   return queue;
 }
 
-// The backlog as hands answered it, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth].
-// Throws what hands said instead, or `unanswered` when it said nothing; a project lit does not track is said as such.
-async function drawnFrom(path, init, unanswered) {
+// The backlog as hands answered it. Throws what hands said instead, or `unanswered` when it said nothing.
+async function answered(path, init, unanswered) {
   let response;
   try { response = await asked(path, init); } catch { throw new Error(unanswered); }
   if (response.status === 401) throw new Error("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.");
   if (!response.ok) throw new Error(await response.text());
-  const read = await response.json();
+  return response.json();
+}
+
+// The backlog as hands answered it, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth].
+// Throws as `answered` does; a project lit does not track is said as such.
+async function drawnFrom(path, init, unanswered) {
+  const read = await answered(path, init, unanswered);
   if (!read.tracked) { tree.replaceChildren(); throw new Error(`lit has no workspace in ${project}.`); }
   levels = read.levels;
   tree.replaceChildren(listed(read.items));
+  stale = false;
+  refusedDrag = false;
+  headed();
+}
+
+// How many level presses are still sending, on every card.
+function sending() {
+  return [...presses.values()].reduce((n, press) => n + press.pending, 0);
+}
+
+// The header's line: the presses still sending, else whether the tree is out of date; and the Reload it offers then.
+function headed() {
+  const n = sending();
+  sendingLine.textContent = n > 0 ? `Sending ${n} ${n === 1 ? "move" : "moves"}…`
+    : refusedDrag ? "Reload before dragging: moved tickets are still drawn where they were."
+    : stale ? "Reload to see moved tickets in their new epics." : "";
+  reload.classList.toggle("offered", stale);
+}
+
+// Where a ticket is drawn now: zero or one card, whichever redraw made it.
+function cardsOf(id) {
+  return tree.querySelectorAll(`li[data-id="${CSS.escape(id)}"] > .card`);
+}
+
+// What went wrong with a ticket's press or note, said over its card; empty puts it away.
+function alarm(id, why) {
+  for (const card of cardsOf(id)) card.querySelector(".alarm").textContent = why;
+}
+
+function* everyNode(items) {
+  for (const node of items) {
+    yield node;
+    yield* everyNode(node.children);
+  }
 }
 
 const TICKETS = `/backlog/tickets?project=${encodeURIComponent(project)}`;
@@ -184,9 +243,15 @@ function item(ticket) {
   const summary = document.createElement("div");
   summary.className = ticket.summary === null ? "summary unsaid" : "summary";
   summary.textContent = ticket.summary ?? "Not summarised yet.";
+  const alarmed = document.createElement("div");
+  alarmed.className = "alarm";
+  alarmed.setAttribute("role", "alert");
+  // Tapping it puts it away, and is never a drag of the card nor a tap that opens or shuts an epic.
+  alarmed.addEventListener("pointerdown", event => event.stopPropagation());
+  alarmed.addEventListener("click", event => { event.stopPropagation(); alarmed.textContent = ""; });
   card.append(grip, title, summary);
   if (ticket.standing !== null) card.append(leveler(ticket));
-  card.append(noter(ticket));
+  card.append(noter(ticket), alarmed);
   card.addEventListener("pointerdown", event => pressed(event, row));
   row.append(card);
   if (ticket.children.length) row.append(listed(ticket.children));
@@ -207,22 +272,10 @@ function toggled(row, card) {
 
 // A button for each level; the one the ticket is at is shown pressed, and does nothing.
 function leveler(ticket) {
-  const box = document.createElement("div");
   const buttons = document.createElement("div");
   buttons.className = "levels";
-  const failed = document.createElement("div");
-  failed.className = "failed";
-  failed.setAttribute("role", "alert");
-  // The level the card shows: lit's, then each press's from the moment it is made.
-  let shown = ticket.standing.level;
-  const show = level => {
-    shown = level;
-    for (const button of buttons.children) {
-      const at = button.dataset.level === level;
-      button.disabled = at;
-      button.setAttribute("aria-pressed", String(at));
-    }
-  };
+  // The level lit held when the tree was drawn, which a failed press is told apart from.
+  buttons.dataset.drawn = ticket.standing.level ?? "";
   buttons.append(...levels.map(level => {
     const button = document.createElement("button");
     button.type = "button";
@@ -230,50 +283,91 @@ function leveler(ticket) {
     button.textContent = level[0].toUpperCase() + level.slice(1);
     // A press on a button is never the start of a drag of its card.
     button.addEventListener("pointerdown", event => event.stopPropagation());
-    button.addEventListener("click", () => {
-      const before = shown;
-      show(level);
-      failed.textContent = "";
-      putAt(ticket.id, level).catch(error => {
-        show(before);
-        failed.textContent = error.message;
-      });
-    });
+    button.addEventListener("click", () => pressedAt(ticket.id, level));
     return button;
   }));
-  show(shown);
-  box.append(buttons, failed);
-  return box;
+  marked(buttons, ticket.standing.level);
+  return buttons;
 }
 
-// A note on how to change the ticket, kept by lit as a comment on it. Saving clears the field at once and the emptied
-// field says the note, so nothing below it moves; one lit did not keep comes back into the field with why.
+function marked(buttons, level) {
+  for (const button of buttons.children) {
+    const at = button.dataset.level === level;
+    button.disabled = at;
+    button.setAttribute("aria-pressed", String(at));
+  }
+}
+
+// A ticket's level buttons wherever it is drawn now: none, or one card's.
+function levelsOf(id) {
+  return tree.querySelectorAll(`li[data-id="${CSS.escape(id)}"] > .card > .levels`);
+}
+
+// A ticket's card shown at `level`, wherever it is drawn now.
+function shownAt(id, level) {
+  for (const buttons of levelsOf(id)) marked(buttons, level);
+}
+
+// A ticket put at a level: the press shows on its card at once and nothing is redrawn, so the next card is where it was
+// and a person goes down the list pressing; the ticket is drawn in its new epic at the next redraw. When the last of its
+// presses still sending has ended, one that failed has its card shown at the level lit holds for the ticket.
+function pressedAt(id, level) {
+  shownAt(id, level);
+  alarm(id, "");
+  const press = presses.get(id) ?? {pending: 0, failed: null};
+  presses.set(id, press);
+  press.pending += 1;
+  headed();
+  putAt(id, level).then(() => { stale = true; }, error => { press.failed = error.message; }).finally(() => {
+    press.pending -= 1;
+    if (press.pending === 0) {
+      presses.delete(id);
+      if (press.failed !== null) restored(id, press.failed);
+    }
+    headed();
+  });
+}
+
+// [LAW:one-source-of-truth] a failed press leaves its card at the level lit holds, read again, never at a guess: lit may
+// have moved the ticket before the press failed. A press made on the card meanwhile owns its buttons, and they are left.
+async function restored(id, why) {
+  let level, said;
+  try {
+    const read = await answered(TICKETS, {}, "hands is out of reach");
+    const node = read.tracked ? [...everyNode(read.items)].find(each => each.id === id) : undefined;
+    level = node?.standing?.level ?? null;
+    said = node === undefined ? `${why}\nlit's open backlog no longer holds ${id}.` : why;
+  } catch (error) {
+    level = null;
+    said = `${why}\nWhat lit holds for ${id} could not be read again, so no level is shown: ${error.message}`;
+  }
+  if (presses.has(id)) return;
+  alarm(id, said);
+  shownAt(id, level);
+  for (const buttons of levelsOf(id)) stale ||= buttons.dataset.drawn !== (level ?? "");
+  headed();
+}
+
+// A note on how to change the ticket, kept by lit as a comment on it. Its draft and what was last noted are the page's
+// state, so a redraw keeps them. Saving empties the field at once, and the field keeps its height while it says it is
+// saving, what lit kept, or takes back a note lit did not keep, so nothing below it moves until its person types again.
 function noter(ticket) {
+  const note = noteOf(ticket.id);
   const box = document.createElement("div");
   box.className = "note";
   const field = document.createElement("textarea");
   field.rows = 1;
-  field.placeholder = "Note on how to change this ticket";
+  field.value = note.draft;
+  field.placeholder = hint(note);
   field.setAttribute("aria-label", `Note on ${ticket.id}`);
+  field.addEventListener("input", () => {
+    note.draft = field.value;
+    field.style.height = "";
+  });
   const save = document.createElement("button");
   save.type = "button";
   save.textContent = "Save";
-  const failed = document.createElement("div");
-  failed.className = "failed";
-  failed.setAttribute("role", "alert");
-  const saved = () => {
-    const text = field.value.trim();
-    if (!text) return;
-    field.value = "";
-    failed.textContent = "";
-    const before = field.placeholder;
-    field.placeholder = `Saving: ${text}`;
-    noted(ticket.id, text).then(() => { field.placeholder = `Noted: ${text}`; }, error => {
-      field.placeholder = before;
-      field.value = field.value ? `${text}\n${field.value}` : text;
-      failed.textContent = error.message;
-    });
-  };
+  const saved = () => noting(ticket.id);
   save.addEventListener("click", saved);
   field.addEventListener("keydown", event => {
     // The card's own keys (an epic's Enter and Space) are not this field's.
@@ -288,8 +382,45 @@ function noter(ticket) {
   const row = document.createElement("div");
   row.className = "noting";
   row.append(field, save);
-  box.append(row, failed);
+  box.append(row);
   return box;
+}
+
+function noteOf(id) {
+  if (!notes.has(id)) notes.set(id, {draft: "", saving: 0, kept: null});
+  return notes.get(id);
+}
+
+function hint(note) {
+  return note.saving > 0 ? "Saving…" : note.kept !== null ? `Noted: ${note.kept}` : "Note on how to change this ticket";
+}
+
+// Each field drawing the ticket's note set to `text`, at the height it has, and saying the note's hint.
+function written(id, text) {
+  for (const card of cardsOf(id)) {
+    const field = card.querySelector(".noting textarea");
+    // Its exact height, fractions and all: a rounded one would move what is below it by the fraction.
+    field.style.height = `${field.getBoundingClientRect().height}px`;
+    field.value = text;
+    field.placeholder = hint(noteOf(id));
+  }
+}
+
+function noting(id) {
+  const note = noteOf(id);
+  const text = note.draft.trim();
+  if (!text) return;
+  note.draft = "";
+  note.saving += 1;
+  written(id, "");
+  alarm(id, "");
+  noted(id, text).then(() => { note.kept = text; }, error => {
+    note.draft = note.draft ? `${text}\n${note.draft}` : text;
+    alarm(id, error.message);
+  }).finally(() => {
+    note.saving -= 1;
+    written(id, note.draft);
+  });
 }
 
 // A note sent to hands; resolves once lit has it, rejects with what hands said.
@@ -303,16 +434,15 @@ async function noted(ticket, text) {
   if (!response.ok) throw new Error(await response.text().catch(() => `hands refused the note on ${ticket}.`));
 }
 
-// A ticket put at a level: the press shows on its card at once and nothing is redrawn, so the next card is where it was
-// and a person goes down the list pressing; the ticket is drawn in its new epic at the next redraw. Its request waits its
-// turn behind every one made before it, so lit moves tickets in the order they were pressed. Rejects with what hands said.
+// A level press sent to hands in its turn behind every request made before it, so lit moves tickets in the order they
+// were pressed. Resolves once lit holds the move, rejects with what hands said.
 function putAt(ticket, level) {
   return new Promise((resolve, reject) => inTurn(async () => {
     let response;
     try {
       response = await asked("/backlog/level", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, level})});
     } catch {
-      reject(new Error(`hands did not answer, so whether lit moved ${ticket} is not known; reload the page to see lit's backlog.`));
+      reject(new Error(`hands did not answer, so whether lit moved ${ticket} is not known.`));
       return;
     }
     if (response.ok) resolve(); else reject(new Error(await response.text().catch(() => `hands refused to move ${ticket}.`)));
@@ -386,8 +516,17 @@ function dragging(event) {
   if (drag === null || event.pointerId !== drag.pointer) return;
   if (!drag.started) {
     if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < SLOP_PX) return;
-    drag.started = true;
     drag.card.dragged = true;
+    if (stale) {
+      // A tree drawn before a press moved a ticket is not lit's order: a drop on it would rank against what lit lacks.
+      refusedDrag = true;
+      headed();
+      const done = drag;
+      drag = null;
+      done.release();
+      return;
+    }
+    drag.started = true;
     drag.row.classList.add("dragged");
     document.body.classList.add("dragging");
   }
@@ -423,6 +562,9 @@ document.addEventListener("pointercancel", ended);
 document.addEventListener("lostpointercapture", ended);
 window.addEventListener("blur", ended);
 // Agents rank, file, and close tickets while the page is away: it is read again whenever it is looked at again.
+reload.addEventListener("click", () => read());
+// A press not yet sent is lost with the page.
+window.addEventListener("beforeunload", event => { if (sending() > 0) event.preventDefault(); });
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && key && project) read(); });
 
 if (!key) say("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.", true);

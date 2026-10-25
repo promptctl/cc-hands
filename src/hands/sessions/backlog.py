@@ -6,8 +6,6 @@ order is changed by `lit rank` alone.
 """
 
 import asyncio
-import getpass
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -47,6 +45,15 @@ def parse_level(named: str) -> Level | None:
 def level_title(topic: str, level: Level) -> str:
     """The title of `topic`'s epic for `level`: the slug's words, then the level, as in `wake word - high`."""
     return f"{topic.replace('-', ' ')} - {level}"
+
+
+@dataclass(frozen=True)
+class Person:
+    """Who a write lit makes for a person is signed by: their name, and the environment hands was started in, which lit
+    is run in without the Claude Code session hands may have been started inside (`_lit`)."""
+
+    name: str
+    environment: Mapping[str, str]
 
 
 class LitFailed(Exception):
@@ -312,7 +319,7 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
     """The backlog lit holds for `project`, or that lit has no workspace there; raises LitFailed when lit cannot say, and
     Rejected when what it said does not parse."""
     try:
-        out = await _lit(project, "export")
+        out = await _lit(project, "export", by=None)
     except LitFailed as failed:
         if failed.reason in NO_WORKSPACE:
             return Untracked(project)
@@ -322,55 +329,54 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
 
 
 async def rank(project: Path, move: Move) -> str:
-    """Have lit in `project` make `move`, and what lit said of what it ranked; raises LitFailed when it fails.
+    """Have lit in `project` make `move`, and what lit said of what it ranked; raises LitFailed when it fails. lit
+    records no one for a rank, and takes no `--by` for it, so it is signed by no one.
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target)).decode(errors="replace").strip()
+    return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target, by=None)).decode(errors="replace").strip()
 
 
-async def make_epic(project: Path, new: NewEpic) -> None:
-    """Have lit in `project` make `new`, at the bottom of its frame; raises LitFailed when it fails. It is found after by
-    its title and topic, as every level's epic is (`Backlog.level_epic`)."""
-    await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)))
+async def make_epic(project: Path, new: NewEpic, by: Person | None) -> None:
+    """Have lit in `project` make `new`, at the bottom of its frame, signed `by` (`_lit`); raises LitFailed when it
+    fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
+    await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), by=by)
 
 
-async def adopt(project: Path, ticket: str, epic: str) -> None:
-    """Have lit in `project` move `ticket` inside `epic`, keeping its id; raises LitFailed when it fails."""
-    await _lit(project, "parent", "set", "--child", ticket, "--parent", epic)
-
-
-async def note(project: Path, ticket: str, text: str) -> None:
-    """Have lit in `project` add `text` to `ticket` as a comment, signed by the person this hands runs as; raises
-    LitFailed when it fails."""
-    await _lit(project, "comment", "add", ticket, "--body", text, "--by", getpass.getuser())
+async def adopt(project: Path, ticket: str, epic: str, by: Person | None) -> None:
+    """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by` (`_lit`); raises LitFailed when it
+    fails."""
+    await _lit(project, "parent", "set", "--child", ticket, "--parent", epic, by=by)
 
 
 async def file_ticket(project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _lit(project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description)
+    filed = await _lit(project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, by=None)
     said = filed.decode(errors="replace").split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
 
 
-async def comment(project: Path, ticket: str, body: str) -> None:
-    """Have lit in `project` add a comment to `ticket`; raises LitFailed when it fails."""
-    await _lit(project, "comment", "add", ticket, "--body", body)
+async def comment(project: Path, ticket: str, body: str, by: Person | None) -> None:
+    """Have lit in `project` add a comment to `ticket`, signed `by` (`_lit`); raises LitFailed when it fails."""
+    await _lit(project, "comment", "add", ticket, "--body", body, by=by)
 
 
-async def _lit(project: Path, *arguments: str) -> bytes:
+async def _lit(project: Path, *arguments: str, by: Person | None) -> bytes:
     """What lit run in `project` with `arguments` wrote out; raises LitFailed when it could not run, did not answer, or exited non-zero.
 
-    [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
+    [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure, and the one place a write
+    is signed. `by` is the person a write is signed by: lit is given `--by` and their environment without
+    CLAUDE_CODE_SESSION_ID, which it would sign with instead, so a hands started inside a Claude Code session signs what a
+    person does as that person. None leaves lit to sign as hands' own environment says, a session's work as the session.
     """
     command = f"lit {arguments[0]}"
+    signed = () if by is None else ("--by", by.name)
+    env = None if by is None else {name: value for name, value in by.environment.items() if name != "CLAUDE_CODE_SESSION_ID"}
     try:
-        # hands' own lit calls are no Claude Code session's: lit takes CLAUDE_CODE_SESSION_ID for who acts, so a hands
-        # started from inside a session would sign what a person does on the backlog page as that session.
-        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env={name: value for name, value in os.environ.items() if name != "CLAUDE_CODE_SESSION_ID"})
+        ran = await run("lit", *arguments, *signed, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=env)
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except OSError as error:

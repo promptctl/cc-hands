@@ -1044,7 +1044,8 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
                     wide.count(filed=1)
                     print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
-                    await backlog.comment(project, ticket, filing.comment(group, logs))
+                    # Signed as the session file-tickets is run from, whose work it is.
+                    await backlog.comment(project, ticket, filing.comment(group, logs), None)
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:

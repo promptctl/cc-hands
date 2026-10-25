@@ -13,9 +13,10 @@ its own, or which epic is which level.
 """
 
 import asyncio
+import getpass
 import json
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from importlib import resources
 from pathlib import Path
@@ -23,7 +24,7 @@ from pathlib import Path
 from aiohttp import web
 
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Place, Standing, Status, Untracked, adopt, make_epic, note, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
@@ -89,6 +90,9 @@ def parse_note(body: bytes) -> tuple[Path, str, str]:
     except ValueError as error:
         raise Rejected(f"a note is JSON: {error}") from error
     match sent:
+        case {"ticket": str(ticket)} if ticket.startswith("-"):
+            # lit would read it as a flag: `--help` says its help and exits 0, keeping nothing.
+            raise Rejected(f"a note's ticket is a ticket's id, and {ticket!r} is a flag")
         case {"project": str(project), "ticket": str(ticket), "text": str(text)} if text.strip():
             return parse_project(project), ticket, text.strip()
         case _:
@@ -151,17 +155,19 @@ def shown(read: Sighted | Untracked) -> dict[str, object]:
             return {"tracked": True, "levels": LEVELS, "items": [asdict(node) for node in nodes]}
 
 
-def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.RouteDef]:
+def backlog_routes(store: SummaryStore, key: str, record: Record, environment: Mapping[str, str]) -> list[web.RouteDef]:
     """The page, the read of a project's backlog, a drop that ranks one ticket next to another, a level that moves a
     ticket into its topic's epic for it, and a note left on a ticket as a lit comment.
 
     [LAW:nothing-unseen] each read is one `backlog.read` event, how many open tickets it showed and how many of them had a
     sentence; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
     and what it showed after; each level one `backlog.leveled`, which ticket at which level, the epic it went into,
-    whether lit made that epic, ranked it, moved the ticket, and ranked it last there, and what it showed after; each note
-    one `backlog.noted`, which ticket, how long, and whether lit kept it; each refused or failed says why.
+    whether lit made that epic, ranked it, moved the ticket, and ranked it last there; each note one `backlog.noted`,
+    which ticket, how long, and whether lit kept it; each refused or failed says why.
     """
     page = resources.files("hands.voice").joinpath("backlog.html").read_text()
+    # Every write from the page is a person's at the page, and lit signs it as the one hands runs as.
+    person = Person(getpass.getuser(), environment)
 
     async def page_served(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
@@ -229,7 +235,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
             return _refused(409, f"the backlog lit holds after the rank does not have {ticket} {place}: it changed while it was moved. lit said: {said}")
         return web.json_response(shown(after))
 
-    @keyed("backlog.leveled", record, key, counts=("tickets", "summarised"))
+    @keyed("backlog.leveled", record, key)
     async def leveled(request: web.Request) -> web.Response:
         try:
             project, ticket, level = parse_leveling(await request.read())
@@ -258,7 +264,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
                 annotate(epic=epic)
             case NewEpic(topic=topic, title=title, parent=frame, place=place) as new:
                 try:
-                    await make_epic(project, new)
+                    await make_epic(project, new, person)
                 except LitFailed as error:
                     raise _unwritten(error, "created", "not leveled", f"whether lit made the epic {title} is not known") from error
                 annotate(created="yes")
@@ -284,7 +290,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
                 annotate(ranked="yes")
                 ranks = (move,)
         try:
-            await adopt(project, ticket, epic)
+            await adopt(project, ticket, epic, person)
         except LitFailed as error:
             raise _unwritten(error, "moved", "not leveled", f"whether lit moved {ticket} into {epic} is not known") from error
         annotate(moved="yes")
@@ -303,14 +309,12 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
                 raise _unwritten(error, "placed", f"lit moved {ticket} into {epic}, and did not rank it last there", f"lit moved {ticket} into {epic}, and whether it ranked it last there is not known") from error
             annotate(placed="yes")
         ranks = (*ranks, *lasts)
-        try:
-            after = await sighted(store, project)
-        except (LitFailed, Rejected) as error:
-            raise Halted(502, f"lit moved {ticket} into {epic}, and the backlog could not be read again to show it: {error}") from error
-        # [LAW:no-silent-failure] the read after is the evidence, as a drop's is.
-        if not _holds(after, lambda backlog: backlog.parent.get(ticket) == epic and backlog.open_children(epic)[-1:] == (ticket,) and all(backlog.landed(move) for move in ranks)):
+        after = await _read(project, f"lit moved {ticket} into {epic}, and the backlog could not be read again to check it", 502, f"lit moved {ticket} into {epic}, and lit no longer tracks {project}")
+        # [LAW:no-silent-failure] the read after is the evidence, as a drop's is. The page drew the press when it was made
+        # and redraws nothing, so a leveling that holds is answered with nothing more.
+        if not (after.parent.get(ticket) == epic and after.open_children(epic)[-1:] == (ticket,) and all(after.landed(move) for move in ranks)):
             raise Halted(409, f"the backlog lit holds after the leveling does not have {ticket} last in {epic} where it was put: it changed while it was leveled")
-        return web.json_response(shown(after))
+        return web.Response(status=204)
 
     @keyed("backlog.noted", record, key)
     async def noted(request: web.Request) -> web.Response:
@@ -322,7 +326,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
         # [LAW:nothing-unseen] whether lit kept the note, "no", "yes", or "unknown", is on the event however it ends.
         annotate(project=project, ticket=ticket, chars=len(text), noted="no")
         try:
-            await note(project, ticket, text)
+            await comment(project, ticket, text, person)
         except LitFailed as error:
             if error.refused:
                 return _refused(502, f"not noted: {error}")

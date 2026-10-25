@@ -343,7 +343,7 @@ def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_pat
 
 
 def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def silent(project: Path, *arguments: str) -> bytes:
+    async def silent(project: Path, *arguments: str, by: backlog.Person | None) -> bytes:
         return b"\n"
 
     monkeypatch.setattr(backlog, "_lit", silent)
