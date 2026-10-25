@@ -344,6 +344,12 @@ def submit(text):
         typed(["permission", stray["behavior"], stray.get("message", "")])
     if said == "fail":
         post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
+    elif said == "fail blank":
+        post("StopFailure", prompt_id=prompt, error="authentication_failed", last_assistant_message="")
+    elif said == "fail odd":
+        post("StopFailure", prompt_id=prompt, error="server_error", last_assistant_message={{"text": "odd"}})
+    elif said == "fail unnamed":
+        post("StopFailure", prompt_id=prompt)
     else:
         post("Stop", prompt_id=prompt, last_assistant_message="Two.")
     last, tail = prompt, time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))

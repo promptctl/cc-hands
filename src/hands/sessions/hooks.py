@@ -72,7 +72,7 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
         case "UserPromptSubmit":
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
-            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
+            return Stopped(session, narration(payload, "last_assistant_message"), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
         case "PermissionRequest":
             return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
@@ -160,18 +160,19 @@ def _option(option: object) -> Option:
     return Option(fields.text("label"), fields.optional_text("description") or None)
 
 
-def _closing(payload: Payload) -> str | None:
-    """The reply the turn closed with, as the Stop hook carries it, and None when it carries none."""
-    match payload.fields.get("last_assistant_message"):
+def narration(payload: Payload, key: str) -> str | None:
+    """A field that only narrates its hook's turn, as text, and None when it carries none: a Stop's closing reply, or a
+    StopFailure's kind of error and the text it showed."""
+    match payload.fields.get(key):
         case str() as text:
             return text
         case None:
             return None
         case other:
-            # Not refused, as a Stop that names no turn is: the prompt_id says which turn stopped, and the reply only
-            # how that turn is narrated. Refusing the hook over the narration would lose the turn's telling, so the turn
-            # is taken and the loud line says why it will be told without its last reply.
-            logger.error(f"Stop carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
+            # Not refused, as a hook that names no turn is: the prompt_id says which turn ended, and this field only
+            # how that turn is narrated. Refusing the hook over the narration would lose the turn's end, so the turn
+            # is taken and the loud line says why it will be told without this field.
+            logger.error(f"{payload.fields.get('hook_event_name')} carried {key} as {type(other).__name__}, not a string, so its turn is told without it")
             return None
 
 

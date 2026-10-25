@@ -36,9 +36,10 @@ from hands.core.effects import Allow, Deny, Text
 from hands.core.session import Permission, PromptText, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
+from hands.core.stopfailure import StopFailed
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, declared
-from hands.sessions.hooks import called, hook_output
+from hands.sessions.hooks import called, hook_output, narration
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped
@@ -478,7 +479,7 @@ class BrainAnswered:
     """The end of a brain turn by itself: its Stop hook, or its StopFailure hook with what failed it. Its words are on the wire."""
 
     prompt: str  # the prompt id Claude Code gave the turn, which every hook of the turn and its transcript records carry
-    error: str | None
+    error: StopFailed | None
 
 
 @dataclass(frozen=True)
@@ -936,7 +937,9 @@ class Brain:
             prompt = said.text("prompt_id")
             # What Claude Code took, on the hook that says it took a prompt: there it is never absent.
             submitted = said.text("prompt") if event == "UserPromptSubmit" else None
-            failed = f"{said.optional_text('error')}: {said.optional_text('last_assistant_message')}"
+            # [LAW:parse-dont-validate] a StopFailure names its kind of error and the text it showed, both only narrating the
+            # turn its prompt_id ends: read as a Stop's closing reply is, so a malformed one cannot leave the turn waiting.
+            failed = StopFailed(narration(said, "error") or None, narration(said, "last_assistant_message") or None) if event == "StopFailure" else None
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -966,7 +969,7 @@ class Brain:
                     turn.others += (prompt,)
                 logger.warning(f"the brain took prompt {prompt}, which is no turn's: one typed for a turn that ended before it was taken, or a task's notification")
             case ("Stop" | "StopFailure"), _ if turn is not None and prompt in turn.prompts:
-                self._over(turn, BrainAnswered(prompt, None if event == "Stop" else failed))
+                self._over(turn, BrainAnswered(prompt, failed))
             case ("Stop" | "StopFailure"), _ if prompt in self._unowned:
                 del self._unowned[prompt]
             case _ if turn is None:

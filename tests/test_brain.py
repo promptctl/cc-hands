@@ -29,6 +29,7 @@ from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, 
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
+from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, located, onboard, pin, pinned_to
@@ -481,7 +482,7 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
     try:
-        assert await brain.ask("fail", unasked) == BrainAnswered("p1", "unknown: API Error: 400 refused")
+        assert await brain.ask("fail", unasked) == BrainAnswered("p1", StopFailed("unknown", "API Error: 400 refused"))
         # An asker that stops waiting leaves the turn to run to its end, and its event still says what failed it.
         asking = asyncio.create_task(brain.ask("fail", unasked))
         await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == 2)
@@ -495,6 +496,20 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
         ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p1",)),
         ("failed", "the brain's turn ended in error: unknown: API Error: 400 refused", ("p2",)),
     ]
+
+
+async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path) -> None:
+    # Both only narrate the failure: refusing the hook over either would leave the turn waiting on an end already posted.
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    said, sink = failures()
+    try:
+        assert await brain.ask("fail blank", unasked) == BrainAnswered("p1", StopFailed("authentication_failed", None))
+        assert await brain.ask("fail odd", unasked) == BrainAnswered("p2", StopFailed("server_error", None))
+        assert await brain.ask("fail unnamed", unasked) == BrainAnswered("p3", StopFailed(None, None))
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
 
 
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
@@ -754,8 +769,14 @@ def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_st
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    # An error that is not text: the hook is logged and passed over, never raised out of the loop that hears hooks.
-    brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}).encode())  # pyright: ignore[reportPrivateUsage]
+    warned: list[str] = []
+    sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
+    try:
+        # A prompt id that is not text names no turn: the hook is logged and passed over, never raised out of the loop that hears hooks.
+        brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": {"id": "p1"}, "error": "unknown"}).encode())  # pyright: ignore[reportPrivateUsage]
+    finally:
+        logger.remove(sink)
+    assert [line.split(":")[0] for line in warned] == ["the brain posted a hook that does not parse"]
 
 
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
