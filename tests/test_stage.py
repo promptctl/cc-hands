@@ -69,6 +69,7 @@ from hands.core.wire import (
     UsageLimitReached,
     unstreamed,
 )
+from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
@@ -469,7 +470,7 @@ async def test_a_telling_the_brain_fails_fails_its_utterance_with_why(rig: Rig) 
     utterance = unasked()
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", "api finished a turn, and I could not tell it.", SessionId("api"), (utterance,)))
     await rig.until(lambda: len(rig.brain.asked) == 1)
-    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
+    rig.brain.end(BrainAnswered("p1", StopFailed("unknown", "API Error: 500 overloaded")))
     await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
     [turn] = turns(rig.recorded)
     assert turn.error is not None and utterance.failure == turn.error
@@ -550,7 +551,7 @@ async def test_a_narration_the_brain_fails_is_said_as_written_with_its_question(
     unsaid = "api finished a turn, and I could not tell it. Want me to push it?"
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid, SessionId("api"), ()))
     await rig.until(lambda: len(rig.brain.asked) == 1)
-    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
+    rig.brain.end(BrainAnswered("p1", StopFailed("unknown", "API Error: 500 overloaded")))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.out.said() == [unsaid]
 
@@ -565,7 +566,7 @@ async def test_a_turns_event_says_what_was_typed_into_the_brain(rig: Rig) -> Non
 
 async def test_a_users_turn_the_brain_fails_has_nothing_said_for_it(rig: Rig) -> None:
     await rig.say("hello")
-    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
+    rig.brain.end(BrainAnswered("p1", StopFailed("unknown", "API Error: 500 overloaded")))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.out.said() == []
 
@@ -779,7 +780,7 @@ async def test_a_hold_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) ->
 
 async def test_a_turn_the_brain_failed_is_a_failed_event_saying_why(rig: Rig) -> None:
     await rig.say("hello")
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: 529 Overloaded"))
+    rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: 529 Overloaded")))
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)
     assert (turn.outcome, turn.error) == ("failed", "the brain's turn ended in error: server_error: API Error: 529 Overloaded")
@@ -1067,7 +1068,7 @@ async def test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_h
     rig.out.playing = Bookmark(("First, it rained.", "Then it snowed."), 1)
     await rig.interrupt()
     await rig.worker.queue_frame(UserWords("and the logs?"))
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: Connection lost mid-response.")))
     await rig.until(lambda: len(rig.brain.asked) == 2)
     # Not also that the user heard all the speaker was handed: the speaker says what they heard.
     over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed.".'
@@ -1245,7 +1246,7 @@ async def test_a_turn_ending_on_a_call_that_lands_is_no_empty_reply(rig: Rig) ->
 
 async def test_a_turn_the_brain_ended_in_error_is_reported_as_the_model_stages_error(rig: Rig) -> None:
     await rig.say("hello")
-    rig.brain.end(BrainAnswered("p1", "unknown: API Error: 500 overloaded"))
+    rig.brain.end(BrainAnswered("p1", StopFailed("unknown", "API Error: 500 overloaded")))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.errors[0].processor is rig.stage
     assert "API Error: 500 overloaded" in rig.errors[0].error
@@ -1264,15 +1265,18 @@ def unreached(exchange: str) -> Exchanged:
     [
         # As Claude Code 2.1.285 meets each (measured, hands-wire-6ic.gfq): a spent limit is asked once, an API the proxy
         # cannot reach eleven times, and what failed the turn is its latest answer.
-        ([429], "rate_limit: You've hit your session limit · resets 12:00pm", UsageLimitReached(RESETS)),
-        ([None, None, None], "server_error: API Error: 502 hands' proxy could not reach https://api.anthropic.com", ModelUnreachable()),
-        ([529], "server_error: API Error: 529 Overloaded", ModelFailed(ErrorCategory.SERVER)),
-        ([None, 529, 200], "server_error: API Error: Connection lost mid-response.", ModelFailed(ErrorCategory.UNKNOWN)),
+        ([429], StopFailed("rate_limit", "You've hit your session limit · resets 12:00pm"), UsageLimitReached(RESETS)),
+        ([None, None, None], StopFailed("server_error", "API Error: 502 hands' proxy could not reach https://api.anthropic.com"), ModelUnreachable()),
+        ([529], StopFailed("server_error", "API Error: 529 Overloaded"), ModelFailed(ErrorCategory.SERVER)),
+        # A 200 names no cause: the reply it began broke, and Claude Code says so.
+        ([None, 529, 200], LOST := StopFailed("server_error", "API Error: Connection lost mid-response."), LOST),
         # A request whose answer never came, its handler cancelled before the head: an earlier answer is not its reason.
-        ([None, "unanswered"], "server_error: API Error: Request timed out.", ModelFailed(ErrorCategory.UNKNOWN)),
+        ([None, "unanswered"], TIMED_OUT := StopFailed("server_error", "API Error: Request timed out."), TIMED_OUT),
+        # Failed in Claude Code before any request, as the audit log saw an expired login on 2026-10-24: only the StopFailure says why.
+        ([], EXPIRED := StopFailed("invalid_request", "Login expired · Run /login to sign in again, or re-authenticate your Anthropic profile"), EXPIRED),
     ],
 )
-async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: str, fact: ModelFact) -> None:
+async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answers: list[int | None | Literal["unanswered"]], failure: StopFailed, fact: ModelFact) -> None:
     await rig.say("hello")
     for status in answers:
         exchange, _ = rig.request()
@@ -1293,19 +1297,28 @@ async def test_a_failed_turn_is_said_as_the_wire_says_it_failed(rig: Rig, answer
     assert turn.facts["failed"] == fact
 
 
+async def test_a_stop_failure_that_shows_no_text_is_told_by_its_kind_of_error(rig: Rig) -> None:
+    # Claude Code's StopFailure always names its kind of error, and its text only when it showed one.
+    await rig.say("hello")
+    rig.brain.end(BrainAnswered("p1", unsaid := StopFailed("authentication_failed", None)))
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert rig.errors[0].error == "the brain's turn ended in error: authentication_failed"
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == unsaid
+
+
 async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_then_the_failure(rig: Rig) -> None:
     # As Claude Code 2.1.285 ends it (hands-wire-6ic.6dz, measured): no retry and no fallback request, only StopFailure.
     await rig.say("tell me about lighthouses")
     exchange, _ = rig.request()
     rig.stream(exchange, "1. Lighthouses stand ", "on rocky coasts and h")
     await rig.until(lambda: len(rig.out.said()) == 2)
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response. The response above may be incomplete."))
+    rig.brain.end(BrainAnswered("p1", lost := StopFailed("server_error", "API Error: Connection lost mid-response. The response above may be incomplete.")))
     await rig.until(lambda: len(rig.errors) == 1)
     assert rig.out.shape() == ["LLMFullResponseStartFrame", "LLMTextFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
     assert rig.out.said() == ["1. Lighthouses stand ", "on rocky coasts and h"]
     assert rig.errors[0].processor is rig.stage
     assert "Connection lost mid-response" in rig.errors[0].error
-    assert ((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, ASKED, 0.0, ModelFailed(ErrorCategory.UNKNOWN)) in spoke(rig.recorded)
+    assert ((exchange,), "1. Lighthouses stand on rocky coasts and h", (), False, ASKED, 0.0, lost) in spoke(rig.recorded)
     # The broken reply is not in the brain's history, so its next turn tells it what the user heard, and only that one.
     await rig.say("what were you saying?")
     rig.brain.end()
@@ -1404,7 +1417,7 @@ async def test_a_turn_that_fails_after_a_reply_was_asked_again_tells_the_brain_a
     await rig.say("tell me about lighthouses")
     _, retry = broken_then_asked_again(rig, ("Lighthouses stand ", "on rocky"), "Most lighthouses stand on rocky coasts.")
     await rig.until(lambda: len(rig.out.said()) == 3)
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: Connection lost mid-response.")))
     await rig.until(lambda: len(rig.errors) == 1)
     assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, "Lighthouses stand on rocky"),)
     await rig.say("what were you saying?")
@@ -1419,7 +1432,7 @@ async def test_what_the_user_heard_of_a_broken_turn_is_told_with_the_first_turn_
     await rig.say("tell me about lighthouses")
     rig.stream(rig.request()[0], "Lighthouses stand")
     await rig.until(lambda: len(rig.out.said()) == 1)
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: Connection lost mid-response.")))
     await rig.until(lambda: len(rig.errors) == 1)
     await rig.say("what were you saying?")
     rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
@@ -1984,7 +1997,7 @@ async def test_an_answer_waiting_behind_a_block_the_turn_ends_in_is_said(rig: Ri
     await asyncio.sleep(0.1)
     assert "Got it. I'll come to that when this is done." not in rig.out.said()
     # The API breaks the reply past its retry, and the turn ends with the block open (2.1.285).
-    rig.brain.end(BrainAnswered("p1", "server_error: API Error: Connection lost mid-response."))
+    rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: Connection lost mid-response.")))
     await rig.until(lambda: "Got it. I'll come to that when this is done." in rig.out.said())
     await rig.until(lambda: bool(turns(rig.recorded)))
     [turn] = turns(rig.recorded)

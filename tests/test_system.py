@@ -22,6 +22,7 @@ from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.system import (
     NoMicrophone,
+    StopFailed,
     TurnExpired,
     told,
     AudioMoved,
@@ -64,6 +65,9 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
+        (StopFailed("invalid_request", "Login expired · Run /login to sign in again"), "The brain failed: Login expired · Run /login to sign in again."),
+        (StopFailed("server_error", "API Error: Request timed out."), "The brain failed: API Error: Request timed out."),
+        (StopFailed("authentication_failed", None), "The brain failed: authentication failed."),
         (ModelReplyEmpty(), "The language model sent back nothing."),
         (ModelActedUntold(), "The language model did not say how that went."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),

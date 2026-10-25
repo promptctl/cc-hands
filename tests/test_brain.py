@@ -30,6 +30,7 @@ from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
+from hands.core.stopfailure import StopFailed
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, located, onboard, pin, pinned_to
 
@@ -481,7 +482,7 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
     try:
-        assert await brain.ask("fail", unasked) == BrainAnswered("p1", "unknown: API Error: 400 refused")
+        assert await brain.ask("fail", unasked) == BrainAnswered("p1", StopFailed("unknown", "API Error: 400 refused"))
         # An asker that stops waiting leaves the turn to run to its end, and its event still says what failed it.
         asking = asyncio.create_task(brain.ask("fail", unasked))
         await until(lambda: sum(line[0] == "prompt" for line in typed(tmp_path)) == 2)

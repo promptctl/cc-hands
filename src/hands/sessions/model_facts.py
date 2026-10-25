@@ -1,10 +1,11 @@
-"""Why a call to the language model failed, as a fact a listener can act on: read off the brain's wire, and said by the
-system channel."""
+"""Why a call to the language model failed, as a fact a listener can act on: read off the brain's wire, or its StopFailure
+hook where the wire named no cause, and said by the system channel."""
 
 from dataclasses import dataclass
 
 from pipecat.utils.errors import ErrorCategory
 
+from hands.core.stopfailure import StopFailed
 from hands.core.wire import UsageLimitReached
 
 
@@ -29,7 +30,7 @@ class ModelActedUntold:
     went. Whether what it did worked is the model's to know, never this fact's."""
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelActedUntold
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelActedUntold | StopFailed
 
 
 class ModelFault(Exception):

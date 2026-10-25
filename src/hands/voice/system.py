@@ -20,6 +20,7 @@ from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
+from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
@@ -54,7 +55,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelActedUntold | UsageLimitReached | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelActedUntold | UsageLimitReached | StopFailed | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -66,6 +67,10 @@ def system_text(fact: SystemFact) -> str:
             return "The language model is unreachable."
         case ModelFailed(category=category):
             return f"The language model failed: {category.value.replace('_', ' ')}."
+        case StopFailed(message=str() as message):
+            return f"The brain failed: {message.removesuffix('.')}."
+        case StopFailed(kind=kind):
+            return f"The brain failed: {kind.replace('_', ' ')}."
         case ModelReplyEmpty():
             return "The language model sent back nothing."
         case ModelActedUntold():

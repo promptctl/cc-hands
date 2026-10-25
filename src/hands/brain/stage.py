@@ -76,6 +76,7 @@ from hands.core.wire import (
     tool_answers,
     tool_input,
 )
+from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, child, continuing, count, fail, here, root, unit, within
@@ -170,8 +171,6 @@ def has_words(text: str) -> bool:
     # and whether it closes on nothing.
     return bool(text.strip())
 
-
-_UNNAMED = ModelFailed(ErrorCategory.UNKNOWN)
 
 # What each turn's event counts: the model's round trips on the wire, and the calls its replies made.
 COUNTS = ("round_trips", "tools", "refused", "cut_in", "silence_refused")
@@ -285,8 +284,9 @@ class _Turn:
     silence_refused: int = 0
     # Whether the turn's latest request sent on carried OWED: one asked again whole repeats it, and carries it too.
     owing: bool = False
-    # What the turn failed of, if it fails, as its latest request's answer told it: nothing named until that answer says.
-    failure: ModelFact = _UNNAMED
+    # What the turn failed of, if it fails, as its latest request's answer told it: None until that answer names a cause,
+    # and where it never does, Claude Code's StopFailure is the turn's only account of why.
+    failure: ModelFact | None = None
     # Waits out the turn's tool work to acknowledge it, which the turn's end cancels.
     acknowledging: asyncio.Task[None] = field(init=False)
     # Set at the turn's first call: its tool work has begun, and the wait to acknowledge it with it.
@@ -849,7 +849,7 @@ class BrainStage(FrameProcessor):
             if not streams(sent.body):
                 # Heard by nobody once the user spoke over the turn: nothing of it is said from there on.
                 turn.broken.append(Broken(sent.exchange, "" if turn.interrupted else turn.reply))
-            turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, _UNNAMED, ""
+            turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, None, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(turn.span))
@@ -939,15 +939,26 @@ class BrainStage(FrameProcessor):
                 turn.working.set()
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):
                 turn.close()
-            # [LAW:one-source-of-truth] why a turn failed is the wire's: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
+            # [LAW:one-source-of-truth] why a turn failed is the wire's wherever the wire names it: the head of its latest answer, heard before Claude Code reads any of it, or an API the proxy could not reach,
             # told before its 502. Its own requests are held final, so Claude Code asks once; a 401 it asks again after
-            # refreshing its login: the latest request's is the turn's.
+            # refreshing its login: the latest request's is the turn's. One that failed in Claude Code before any answer came is the
+            # StopFailure's to name (`_failed`).
             case Answering(exchange=exchange, status=status, limit=limit) if exchange in turn.exchanges:
-                turn.failure = limit or ModelFailed(classify_http_status_code(status))
+                turn.failure = limit or _cause(status)
             case Exchanged(exchange=exchange, reply=Unreached()) if exchange in turn.exchanges:
                 turn.failure = ModelUnreachable()
             case _:
                 pass
+
+
+def _cause(status: int) -> ModelFailed | None:
+    """The cause an answer's status names, or None for one Pipecat has no category for: a 200 whose reply broke names no
+    cause, and saying it as 'unknown' would stand in for the StopFailure that does."""
+    match classify_http_status_code(status):
+        case ErrorCategory.UNKNOWN:
+            return None
+        case category:
+            return ModelFailed(category)
 
 
 def _since(arrived: Seconds, released: Seconds | None) -> Seconds:
@@ -973,8 +984,8 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failu
     match ended:
         case BrainStopped():
             return None
-        case BrainAnswered(error=str() as error):
-            return _Failure(f"the brain's turn ended in error: {error}", turn.failure, _broken_off("".join(turn.spoken)))
+        case BrainAnswered(error=StopFailed() as stop):
+            return _Failure(f"the brain's turn ended in error: {stop}", turn.failure or stop, _broken_off("".join(turn.spoken)))
         case BrainAnswered():
             pass
     if turn.empty():
