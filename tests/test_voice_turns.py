@@ -19,6 +19,7 @@ from io import BytesIO
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
+import numpy as np
 import pytest
 from pipecat.frames.frames import (
     Frame,
@@ -36,7 +37,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import running, unprimed
+from conftest import CHUNKING, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -56,7 +57,7 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.turnstop import Hold, TurnOpened, TurnResolved, Typed
-from hands.voice import engaged, hold, whisper
+from hands.voice import diarization, engaged, hold, whisper
 from hands.voice.engaged import Act
 from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.whisper import Whisper
@@ -1120,3 +1121,43 @@ async def test_over_many_turns_each_is_sent_as_its_own_words_and_neither_side_ke
     assert rig.out.sent == said
     user, assistant = rig.conversation
     assert user.messages == assistant.messages == []
+
+
+def heard_aloud(chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
+    """A step of a model that hears speaker 0 in every frame that is not digital silence."""
+    offset = 0 if first else CHUNKING.lead
+    frames = chunk[offset : offset + CHUNKING.frames * diarization.FRAME].reshape(-1, diarization.FRAME)
+    scored = np.zeros((CHUNKING.frames, 8), np.float32)
+    scored[: len(frames), 0] = np.where(np.abs(frames).max(axis=1) > 0, 0.9, 0.0)
+    return scored, cache
+
+
+def broken(chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
+    raise RuntimeError("the model broke")
+
+
+def diarized(rig: Rig) -> list[WideEvent]:
+    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "diarization.hold"]
+
+
+async def test_each_hold_the_key_sent_or_dropped_is_diarized_beside_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(heard_aloud, CHUNKING))
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
+        # Three frames of 20 ms held down: the hold's audio, and the hold the key sent.
+        await rig.hold(["down", "down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
+        await rig.texts.put("what time is it")
+        await rig.hold(["down", "dropped"], sound=struct.pack("<h", 1000) * 320)
+        await rig.until(lambda: len(diarized(rig)) == 2)
+        sent, dropped = diarized(rig)
+        assert (sent.facts["hold"], sent.facts["fate"], sent.facts["speakers"]) == (1, "sent", (diarization.Speech(0, 0.06),))
+        assert (dropped.facts["hold"], dropped.facts["fate"], dropped.facts["speakers"]) == (2, "dropped", (diarization.Speech(0, 0.02),))
+
+
+async def test_a_hold_whose_diarization_breaks_still_sends_its_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(broken, CHUNKING))
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
+        await rig.hold(["down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
+        await rig.texts.put("what time is it")
+        assert await rig.everything_sent(holds=1) == ["what time is it"]
+        await rig.until(lambda: len(diarized(rig)) == 2)
+        assert [(event.facts["hold"], event.outcome) for event in diarized(rig)] == [(1, "failed"), (2, "failed")]

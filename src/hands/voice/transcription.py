@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
+import numpy.typing as npt
 
 from hands.sessions.audit import Unsaid
 
@@ -39,11 +40,17 @@ def load() -> None:
     _transcribe(_SILENCE, None)
 
 
-def segments(samples: bytes, prompt: str | None) -> list[Unsaid]:
-    """The segments Whisper hears in mono 16-bit `samples` at RATE, primed with `prompt`. It blocks while the model runs."""
+def decoded(audio: bytes) -> npt.NDArray[np.float32]:
+    """Mono 16-bit `audio` as the samples in [-1, 1) a model hears; the one decoding of a hold, for Whisper and the
+    diarizer alike."""
+    return np.frombuffer(audio, dtype=np.int16).astype(np.float32) / np.float32(32768)
+
+
+def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
+    """The segments Whisper hears in mono 16-bit `audio` at RATE, primed with `prompt`. It blocks while the model runs."""
     return [
         Unsaid(str(segment["text"]).strip(), float(segment["compression_ratio"]), float(segment["avg_logprob"]))
-        for segment in _transcribe(np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768.0, prompt)
+        for segment in _transcribe(decoded(audio), prompt)
     ]
 
 

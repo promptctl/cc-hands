@@ -56,10 +56,15 @@ class SerialThread:
 
     async def run[T](self, work: Callable[[], T]) -> T:
         """The result of work, once everything given before it has finished and it has run."""
+        return await self.settles(work)
+
+    def settles[T](self, work: Callable[[], T]) -> asyncio.Future[T]:
+        """A future settled with work's outcome, the work queued now, behind everything given before it: what is given
+        after this returns runs after it, which a coroutine of `run` does not promise until it is first awaited."""
         loop = asyncio.get_running_loop()
         settled: asyncio.Future[T] = loop.create_future()
         self.give(lambda: _settle(loop, settled, work))
-        return await settled
+        return settled
 
 
 def _settle[T](loop: asyncio.AbstractEventLoop, settled: asyncio.Future[T], work: Callable[[], T]) -> None:
