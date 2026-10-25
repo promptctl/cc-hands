@@ -91,10 +91,15 @@ class Recorded(FrameProcessor):
         self.order: list[str] = []
         # What hands handed the brain to say in its own words, in order.
         self.told: list[str] = []
+        # How many frames the test's microphone captured have come through to here: it moves while the pipeline still
+        # has that audio to work through, and stops once it has.
+        self.audio = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
+            case KeyedAudio():
+                self.audio += 1
             case UserWords(words=words):
                 self.sent.append(words)
                 self.order.append(f"sent: {words}")
@@ -122,6 +127,21 @@ class Recorded(FrameProcessor):
             case _:
                 pass
         await self.push_frame(frame, direction)
+
+
+async def until(out: Recorded, what: Callable[[], bool]) -> None:
+    """Until `what` holds, failing once `PATIENCE_SECS` pass with none of the captured audio coming through to `out`.
+
+    [LAW:no-ambient-temporal-coupling] the patience bounds a stall, not the audio queued ahead: three minutes of it
+    take longer to come through on a loaded machine than a turn is given to end once it has."""
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(PATIENCE_SECS) as patience:
+        through = out.audio
+        while not what():
+            await asyncio.sleep(0.01)
+            if out.audio != through:
+                through = out.audio
+                patience.reschedule(loop.time() + PATIENCE_SECS)
 
 
 class NoSpeech(FrameProcessor):
@@ -194,9 +214,7 @@ class Rig:
         await self.worker.queue_frame(gate.framed(sound, sound, 16000, 1, gate.place))
 
     async def until(self, what: Callable[[], bool]) -> None:
-        async with asyncio.timeout(PATIENCE_SECS):
-            while not what():
-                await asyncio.sleep(0.01)
+        await until(self.out, what)
 
     async def everything_sent(self, holds: int) -> list[str]:
         """What the model was sent once the test's `holds` holds are all resolved, closed by one more spoken hold.
@@ -999,22 +1017,16 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
     out = Recorded()
     one, two = Hold(1, "held key"), Hold(2, "engaged conversation")
     async with running([Floor(lambda id: id, dict), out], []) as run:
-
-        async def until(what: Callable[[], bool]) -> None:
-            async with asyncio.timeout(PATIENCE_SECS):
-                while not what():
-                    await asyncio.sleep(0.01)
-
         await run.worker.queue_frames([TurnOpened(hold=one), TurnResolved(hold=one)])
-        await until(lambda: out.resolved == [1])
+        await until(out, lambda: out.resolved == [1])
         # The aggregator stops the first turn behind its hold's resolution, as the second hold opens.
         await run.worker.queue_frames([TurnOpened(hold=two), UserStoppedSpeakingFrame(), waiting(), TextFrame("marker")])
-        await until(lambda: "marker" in out.order)
+        await until(out, lambda: "marker" in out.order)
         assert not any(each.startswith("said:") for each in out.order)
         await run.worker.queue_frame(TurnResolved(hold=two))
-        await until(lambda: out.resolved == [1, 2])
+        await until(out, lambda: out.resolved == [1, 2])
         await run.worker.queue_frame(UserStoppedSpeakingFrame())
-        await until(lambda: "said: The session api is gone." in out.order)
+        await until(out, lambda: "said: The session api is gone." in out.order)
         assert out.order == ["stopped", "marker", "stopped", "said: The session api is gone."]
 
 
