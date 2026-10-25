@@ -68,6 +68,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (StopFailed("invalid_request", "Login expired · Run /login to sign in again"), "The brain failed: Login expired · Run /login to sign in again."),
         (StopFailed("server_error", "API Error: Request timed out."), "The brain failed: API Error: Request timed out."),
         (StopFailed("authentication_failed", None), "The brain failed: authentication failed."),
+        (StopFailed(None, None), "The brain failed, and Claude Code did not say why."),
         (ModelReplyEmpty(), "The language model sent back nothing."),
         (ModelActedUntold(), "The language model did not say how that went."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),

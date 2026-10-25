@@ -38,7 +38,7 @@ from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, declared
-from hands.sessions.hooks import called, closing, hook_output
+from hands.sessions.hooks import called, hook_output, narration
 from hands.core.stopfailure import StopFailed
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
@@ -937,9 +937,9 @@ class Brain:
             prompt = said.text("prompt_id")
             # What Claude Code took, on the hook that says it took a prompt: there it is never absent.
             submitted = said.text("prompt") if event == "UserPromptSubmit" else None
-            # [LAW:parse-dont-validate] a StopFailure always names its kind of error, and may carry the text it showed:
-            # the kind is its contract's and refused when absent, the text only narrates it and is read as a Stop's is.
-            failed = StopFailed(said.text("error"), closing(said) or None) if event == "StopFailure" else None
+            # [LAW:parse-dont-validate] a StopFailure names its kind of error and the text it showed, both only narrating the
+            # turn its prompt_id ends: read as a Stop's closing reply is, so a malformed one cannot leave the turn waiting.
+            failed = StopFailed(narration(said, "error") or None, narration(said, "last_assistant_message") or None) if event == "StopFailure" else None
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return

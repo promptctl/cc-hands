@@ -348,6 +348,8 @@ def submit(text):
         post("StopFailure", prompt_id=prompt, error="authentication_failed", last_assistant_message="")
     elif said == "fail odd":
         post("StopFailure", prompt_id=prompt, error="server_error", last_assistant_message={{"text": "odd"}})
+    elif said == "fail unnamed":
+        post("StopFailure", prompt_id=prompt)
     else:
         post("Stop", prompt_id=prompt, last_assistant_message="Two.")
     last, tail = prompt, time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))

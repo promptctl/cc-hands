@@ -498,17 +498,18 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     ]
 
 
-async def test_a_stop_failure_whose_text_is_empty_or_not_text_still_ends_its_turn_by_its_kind(tmp_path: Path, fake_claude: Path) -> None:
-    # The text only narrates the failure: refusing the hook over it would leave the turn waiting on an end already posted.
+async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path) -> None:
+    # Both only narrate the failure: refusing the hook over either would leave the turn waiting on an end already posted.
     brain = await start(launch(tmp_path), list[Entry]().append)
     said, sink = failures()
     try:
         assert await brain.ask("fail blank", unasked) == BrainAnswered("p1", StopFailed("authentication_failed", None))
         assert await brain.ask("fail odd", unasked) == BrainAnswered("p2", StopFailed("server_error", None))
+        assert await brain.ask("fail unnamed", unasked) == BrainAnswered("p3", StopFailed(None, None))
     finally:
         logger.remove(sink)
         await brain.stop()
-    assert said == ["StopFailure carried last_assistant_message as dict, not a string, so the turn is told without its closing reply"]
+    assert said == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
 
 
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
@@ -768,8 +769,8 @@ def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_st
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    # An error that is not text: the hook is logged and passed over, never raised out of the loop that hears hooks.
-    brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": "p1", "error": {"kind": "odd"}}).encode())  # pyright: ignore[reportPrivateUsage]
+    # A prompt id that is not text names no turn: the hook is logged and passed over, never raised out of the loop that hears hooks.
+    brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": {"id": "p1"}, "error": "unknown"}).encode())  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:

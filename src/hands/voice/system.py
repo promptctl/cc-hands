@@ -69,8 +69,10 @@ def system_text(fact: SystemFact) -> str:
             return f"The language model failed: {category.value.replace('_', ' ')}."
         case StopFailed(message=str() as message):
             return f"The brain failed: {message.removesuffix('.')}."
-        case StopFailed(kind=kind):
+        case StopFailed(kind=str() as kind):
             return f"The brain failed: {kind.replace('_', ' ')}."
+        case StopFailed():
+            return "The brain failed, and Claude Code did not say why."
         case ModelReplyEmpty():
             return "The language model sent back nothing."
         case ModelActedUntold():

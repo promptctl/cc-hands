@@ -7,16 +7,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class StopFailed:
-    """What Claude Code's StopFailure hook says failed a turn: the kind of error, always sent, and the error text it
-    showed, when it showed one. Where the wire named no cause, a turn that failed in Claude Code before the API answered
-    it, as an expired login does, this is the only account of why."""
+    """What Claude Code's StopFailure hook says failed a turn: the kind of error, and the error text it showed. Its
+    contract always sends the kind and may not show text; either missing is None, since the hook is never refused over
+    what only narrates its turn. Where the wire named no cause, a turn that failed in Claude Code before the API
+    answered it, as an expired login does, this is the only account of why."""
 
-    kind: str
+    kind: str | None
     message: str | None
 
     def __str__(self) -> str:
-        match self.message:
-            case str() as message:
-                return f"{self.kind}: {message}"
-            case None:
-                return self.kind
+        match (self.kind, self.message):
+            case (str() as kind, str() as message):
+                return f"{kind}: {message}"
+            case (str() as kind, None):
+                return kind
+            case (None, str() as message):
+                return message
+            case (None, None):
+                return "no error named"
