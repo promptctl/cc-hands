@@ -13,14 +13,15 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import get_args
 
 from hands.core.wire import Exchanged
-from hands.sessions.audit import Exported, Logged, Primed, Refocused, SettingsEdited, TypingFailed
+from hands.sessions.audit import Exported, Logged, Primed, Refocused, SettingsEdited, Severity, TypingFailed
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import WideEvent
 
 # The levels of the lines a group is made of: every other line is the log telling what went right.
-_FILED = ("error", "warning")
+_FILED = get_args(Severity)
 
 # Text in quotes, a byte literal's among them, opened where no word runs into the quote, so "session's" opens none; a
 # quote never closed, as a cut excerpt's is, runs to the end.
@@ -87,12 +88,14 @@ class Group:
 @dataclass(frozen=True)
 class Read:
     """The log as groups, and what reading it took: its lines, those that were not JSON objects, the warning and error
-    lines whose fields this hands cannot read, and the first and last time read, None for a log with no line."""
+    lines whose fields this hands cannot read, the failed units that told again a failure of one inside them, and the
+    first and last time read, None for a log with no line."""
 
     groups: tuple[Group, ...]
     lines: int
     unreadable: int
     unparsed: int
+    retold: int
     oldest: datetime | None
     newest: datetime | None
 
@@ -166,10 +169,28 @@ def _cause(kind: str, line: Payload) -> tuple[str, str, bool]:
     return origin, normalised(said), True
 
 
+def _retold(kind: str, line: Payload, failed_inside: set[tuple[str, str]]) -> bool:
+    """Whether a unit's line tells again how a unit inside it failed, which that unit's own line told first: one cause,
+    whose sighting is the innermost unit's. A unit's line is written as it ends, so a unit inside another is read first,
+    and notes the unit around it in `failed_inside`, by trace and span.
+    """
+    if kind != WideEvent.__name__:
+        return False
+    try:
+        trace, span, parent = line.text("trace_id"), line.text("span_id"), line.optional_text("parent_id")
+    except Rejected:
+        # A span this hands cannot read places the line inside nothing: it is a sighting, read by its cause as any is.
+        return False
+    if parent is not None:
+        failed_inside.add((trace, parent))
+    return (trace, span) in failed_inside
+
+
 def read(lines: Iterable[str]) -> Read:
     """The warning and error lines among `lines`, oldest first, grouped by cause, the groups in the order each began."""
     sightings: dict[tuple[str, str], list[Sighting]] = {}
-    count = unreadable = unparsed = 0
+    failed_inside: set[tuple[str, str]] = set()
+    count = unreadable = unparsed = retold = 0
     oldest: datetime | None = None
     newest: datetime | None = None
     for text in lines:
@@ -186,9 +207,12 @@ def read(lines: Iterable[str]) -> Read:
         newest = at
         if level not in _FILED:
             continue
+        if _retold(kind, line, failed_inside):
+            retold += 1
+            continue
         origin, cause, parsed = _cause(kind, line)
         unparsed += 0 if parsed else 1
         sightings.setdefault((origin, cause), []).append(Sighting(origin, cause, at))
     groups = tuple(Group(origin, cause, tuple(seen)) for (origin, cause), seen in sightings.items())
-    return Read(groups, count, unreadable, unparsed, oldest, newest)
+    return Read(groups, count, unreadable, unparsed, retold, oldest, newest)
 

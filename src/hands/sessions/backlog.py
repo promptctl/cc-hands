@@ -336,10 +336,13 @@ async def adopt(project: Path, ticket: str, epic: str) -> None:
 
 
 async def file_ticket(project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
-    """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; what lit said of the ticket it
-    filed, its id first. Raises LitFailed when it fails."""
+    """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
+    the first word lit says. Raises LitFailed when it fails, or says no id."""
     filed = await _lit(project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description)
-    return filed.decode(errors="replace").strip()
+    said = filed.decode(errors="replace").split()
+    if not said:
+        raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
+    return said[0]
 
 
 async def comment(project: Path, ticket: str, body: str) -> None:

@@ -1,5 +1,6 @@
 """Warnings and errors from the audit log grouped by cause, and what `hands file-tickets` files for each group."""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ from typing import get_args
 import pytest
 
 from hands.daemon import cli
-from hands.sessions import audit, filing, grouping
+from hands.sessions import audit, backlog, filing, grouping
 from hands.sessions.audit import AuditLog, Entry, Logged, Transcribed
 from hands.sessions.backlog import parse_export
 
@@ -18,6 +19,8 @@ LIT = shutil.which("lit")
 real_lit = pytest.mark.skipif(LIT is None, reason="the tickets are lit's, so it is lit that is driven")
 
 START = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+# Where a ticket says the audit log is.
+LOGS = "~/.hands/audit"
 
 
 class Clock:
@@ -119,11 +122,11 @@ def test_each_group_no_ticket_has_is_a_new_ticket_and_the_same_lines_against_tho
     assert [type(each).__name__ for each in first] == ["New", "New"]
     # The tickets those make, as lit would hold them.
     filed = parse_export(export(
-        [issue("e", "0", None), *(issue(f"t{at}", f"{at + 1}", "open", filing.description(each.group)) for at, each in enumerate(first))],
+        [issue("e", "0", None), *(issue(f"t{at}", f"{at + 1}", "open", filing.description(each.group, LOGS)) for at, each in enumerate(first))],
         labels={f"t{at}": each.group.label for at, each in enumerate(first)},
     ))
     assert filing.filings(groups, filed) == ()
-    description = filing.description(first[0].group)
+    description = filing.description(first[0].group, LOGS)
     assert "hands logged this 3 times, from 2026-10-24T12:01:00.000+00:00 to 2026-10-24T12:05:00.000+00:00" in description
     assert description.endswith(f"Last seen: 2026-10-24T12:05:00.000+00:00 ({first[0].group.label})")
 
@@ -132,11 +135,11 @@ def test_a_ticket_carries_none_of_the_line_and_the_command_it_gives_reads_the_li
     clock = Clock()
     write_audit(tmp_path / "audit", clock)
     [copy, _] = groups_of(tmp_path)
-    description = filing.description(copy)
+    description = filing.description(copy, str(tmp_path / "audit"))
     # lit's tickets are pushed with the repository: no id, path, or excerpt a line said leaves the machine.
     assert not any(said in description for said in ("ee909f6e", "/Users/someone", "0d8d2611", '"kind"', "/x/tap.py"))
     [command] = [line for line in description.splitlines() if line.startswith("grep ")]
-    found = subprocess.run(command.replace("~/.hands/audit", str(tmp_path / "audit")), shell=True, check=True, capture_output=True, text=True).stdout
+    found = subprocess.run(command, shell=True, check=True, capture_output=True, text=True).stdout
     assert [json.loads(line)["message"].split(" ")[5] for line in found.splitlines()] == ["ee909f6e-b7ac-4256-9af5-a55e54d100d3's", "0d8d2611-26bc-4663-94ed-87b5c47ee882's"]
 
 
@@ -144,7 +147,7 @@ def test_a_group_seen_again_is_a_comment_on_its_open_ticket_and_a_new_ticket_onc
     clock = Clock()
     log = write_audit(tmp_path / "audit", clock)
     [copy, git] = groups_of(tmp_path)
-    told = {"t1": filing.description(copy), "t2": filing.description(git)}
+    told = {"t1": filing.description(copy, LOGS), "t2": filing.description(git, LOGS)}
     log.record(broke("4ce425fb-670d-4936-b5c2-f9b045875d8d", "/tmp/d.jsonl", 9))
     log.record(Logged(level="warning", source="hands.sessions.delta:_git", message="git add in /code/y did not answer in 0.2s", where="/x/delta.py:515", trace=()))
     again = groups_of(tmp_path)
@@ -154,13 +157,13 @@ def test_a_group_seen_again_is_a_comment_on_its_open_ticket_and_a_new_ticket_onc
     ))
     [comment, new] = filing.filings(again, held)
     assert isinstance(comment, filing.Again) and comment.ticket == "t1" and len(comment.group.sightings) == 1
-    assert filing.comment(comment.group).startswith("Seen again once, from 2026-10-24T12:06:00.000+00:00 to 2026-10-24T12:06:00.000+00:00.")
+    assert filing.comment(comment.group, LOGS).startswith("Seen again once, from 2026-10-24T12:06:00.000+00:00 to 2026-10-24T12:06:00.000+00:00.")
     # Only what came after the closed ticket's last sighting is the new ticket's.
     assert isinstance(new, filing.New) and [sighting.at for sighting in new.group.sightings] == [START + timedelta(minutes=7)]
     # A comment's Last seen line moves the cursor as a description's does.
     commented = parse_export(export(
-        [issue("e", "0", None), issue("t1", "1", "open", told["t1"]), issue("t3", "3", "open", filing.description(new.group))],
-        labels={"t1": copy.label, "t3": git.label}, comments=[("t1", filing.comment(comment.group))],
+        [issue("e", "0", None), issue("t1", "1", "open", told["t1"]), issue("t3", "3", "open", filing.description(new.group, LOGS))],
+        labels={"t1": copy.label, "t3": git.label}, comments=[("t1", filing.comment(comment.group, LOGS))],
     ))
     assert filing.filings(again, commented) == ()
 
@@ -173,7 +176,7 @@ def test_a_group_whose_ticket_was_closed_into_another_is_a_comment_on_that_one(t
     log.record(broke("4ce425fb-670d-4936-b5c2-f9b045875d8d", "/tmp/d.jsonl", 9))
     again = groups_of(tmp_path)
     held = parse_export(export(
-        [issue("e", "0", None), issue("t1", "1", "closed", filing.description(copy), resolution=resolution, redirect_target="t9"), issue("t9", "2", "open")],
+        [issue("e", "0", None), issue("t1", "1", "closed", filing.description(copy, LOGS), resolution=resolution, redirect_target="t9"), issue("t9", "2", "open")],
         labels={"t1": copy.label},
     ))
     [comment] = [each for each in filing.filings(again, held) if each.group.label == copy.label]
@@ -185,7 +188,7 @@ def test_an_archived_ticket_still_says_how_far_its_group_was_told(tmp_path: Path
     write_audit(tmp_path / "audit", clock)
     groups = groups_of(tmp_path)
     archived = parse_export(export(
-        [issue("e", "0", None), *(issue(f"t{at}", f"{at + 1}", "closed", filing.description(group), archived_at="2026-10-24T14:00:00Z") for at, group in enumerate(groups))],
+        [issue("e", "0", None), *(issue(f"t{at}", f"{at + 1}", "closed", filing.description(group, LOGS), archived_at="2026-10-24T14:00:00Z") for at, group in enumerate(groups))],
         labels={f"t{at}": group.label for at, group in enumerate(groups)},
     ))
     assert archived.tickets.keys() == {"e"}
@@ -200,10 +203,10 @@ def test_two_groups_closed_into_one_ticket_keep_their_own_cursors(tmp_path: Path
     later = next(group for group in groups_of(tmp_path) if group.label == copy.label)
     # The git group was last told after the copy group's new sighting; its line on the shared ticket is not the copy group's.
     held = parse_export(export(
-        [issue("e", "0", None), issue("t1", "1", "closed", filing.description(copy), resolution="duplicate", redirect_target="t9"),
+        [issue("e", "0", None), issue("t1", "1", "closed", filing.description(copy, LOGS), resolution="duplicate", redirect_target="t9"),
          issue("t2", "2", "closed", "", resolution="duplicate", redirect_target="t9"), issue("t9", "3", "open")],
         labels={"t1": copy.label, "t2": git.label},
-        comments=[("t9", f"Last seen: 2026-10-24T13:00:00+00:00 ({git.label})")],
+        comments=[("t9", f"Last seen: 2026-10-24T13:00:00.000+00:00 ({git.label})")],
     ))
     [comment] = filing.filings([later], held)
     assert isinstance(comment, filing.Again) and len(comment.group.sightings) == 1
@@ -256,9 +259,9 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
     # Each pass is one event, counting what it read and what came of it.
     passes = [line for line in map(json.loads, audit.forwards(home / "audit")) if line.get("event") == "tickets.file"]
     assert [line["counts"] for line in passes] == [
-        {"lines": 5, "unreadable": 0, "unparsed": 0, "sightings": 4, "groups": 2, "filed": 2, "commented": 0, "unchanged": 0},
-        {"lines": 7, "unreadable": 0, "unparsed": 0, "sightings": 4, "groups": 2, "filed": 0, "commented": 0, "unchanged": 2},
-        {"lines": 10, "unreadable": 0, "unparsed": 0, "sightings": 5, "groups": 2, "filed": 0, "commented": 1, "unchanged": 1},
+        {"lines": 5, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 4, "groups": 2, "filed": 2, "commented": 0, "unchanged": 0},
+        {"lines": 7, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 4, "groups": 2, "filed": 0, "commented": 0, "unchanged": 2},
+        {"lines": 10, "unreadable": 0, "unparsed": 0, "retold": 0, "sightings": 5, "groups": 2, "filed": 0, "commented": 1, "unchanged": 1},
     ]
     assert passes[0]["facts"]["oldest"] == "2026-10-24T12:01:00.000+00:00" and passes[0]["facts"]["epic"] == epic
 
@@ -273,4 +276,47 @@ def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_pat
     assert bugs(repository) == []
     [event] = [line for line in map(json.loads, audit.forwards(home / "audit")) if line.get("event") == "tickets.file"]
     assert (event["outcome"], event["error"]) == ("failed", f"the backlog in {repository} lists no epic no-such-epic")
+    # The command failed because the pass inside it did: one cause, and the next pass files it once.
+    found = grouping.read(audit.forwards(home / "audit"))
+    assert [group.origin for group in found.groups].count("tickets.file") == 1
+    assert "hands.command" not in [group.origin for group in found.groups] and found.retold == 1
 
+
+
+def unit(event: str, span: str, parent: str | None, at: int, error: str | None) -> str:
+    """A unit of work's line in trace t, failed where it says an error."""
+    return json.dumps({
+        "at": f"2026-10-24T12:{at:02d}:00.000+00:00", "level": "info" if error is None else "error", "type": "WideEvent",
+        "event": event, "trace_id": "t", "span_id": span, "parent_id": parent, "outcome": "ok" if error is None else "failed", "error": error,
+    })
+
+
+def test_a_failed_unit_is_a_sighting_of_its_own_unless_a_unit_inside_it_failed_first() -> None:
+    nested = grouping.read([unit("inner", "c", "b", 1, "broke"), unit("middle", "b", "a", 2, "broke"), unit("hands.command", "a", None, 3, "exited 1: broke")])
+    assert [(group.origin, group.cause) for group in nested.groups] == [("inner", "broke")] and nested.retold == 2
+    # A unit inside it that went right leaves the failure the outer unit's own.
+    alone = grouping.read([unit("inner", "c", "a", 1, None), unit("hands.command", "a", None, 2, "exited 2: undone")])
+    assert [group.origin for group in alone.groups] == ["hands.command"] and alone.retold == 0
+
+
+def test_a_last_seen_line_the_pass_did_not_write_is_not_read_as_one(tmp_path: Path) -> None:
+    write_audit(tmp_path / "audit", Clock())
+    [copy, _] = groups_of(tmp_path)
+    for said in (f"Last seen: yesterday ({copy.label})", f"Last seen: 2026-10-24T13:00:00 ({copy.label})"):
+        held = parse_export(export([issue("e", "0", None), issue("t1", "1", "open", said)], labels={"t1": copy.label}))
+        [again] = filing.filings([copy], held)
+        assert isinstance(again, filing.Again) and again.group.sightings == copy.sightings
+
+
+def test_a_ticket_names_the_audit_log_under_the_users_home_by_tilde_and_elsewhere_whole() -> None:
+    assert filing.where(Path("/Users/someone/.hands/audit"), Path("/Users/someone")) == "~/.hands/audit"
+    assert filing.where(Path("/opt/hands/audit"), Path("/Users/someone")) == "/opt/hands/audit"
+
+
+def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def silent(project: Path, *arguments: str) -> bytes:
+        return b"\n"
+
+    monkeypatch.setattr(backlog, "_lit", silent)
+    with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
+        asyncio.run(backlog.file_ticket(tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))

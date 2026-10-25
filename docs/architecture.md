@@ -2194,9 +2194,11 @@ thing that failed `[LAW:no-silent-failure]`:
    the system channel writes `Announced` with whether it spoke or posted; each thing a
    session gives hands to say unasked is an `utterance` wide event, from heard to its fate; and a
    loguru sink turns every warning and error the terminal shows into a `Logged` line at its level, so the terminal's
-   warnings and errors are the log's (`audit.logged_to`, set up with the terminal by `cli.logging_to` for the daemon and
-   every command). `hands file-tickets <epic>` (`hands.sessions.grouping`, `hands.sessions.filing`) groups the log's
-   warning and error lines by cause and files a ticket for each group no open ticket has, keeping where each group was
+   warnings and errors are the log's (`audit.logged_to`, set up with the terminal by `cli.logging_to` for every hands
+   process, the terminal first, so what opening the log warns of is shown). `hands file-tickets <epic>`
+   (`hands.sessions.grouping`, `hands.sessions.filing`) groups the log's warning and error lines by cause, a failed unit
+   of work whose failure was a unit's inside it counted as `retold` and grouped as that unit, and files a ticket for
+   each group no open ticket has, keeping where each group was
    last told on its tickets, as their `Last seen` line, so it files nothing twice. A dictation is
    traced from the words to the readback: `Transcribed`, then the `tool.run` of
    `stage_draft` with what hands said back, which no model rewords. The log watches

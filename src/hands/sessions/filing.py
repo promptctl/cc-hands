@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 
 from hands.sessions.backlog import Backlog, Ticket
 from hands.sessions.grouping import Group
@@ -21,7 +22,11 @@ from hands.sessions.grouping import Group
 # How long a ticket's title is: its origin and cause, cut.
 TITLE_CHARS = 120
 
-_LAST_SEEN = re.compile(r"^Last seen: (?P<at>\S+) \((?P<label>audit-[0-9a-f]+)\)$", re.MULTILINE)
+# [LAW:parse-dont-validate] the line exactly as _last_seen writes it, a Sighting's stamp to the millisecond with its
+# offset, so a line a person wrote otherwise is no line of the pass's, and every one read is a time with a zone.
+_LAST_SEEN = re.compile(
+    r"^Last seen: (?P<at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}) \((?P<label>audit-[0-9a-f]{12})\)$", re.MULTILINE
+)
 
 
 @dataclass(frozen=True)
@@ -61,15 +66,15 @@ def _filing(group: Group, backlog: Backlog) -> Filing | None:
 def _standing(group: Group, backlog: Backlog) -> tuple[Ticket, ...]:
     """The tickets that have the group, in rank order: those carrying its label, and each ticket one was closed into,
     as far down the chain of closings as it goes. A chain that comes back on itself ends at the first ticket met twice."""
-    standing: dict[str, Ticket] = {}
+    standing: set[str] = set()
     for ticket in (ticket for ticket in backlog.kept.values() if group.label in ticket.labels):
         while ticket.id not in standing:
-            standing[ticket.id] = ticket
+            standing.add(ticket.id)
             if ticket.redirect_target is None or ticket.redirect_target not in backlog.kept:
                 break
             ticket = backlog.kept[ticket.redirect_target]
-    rank = {id: at for at, id in enumerate(backlog.kept)}
-    return tuple(sorted(standing.values(), key=lambda ticket: rank[ticket.id]))
+    # The backlog keeps its tickets in rank order.
+    return tuple(ticket for ticket in backlog.kept.values() if ticket.id in standing)
 
 
 def _seen(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
@@ -86,13 +91,18 @@ def title(group: Group) -> str:
     return whole if len(whole) <= TITLE_CHARS else f"{whole[: TITLE_CHARS - 1]}…"
 
 
-def description(group: Group) -> str:
+def where(directory: Path, home: Path) -> str:
+    """The audit log's directory as a ticket names it: under ~ when it is in the user's `home`, whose path is theirs."""
+    return f"~/{directory.relative_to(home)}" if directory.is_relative_to(home) else str(directory)
+
+
+def description(group: Group, logs: str) -> str:
     """A new ticket's description: what the group is, how often and when it was seen, and how to read its lines.
 
     [LAW:effects-at-boundaries] the lines stay in the audit log, on this machine: lit's tickets are pushed with the
     repository, and the log's lines hold what the user said and what each session did, which is the user's alone
     (audit.AuditLog keeps it so). A ticket carries only the group's origin and cause, whose ids, paths, and quoted
-    text are normalised away, and the command that reads its lines where they are.
+    text are normalised away, and the command that reads its lines where they are, in `logs`.
     """
     return f"""hands logged this {_times(group)}, from {group.first.stamp} to {group.last.stamp}, in its audit log. Filed by \
 `hands file-tickets`, which groups the log's warnings and errors by cause: where each came from and what it said, with \
@@ -101,26 +111,26 @@ ids, paths, times, numbers, and quoted text normalised.
 Origin: {group.origin}
 Cause: {group.cause}
 
-{_lines(group)}
+{_lines(group, logs)}
 
 {_last_seen(group)}"""
 
 
-def comment(group: Group) -> str:
+def comment(group: Group, logs: str) -> str:
     """A comment on the ticket that has the group: how often and when it was seen since, and how to read its lines."""
     return f"""Seen again {_times(group)}, from {group.first.stamp} to {group.last.stamp}.
 
-{_lines(group)}
+{_lines(group, logs)}
 
 {_last_seen(group)}"""
 
 
-def _lines(group: Group) -> str:
+def _lines(group: Group, logs: str) -> str:
     """The command that prints the first and newest of the group's lines from the audit log, which they never leave."""
     return f"""The first and newest of these lines, with their facts and traces, on the machine that logged them:
 
 ```sh
-grep -h -e '"at": "{group.first.stamp}"' -e '"at": "{group.last.stamp}"' ~/.hands/audit/*.jsonl
+grep -h -e '"at": "{group.first.stamp}"' -e '"at": "{group.last.stamp}"' {logs}/*.jsonl
 ```"""
 
 

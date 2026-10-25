@@ -495,10 +495,10 @@ def logged_to(record: Record, shown: "Callable[[LogRecord], bool]") -> int:
     filter: loguru asks it before it takes the sink's lock, so the log's own failure, logged from inside the sink, is
     refused there rather than met by the lock the sink holds.
     """
-    floor = logger.level("WARNING").no
+    error = logger.level("ERROR").no
 
     def admitted(logged: "LogRecord") -> bool:
-        return logged["level"].no >= floor and _UNLOGGED not in logged["extra"] and shown(logged)
+        return _UNLOGGED not in logged["extra"] and shown(logged)
 
     def sink(message: "Message") -> None:
         logged = message.record
@@ -506,7 +506,7 @@ def logged_to(record: Record, shown: "Callable[[LogRecord], bool]") -> int:
         detail = "" if exception is None or exception.value is None else f": {type(exception.value).__name__}: {exception.value}"
         record(
             Logged(
-                level="error" if logged["level"].no >= logger.level("ERROR").no else "warning",
+                level="error" if logged["level"].no >= error else "warning",
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",

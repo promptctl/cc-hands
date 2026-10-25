@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from loguru import logger
 
+from hands.daemon import cli
 from hands.daemon.cli import main
 from hands.sessions import heartbeat, marketplace
 from hands.sessions.audit import segment
@@ -179,3 +180,13 @@ def test_a_command_logs_to_every_sink_there_was_before_it_and_leaves_them_as_the
     # The command's own audit sink kept it while it ran.
     logged = [line for line in map(json.loads, segment(home.audit, 0).read_text().splitlines()) if line["type"] == "Logged"]
     assert [(line["level"], line["message"]) for line in logged] == [("warning", "warned inside the command")]
+
+
+def test_what_opening_the_audit_log_warns_of_is_shown_on_the_terminal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def refused(self: Path, mode: int) -> None:
+        raise PermissionError(f"not {self}'s owner")
+
+    monkeypatch.setattr(Path, "chmod", refused)
+    with cli.logging_to(Home(tmp_path)):
+        pass
+    assert "cannot be made the user's alone" in capsys.readouterr().err

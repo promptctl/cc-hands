@@ -92,17 +92,19 @@ def to_terminal(stream: TextIO) -> tuple[int, int]:
 
 
 @contextmanager
-def logging_to(record: audit.Record) -> Generator[None]:
-    """[LAW:single-enforcer] the one logging setup of a hands process, the daemon's and each command's: the terminal, and
-    the audit log beside it keeping every warning and error the terminal shows, through `record`, for as long as it is
-    held.
+def logging_to(home: Home) -> Generator[audit.AuditLog]:
+    """[LAW:single-enforcer] the one logging setup of every hands process: the terminal, and `home`'s audit log beside it
+    keeping every warning and error the terminal shows, for as long as it is held; the audit log.
 
-    [LAW:no-ambient-temporal-coupling] it lets go of exactly the sinks it added, and of no other: what logs after it is
-    as before it, whatever ran first. loguru's own default sink is `entry`'s to let go of, once a process.
+    [LAW:no-ambient-temporal-coupling] the terminal comes first, so what opening the log warns of is shown; and it lets
+    go of exactly the sinks it added, and of no other: what logs after it is as before it, whatever ran first. loguru's
+    own default sink is `entry`'s to let go of, once a process.
     """
-    added = (*to_terminal(sys.stderr), audit.logged_to(record, on_terminal))
+    added = list(to_terminal(sys.stderr))
     try:
-        yield
+        audit_log = audit_log_of(home)
+        added.append(audit.logged_to(audit_log.record, on_terminal))
+        yield audit_log
     finally:
         for sink in added:
             logger.remove(sink)
@@ -211,13 +213,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 2
-    match arguments.command:
-        case "run":
-            return run_daemon(home, arguments.restarted, arguments.model)
-        case "tmux-status":
-            return show_segment(home)
-        case _:
-            return commanded(home, arguments)
+    # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs.
+    with logging_to(home) as audit_log:
+        match arguments.command:
+            case "run":
+                return run_daemon(home, audit_log, arguments.restarted, arguments.model)
+            case "tmux-status":
+                return show_segment(home)
+            case _:
+                return commanded(home, audit_log.record, arguments)
 
 
 def model_id(text: str) -> str:
@@ -227,7 +231,7 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
+def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
@@ -237,51 +241,47 @@ def run_daemon(home: Home, restarted: int | None, model: str | None) -> int:
     # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
     run_start.heard(model_flag=model)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
-    audit_log = audit_log_of(home)
-    # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs: the
-    # run's start, its refusal, the indicator it retires and reaps.
-    with logging_to(audit_log.record):
-        # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
-        # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
-        # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
-        # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
-        held: heartbeat.Heart | None = None
-        with run_start.ending(audit_log.record):
-            try:
-                hold(home)
-                held = None if restarted is None else heart
-                # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
-                # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
-                after_crash = restarted is None and crashed_before(home)
-                run_start.heard(after_crash=after_crash)
-                settings = door(home, run_start, model)
-            except CannotStart as cannot:
-                run_start.ended(audit_log.record, cannot)
-                refuse(cannot, held)
+    # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
+    # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
+    # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
+    # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
+    held: heartbeat.Heart | None = None
+    with run_start.ending(audit_log.record):
+        try:
+            hold(home)
+            held = None if restarted is None else heart
+            # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
+            # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
+            after_crash = restarted is None and crashed_before(home)
+            run_start.heard(after_crash=after_crash)
+            settings = door(home, run_start, model)
+        except CannotStart as cannot:
+            run_start.ended(audit_log.record, cannot)
+            refuse(cannot, held)
+            return 1
+        try:
+            ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+        except* CannotStart as cannot:
+            # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
+            # refused once, and said so even where another error raised with it is raised on past this block.
+            match cannot.exceptions:
+                case (CannotStart() as reason,):
+                    refuse(reason, heart)
+                    ran = reason
+                case _:
+                    raise
+        match ran:
+            case CannotStart():
                 return 1
-            try:
-                ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
-            except* CannotStart as cannot:
-                # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
-                # refused once, and said so even where another error raised with it is raised on past this block.
-                match cannot.exceptions:
-                    case (CannotStart() as reason,):
-                        refuse(reason, heart)
-                        ran = reason
-                    case _:
-                        raise
-            match ran:
-                case CannotStart():
-                    return 1
-                case ("quit", _):
-                    return 0
-                case ("restart", shown):
-                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
-                    # one argument, so an id that begins with a dash is never read as an option.
-                    again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
+            case ("quit", _):
+                return 0
+            case ("restart", shown):
+                # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
+                # one argument, so an id that begins with a dash is never read as an option.
+                again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(home: Home, arguments: argparse.Namespace) -> int:
+def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -290,8 +290,7 @@ def commanded(home: Home, arguments: argparse.Namespace) -> int:
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
     collector, or on a config.toml the daemon has yet to accept.
     """
-    record = audit_log_of(home).record
-    with logging_to(record), wide.unit("hands.command", record):
+    with wide.unit("hands.command", record):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
         ended = dispatch(home, arguments, record)
@@ -965,8 +964,9 @@ def tail_log(home: Home, lines: int) -> Literal[0]:
 
 
 # What a pass of file-tickets counts: the log's lines, those that were no JSON object, the warning and error lines whose
-# fields this hands cannot read, each warning and error sighted, their groups, and what came of each group.
-FILED_COUNTS = ("lines", "unreadable", "unparsed", "sightings", "groups", "filed", "commented", "unchanged")
+# fields this hands cannot read, the failed units that told again a failure inside them, each warning and error
+# sighted, their groups, and what came of each group.
+FILED_COUNTS = ("lines", "unreadable", "unparsed", "retold", "sightings", "groups", "filed", "commented", "unchanged")
 
 
 def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
@@ -983,16 +983,16 @@ def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> 
         found = grouping.read(audit.forwards(home.audit))
         wide.annotate(oldest=found.oldest, newest=found.newest)
         wide.count(
-            lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed,
+            lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed, retold=found.retold,
             sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
         )
-        ended = asyncio.run(_filed(project, epic, found.groups))
+        ended = asyncio.run(_filed(project, epic, found.groups, filing.where(home.audit, Path.home())))
         if isinstance(ended, exits.Failed):
             wide.fail(ended.why)
     return ended
 
 
-async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group]) -> exits.Exit:
+async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:
@@ -1013,11 +1013,11 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group]) -> 
         try:
             match each:
                 case filing.New(group=group):
-                    said = await backlog.file_ticket(project, epic, under.topic, filing.title(group), filing.description(group), group.label)
+                    filed = await backlog.file_ticket(project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
                     wide.count(filed=1)
-                    print(f"filed {said.splitlines()[0]}".translate(VISIBLE))
+                    print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
-                    await backlog.comment(project, ticket, filing.comment(group))
+                    await backlog.comment(project, ticket, filing.comment(group, logs))
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:
