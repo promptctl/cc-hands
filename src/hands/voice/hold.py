@@ -102,7 +102,7 @@ def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
     """The hold after `event`, and what it does: most keystrokes do nothing."""
     match hold, event:
         # A press is a fresh start whatever came before: one that finds the key already down proves a release went by
-        # unseen, while macOS had the tap switched off, and a turn still open is sent, as that release would have sent it.
+        # unseen, and a turn still open is sent, as that release would have sent it.
         case Talking(), Pressed(at=at):
             return Arming(at), ("stop", "arm")
         case _, Pressed(at=at):
