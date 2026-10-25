@@ -36,10 +36,10 @@ from hands.core.effects import Allow, Deny, Text
 from hands.core.session import Permission, PromptText, SessionId, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
+from hands.core.stopfailure import StopFailed
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, declared
 from hands.sessions.hooks import called, hook_output, narration
-from hands.core.stopfailure import StopFailed
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.typing import Typist, Untyped

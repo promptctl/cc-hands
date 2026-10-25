@@ -29,8 +29,8 @@ from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, 
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
-from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.core.stopfailure import StopFailed
+from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, located, onboard, pin, pinned_to
 
@@ -769,8 +769,14 @@ def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_st
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
-    # A prompt id that is not text names no turn: the hook is logged and passed over, never raised out of the loop that hears hooks.
-    brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": {"id": "p1"}, "error": "unknown"}).encode())  # pyright: ignore[reportPrivateUsage]
+    warned: list[str] = []
+    sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
+    try:
+        # A prompt id that is not text names no turn: the hook is logged and passed over, never raised out of the loop that hears hooks.
+        brain._hook(json.dumps({"hook_event_name": "StopFailure", "session_id": "b1", "prompt_id": {"id": "p1"}, "error": "unknown"}).encode())  # pyright: ignore[reportPrivateUsage]
+    finally:
+        logger.remove(sink)
+    assert [line.split(":")[0] for line in warned] == ["the brain posted a hook that does not parse"]
 
 
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
