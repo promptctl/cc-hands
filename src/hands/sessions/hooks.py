@@ -72,7 +72,7 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
         case "UserPromptSubmit":
             return Prompted(session, at, _mode(payload), _prompt(payload))
         case "Stop":
-            return Stopped(session, _closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
+            return Stopped(session, closing(payload), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
         case "PermissionRequest":
             return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":
@@ -160,8 +160,8 @@ def _option(option: object) -> Option:
     return Option(fields.text("label"), fields.optional_text("description") or None)
 
 
-def _closing(payload: Payload) -> str | None:
-    """The reply the turn closed with, as the Stop hook carries it, and None when it carries none."""
+def closing(payload: Payload) -> str | None:
+    """The text the turn closed with, as its Stop or StopFailure hook carries it, and None when it carries none."""
     match payload.fields.get("last_assistant_message"):
         case str() as text:
             return text
@@ -171,7 +171,7 @@ def _closing(payload: Payload) -> str | None:
             # Not refused, as a Stop that names no turn is: the prompt_id says which turn stopped, and the reply only
             # how that turn is narrated. Refusing the hook over the narration would lose the turn's telling, so the turn
             # is taken and the loud line says why it will be told without its last reply.
-            logger.error(f"Stop carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
+            logger.error(f"{payload.fields.get('hook_event_name')} carried last_assistant_message as {type(other).__name__}, not a string, so the turn is told without its closing reply")
             return None
 
 

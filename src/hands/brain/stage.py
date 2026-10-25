@@ -72,6 +72,7 @@ from hands.core.wire import (
     ToolAnswer,
     Unreadable,
     Unreached,
+    UsageLimitReached,
     streams,
     tool_answers,
     tool_input,
@@ -286,7 +287,7 @@ class _Turn:
     owing: bool = False
     # What the turn failed of, if it fails, as its latest request's answer told it: None until that answer names a cause,
     # and where it never does, Claude Code's StopFailure is the turn's only account of why.
-    failure: ModelFact | None = None
+    failure: ModelUnreachable | UsageLimitReached | ModelFailed | None = None
     # Waits out the turn's tool work to acknowledge it, which the turn's end cancels.
     acknowledging: asyncio.Task[None] = field(init=False)
     # Set at the turn's first call: its tool work has begun, and the wait to acknowledge it with it.

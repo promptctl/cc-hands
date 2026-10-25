@@ -90,6 +90,17 @@ def system_text(fact: SystemFact) -> str:
             return f"Audio moved: listening on {input_}, speaking on {output}."
 
 
+def _fault(fact: SystemFact) -> str:
+    """What recurs of a fact, which `SystemChannel._claim` keys its window on: the sentence it is said as, but for a
+    StopFailed the sentence of its kind alone. The text Claude Code showed is from outside, and can differ every time
+    the same failure happens; the kind is one of the closed set its hook names."""
+    match fact:
+        case StopFailed(kind=kind):
+            return system_text(StopFailed(kind, None))
+        case _:
+            return system_text(fact)
+
+
 @dataclass(frozen=True)
 class Say:
     fact: SystemFact
@@ -200,7 +211,7 @@ class SystemChannel:
 
     async def say(self, fact: SystemFact) -> None:
         text = system_text(fact)
-        if not self._claim(text):
+        if not self._claim(_fault(fact)):
             # Said and audited once already inside this window; the terminal is not where it is read again.
             return
         if self._tts.is_usable:
@@ -214,8 +225,8 @@ class SystemChannel:
     def _claim(self, fault: str) -> bool:
         """True when this fault may be said now, taking its window as it answers.
 
-        The fault is what recurs, and it comes from a closed set by construction — a sentence `system_text` built
-        from the `SystemFact` union, or `Post.fault` — never text from outside. Keyed on a sentence carrying a
+        The fault is what recurs, and it comes from a closed set by construction — a fact's `_fault`, or `Post.fault`
+        — never text from outside. Keyed on a sentence carrying a
         Pipecat error verbatim, this window would be taken afresh by every occurrence and would never once close.
 
         How often hands tries to reach the user and what the user was given are two different facts, kept apart:

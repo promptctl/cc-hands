@@ -224,6 +224,20 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
     assert recorded == [Announced("Speech recognition failed for that turn.", "speech")] * 9
 
 
+async def test_a_brain_failing_one_way_through_one_burst_is_said_once_however_its_words_differ() -> None:
+    """What Claude Code shows for a failure can name a request id or a time, so it differs every time the same failure
+    happens; the burst is the failure's kind, and a different kind is news."""
+    clock = Clock()
+    tts, _, channel = speaking(clock)
+    await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_1"))
+    await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_2"))
+    await channel.say(StopFailed("invalid_request", "Login expired · Run /login to sign in again"))
+    assert said(tts) == [
+        "The brain failed: API Error: Connection lost mid-response. req_1.",
+        "The brain failed: Login expired · Run /login to sign in again.",
+    ]
+
+
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
     """Nothing else is ever said while a model is down, so only time can end the burst. Suppressing until
     something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""

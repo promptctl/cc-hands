@@ -498,6 +498,19 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     ]
 
 
+async def test_a_stop_failure_whose_text_is_empty_or_not_text_still_ends_its_turn_by_its_kind(tmp_path: Path, fake_claude: Path) -> None:
+    # The text only narrates the failure: refusing the hook over it would leave the turn waiting on an end already posted.
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    said, sink = failures()
+    try:
+        assert await brain.ask("fail blank", unasked) == BrainAnswered("p1", StopFailed("authentication_failed", None))
+        assert await brain.ask("fail odd", unasked) == BrainAnswered("p2", StopFailed("server_error", None))
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["StopFailure carried last_assistant_message as dict, not a string, so the turn is told without its closing reply"]
+
+
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
