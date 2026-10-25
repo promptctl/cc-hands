@@ -175,9 +175,10 @@ async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Rec
 
 async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> None:
     """One copy read as it arrives, each event told as its bytes come, and the whole exchange told at its end."""
-    first = await reader.readline()
-    if not first:
-        # A fritter that dialled and went before it wrote: it counts the copy as lost, and says so with its next one.
+    first = await _line(reader)
+    if first is None:
+        # A fritter that dialled and went before it wrote its request whole: it counts the copy as lost, and says so with
+        # its next one. [LAW:one-source-of-truth] that count is the loss's one record.
         return
     # Off the loop: a request carries its session's whole history, megabytes on a long one, and the voice runs on this loop.
     request, sent = await asyncio.to_thread(_opened, first)
@@ -199,14 +200,23 @@ def _opened(raw: bytes) -> tuple[Request, Sent]:
             raise Rejected(f"a copy opened with a {type(other).__name__}, not its request")
 
 
+async def _line(reader: asyncio.StreamReader) -> bytes | None:
+    """The copy's next whole line, or None once the copy has ended."""
+    # [LAW:single-enforcer] the one place that says what a line of a copy is: one that ends in a newline. readline gives
+    # back the bytes before the end of the copy as a line of their own; they are where fritter stopped, partway through
+    # a line, when hands had not read for its write deadline or it ended.
+    raw = await reader.readline()
+    return raw if raw.endswith(b"\n") else None
+
+
 async def _next(reader: asyncio.StreamReader) -> Line | str:
     """The copy's next line, or why it has none."""
     try:
-        raw = await reader.readline()
+        raw = await _line(reader)
     except (OSError, ValueError) as error:
         # A connection reset, or a line longer than LINE_LIMIT.
         return f"the copy broke off: {error!r}"
-    if not raw:
+    if raw is None:
         return "the copy broke off: its fritter ended, or hands could not keep reading"
     try:
         return line_of(raw)
