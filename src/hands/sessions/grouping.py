@@ -140,8 +140,8 @@ def _said(field: str) -> Cause:
 # says what went wrong; a test holds this to every such kind in audit.Entry.
 CAUSES: Mapping[str, Cause] = {
     Logged.__name__: _logged,
-    # A Logged line's name before it held warnings: kept while the log can still hold one, two segments, under a week
-    # from 2026-10-24; then this line goes.
+    # A Logged line's name before it held warnings, kept while the log can still hold one: promptctl-warnings-2d80.9i6
+    # deletes it once none is left.
     "Failure": _logged,
     WideEvent.__name__: _event,
     Exchanged.__name__: _exchanged,
@@ -169,27 +169,31 @@ def _cause(kind: str, line: Payload) -> tuple[str, str, bool]:
     return origin, normalised(said), True
 
 
-def _retold(kind: str, line: Payload, failed_inside: set[tuple[str, str]]) -> bool:
+def _retold(kind: str, line: Payload, failed_inside: dict[tuple[str, str], set[str]]) -> bool:
     """Whether a unit's line tells again how a unit inside it failed, which that unit's own line told first: one cause,
-    whose sighting is the innermost unit's. A unit's line is written as it ends, so a unit inside another is read first,
-    and notes the unit around it in `failed_inside`, by trace and span.
+    whose sighting is the innermost unit's. It tells it again when its error ends on the inner one's, as an exception
+    raised on through both says the same, and a command's `exited <code>: <why>` says its pass's why; an error of its own
+    is a sighting of its own. A unit's line is written as it ends, so a unit inside another is read first, and notes
+    its error in `failed_inside` under the unit around it, by trace and span.
     """
     if kind != WideEvent.__name__:
         return False
     try:
-        trace, span, parent = line.text("trace_id"), line.text("span_id"), line.optional_text("parent_id")
+        trace, span, parent, error = line.text("trace_id"), line.text("span_id"), line.optional_text("parent_id"), line.optional_text("error")
     except Rejected:
         # A span this hands cannot read places the line inside nothing: it is a sighting, read by its cause as any is.
         return False
+    if error is None:
+        return False
     if parent is not None:
-        failed_inside.add((trace, parent))
-    return (trace, span) in failed_inside
+        failed_inside.setdefault((trace, parent), set()).add(error)
+    return any(error.endswith(inner) for inner in failed_inside.get((trace, span), ()))
 
 
 def read(lines: Iterable[str]) -> Read:
     """The warning and error lines among `lines`, oldest first, grouped by cause, the groups in the order each began."""
     sightings: dict[tuple[str, str], list[Sighting]] = {}
-    failed_inside: set[tuple[str, str]] = set()
+    failed_inside: dict[tuple[str, str], set[str]] = {}
     count = unreadable = unparsed = retold = 0
     oldest: datetime | None = None
     newest: datetime | None = None

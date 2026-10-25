@@ -2,8 +2,9 @@
 already has it, or nothing, read off what the backlog already holds.
 
 [LAW:one-source-of-truth] a group's tickets are where it stands: each carries its label, and each body the pass writes
-on one, its description or a comment, ends on the line `Last seen: <at> (<label>)`. The newest of those lines is how far
-the backlog has been told of the group, and only what the log holds after it is new. Nothing else keeps a cursor, so a
+on one, its description or a comment, ends on the line `Last seen: <at> (<label>)`. The newest of those lines, or of the
+times those tickets were closed, is how far the backlog has been told of the group: a ticket closed answers for every
+sighting before it. Only what the log holds after that is new. Nothing else keeps a cursor, so a
 run over the same log files nothing twice, and a ticket a person closes into another, as a duplicate or superseded,
 hands the group on to the ticket it was closed into.
 
@@ -11,11 +12,13 @@ Nothing here runs lit: it decides, and cli.py's file-tickets carries out what it
 """
 
 import re
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
+from hands.sessions.audit import SEGMENT_GLOB
 from hands.sessions.backlog import Backlog, Ticket
 from hands.sessions.grouping import Group
 
@@ -54,7 +57,7 @@ def filings(groups: Iterable[Group], backlog: Backlog) -> tuple[Filing, ...]:
 
 def _filing(group: Group, backlog: Backlog) -> Filing | None:
     tickets = _standing(group, backlog)
-    told = max((seen for ticket in tickets for seen in _seen(group, ticket, backlog)), default=None)
+    told = max((seen for ticket in tickets for seen in _told(group, ticket, backlog)), default=None)
     fresh = tuple(sighting for sighting in group.sightings if told is None or sighting.at > told)
     if not fresh:
         return None
@@ -77,8 +80,11 @@ def _standing(group: Group, backlog: Backlog) -> tuple[Ticket, ...]:
     return tuple(ticket for ticket in backlog.kept.values() if ticket.id in standing)
 
 
-def _seen(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
-    """Each time a body the pass wrote on `ticket` says the group was last seen."""
+def _told(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
+    """Each time `ticket` says the backlog was told of the group up to: when it was closed, and each time a body the
+    pass wrote on it says the group was last seen."""
+    if ticket.closed_at is not None:
+        yield ticket.closed_at
     bodies = (ticket.description, *(comment.body for comment in backlog.comments.get(ticket.id, ())))
     for body in bodies:
         for found in _LAST_SEEN.finditer(body):
@@ -92,8 +98,10 @@ def title(group: Group) -> str:
 
 
 def where(directory: Path, home: Path) -> str:
-    """The audit log's directory as a ticket names it: under ~ when it is in the user's `home`, whose path is theirs."""
-    return f"~/{directory.relative_to(home)}" if directory.is_relative_to(home) else str(directory)
+    """The audit log's segments as a ticket's shell command names them: under ~ when they are in the user's `home`,
+    whose path is theirs, and quoted so a space in it is no second word."""
+    under = f"~/{shlex.quote(str(directory.relative_to(home)))}" if directory.is_relative_to(home) else shlex.quote(str(directory))
+    return f"{under}/{SEGMENT_GLOB}"
 
 
 def description(group: Group, logs: str) -> str:
@@ -130,7 +138,7 @@ def _lines(group: Group, logs: str) -> str:
     return f"""The first and newest of these lines, with their facts and traces, on the machine that logged them:
 
 ```sh
-grep -h -e '"at": "{group.first.stamp}"' -e '"at": "{group.last.stamp}"' {logs}/*.jsonl
+grep -h -e '"at": "{group.first.stamp}"' -e '"at": "{group.last.stamp}"' {logs}
 ```"""
 
 

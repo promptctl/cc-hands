@@ -20,7 +20,7 @@ real_lit = pytest.mark.skipif(LIT is None, reason="the tickets are lit's, so it 
 
 START = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
 # Where a ticket says the audit log is.
-LOGS = "~/.hands/audit"
+LOGS = filing.where(Path("/Users/someone/.hands/audit"), Path("/Users/someone"))
 
 
 class Clock:
@@ -98,7 +98,8 @@ def test_every_kind_of_line_the_log_can_judge_a_warning_or_an_error_says_its_cau
 
 def issue(id: str, rank: str, status: str | None, description: str = "", **extra: object) -> dict[str, object]:
     made: dict[str, object] = {"id": id, "title": id, "description": description, "issue_type": "bug" if status else "epic", "topic": "warnings", "rank": rank, **extra}
-    return made if status is None else {**made, "status": status}
+    closed = {"closed_at": "2026-10-24T12:00:00Z"} if status == "closed" and "closed_at" not in extra else {}
+    return made if status is None else {**made, "status": status, **closed}
 
 
 def export(issues: list[dict[str, object]], labels: dict[str, str] = {}, comments: list[tuple[str, str]] = []) -> bytes:
@@ -135,7 +136,7 @@ def test_a_ticket_carries_none_of_the_line_and_the_command_it_gives_reads_the_li
     clock = Clock()
     write_audit(tmp_path / "audit", clock)
     [copy, _] = groups_of(tmp_path)
-    description = filing.description(copy, str(tmp_path / "audit"))
+    description = filing.description(copy, filing.where(tmp_path / "audit", Path("/Users/someone")))
     # lit's tickets are pushed with the repository: no id, path, or excerpt a line said leaves the machine.
     assert not any(said in description for said in ("ee909f6e", "/Users/someone", "0d8d2611", '"kind"', "/x/tap.py"))
     [command] = [line for line in description.splitlines() if line.startswith("grep ")]
@@ -297,6 +298,9 @@ def test_a_failed_unit_is_a_sighting_of_its_own_unless_a_unit_inside_it_failed_f
     # A unit inside it that went right leaves the failure the outer unit's own.
     alone = grouping.read([unit("inner", "c", "a", 1, None), unit("hands.command", "a", None, 2, "exited 2: undone")])
     assert [group.origin for group in alone.groups] == ["hands.command"] and alone.retold == 0
+    # An outer unit that failed of its own, after one inside it failed of another cause, is a sighting of each.
+    apart = grouping.read([unit("tool.call", "c", "a", 1, "the tool refused"), unit("brain.turn", "a", None, 2, "TimeoutError: no reply")])
+    assert [group.origin for group in apart.groups] == ["tool.call", "brain.turn"] and apart.retold == 0
 
 
 def test_a_last_seen_line_the_pass_did_not_write_is_not_read_as_one(tmp_path: Path) -> None:
@@ -308,9 +312,24 @@ def test_a_last_seen_line_the_pass_did_not_write_is_not_read_as_one(tmp_path: Pa
         assert isinstance(again, filing.Again) and again.group.sightings == copy.sightings
 
 
-def test_a_ticket_names_the_audit_log_under_the_users_home_by_tilde_and_elsewhere_whole() -> None:
-    assert filing.where(Path("/Users/someone/.hands/audit"), Path("/Users/someone")) == "~/.hands/audit"
-    assert filing.where(Path("/opt/hands/audit"), Path("/Users/someone")) == "/opt/hands/audit"
+def test_a_ticket_names_the_audit_logs_segments_under_the_users_home_by_tilde_and_elsewhere_whole_quoted() -> None:
+    assert filing.where(Path("/Users/someone/.hands/audit"), Path("/Users/someone")) == f"~/.hands/audit/{audit.SEGMENT_GLOB}"
+    assert filing.where(Path("/Users/someone/Library/Application Support/hands/audit"), Path("/Users/someone")) == f"~/'Library/Application Support/hands/audit'/{audit.SEGMENT_GLOB}"
+    assert filing.where(Path("/opt/hands/audit"), Path("/Users/someone")) == f"/opt/hands/audit/{audit.SEGMENT_GLOB}"
+
+
+def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_path: Path) -> None:
+    log = write_audit(tmp_path / "audit", Clock())
+    [copy, _] = groups_of(tmp_path)
+    log.record(broke("4ce425fb-670d-4936-b5c2-f9b045875d8d", "/tmp/d.jsonl", 9))
+    [later, _] = groups_of(tmp_path)
+    # Told up to 12:05, seen again at 12:06, and closed fixed at 12:30: nothing is new.
+    fixed = issue("t1", "1", "closed", filing.description(copy, LOGS), resolution="fixed", closed_at="2026-10-24T12:30:00Z")
+    assert filing.filings([later], parse_export(export([issue("e", "0", None), fixed], labels={"t1": copy.label}))) == ()
+    # Seen again after it was closed, it is a new ticket of what came after.
+    early = issue("t1", "1", "closed", filing.description(copy, LOGS), resolution="fixed", closed_at="2026-10-24T12:05:30Z")
+    [new] = filing.filings([later], parse_export(export([issue("e", "0", None), early], labels={"t1": copy.label})))
+    assert isinstance(new, filing.New) and [sighting.stamp for sighting in new.group.sightings] == ["2026-10-24T12:06:00.000+00:00"]
 
 
 def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

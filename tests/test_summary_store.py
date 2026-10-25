@@ -31,7 +31,7 @@ SID = SessionId("s1")
 
 def ticket(id: str, rank: str, title: str, description: str = "", status: str | None = "open", kind: str = "task") -> dict[str, object]:
     issue: dict[str, object] = {"id": id, "title": title, "description": description, "issue_type": kind, "topic": "voice", "rank": rank}
-    return issue if status is None else {**issue, "status": status}
+    return issue if status is None else {**issue, "status": status, **({"closed_at": "2026-10-19T10:00:00Z"} if status == "closed" else {})}
 
 
 def child(of: str, id: str) -> dict[str, object]:
@@ -320,7 +320,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
     async def fails(page: str) -> str:
         raise SummaryFailed("boom")
 
-    (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed"} if issue["id"] == "t1" else issue for issue in edited]))
+    (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed", "closed_at": "2026-10-19T10:00:00Z"} if issue["id"] == "t1" else issue for issue in edited]))
     await summarise_backlog(project, steadied, fails, records.append)
     passes = [record for record in records if isinstance(record, WideEvent)]
     assert [

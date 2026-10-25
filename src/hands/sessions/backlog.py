@@ -9,6 +9,7 @@ import asyncio
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, get_args
@@ -88,6 +89,8 @@ class Ticket:
     labels: frozenset[str]
     # The ticket lit closed this one into, as a duplicate of it or superseded by it; None for one it closed into none.
     redirect_target: str | None
+    # When lit closed it; None for a ticket open or in progress, and for an epic.
+    closed_at: datetime | None
 
     @property
     def text(self) -> str:
@@ -403,10 +406,19 @@ def _listed(issue: Payload) -> bool:
 
 
 def _ticket(issue: Payload, labels: frozenset[str]) -> Ticket:
+    status = _status(issue.optional_text("status"))
     return Ticket(
         issue.text("id"), issue.text("title"), issue.text("description"), issue.text("issue_type"), issue.text("topic"),
-        _status(issue.optional_text("status")), labels, issue.optional_text("redirect_target"),
+        status, labels, issue.optional_text("redirect_target"), _closed_at(issue) if status == "closed" else None,
     )
+
+
+def _closed_at(issue: Payload) -> datetime:
+    """[LAW:parse-dont-validate] when lit closed a closed ticket, which lit exports for every one."""
+    try:
+        return datetime.fromisoformat(issue.text("closed_at"))
+    except ValueError as error:
+        raise Rejected(f"a closed ticket's closed_at should be a time: {error}") from None
 
 
 def _status(status: str | None) -> Status | None:
