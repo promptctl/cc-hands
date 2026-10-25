@@ -12,7 +12,7 @@ import asyncio
 import datetime
 import json
 import ssl
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from functools import partial
 from importlib import resources
 from pathlib import Path
@@ -80,11 +80,11 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     return app
 
 
-async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record) -> Never:
+async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str]) -> Never:
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
     with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `brain`. The
     conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
-    page, its sentences read from `store`.
+    page, its sentences read from `store` and its writes run in `environment`, the one hands was started in.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
@@ -93,7 +93,7 @@ async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Await
     app = phone_app(phone, key, record)
     app.add_routes(brain_routes(brain, key, record))
     app.add_routes(conversation_routes(Conversation(home.audit), typed, key, record))
-    app.add_routes(backlog_routes(store, key, record))
+    app.add_routes(backlog_routes(store, key, record, environment))
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:

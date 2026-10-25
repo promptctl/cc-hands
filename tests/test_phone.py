@@ -565,7 +565,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(phone, IdleBrain(), nobody_types, SummaryStore(Sentences(home.sentences)), home, recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(phone, IdleBrain(), nobody_types, SummaryStore(Sentences(home.sentences)), home, recorded.append, {}))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -608,7 +608,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(phone, IdleBrain(), typing, SummaryStore(Sentences(tmp_path / "sentences.db")), Home(tmp_path), recorded.append))
+    serving = asyncio.create_task(phonepage.serve_phone(phone, IdleBrain(), typing, SummaryStore(Sentences(tmp_path / "sentences.db")), Home(tmp_path), recorded.append, {}))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)

@@ -295,7 +295,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start)
+                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start, environment)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -346,6 +346,7 @@ async def converse(
     triggers: Triggers,
     wake_word: Word,
     run_start: Start,
+    environment: Mapping[str, str],
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
@@ -448,7 +449,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record), name="the phone's page")
+                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()
