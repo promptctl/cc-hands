@@ -39,11 +39,18 @@ jobs:
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
       # The diarization tests run Nemotron 3 Diarization on real speech, fetched into the Hugging Face cache at the revision
       # diarization.py pins; kept the same way, for the same reason. The whole hub: a model's directory holds only links
-      # into the hub's shared store of blobs, where its weights are.
+      # into the hub's shared store of blobs, where its weights are. Keyed on the revision, the one thing the weights
+      # depend on, so an edit to the rest of diarization.py still finds them.
+      - name: The diarization model's pinned revision
+        id: nemotron
+        run: |
+          revision=$(sed -n 's/^REVISION = "\([0-9a-f]*\)"$/\1/p' src/hands/voice/diarization.py)
+          test -n "$revision" || { echo "src/hands/voice/diarization.py pins no REVISION this step can read" >&2; exit 1; }
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface/hub
-          key: nemotron-diarization-${{ hashFiles('src/hands/voice/diarization.py') }}
+          key: nemotron-diarization-${{ steps.nemotron.outputs.revision }}
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
