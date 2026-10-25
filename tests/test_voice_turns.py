@@ -1141,7 +1141,7 @@ def diarized(rig: Rig) -> list[WideEvent]:
 
 
 async def test_each_hold_the_key_sent_or_dropped_is_diarized_beside_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Stream(diarization.Model(heard_aloud, CHUNKING)))
+    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(heard_aloud, CHUNKING))
     async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
         # Three frames of 20 ms held down: the hold's audio, and the hold the key sent.
         await rig.hold(["down", "down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
@@ -1154,7 +1154,7 @@ async def test_each_hold_the_key_sent_or_dropped_is_diarized_beside_it(monkeypat
 
 
 async def test_a_hold_whose_diarization_breaks_still_sends_its_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Stream(diarization.Model(broken, CHUNKING)))
+    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(broken, CHUNKING))
     async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
         await rig.hold(["down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
         await rig.texts.put("what time is it")

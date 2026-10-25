@@ -1781,7 +1781,12 @@ frames a hold is made of, so each hold's `HoldHeard` line says its mean power in
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
 reply's echo left over reads loud captured and quiet heard, one of the room with nobody
 speaking reads quiet on both. A level is null for digital silence, and at the phone,
-heard through no canceller, the two are equal.
+heard through no canceller, the two are equal. Measured on
+2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
+nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
+one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept
+"Stop." in 8 of 8. The mute this replaced held the microphone shut until the reply's
+sound had died away, and lost that first word in 8 of 8.
 
 Who spoke in each hold is diarized beside it (`hands.voice.diarization`): NVIDIA's Nemotron 3
 Diarization, a Streaming Sortformer, on the CPU, in one stream for the run. While the key is
@@ -1792,12 +1797,10 @@ who has been heard from hold to hold, so speaker 0 is the first voice of the run
 hold. Each hold the key sent or dropped is one `diarization.hold` event: its fate, its
 speakers with the seconds each was heard, longest first, and how far behind the hold's
 speech they settled; a step that failed is the event's failure. Whisper never waits on it,
-and a hold still unsettled when the next ends is logged as diarization running behind. Measured on
-2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
-nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
-one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept
-"Stop." in 8 of 8. The mute this replaced held the microphone shut until the reply's
-sound had died away, and lost that first word in 8 of 8.
+and a hold still unsettled when the next ends is logged as diarization running behind. The
+model loads on the stream's own thread, as its first work (`diarization.loaded`), so the
+voice starts without it and holds spoken meanwhile wait their turn behind it; a model that
+fails to load fails that event and every hold's after it, with why.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed

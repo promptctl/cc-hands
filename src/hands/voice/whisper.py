@@ -162,12 +162,8 @@ class Whisper(SegmentedSTTService):
         with unit("whisper.loaded", record):
             transcription.load()
             annotate(model=transcription.MODEL)
-        # [LAW:nothing-unseen] the diarizer's load is a unit of its own beside the transcriber's.
-        with unit("diarization.loaded", record):
-            stream = diarization.load()
-            annotate(model=diarization.MODEL, revision=diarization.REVISION)
-        # Who spoke in each hold, told beside it: nothing Whisper does waits on it.
-        self._diarizer = diarization.Diarizer(stream, record)
+        # Who spoke in each hold, told beside it: nothing Whisper does waits on it, its model's load included.
+        self._diarizer = diarization.Diarizer(diarization.load, record)
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
@@ -311,8 +307,9 @@ class Whisper(SegmentedSTTService):
         opened.diarized = len(self._audio_buffer)
 
     async def cleanup(self) -> None:
-        await super().cleanup()
+        # First, so a hold unsettled is told however the cleanup after it ends.
         self._diarizer.stopped()
+        await super().cleanup()
 
     async def _overhear(self) -> None:
         """Queue the hold open to be heard, its last two hops, where its cut waits on words, none was heard in it yet, no

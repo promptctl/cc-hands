@@ -21,18 +21,17 @@ import numpy.typing as npt
 from loguru import logger
 
 from hands.sessions.audit import Record
-from hands.sessions.wide import Begun, begun, ended
+from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
+from hands.voice.transcription import RATE, decoded
 
 # The model, fetched from the Hugging Face hub into its cache on the first load, at the revision measured for it.
 MODEL = "nvidia/Nemotron-3-Diarization"
 REVISION = "f667ed73aee57d40cc39428eb768b4fd87a0a29e"
 
-# The model's streaming mode: 1.04 s of look-ahead past each step, the best-scoring of its streaming modes.
+# The model's streaming mode, the best-scoring of them: a step scores 0.72 s and looks 0.32 s past it, so a frame is
+# known 1.04 s after it is spoken at the latest.
 STREAMING_MODE = "low_latency"
-
-# The rate the model hears at; holds come at it already, mono 16-bit.
-RATE = 16_000
 
 # Samples to a 10 ms frame, the frame every speaker is scored in.
 FRAME = 160
@@ -97,7 +96,8 @@ class Diarized:
 
 @dataclass(frozen=True)
 class Undiarized:
-    """A hold whose speakers are not known, since a step scoring it failed; and how many steps scored it."""
+    """A hold whose speakers are not known, since a step scoring it failed or the model never loaded; and how many steps
+    scored it."""
 
     error: str
     steps: int
@@ -178,6 +178,20 @@ class Stream:
             self._samples, self._base = self._samples[kept:], self._base + kept
 
 
+@dataclass(frozen=True)
+class Unloaded:
+    """The run's diarization where the model did not load: nothing scores what it hears, and each hold ends undiarized
+    with why. [LAW:one-type-per-behavior] it hears and ends holds as a Stream does, so the Diarizer is the same either way."""
+
+    error: str
+
+    def heard(self, samples: Samples) -> None:
+        """Samples no model scores."""
+
+    def ended(self) -> Undiarized:
+        return Undiarized(self.error, 0)
+
+
 class Diarizer:
     """The run's stream on a thread of its own, and the one place each hold's diarization becomes an event.
 
@@ -186,18 +200,33 @@ class Diarizer:
     the same hold: the two are joined by its number.
     """
 
-    def __init__(self, stream: Stream, record: Record) -> None:
-        self._stream = stream
+    # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
+    _stream: Stream | Unloaded
+
+    def __init__(self, model: Callable[[], Model], record: Record) -> None:
         self._record = record
         # [LAW:no-ambient-temporal-coupling] one thread scores the run in the order it was spoken: a hold's end is queued
-        # behind its last audio and ahead of the next hold's first.
+        # behind its last audio and ahead of the next hold's first. The model loads there first, so holds spoken while it
+        # loads wait behind it, and nothing else does.
         self._thread = SerialThread("Diarization")
-        # The holds whose end is queued and whose speakers have not settled yet, oldest first, each as its unit began.
-        self._unsettled: dict[int, Begun] = {}
+        self._thread.give(lambda: self._load(model))
+        # The holds whose end is queued and whose speakers have not settled yet, oldest first, each as its unit began
+        # and with what the key did with it.
+        self._unsettled: dict[int, tuple[Begun, Fate]] = {}
+
+    def _load(self, model: Callable[[], Model]) -> None:
+        """The run's stream, on the model; or, where it fails to load, one that ends each hold undiarized with why.
+        [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
+        try:
+            with unit("diarization.loaded", self._record):
+                annotate(model=MODEL, revision=REVISION)
+                self._stream = Stream(model())
+        except Exception as error:
+            self._stream = Unloaded(f"the model did not load: {type(error).__name__}: {error}")
 
     def heard(self, audio: bytes) -> None:
         """Mono 16-bit audio of the hold open, scored behind everything given before it; this returns at once."""
-        samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / np.float32(32768)
+        samples = decoded(audio)
         self._thread.give(lambda: self._stream.heard(samples))
 
     def ended(self, hold: int, fate: Fate) -> None:
@@ -207,8 +236,9 @@ class Diarizer:
             # [LAW:nothing-unseen] a hold settles a fraction of a second after it ends, so one still unsettled as the next
             # ends is a stream at least a hold behind, or a step that never returned: said at every hold until it settles.
             logger.warning(f"the speakers of hold(s) {list(self._unsettled)} are not known yet as hold {hold} ends: diarization is behind")
-        self._unsettled[hold] = began = begun()
-        settled = self._thread.settles(self._stream.ended)
+        self._unsettled[hold] = (began := begun(), fate)
+        # Read on the thread, where the load has set it.
+        settled = self._thread.settles(lambda: self._stream.ended())
 
         def emitted(done: asyncio.Future[Diarized | Undiarized]) -> None:
             if self._unsettled.pop(hold, None) is None:
@@ -230,12 +260,12 @@ class Diarizer:
     def stopped(self) -> None:
         """The pipeline stops: a hold whose speakers have not settled ends cancelled, so its unit is told however it
         ends; its speakers, if they settle after, are no one's."""
-        for hold, began in self._unsettled.items():
-            ended("diarization.hold", self._record, began, asyncio.CancelledError(), hold=hold)
+        for hold, (began, fate) in self._unsettled.items():
+            ended("diarization.hold", self._record, began, asyncio.CancelledError(), hold=hold, fate=fate)
         self._unsettled.clear()
 
 
-def model() -> Model:
+def load() -> Model:
     """The model's step on the CPU, fetched if it never was, and how its processor cuts the samples for it.
 
     Loading it takes about 8 s the first time in a process, most of it importing torch and transformers, which only this
@@ -265,8 +295,3 @@ def model() -> Model:
     if (int(extractor.sampling_rate), int(extractor.hop_length)) != (RATE, FRAME):
         raise ValueError(f"{MODEL} hears {extractor.sampling_rate} Hz in frames of {extractor.hop_length}; hands diarizes {RATE} Hz in frames of {FRAME}")
     return Model(step, chunking)
-
-
-def load() -> Stream:
-    """A stream for the run, on the real model."""
-    return Stream(model())

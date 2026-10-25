@@ -103,7 +103,7 @@ def meeting(directory: Path, model: diarization.Model, name: str) -> None:
 def main() -> None:
     directory = Path(sys.argv[1])
     directory.mkdir(parents=True, exist_ok=True)
-    model = diarization.model()
+    model = diarization.load()
     one_person(directory, model)
     for name in MEETINGS:
         meeting(directory, model, name)

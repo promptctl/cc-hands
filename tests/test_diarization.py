@@ -16,6 +16,8 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice import diarization
 from hands.voice.diarization import Diarized, Diarizer, Model, Speech, Stream, Undiarized
+# The real load, bound before conftest stands a model that hears nobody in for it.
+from hands.voice.diarization import load as nemotron
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -138,7 +140,7 @@ def pcm(samples: diarization.Samples) -> bytes:
 
 async def test_each_hold_is_one_event_with_its_fate_speakers_and_steps() -> None:
     recorded: list[Entry] = []
-    diarizer = Diarizer(Stream(Model(Scripted(), CHUNKING)), recorded.append)
+    diarizer = Diarizer(lambda: Model(Scripted(), CHUNKING), recorded.append)
     diarizer.heard(pcm(said(0, 100)))
     diarizer.ended(1, "sent")
     diarizer.heard(pcm(said(1, 40)))
@@ -151,7 +153,7 @@ async def test_each_hold_is_one_event_with_its_fate_speakers_and_steps() -> None
 
 async def test_a_hold_whose_step_failed_is_a_failed_event_with_the_error() -> None:
     recorded: list[Entry] = []
-    diarizer = Diarizer(Stream(Model(Scripted(failing=frozenset({0})), CHUNKING)), recorded.append)
+    diarizer = Diarizer(lambda: Model(Scripted(failing=frozenset({0})), CHUNKING), recorded.append)
     diarizer.heard(pcm(said(0, 100)))
     diarizer.ended(1, "sent")
     [told] = await settled(recorded, 1)
@@ -166,7 +168,7 @@ async def test_a_hold_still_unsettled_as_the_next_ends_is_warned_of() -> None:
     sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
     try:
         step = Held()
-        diarizer = Diarizer(Stream(Model(step, CHUNKING)), recorded.append)
+        diarizer = Diarizer(lambda: Model(step, CHUNKING), recorded.append)
         diarizer.heard(pcm(said(0, 100)))
         diarizer.ended(1, "sent")
         diarizer.ended(2, "sent")
@@ -180,16 +182,56 @@ async def test_a_hold_still_unsettled_as_the_next_ends_is_warned_of() -> None:
 async def test_a_hold_unsettled_as_the_pipeline_stops_ends_cancelled_once() -> None:
     recorded: list[Entry] = []
     step = Held()
-    diarizer = Diarizer(Stream(Model(step, CHUNKING)), recorded.append)
+    diarizer = Diarizer(lambda: Model(step, CHUNKING), recorded.append)
     diarizer.heard(pcm(said(0, 100)))
     diarizer.ended(1, "sent")
     diarizer.stopped()
     [told] = holds_told(recorded)
-    assert (told.outcome, told.facts["hold"]) == ("cancelled", 1)
+    assert (told.outcome, told.facts["hold"], told.facts["fate"]) == ("cancelled", 1, "sent")
     # Its speakers settling after the stop tell it no second time.
     step.go.set()
     await asyncio.sleep(0.2)
     assert len(holds_told(recorded)) == 1
+
+
+def loaded(recorded: list[Entry]) -> list[WideEvent]:
+    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "diarization.loaded"]
+
+
+async def test_holds_spoken_while_the_model_loads_are_diarized_once_it_has() -> None:
+    recorded: list[Entry] = []
+    go = threading.Event()
+
+    def slow() -> Model:
+        go.wait()
+        return Model(Scripted(), CHUNKING)
+
+    diarizer = Diarizer(slow, recorded.append)
+    diarizer.heard(pcm(said(0, 100)))
+    diarizer.ended(1, "sent")
+    await asyncio.sleep(0.1)
+    assert (loaded(recorded), holds_told(recorded)) == ([], [])
+    go.set()
+    [told] = await settled(recorded, 1)
+    assert (told.outcome, told.facts["speakers"]) == ("ok", (Speech(0, 1.0),))
+    [load] = loaded(recorded)
+    assert (load.outcome, load.facts["model"], load.facts["revision"]) == ("ok", diarization.MODEL, diarization.REVISION)
+
+
+async def test_a_model_that_fails_to_load_leaves_every_hold_a_failed_event_saying_why() -> None:
+    recorded: list[Entry] = []
+
+    def unreachable() -> Model:
+        raise OSError("the hub is unreachable")
+
+    diarizer = Diarizer(unreachable, recorded.append)
+    for hold in (1, 2):
+        diarizer.heard(pcm(said(0, 100)))
+        diarizer.ended(hold, "sent")
+    told = await settled(recorded, 2)
+    assert [(event.outcome, event.error, event.facts["steps"]) for event in told] == [("failed", "the model did not load: OSError: the hub is unreachable", 0)] * 2
+    [load] = loaded(recorded)
+    assert (load.outcome, load.error) == ("failed", "OSError: the hub is unreachable")
 
 
 # The real model, on real speech: the weights are fetched into the Hugging Face cache the first time, and CI keeps that
@@ -208,7 +250,7 @@ def fixture_holds(name: str) -> list[diarization.Samples]:
 
 @pytest.fixture(scope="module")
 def model() -> Model:
-    return diarization.model()
+    return nemotron()
 
 
 def first_heard(diarized: Diarized | Undiarized) -> int | None:

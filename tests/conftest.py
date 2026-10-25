@@ -66,7 +66,7 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 
-# How Nemotron 3 Diarization's processor cuts the run in its low-latency mode, as `diarization.model` reads it from the
+# How Nemotron 3 Diarization's processor cuts the run in its low-latency mode, as `diarization.load` reads it from the
 # real one: a first chunk of 16680 samples, 17040 after it, 72 frames scored a step, a later chunk 256 samples before
 # its first frame.
 CHUNKING = diarization.Chunking(16_680, 17_040, 72, 256)
@@ -81,7 +81,7 @@ def unheard(chunk: diarization.Samples, first: bool, cache: object) -> tuple[dia
 def no_diarization_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building a Whisper diarizes with a model that hears nobody: its load would fetch 400 MB of weights and import
     torch, which no test is about but the ones that ask for the real model."""
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Stream(diarization.Model(unheard, CHUNKING)))
+    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(unheard, CHUNKING))
 
 
 async def unprimed() -> None:

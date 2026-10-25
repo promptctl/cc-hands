@@ -455,6 +455,7 @@ dependencies = [
     { name = "pyobjc-framework-quartz" },
     { name = "segno" },
     { name = "tomlkit" },
+    { name = "torch" },
     { name = "transformers" },
     { name = "zstandard" },
 ]
@@ -484,6 +485,7 @@ requires-dist = [
     { name = "pyobjc-framework-quartz", specifier = ">=12.2.2" },
     { name = "segno", specifier = ">=1.6" },
     { name = "tomlkit", specifier = ">=0.15.1" },
+    { name = "torch", specifier = ">=2.14,<3" },
     { name = "transformers", specifier = ">=5.20.2,<6" },
     { name = "zstandard", specifier = ">=0.25.0" },
 ]
