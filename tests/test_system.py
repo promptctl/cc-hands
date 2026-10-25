@@ -23,7 +23,7 @@ from hands.sessions.home import Home
 from hands.voice.system import (
     NoMicrophone,
     StopFailed,
-    TurnExpired,
+    TurnTimedOut,
     told,
     AudioMoved,
     BURST_SECONDS,
@@ -73,7 +73,7 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (ModelActedUntold(), "The language model did not say how that went."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
-        (TurnExpired(), "That turn was open for 120 seconds, so hands threw it away."),
+        (TurnTimedOut(), "That turn ran 10 minutes, so hands sent it and stopped recording."),
     ],
 )
 def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> None:
@@ -89,8 +89,8 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
         ("stop", DEAF, ()),
         ("drop", DEAF, ()),
         ("start", BUILT_IN, ()),
-        ("expire", BUILT_IN, (TurnExpired(),)),
-        ("expire", DEAF, ()),
+        ("timeout", BUILT_IN, (TurnTimedOut(),)),
+        ("timeout", DEAF, ()),
     ],
 )
 def test_a_move_the_tone_alone_would_leave_unexplained_is_said(move: Move, devices: Devices, said: tuple[SystemFact, ...]) -> None:
@@ -349,8 +349,9 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     whisper = Whisper(prompt=unprimed, record=lambda _: None)
-    # What the pipeline's start sets: a sent hold is wrapped as a WAV at this rate.
+    # What the pipeline's setup and start set: a sent hold is wrapped as a WAV at this rate, a second of it this many bytes.
     whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
+    whisper._audio_buffer_size_1s = 32_000  # pyright: ignore[reportPrivateUsage]
 
     async def push(_frame: Frame, _direction: object = None) -> None:
         pass

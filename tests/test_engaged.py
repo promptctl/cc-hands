@@ -57,8 +57,8 @@ def acts(events: Sequence[Event]) -> tuple[Engagement, list[Act]]:
         ([*HOLD, SpeechStarted(2.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
         # Turns follow one another with no key between them.
         ([*HOLD, SpeechStarted(2.0), TurnEnded("verdict"), SpeechStarted(4.0), TurnEnded("verdict"), SpeechStarted(6.0), TurnEnded("verdict")], ["listen", *["arm", "start", "stop"] * 3]),
-        # A turn open past the limit is thrown away; a limit set for an earlier turn ends nothing.
-        ([*HOLD, SpeechStarted(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
+        # A turn open past the limit is sent as it stands; a limit set for an earlier turn ends nothing.
+        ([*HOLD, SpeechStarted(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "timeout"]),
         ([*HOLD, SpeechStarted(2.0), TurnEnded("verdict"), SpeechStarted(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
         # Disengaging sends a turn open and lets go of a start, then stops the desk listening; after it, the room opens
         # nothing.
@@ -195,7 +195,7 @@ async def test_three_turns_with_no_key_between_them_then_a_disengage() -> None:
     assert rig.made == ["listen", *["arm", "start", "stop"] * 3, "deafen"]
     engagement = [event for event in rig.events if event.event == "trigger.engaged"]
     assert len(engagement) == 1
-    assert dict(engagement[0].counts) == {"listen": 1, "arm": 3, "disarm": 0, "start": 3, "stop": 3, "drop": 0, "expire": 0, "deafen": 1, "held_open": 2, "ended_on_silence": 1}
+    assert dict(engagement[0].counts) == {"listen": 1, "arm": 3, "disarm": 0, "start": 3, "stop": 3, "drop": 0, "timeout": 0, "deafen": 1, "held_open": 2, "ended_on_silence": 1}
     judged = [event for event in rig.events if event.event == "trigger.judged"]
     assert [event.facts["complete"] for event in judged] == [False, True, True, False]
     assert all(event.parent_id == engagement[0].span_id for event in judged)
@@ -210,7 +210,7 @@ async def test_a_switch_away_mid_turn_drops_it_and_ends_the_engagement_cancelled
     await stopped(driving)
     assert rig.made == ["listen", "arm", "start", "drop", "deafen"]
     assert [(event.event, event.outcome) for event in rig.events] == [("trigger.engaged", "cancelled")]
-    assert dict(rig.events[0].counts) == {"listen": 1, "arm": 1, "disarm": 0, "start": 1, "stop": 0, "drop": 1, "expire": 0, "deafen": 1, "held_open": 0, "ended_on_silence": 0}
+    assert dict(rig.events[0].counts) == {"listen": 1, "arm": 1, "disarm": 0, "start": 1, "stop": 0, "drop": 1, "timeout": 0, "deafen": 1, "held_open": 0, "ended_on_silence": 0}
 
 
 async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks() -> None:

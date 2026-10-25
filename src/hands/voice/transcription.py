@@ -48,8 +48,14 @@ def segments(samples: bytes, prompt: str | None) -> list[Unsaid]:
 
 
 def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
-    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every hold run."""
+    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every hold run.
+
+    Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long hold fell
+    into a loop ("$.h. $.h. ...") that carried from window to window, and the compression filter dropped every segment
+    after it, the back half of a 600 s hold of spoken prose; decoded on their own, 180 s and 600 s lost none
+    (promptctl-voice-je8.d20). MLX Whisper then primes only the first window with `prompt`.
+    """
     transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
-        audio, path_or_hf_repo=MODEL, temperature=0.0, language=LANGUAGE, initial_prompt=prompt
+        audio, path_or_hf_repo=MODEL, temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
     )
     return cast("list[dict[str, Any]]", transcribed["segments"])

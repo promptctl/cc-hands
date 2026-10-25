@@ -69,7 +69,9 @@ LEVELS = Levels(captured_dbfs=-12.5, heard_dbfs=-40.0)
 
 
 async def transcribe(whisper: Whisper, hold: int, audio: bytes) -> list[Frame]:
-    whisper._transcribing.append(_Recorded(Hold(hold, "held key"), LEVELS))  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
+    with wave.open(BytesIO(audio)) as held:
+        seconds = held.getnframes() / held.getframerate()
+    whisper._transcribing.append(_Recorded(Hold(hold, "held key"), seconds, LEVELS))  # pyright: ignore[reportPrivateUsage]  (the hold a release queues)
     return [frame async for frame in whisper.run_stt(audio)]
 
 
@@ -81,7 +83,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
     await transcribe(whisper, 1, SILENCE)
 
     [(_, loaded), (_, held)] = model.asked
-    assert loaded == held == {"path_or_hf_repo": transcription.MODEL, "temperature": 0.0, "language": "en", "initial_prompt": None}
+    assert loaded == held == {"path_or_hf_repo": transcription.MODEL, "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert event.outcome == "ok" and event.facts["model"] == transcription.MODEL
