@@ -273,7 +273,7 @@ Entry = (
     | Exported
 )
 Record = Callable[[Entry], None]
-Level = Literal["error", "warning", "info"]
+Level = Literal[Severity, "info"]
 
 
 def level(entry: Entry) -> Level:

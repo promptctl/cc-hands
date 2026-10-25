@@ -268,12 +268,13 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
 
 
 @real_lit
-def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_path: Path, project: tuple[Path, str], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_path: Path, project: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     repository, _ = project
     home = tmp_path / "home"
     write_audit(home / "audit", Clock())
     monkeypatch.chdir(repository)
     assert cli.main(["--home", str(home), "file-tickets", "no-such-epic"]) == 1
+    assert f"hands file-tickets: the backlog in {repository} lists no epic no-such-epic" in capsys.readouterr().err
     assert bugs(repository) == []
     [event] = [line for line in map(json.loads, audit.forwards(home / "audit")) if line.get("event") == "tickets.file"]
     assert (event["outcome"], event["error"]) == ("failed", f"the backlog in {repository} lists no epic no-such-epic")
@@ -284,23 +285,32 @@ def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_pat
 
 
 
-def unit(event: str, span: str, parent: str | None, at: int, error: str | None) -> str:
-    """A unit of work's line in trace t, failed where it says an error."""
+def unit(event: str, span: str, parent: str | None, at: int, error: str | None, exit_code: int | None = None) -> str:
+    """A unit of work's line in trace t, failed where it says an error, a command's carrying the code it exited with."""
     return json.dumps({
         "at": f"2026-10-24T12:{at:02d}:00.000+00:00", "level": "info" if error is None else "error", "type": "WideEvent",
         "event": event, "trace_id": "t", "span_id": span, "parent_id": parent, "outcome": "ok" if error is None else "failed", "error": error,
+        "facts": {} if exit_code is None else {"exit_code": exit_code},
     })
 
 
 def test_a_failed_unit_is_a_sighting_of_its_own_unless_a_unit_inside_it_failed_first() -> None:
-    nested = grouping.read([unit("inner", "c", "b", 1, "broke"), unit("middle", "b", "a", 2, "broke"), unit("hands.command", "a", None, 3, "exited 1: broke")])
+    nested = grouping.read([unit("inner", "c", "b", 1, "broke"), unit("middle", "b", "a", 2, "broke"), unit("hands.command", "a", None, 3, "exited 1: broke", 1)])
     assert [(group.origin, group.cause) for group in nested.groups] == [("inner", "broke")] and nested.retold == 2
     # A unit inside it that went right leaves the failure the outer unit's own.
-    alone = grouping.read([unit("inner", "c", "a", 1, None), unit("hands.command", "a", None, 2, "exited 2: undone")])
+    alone = grouping.read([unit("inner", "c", "a", 1, None), unit("hands.command", "a", None, 2, "exited 2: undone", 2)])
     assert [group.origin for group in alone.groups] == ["hands.command"] and alone.retold == 0
     # An outer unit that failed of its own, after one inside it failed of another cause, is a sighting of each.
     apart = grouping.read([unit("tool.call", "c", "a", 1, "the tool refused"), unit("brain.turn", "a", None, 2, "TimeoutError: no reply")])
     assert [group.origin for group in apart.groups] == ["tool.call", "brain.turn"] and apart.retold == 0
+    # One whose error only ends on the inner one's is a cause of its own.
+    longer = grouping.read([unit("lit.run", "c", "a", 1, "timed out"), unit("backlog.read", "a", None, 2, "lit export timed out")])
+    assert [group.origin for group in longer.groups] == ["lit.run", "backlog.read"] and longer.retold == 0
+
+
+def test_a_title_is_one_line_whatever_the_cause_said() -> None:
+    group = grouping.Group("hands.x:f", "request failed:\n  <text>\tagain", (grouping.Sighting("hands.x:f", "c", START),))
+    assert filing.title(group) == "hands.x:f: request failed: <text> again"
 
 
 def test_a_last_seen_line_the_pass_did_not_write_is_not_read_as_one(tmp_path: Path) -> None:

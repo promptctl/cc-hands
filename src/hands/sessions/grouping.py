@@ -18,7 +18,7 @@ from typing import get_args
 from hands.core.wire import Exchanged
 from hands.sessions.audit import Exported, Logged, Primed, Refocused, SettingsEdited, Severity, TypingFailed
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, exited
 
 # The levels of the lines a group is made of: every other line is the log telling what went right.
 _FILED = get_args(Severity)
@@ -171,15 +171,16 @@ def _cause(kind: str, line: Payload) -> tuple[str, str, bool]:
 
 def _retold(kind: str, line: Payload, failed_inside: dict[tuple[str, str], set[str]]) -> bool:
     """Whether a unit's line tells again how a unit inside it failed, which that unit's own line told first: one cause,
-    whose sighting is the innermost unit's. It tells it again when its error ends on the inner one's, as an exception
-    raised on through both says the same, and a command's `exited <code>: <why>` says its pass's why; an error of its own
-    is a sighting of its own. A unit's line is written as it ends, so a unit inside another is read first, and notes
-    its error in `failed_inside` under the unit around it, by trace and span.
+    whose sighting is the innermost unit's. It tells it again when its error is the inner one's, as an exception raised
+    on through both is, or is a command's exit for it, as `wide.exited` says one; any other error is a sighting of its
+    own. A unit's line is written as it ends, so a unit inside another is read first, and notes its error in
+    `failed_inside` under the unit around it, by trace and span.
     """
     if kind != WideEvent.__name__:
         return False
     try:
         trace, span, parent, error = line.text("trace_id"), line.text("span_id"), line.optional_text("parent_id"), line.optional_text("error")
+        code = line.mapping("facts").get("exit_code")
     except Rejected:
         # A span this hands cannot read places the line inside nothing: it is a sighting, read by its cause as any is.
         return False
@@ -187,7 +188,9 @@ def _retold(kind: str, line: Payload, failed_inside: dict[tuple[str, str], set[s
         return False
     if parent is not None:
         failed_inside.setdefault((trace, parent), set()).add(error)
-    return any(error.endswith(inner) for inner in failed_inside.get((trace, span), ()))
+    inner = failed_inside.get((trace, span), set())
+    commanded: set[str] = {exited(code, why) for why in inner} if isinstance(code, int) else set()
+    return error in inner | commanded
 
 
 def read(lines: Iterable[str]) -> Read:

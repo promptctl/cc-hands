@@ -176,6 +176,11 @@ def fail(error: str) -> None:
     _current().failure = error
 
 
+def exited(code: int, why: str) -> str:
+    """The error a command's unit fails with: the code it exited with, and why, in the command's words."""
+    return f"exited {code}: {why}"
+
+
 def child(event: str, span: Span, started_at: datetime, duration_ms: float, outcome: Outcome, error: str | None = None, **facts: Fact) -> None:
     """Emit a part of the unit of work open here that was timed where it happened rather than run inside it, such as a
     request another process made on its behalf: its own event, as `span`, which `within` made inside the unit's, minted

@@ -297,7 +297,7 @@ def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
-                wide.fail(f"exited {code}: {why}")
+                wide.fail(wide.exited(code, why))
             case 0:
                 pass
     return exits.code_of(ended)
@@ -998,17 +998,18 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
     try:
         read = await backlog.read_backlog(project)
     except (backlog.LitFailed, Rejected) as failed:
-        return exits.Failed(1, f"cannot read the backlog: {failed}")
+        return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
         case backlog.Untracked():
-            return exits.Failed(1, f"{project} has no lit backlog to file tickets in")
+            return refused("hands file-tickets", 1, f"{project} has no lit backlog to file tickets in")
         case backlog.Backlog() as held:
             pass
     under = held.tickets.get(epic)
     if under is None or under.kind != "epic":
-        return exits.Failed(1, f"the backlog in {project} lists no epic {epic}")
+        return refused("hands file-tickets", 1, f"the backlog in {project} lists no epic {epic}")
     planned = filing.filings(groups, held)
-    wide.count(unchanged=len(groups) - len(planned))
+    unchanged = len(groups) - len(planned)
+    wide.count(unchanged=unchanged)
     for each in planned:
         try:
             match each:
@@ -1021,8 +1022,8 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:
-            return exits.Failed(1, str(failed))
-    print(f"{len(groups)} groups of warnings and errors: {len(planned)} filed or commented, {len(groups) - len(planned)} with nothing new")
+            return refused("hands file-tickets", 1, str(failed))
+    print(f"{len(groups)} groups of warnings and errors: {len(planned)} filed or commented, {unchanged} with nothing new")
     return 0
 
 

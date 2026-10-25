@@ -93,7 +93,8 @@ def _told(group: Group, ticket: Ticket, backlog: Backlog) -> Iterable[datetime]:
 
 
 def title(group: Group) -> str:
-    whole = f"{group.origin}: {group.cause}"
+    """The group's origin and cause on one line, cut to TITLE_CHARS."""
+    whole = " ".join(f"{group.origin}: {group.cause}".split())
     return whole if len(whole) <= TITLE_CHARS else f"{whole[: TITLE_CHARS - 1]}…"
 
 
