@@ -41,6 +41,7 @@ from hands.core.wire import (
     Text,
     TextDelta,
     Unfinished,
+    Unkept,
     Unreached,
     UsageLimitReached,
     assemble,
@@ -325,6 +326,20 @@ async def test_an_error_status_passes_through_with_its_body_read(serve: Callable
     assert (await post(wire.proxy.url))[::2] == (529, error)
     reply = only_exchange(wire).reply
     assert isinstance(reply, Reached) and (reply.status, reply.body) == (529, Answered({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
+
+
+async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_reaches_the_client_whole_and_is_kept_as_its_size_alone(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]],
+) -> None:
+    hello = b'{"ok": true}'
+
+    async def answered(_request: web.Request) -> web.Response:
+        return web.Response(body=hello, headers={"Content-Type": "application/json"})
+
+    _, wire = await serve(answered)
+    assert (await post(wire.proxy.url, path="/api/hello"))[::2] == (200, hello)
+    reply = only_exchange(wire).reply
+    assert isinstance(reply, Reached) and (reply.reply_bytes, reply.body) == (len(hello), Unkept(None))
 
 
 async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange() -> None:

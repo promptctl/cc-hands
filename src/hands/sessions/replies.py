@@ -80,6 +80,19 @@ def _reset(reset: str) -> Seconds | None:
 
 
 class Reader(Protocol):
+    """A reply's bytes as they come, and its body once it has ended: read to its end when `cut` is None, and otherwise
+    ended early, as `cut` says."""
+
+    def feed(self, plain: bytes, /) -> None: ...
+    # [LAW:single-enforcer] the one place that says what a reply known to have ended early is: garbled when hands was
+    # reading it, unkept when it was reading none of it. The proxy cannot yet tell an early end from its own failure
+    # (promptctl-warnings-2d80.sj1), so it never has a cut to pass.
+    def finish(self, cut: str | None, /) -> Body: ...
+
+
+class _Plain(Protocol):
+    """What reads a model reply's bytes once their Content-Encoding is off; how the reply ended is `_Decoded`'s."""
+
     def feed(self, plain: bytes, /) -> None: ...
     def finish(self) -> Body: ...
 
@@ -104,8 +117,8 @@ class _Unread:
     def feed(self, plain: bytes) -> None:
         pass
 
-    def finish(self) -> Body:
-        return Unkept()
+    def finish(self, cut: str | None) -> Body:
+        return Unkept(cut)
 
 
 class _Events:
@@ -155,7 +168,7 @@ class _Whole:
 class _Decoded:
     """A reader handed the reply's bytes with their Content-Encoding taken off; what cannot be read is the reply's record."""
 
-    def __init__(self, encoding: str, reader: Reader) -> None:
+    def __init__(self, encoding: str, reader: _Plain) -> None:
         self._decode = _decoder(encoding)
         self._reader = reader
         self._error: str | None = None
@@ -168,19 +181,23 @@ class _Decoded:
         except Exception as error:
             self._fail(error)
 
-    def finish(self) -> Body:
-        if self._error is None:
-            try:
-                return self._reader.finish()
-            except Exception as error:
-                self._fail(error)
-        return Garbled(f"hands could not read it: {self._error}")
+    def finish(self, cut: str | None) -> Body:
+        # hands' reading failing comes before the reply's end, and is what the record says when both happened.
+        if self._error is not None:
+            return Garbled(self._error)
+        if cut is not None:
+            return Garbled(cut)
+        try:
+            return self._reader.finish()
+        except Exception as error:
+            return Garbled(self._fail(error))
 
-    def _fail(self, error: Exception) -> None:
+    def _fail(self, error: Exception) -> str:
         # [LAW:single-enforcer] what hears the wire never changes it: whatever hands' reading raises, the reply still
         # reaches the client whole. [LAW:no-silent-failure] the failure is the reply's record, and its trace is logged.
         logger.opt(exception=error).warning("the proxy could not read a reply it forwarded")
-        self._error = f"{type(error).__name__}: {error}"
+        self._error = f"hands could not read it: {type(error).__name__}: {error}"
+        return self._error
 
 
 def _decoder(encoding: str) -> Callable[[bytes], bytes]:

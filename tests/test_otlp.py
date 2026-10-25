@@ -18,7 +18,7 @@ import pytest
 
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unreached, Written
+from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat
@@ -222,6 +222,10 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     streamed, whole = (traced(_exchanged(Reached(200, 1001.0, 1001.0, 10, Written(message, way)))) for way in (True, False))
     assert streamed is not None and whole is not None and (streamed.facts["streamed"], whole.facts["streamed"]) == (True, False)
     assert "streamed" not in answered.facts
+    # A reply from elsewhere says how it ended, and an early end is no failure.
+    cut, whole = (traced(_exchanged(Reached(200, 1001.0, 1001.0, 10, Unkept(way)))) for way in ("the reply ended early: context canceled", None))
+    assert cut is not None and (cut.outcome, cut.error, cut.facts["cut"]) == ("ok", None, "the reply ended early: context canceled")
+    assert whole is not None and whole.facts["cut"] is None and "cut" not in answered.facts
     # One hands answered itself is answered whole, as the API never saw it.
     held = traced(_exchanged(Held("(stayed silent)", 1000.75)))
     assert held is not None and (held.outcome, held.error, held.duration_ms) == ("ok", None, 250.0)
