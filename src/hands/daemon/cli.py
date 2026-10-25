@@ -238,12 +238,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
-    # [LAW:nothing-unseen] every run asks the lock first, as a unit of work of its own, on the log alone, since there is
-    # no collector before the settings are read. A home a daemon holds is the lock's answer, not a failure: hands is running.
-    with wide.unit("hands.hold", audit_log.record):
-        holder = hold(home)
-        wide.annotate(pid=os.getpid(), holder=holder)
-    match holder:
+    match hold(home, audit_log.record, restarted=restarted is not None):
         case Running(pid=pid):
             # Told where it was run, and nothing of the home touched: the heartbeat, the sockets, and the indicator
             # are the running daemon's. A run that never held the home was never a start, so it writes no hands.start.
@@ -435,32 +430,43 @@ class Running:
     pid: int
 
 
-def hold(home: Home) -> Running | None:
+def hold(home: Home, record: Callable[[wide.WideEvent], None], *, restarted: bool) -> Running | None:
     """Lock the home for the rest of this process, or the daemon that holds it; None once this process holds it.
 
     [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
-    written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
+    written: a run that finds it held leaves the heartbeat, the socket, and the indicator to the daemon running.
     A POSIX record lock is the process's, kept across a restart's exec through the inheritable descriptor, so the same
     pid takes it again; the kernel lets it go when the process ends, however it ends, so a crash leaves no stale lock.
+
+    [LAW:nothing-unseen] the ask is a unit of work of its own, `hands.hold`, on the log alone, since there is no collector
+    before the settings are read. A home a daemon holds is the lock's answer, not a failure, since hands is running;
+    except to a restart's run, the process that held the home: it lost the lock, and hands ends with it.
     """
-    home.root.mkdir(parents=True, exist_ok=True)
-    # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
-    # through the one the run before it opened, so restarts open no more of them.
-    descriptor = inherited(home.lock)
-    if descriptor is None:
-        descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
-        os.set_inheritable(descriptor, True)
-    while True:
-        try:
-            fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return None
-        except BlockingIOError:
-            # [LAW:one-source-of-truth] the lock names who holds it; the heartbeat may still be an earlier run's.
-            # None where the holder let go between the two asks, so the home is free to take.
-            pid = holder(descriptor)
-            if pid is not None:
-                os.close(descriptor)
-                return Running(pid)
+    with wide.unit("hands.hold", record, counts=("retries",)):
+        wide.annotate(pid=os.getpid(), restarted=restarted)
+        home.root.mkdir(parents=True, exist_ok=True)
+        # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
+        # through the one the run before it opened, so restarts open no more of them.
+        descriptor = inherited(home.lock)
+        if descriptor is None:
+            descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
+            os.set_inheritable(descriptor, True)
+        while True:
+            try:
+                fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                wide.annotate(holder=None)
+                return None
+            except BlockingIOError:
+                # [LAW:one-source-of-truth] the lock names who holds it; the heartbeat may still be an earlier run's.
+                # None where the holder let go between the two asks, so the home is free to take, and is asked again.
+                pid = holder(descriptor)
+                if pid is not None:
+                    os.close(descriptor)
+                    wide.annotate(holder=Running(pid))
+                    if restarted:
+                        wide.fail(f"a restart's run lost its home to pid {pid}")
+                    return Running(pid)
+                wide.count(retries=1)
 
 
 def inherited(path: Path) -> int | None:

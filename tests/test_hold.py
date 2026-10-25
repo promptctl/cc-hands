@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -161,8 +162,8 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
 
 
 def holds(home: Path, said: str) -> str:
-    """Python that holds `home` as a running daemon does, then prints `said`."""
-    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\ncli.hold(Home(Path({str(home)!r})))\nprint({said!r}, flush=True)\n"
+    """Python that holds `home` as a running daemon does, then prints `said`; raises, and prints nothing, where it is held."""
+    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nassert cli.hold(Home(Path({str(home)!r})), lambda event: None, restarted=False) is None\nprint({said!r}, flush=True)\n"
 
 
 def holding(home: Path, then: str) -> subprocess.Popen[str]:
@@ -172,8 +173,10 @@ def holding(home: Path, then: str) -> subprocess.Popen[str]:
     return holder
 
 
-@pytest.mark.parametrize("run", [["run"], ["run", "--restarted", "0"]])
-def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat_and_sockets(run: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+# To a run of its own, hands running is no fault, so the lock's answer is info and is never filed. To a restart's run,
+# the process that held the home, it lost the lock, and hands ends with it: an error, filed.
+@pytest.mark.parametrize(("run", "level", "outcome"), [(["run"], "info", "ok"), (["run", "--restarted", "0"], "error", "failed")])
+def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat_and_sockets(run: list[str], level: str, outcome: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import shutil
     import socket
     import tempfile
@@ -202,15 +205,38 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         assert home.status.read_bytes() == live
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as shim:
             shim.connect(str(home.socket))
-        # The lock's answer, and no start: hands is running, which is no fault, so the line is info and is never filed.
+        # The lock's answer, and no start.
         [answered] = [json.loads(line) for line in audit.tail(home.audit, 10)[0]]
-        assert (answered["event"], answered["level"], answered["outcome"]) == ("hands.hold", "info", "ok")
-        assert answered["facts"]["holder"] == {"type": "Running", "pid": holder.pid}
+        assert (answered["event"], answered["level"], answered["outcome"]) == ("hands.hold", level, outcome)
+        assert answered["facts"] == {"pid": os.getpid(), "restarted": "--restarted" in run, "holder": {"type": "Running", "pid": holder.pid}}
+        assert answered["counts"] == {"retries": 0}
     finally:
         listening.close()
         holder.kill()
         holder.wait()
         shutil.rmtree(root)
+
+
+def test_a_holder_that_lets_go_between_the_two_asks_is_asked_again_and_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.sessions import wide
+
+    holder = holding(tmp_path, "import sys; sys.stdin.read()")
+    try:
+        # The lock refuses, and the first ask of who holds it finds no one: the holder let go between the two.
+        named = cli.holder
+        answers: list[int | None] = [None]
+
+        def let_go_once(descriptor: int) -> int | None:
+            return answers.pop() if answers else named(descriptor)
+
+        monkeypatch.setattr(cli, "holder", let_go_once)
+        events: list[wide.WideEvent] = []
+        assert cli.hold(Home(tmp_path), events.append, restarted=False) == cli.Running(holder.pid)
+        [asked] = events
+        assert (asked.event, asked.outcome, asked.counts) == ("hands.hold", "ok", {"retries": 1})
+    finally:
+        holder.kill()
+        holder.wait()
 
 
 def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path: Path) -> None:
@@ -224,7 +250,7 @@ def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
         assert holder.stdout.readline() == "1\n"
         # And still holds it against every other process.
-        other = subprocess.run([sys.executable, "-c", f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nprint(cli.hold(Home(Path({str(tmp_path)!r}))))\n"], capture_output=True, text=True, check=True)
+        other = subprocess.run([sys.executable, "-c", f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nprint(cli.hold(Home(Path({str(tmp_path)!r})), lambda event: None, restarted=False))\n"], capture_output=True, text=True, check=True)
         assert other.stdout == f"Running(pid={holder.pid})\n"
     finally:
         holder.kill()

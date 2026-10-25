@@ -233,7 +233,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     def again(argv: list[str]) -> None:
         raise Again(argv)
 
-    def hold(_home: Home) -> None:
+    def hold(_home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
     def run_here(*_arguments: object) -> tuple[str, int]:
