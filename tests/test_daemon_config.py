@@ -233,7 +233,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     def again(argv: list[str]) -> None:
         raise Again(argv)
 
-    def hold(_home: Home) -> None:
+    def hold(_home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
     def run_here(*_arguments: object) -> tuple[str, int]:
@@ -522,8 +522,8 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")
     assert str(home.config) in reason
-    # Refused at the door, before the settings name a collector: the start's event is on the log alone.
-    assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.start", f"CannotStart: {reason}")]
+    # Refused at the door, before the settings name a collector: the hold's event and the start's are on the log alone.
+    assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.hold", None), ("hands.start", f"CannotStart: {reason}")]
     assert cli.crashed_before(home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
     assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1

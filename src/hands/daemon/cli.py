@@ -13,6 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Coroutine, Generator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
@@ -237,18 +238,25 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
+    match hold(home, audit_log.record, restarted=restarted is not None):
+        case Running(pid=pid):
+            # Told where it was run, and nothing of the home touched: the heartbeat, the sockets, and the indicator
+            # are the running daemon's. A run that never held the home was never a start, so it writes no hands.start.
+            print(f"hands: hands is already running on {home.root}, as pid {pid}", file=sys.stderr)
+            return 1
+        case None:
+            pass
     run_start = Start(restarted=restarted is not None)
     # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
     run_start.heard(model_flag=model)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
-    # or a crash the next run must read. A restart's run holds it already, once it holds the home: the run before it
+    # or a crash the next run must read. A restart's run holds it already, since it holds the home: the run before it
     # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
     # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
         try:
-            hold(home)
             held = None if restarted is None else heart
             # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
             # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
@@ -415,32 +423,50 @@ def door(home: Home, run_start: Start, model: str | None) -> Settings:
         raise CannotStart(str(error)) from error
 
 
-def hold(home: Home) -> None:
-    """Lock the home for the rest of this process, or CannotStart, naming the daemon that holds it.
+@dataclass(frozen=True)
+class Running:
+    """A home a daemon already runs on, as its lock answered a run that asked for it: the daemon's pid."""
+
+    pid: int
+
+
+def hold(home: Home, record: Callable[[wide.WideEvent], None], *, restarted: bool) -> Running | None:
+    """Lock the home for the rest of this process, or the daemon that holds it; None once this process holds it.
 
     [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
-    written: a second run refused here leaves the heartbeat, the socket, and the indicator to the daemon running.
+    written: a run that finds it held leaves the heartbeat, the socket, and the indicator to the daemon running.
     A POSIX record lock is the process's, kept across a restart's exec through the inheritable descriptor, so the same
     pid takes it again; the kernel lets it go when the process ends, however it ends, so a crash leaves no stale lock.
+
+    [LAW:nothing-unseen] the ask is a unit of work of its own, `hands.hold`, on the log alone, since there is no collector
+    before the settings are read. A home a daemon holds is the lock's answer, not a failure, since hands is running;
+    except to a restart's run, the process that held the home: it lost the lock, and hands ends with it.
     """
-    home.root.mkdir(parents=True, exist_ok=True)
-    # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
-    # through the one the run before it opened, so restarts open no more of them.
-    descriptor = inherited(home.lock)
-    if descriptor is None:
-        descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
-        os.set_inheritable(descriptor, True)
-    while True:
-        try:
-            fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except BlockingIOError as error:
-            # [LAW:one-source-of-truth] the lock names who holds it; the heartbeat may still be an earlier run's.
-            # None where the holder let go between the two asks, so the home is free to take.
-            pid = holder(descriptor)
-            if pid is not None:
-                os.close(descriptor)
-                raise CannotStart(f"hands is already running on {home.root}, as pid {pid}") from error
+    with wide.unit("hands.hold", record, counts=("retries",)):
+        wide.annotate(pid=os.getpid(), restarted=restarted)
+        home.root.mkdir(parents=True, exist_ok=True)
+        # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
+        # through the one the run before it opened, so restarts open no more of them.
+        descriptor = inherited(home.lock)
+        if descriptor is None:
+            descriptor = os.open(home.lock, os.O_RDWR | os.O_CREAT, 0o600)
+            os.set_inheritable(descriptor, True)
+        while True:
+            try:
+                fcntl.lockf(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                wide.annotate(holder=None)
+                return None
+            except BlockingIOError:
+                # [LAW:one-source-of-truth] the lock names who holds it; the heartbeat may still be an earlier run's.
+                # None where the holder let go between the two asks, so the home is free to take, and is asked again.
+                pid = holder(descriptor)
+                if pid is not None:
+                    os.close(descriptor)
+                    wide.annotate(holder=Running(pid))
+                    if restarted:
+                        wide.fail(f"a restart's run lost its home to pid {pid}")
+                    return Running(pid)
+                wide.count(retries=1)
 
 
 def inherited(path: Path) -> int | None:

@@ -2141,7 +2141,7 @@ thing that failed `[LAW:no-silent-failure]`:
    daemon running is its one writer: a run locks `~/.hands/hands.lock` before it reads the
    heartbeat or listens, so a second `hands run` on a home a daemon holds is refused there,
    says that hands is already running and the pid the lock names, and leaves the heartbeat
-   and the sockets alone; only its failed `hands.start` reaches the log. When TTS itself is down, a macOS notification is posted through
+   and the sockets alone. Every run asks the lock as a unit of work of its own, `hands.hold`, whose `holder` fact names the daemon holding the home, or none where this run took it, and whose `retries` count the asks where the holder let go between the lock refusing and naming it; a refused run writes only that, ok and at info, since hands running is no fault, and makes no start. A restart's run refused is the one fault there: it is the process that held the home, so it lost the lock, and hands ends with it; its `hands.hold` fails, at error. When TTS itself is down, a macOS notification is posted through
    `osascript`. `hands indicator` is a menu-bar status item in a process of its own,
    which `hands run` starts in a session of its own, so neither the daemon dying nor the
    terminal's Ctrl-C takes it down first. It lives while the process that started it does,
@@ -2236,7 +2236,7 @@ says failed, quit, or restart, and a failed run carries its errors. A run killed
 event, and that absence is the only one the log has.
 
 A start is one `hands.start` event (`hands.daemon.starting.Start`), timed from the moment
-`hands run` began to the moment the pipeline reported started, so its duration is how
+`hands run` held its home to the moment the pipeline reported started, so its duration is how
 long hands took to be ready. It says which run it is (`pid`, `restarted`, `after_crash`, and on a restart what became
 of the `previous_indicator`: ended, killed, exited on its own, or reaped already),
 which settings won (the file, the collector, the backend, server,
