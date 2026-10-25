@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 
 from hands.voice import talkkey
-from hands.voice.hold import HOLD_SECONDS, TURN_LIMIT_SECONDS, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Ripe, step
+from hands.voice.hold import Hold, Idle, KeyEvent, Move, asked, step
 
 QUIT = "q"
 
@@ -31,15 +31,11 @@ async def tapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
 
     def arrived(event: KeyEvent) -> None:
         into(event)
-        # [LAW:no-ambient-temporal-coupling] every press asks to be told when it has been held for HOLD_SECONDS and
-        # for TURN_LIMIT_SECONDS, counted from the press itself on the loop's own clock, the monotonic one; the hold is
-        # the one owner of what that means, and ignores the ones a release has made stale.
-        match event:
-            case Pressed(at=at):
-                loop.call_at(at + HOLD_SECONDS, into, Ripe(at))
-                loop.call_at(at + TURN_LIMIT_SECONDS, into, Overlong(at))
-            case _:
-                pass
+        # [LAW:no-ambient-temporal-coupling] what each event asks to be told later is told at its instant on the loop's own
+        # clock, the monotonic one the press was stamped on; the hold is the one owner of what that means, and ignores the
+        # ones a release has made stale.
+        for at, later in asked(event):
+            loop.call_at(at, into, later)
 
     def heard_on_the_tap(event: KeyEvent) -> None:
         loop.call_soon_threadsafe(arrived, event)

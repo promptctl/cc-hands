@@ -37,7 +37,8 @@ class Cue:
 OPENED = Cue("turn: started", ((660.0, 990.0),))
 SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
-EXPIRED = Cue(f"turn: dropped, open {TURN_LIMIT_SECONDS:.0f}s", DROPPED.glides)
+# Sent, as a release sends: the line alone says the limit ended it, with the key perhaps still down.
+TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
 # The desk starting and stopping listening for every turn, under engaged conversation or the wake word: two rising tones
 # as it starts, two falling as it stops. Two tones, so neither is taken for a turn opening or ending.
 LISTENING = Cue("desk: listening", ((660.0, 990.0), (660.0, 990.0)))
@@ -70,8 +71,8 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return (SENT,)
         case "drop":
             return (DROPPED,)
-        case "expire":
-            return (EXPIRED,)
+        case "timeout":
+            return (TIMED_OUT,)
         case "arm" | "disarm":
             return ()
         case "listen":

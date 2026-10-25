@@ -7,6 +7,8 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 """
 
 import asyncio
+import heapq
+import itertools
 import struct
 import threading
 import wave
@@ -54,7 +56,9 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.turnstop import Hold, TurnOpened, TurnResolved, Typed
-from hands.voice import whisper
+from hands.voice import engaged, hold, whisper
+from hands.voice.engaged import Act
+from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.whisper import Whisper
 from test_narrator import heard
 from test_playback import ended, spoken
@@ -168,14 +172,15 @@ class Rig:
 
     async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Edge = "held key", captured: bytes | None = None) -> None:
         """A frame captured under each key, by `by`'s microphone, counted as the gate counts them: the key leaving down
-        for a rest sends the turn, and for a press (a key pressed while it was held) or "dropped" throws it away; a hold
-        it opens is opened by `by`. `captured` is the sound before the echo canceller, where the canceller changed it."""
+        for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
+        "dropped" throws it away; a hold it opens is opened by `by`. `captured` is the sound before the echo canceller,
+        where the canceller changed it."""
         frames: list[KeyedAudio] = []
         for held in keys:
             match self.gate.key, held:
-                case "down", "up" | "listening":
+                case "down", "up" | "listening" | "arming":
                     self.gate = replace(self.gate, sent=self.gate.sent + 1)
-                case "down", "arming" | "dropped":
+                case "down", "dropped":
                     self.gate = replace(self.gate, dropped=self.gate.dropped + 1)
                 case _:
                     pass
@@ -694,11 +699,113 @@ async def test_a_hold_released_to_a_whisper_that_cannot_transcribe_ends_its_turn
     assert await rig.everything_sent(holds=1) == []
 
 
-async def test_a_hold_dropped_by_a_press_is_thrown_away_and_the_press_is_a_hold_of_its_own(rig: Rig) -> None:
-    # A press that finds the key down drops the hold and arms again between two frames, so no frame sees it dropped.
+async def test_a_hold_a_press_finds_open_is_sent_and_the_press_is_a_hold_of_its_own(rig: Rig) -> None:
+    # A press that finds the key down sends the hold, its release gone by unseen, and arms again between two frames, so
+    # no frame sees the key at rest.
     await rig.hold(["down", "arming", "down", "up"])
     await rig.texts.put("what time is it")
-    assert await rig.everything_sent(holds=2) == ["what time is it"]
+    await rig.texts.put("and the date")
+    assert " ".join(await rig.everything_sent(holds=2)) == "what time is it and the date"
+
+
+# 20 ms of speech at 16 kHz, as the keyed microphone captures it.
+FRAME_SECONDS = 0.02
+SPEECH = bytes([3, 3]) * 320
+
+
+@dataclass
+class Timeline:
+    """What a timeline captured: each frame, as the gate tagged it, and every move the edge made."""
+
+    frames: list[KeyedAudio]
+    moves: list[Move]
+
+    def held(self) -> int:
+        """How many frames were captured with the turn open or its press arming: the audio the turn is made of."""
+        return sum(frame.key in ("arming", "down") for frame in self.frames)
+
+
+def play_out[S, E](
+    step: Callable[[S, E], tuple[S, tuple[Act, ...]]],
+    state: S,
+    asked: Callable[[S, E, S], tuple[tuple[float, E], ...]],
+    told: Sequence[tuple[float, E]],
+    seconds: float,
+    by: Edge,
+) -> Timeline:
+    """Speech captured every 20 ms for `seconds`, under the gate as the edge's own `step` moves it: each event of `told`,
+    and each that a step `asked` to be told later, stepped at its instant, as the loop delivers them. No keyboard, no
+    microphone and no clock: hours play out in the time it takes to step them."""
+    # In order of instant, then of arrival: the loop's own order for two calls due at once.
+    arrival = itertools.count()
+    due: list[tuple[float, int, E]] = [(at, next(arrival), event) for at, event in told]
+    heapq.heapify(due)
+    gate, frames, moves = Gate(), list[KeyedAudio](), list[Move]()
+    for n in range(round(seconds / FRAME_SECONDS)):
+        while due and due[0][0] <= n * FRAME_SECONDS:
+            _, _, event = heapq.heappop(due)
+            was = state
+            state, acts = step(state, event)
+            for at, later in asked(was, event, state):
+                heapq.heappush(due, (at, next(arrival), later))
+            for act in acts:
+                if act != "judge":
+                    moves.append(act)
+                    gate = gate.after(act, by)
+        frames.append(gate.framed(SPEECH, SPEECH, 16000, 1, place_of(by)))
+    return Timeline(frames, moves)
+
+
+def held_key(told: Sequence[tuple[float, KeyEvent]], seconds: float) -> Timeline:
+    """The talk key's own hold, told `told`, with its press's Ripe and Overlong told as `keys.tapped` tells them."""
+    return play_out(hold.step, Idle(), lambda _was, event, _now: hold.asked(event), told, seconds, "held key")
+
+
+def engaged_conversation(told: Sequence[tuple[float, engaged.Event]], seconds: float) -> Timeline:
+    """Engaged conversation, told `told`, with its key's presses told as `keys.tapped` tells them and each turn's limit as
+    `engaged.drive` tells it."""
+
+    def asked(was: engaged.Engagement, event: engaged.Event, now: engaged.Engagement) -> tuple[tuple[float, engaged.Event], ...]:
+        return (*(hold.asked(event) if isinstance(event, KeyEvent) else ()), *engaged.deadline(was.phase, now.phase))
+
+    return play_out(engaged.step, engaged.Engagement(), asked, told, seconds, "engaged conversation")
+
+
+async def test_a_held_key_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
+    timeline = held_key([(0.0, Pressed(0.0)), (180.0, Released())], 181.0)
+    assert timeline.moves == ["arm", "start", "stop"]
+    await rig.worker.queue_frames(timeline.frames)
+    await rig.texts.put("three minutes of dictation")
+    assert await rig.everything_sent(holds=1) == ["three minutes of dictation"]
+    # Every frame from the press to the release, then Pipecat's silence: 180 s of it, none cut.
+    assert timeline.held() == 9000
+    assert rig.heard[0].rstrip(b"\x00") == SPEECH * timeline.held()
+
+
+async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
+    engage = [(0.0, Pressed(0.0)), (1.0, Released())]
+    timeline = engaged_conversation([*engage, (2.0, engaged.SpeechStarted(2.0)), (182.0, engaged.TurnEnded("verdict"))], 183.0)
+    assert timeline.moves == ["listen", "arm", "start", "stop"]
+    await rig.worker.queue_frames(timeline.frames)
+    await rig.texts.put("three minutes of conversation")
+    assert await rig.everything_sent(holds=1) == ["three minutes of conversation"]
+    # The turn is all 180 s it was open, after the second the desk heard before it.
+    assert timeline.held() == 9000
+    assert rig.heard[0].rstrip(b"\x00") == SPEECH * (timeline.held() + 50)
+
+
+async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 3.0)
+    # Pressed, and never released: a key stuck down, or a release macOS never reported.
+    timeline = held_key([(0.0, Pressed(0.0))], 5.0)
+    assert timeline.moves == ["arm", "start", "timeout"]
+    await rig.worker.queue_frames(timeline.frames)
+    await rig.texts.put("what I said before the limit")
+    assert await rig.everything_sent(holds=1) == ["what I said before the limit"]
+    # The three seconds up to the limit, every one; after it the microphone is closed, and the room is no part of it.
+    assert timeline.held() == 150
+    assert rig.heard[0].rstrip(b"\x00") == SPEECH * timeline.held()
+    assert timeline.frames[-1].audio == bytes(len(SPEECH))
 
 
 async def test_a_hold_dropped_while_the_last_is_transcribed_leaves_the_last_to_be_sent(rig: Rig) -> None:

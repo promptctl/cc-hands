@@ -178,7 +178,7 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
 
 def in_turn(turn: Woke | Talking, heard: SpeechStopped | TurnEnded | TurnTooLong) -> tuple[Phase, tuple[Act, ...]]:
     """How a turn the voice opened ends, whatever opened it: Smart Turn's verdict on a stop, the silence after it, or the
-    limit."""
+    limit, which sends it as it stands."""
     match heard:
         case SpeechStopped():
             return turn, ("judge",)
@@ -186,9 +186,21 @@ def in_turn(turn: Woke | Talking, heard: SpeechStopped | TurnEnded | TurnTooLong
             return Listening(), ("stop",)
         # [LAW:no-ambient-temporal-coupling] a limit counts only for the turn it was set for.
         case TurnTooLong(opened_at=opened_at) if opened_at == turn.since:
-            return Listening(), ("expire",)
+            return Listening(), ("timeout",)
         case TurnTooLong():
             return turn, ()
+
+
+def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong], ...]:
+    """What the phase moving from `was` to `now` asks to be told later, and at what instant: a turn just opened, once it
+    has been open `TURN_LIMIT_SECONDS`."""
+    match now, was:
+        case Woke(since=since) | Talking(since=since), Woke(since=opened) | Talking(since=opened) if since == opened:
+            return ()
+        case Woke(since=since) | Talking(since=since), _:
+            return ((since + TURN_LIMIT_SECONDS, TurnTooLong(since)),)
+        case _:
+            return ()
 
 
 def released(engagement: Engagement) -> tuple[Move, ...]:
@@ -396,16 +408,11 @@ async def drive(
                                     count(**{move: 1})
                                     # [LAW:no-ambient-temporal-coupling] Smart Turn starts each turn with no speech
                                     # of the last one in it, as Pipecat clears it as each turn ends.
-                                    if move in ("stop", "drop", "expire"):
+                                    if move in ("stop", "drop", "timeout"):
                                         ears.clear()
                                     await on_move(move)
-                        match engagement.phase, was.phase:
-                            case Woke(since=since) | Talking(since=since), Woke(since=opened) | Talking(since=opened) if since == opened:
-                                pass
-                            case Woke(since=since) | Talking(since=since), _:
-                                loop.call_at(since + TURN_LIMIT_SECONDS, events.put_nowait, TurnTooLong(since))
-                            case _:
-                                pass
+                        for at, later in deadline(was.phase, engagement.phase):
+                            loop.call_at(at, events.put_nowait, later)
                         if was.engaged and not engagement.engaged:
                             engaged.close()
         finally:

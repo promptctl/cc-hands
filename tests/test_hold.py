@@ -42,13 +42,13 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         # Typing with Right Shift up is nothing to the turn.
         ([Typed(), Typed()], []),
-        # A press that finds the key already down proves a release went by unseen: an open turn is dropped, and the
-        # press starts afresh, from Typing too.
-        ([Pressed(1.0), Ripe(1.0), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
+        # A press that finds the key already down proves a release went by unseen: an open turn is sent, as that
+        # release would have sent it, and the press starts afresh, from Typing too.
+        ([Pressed(1.0), Ripe(1.0), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "stop", "arm", "start", "stop"]),
         ([Pressed(1.0), Typed(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
-        # A turn open past the limit is thrown away, and the release after it, whenever it comes, sends nothing.
-        ([Pressed(1.0), Ripe(1.0), Overlong(1.0), Released()], ["arm", "start", "expire"]),
-        # The limit counts only for the press it was scheduled for, and a turn already sent has nothing left to expire.
+        # A turn open past the limit is sent as it stands, and the release after it, whenever it comes, sends nothing more.
+        ([Pressed(1.0), Ripe(1.0), Overlong(1.0), Released()], ["arm", "start", "timeout"]),
+        # The limit counts only for the press it was scheduled for, and a turn already sent has nothing left to send.
         ([Pressed(1.0), Released(), Pressed(2.0), Ripe(2.0), Overlong(1.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         ([Pressed(1.0), Ripe(1.0), Released(), Overlong(1.0)], ["arm", "start", "stop"]),
         # After a dropped turn the key works again from the next press.
@@ -93,7 +93,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         return lambda: stopped.append(None)
 
     monkeypatch.setattr(talkkey, "tap", tap)
-    monkeypatch.setattr(keys, "HOLD_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
     made: list[Move] = []
     started = asyncio.Event()
 
@@ -117,7 +117,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
     assert stopped == [None]
 
 
-async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch: pytest.MonkeyPatch) -> None:
     taps: list[Callable[[KeyEvent], None]] = []
 
     def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
@@ -125,8 +125,8 @@ async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monke
         return lambda: None
 
     monkeypatch.setattr(talkkey, "tap", tap)
-    monkeypatch.setattr(keys, "HOLD_SECONDS", 0.05)
-    monkeypatch.setattr(keys, "TURN_LIMIT_SECONDS", 0.1)
+    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 0.1)
     made: list[Move] = []
 
     async def on_move(move: Move) -> None:
@@ -142,7 +142,7 @@ async def test_a_turn_held_past_the_limit_is_thrown_away_without_a_release(monke
     driving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await driving
-    assert made == ["arm", "start", "expire"]
+    assert made == ["arm", "start", "timeout"]
 
 
 def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

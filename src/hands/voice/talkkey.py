@@ -72,11 +72,11 @@ def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
 
     def callback(_proxy, kind, event, _refcon):
         if kind in SWITCHED_OFF:
-            # [LAW:no-silent-failure] a release may have gone by unseen, so a turn in progress is dropped, not left
-            # open, and the tap is switched back on. Nothing in hands switches the tap off, so this is always macOS.
-            logger.warning("macOS switched the talk key's tap off; a turn in progress is dropped, and the tap is back on")
+            # [LAW:no-silent-failure] a release may have gone by unseen, so it is taken as one: a turn in progress is sent,
+            # not left open, and the tap is switched back on. Nothing in hands switches the tap off, so this is always macOS.
+            logger.warning("macOS switched the talk key's tap off; a turn in progress is sent, and the tap is back on")
             Quartz.CGEventTapEnable(port, True)
-            heard(Typed())
+            heard(Released())
         else:
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             heard(event_of(kind, keycode, Quartz.CGEventGetFlags(event), time.monotonic()))

@@ -44,8 +44,9 @@ class NoMicrophone:
 
 
 @dataclass(frozen=True)
-class TurnExpired:
-    """A turn was open `TURN_LIMIT_SECONDS`, and what it recorded was thrown away."""
+class TurnTimedOut:
+    """A turn was open `TURN_LIMIT_SECONDS`, and was sent as it stood: the microphone closed on it, the key perhaps still
+    down and the user still talking."""
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ class AudioMoved:
     devices: Devices
 
 
-SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelActedUntold | UsageLimitReached | StopFailed | TranscriptionFailed | NoMicrophone | TurnExpired | AudioMoved
+SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelActedUntold | UsageLimitReached | StopFailed | TranscriptionFailed | NoMicrophone | TurnTimedOut | AudioMoved
 
 
 def system_text(fact: SystemFact) -> str:
@@ -83,8 +84,8 @@ def system_text(fact: SystemFact) -> str:
             return "Speech recognition failed for that turn."
         case NoMicrophone():
             return "There is no microphone, so hands cannot hear you."
-        case TurnExpired():
-            return f"That turn was open for {TURN_LIMIT_SECONDS:.0f} seconds, so hands threw it away."
+        case TurnTimedOut():
+            return f"That turn ran {TURN_LIMIT_SECONDS / 60:.0f} minutes, so hands sent it and stopped recording."
         case AudioMoved(devices=Devices(input=None, output=output)):
             # [LAW:no-silent-failure] said on whatever speaker is left, since nothing will be heard until a microphone is back.
             return f"No microphone: hands cannot hear you. Speaking on {output}."
@@ -261,17 +262,17 @@ class SystemChannel:
                 logger.error(f"{source} failed: {error}")
 
 
-def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnExpired, ...]:
+def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnTimedOut, ...]:
     """What a move of the key says aloud, beyond its tone: a press to talk, or engaging, with no microphone, which no
-    turn will answer since no frame reaches Whisper, and a turn thrown away for being open too long, which with no microphone
-    recorded nothing to throw away."""
+    turn will answer since no frame reaches Whisper, and a turn sent for being open too long, since the user may still be
+    talking into a microphone that has closed; with no microphone it recorded nothing, and nobody was heard to be cut off."""
     match move, devices:
         case "start" | "listen", Devices(input=None):
             return (NoMicrophone(),)
-        case "expire", Devices(input=None):
+        case "timeout", Devices(input=None):
             return ()
-        case "expire", _:
-            return (TurnExpired(),)
+        case "timeout", _:
+            return (TurnTimedOut(),)
         case _:
             return ()
 

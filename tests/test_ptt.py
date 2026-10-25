@@ -23,7 +23,7 @@ def test_a_started_turn_is_heard() -> None:
     assert gate.audible(LOUD) == LOUD
 
 
-@pytest.mark.parametrize("ended", ["stop", "drop", "expire"])
+@pytest.mark.parametrize("ended", ["stop", "drop", "timeout"])
 def test_an_ended_turn_is_silence_of_the_same_length(ended: Move) -> None:
     gate = Gate().after("start", "held key").after(ended, "held key")
     assert gate.audible(LOUD) == QUIET
@@ -37,7 +37,7 @@ def test_a_press_is_heard_before_it_means_talk_and_silence_once_it_is_shift() ->
 def test_every_turn_is_counted_sent_or_thrown_away_and_the_key_rests_after_either() -> None:
     assert Gate().after("start", "held key").after("stop", "held key") == Gate("up", "desk", sent=1)
     assert Gate().after("start", "held key").after("drop", "held key") == Gate("up", "desk", dropped=1)
-    assert Gate().after("start", "held key").after("expire", "held key") == Gate("up", "desk", dropped=1)  # never sent
+    assert Gate().after("start", "held key").after("timeout", "held key") == Gate("up", "desk", sent=1)  # sent, as it stood
     # A turn ended and the next opened before a frame is captured: the count says the first was sent.
     assert Gate().after("start", "held key").after("stop", "held key").after("arm", "held key").after("start", "held key") == Gate("down", "desk", sent=1)
 
@@ -50,8 +50,8 @@ def test_an_engaged_desk_is_heard_between_turns_and_each_turn_ends_back_to_liste
     assert turn.turn_open
     assert turn.after("stop", "engaged conversation").key == "listening"
     assert engaged.after("arm", "engaged conversation").after("disarm", "engaged conversation").key == "listening"
-    # And listens on; the turn it threw away was opened by the voice.
-    assert turn.after("expire", "engaged conversation") == Gate("listening", "desk", listens=True, dropped=1, opened="engaged conversation")
+    # And listens on; the turn the limit sent was opened by the voice.
+    assert turn.after("timeout", "engaged conversation") == Gate("listening", "desk", listens=True, sent=1, opened="engaged conversation")
 
 
 @pytest.mark.parametrize(("before", "after"), [("listening", "up"), ("arming", "arming"), ("down", "down")])
@@ -77,7 +77,7 @@ def test_a_turn_opened_at_the_other_place_moves_the_gate_there() -> None:
     assert gate.hears("phone") and not gate.hears("desk")
 
 
-@pytest.mark.parametrize("move", ["arm", "disarm", "stop", "drop", "expire"])
+@pytest.mark.parametrize("move", ["arm", "disarm", "stop", "drop", "timeout"])
 def test_the_other_place_cannot_touch_a_turn_but_by_opening_one(move: Move) -> None:
     # A Shift typed at the desk while the user talks on the phone.
     on_the_phone = Gate().after("start", "phone button")
@@ -121,7 +121,7 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
     assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "dropped": True}
 
 
-@pytest.mark.parametrize("ending", ["stop", "drop", "expire"])
+@pytest.mark.parametrize("ending", ["stop", "drop", "timeout"])
 def test_the_end_of_a_hold_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
     # The phone's turn was dropped by a press at the desk, whose hold now ends: nothing is sent, nothing cued twice.
     dropped = Gate("up", "desk", dropped=1)

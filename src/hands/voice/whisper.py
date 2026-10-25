@@ -58,8 +58,8 @@ _REPEATING = 2.4
 _GUESSED = -1.5
 
 # The longest a hold's transcription may take before it fails. The model takes about a third of a second a hold, and the
-# longest hold the key keeps open (TURN_LIMIT_SECONDS) is a few seconds' work, so a minute is a transcription that is
-# not coming back.
+# longest hold the key keeps open (TURN_LIMIT_SECONDS, ten minutes) took 17 s on this Mac, so a minute is a
+# transcription that is not coming back.
 TRANSCRIBING_SECONDS = 60.0
 
 # How much more audio a hold still open gathers before Whisper hears it again, where its cut waits on words: a word or two
@@ -224,7 +224,7 @@ class Whisper(SegmentedSTTService):
                 await self.push_frame(stopped)
                 self._captured = "up"
             case ("down", True, _) | ("down", _, True):
-                # Thrown away, as typing, too long open, or a call came or went; or sent to a Whisper that can no longer
+                # Thrown away, as typing, or a call came or went; or sent to a Whisper that can no longer
                 # transcribe, which Pipecat would give nothing to. Nothing is transcribed or sent, and Whisper is done
                 # with the hold as soon as it is done with every hearing of it while it was open.
                 self._user_speaking = False

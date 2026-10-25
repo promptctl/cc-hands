@@ -85,7 +85,7 @@ class Gate:
         match at == self.place, move, self.key:
             case _, "listen" | "deafen", _:
                 return move
-            case True, "stop" | "drop" | "expire", "up" | "listening" | "arming":
+            case True, "stop" | "drop" | "timeout", "up" | "listening" | "arming":
                 return None
             case True, _, _:
                 return move
@@ -114,9 +114,9 @@ class Gate:
                 return replace(self, key=rest, place=at)
             case "start":
                 return replace(self, key="down", place=at, opened=by)
-            case "stop":
+            case "stop" | "timeout":
                 return replace(self, key=rest, place=at, sent=self.sent + 1)
-            case "drop" | "expire":
+            case "drop":
                 return replace(self, key=rest, place=at, dropped=self.dropped + (self.key == "down"))
 
     def moved(self, to: Place) -> "Gate":

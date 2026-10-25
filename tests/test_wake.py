@@ -48,10 +48,10 @@ def acts(events: Sequence[Event]) -> list[Act]:
         ([Woken(2.0), SpeechStarted(2.5), Woken(3.0), SpeechStopped(), TurnEnded("verdict")], ["listen", "arm", "start", "judge", "stop"]),
         # Turns follow one another, each opened by the wake word.
         ([Woken(2.0), SpeechStarted(2.5), TurnEnded("silence"), SpeechStarted(4.0), Woken(5.0), SpeechStarted(5.5), TurnEnded("silence")], ["listen", "arm", "start", "stop", "arm", "start", "stop"]),
-        # A turn open past the limit is thrown away, whether or not what is asked has started; a limit set for an
+        # A turn open past the limit is sent as it stands, whether or not what is asked has started; a limit set for an
         # earlier turn ends nothing.
-        ([Woken(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
-        ([Woken(2.0), SpeechStarted(2.5), TurnTooLong(2.0)], ["listen", "arm", "start", "expire"]),
+        ([Woken(2.0), TurnTooLong(2.0)], ["listen", "arm", "start", "timeout"]),
+        ([Woken(2.0), SpeechStarted(2.5), TurnTooLong(2.0)], ["listen", "arm", "start", "timeout"]),
         ([Woken(2.0), SpeechStarted(2.5), TurnEnded("silence"), Woken(4.0), TurnTooLong(2.0)], ["listen", "arm", "start", "stop", "arm", "start"]),
         # The talk key does nothing.
         ([Pressed(1.0), Ripe(1.0), Released(), Woken(2.0)], ["listen", "arm", "start"]),
