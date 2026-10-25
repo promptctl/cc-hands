@@ -15,7 +15,7 @@ from aiohttp import web
 from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
-from hands.sessions.audit import CopiesLost, Entry
+from hands.sessions.audit import CopiesLost, Entry, level
 from hands.sessions.tap import _copy, moves, serve_tap  # pyright: ignore[reportPrivateUsage]
 from hands.sessions.wide import root
 
@@ -134,7 +134,28 @@ async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_is_kept_as_its_s
     await asyncio.wait_for(tap.done.wait(), 5)
     exchanged = tap.exchanged()
     assert exchanged.kind == Elsewhere("/api/oauth/profile")
-    assert exchanged.reply == Reached(200, 101.0, 101.0, len(profile), Unkept())
+    assert exchanged.reply == Reached(200, 101.0, 101.0, len(profile), Unkept(None))
+
+
+WORKER_STREAM: Mapping[str, object] = {**request_line(), "method": "GET", "path": "/v1/code/sessions/cse_1/worker/events/stream", "body": None}
+
+
+async def test_a_reply_from_elsewhere_cut_short_is_unkept_with_what_cut_it_and_is_no_error(tap: Heard_, socket_path: Path) -> None:
+    # Remote Control's hour-long stream, which the server resets and Claude Code reopens: hands read none of it, so no
+    # reading of it failed.
+    await copy(socket_path, [WORKER_STREAM, HEAD, CHUNKS[0], {**END, "error": "the reply ended early: context canceled"}])
+    await asyncio.wait_for(tap.done.wait(), 5)
+    exchanged = tap.exchanged()
+    assert exchanged.reply == Reached(200, 101.0, 101.0, len(STREAM[0]), Unkept("the reply ended early: context canceled"))
+    assert level(exchanged) == "info"
+
+
+async def test_a_copy_from_elsewhere_that_breaks_off_is_garbled_since_hands_could_not_read_its_own_copy(tap: Heard_, socket_path: Path) -> None:
+    await copy(socket_path, [WORKER_STREAM, HEAD, CHUNKS[0]])
+    await asyncio.wait_for(tap.done.wait(), 5)
+    exchanged = tap.exchanged()
+    assert isinstance(reply := exchanged.reply, Reached) and isinstance(reply.body, Garbled) and "broke off" in reply.body.reason
+    assert level(exchanged) == "error"
 
 
 async def test_copies_lost_before_this_one_are_a_line_of_the_session_that_lost_them(tap: Heard_, socket_path: Path) -> None:

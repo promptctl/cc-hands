@@ -184,7 +184,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     reader.feed(chunk)
                     await relay(chunk)
                 ended = clock()
-                reply = reader.finish()
+                reply = reader.finish(None)
 
             try:
                 limit = spent(reached.status, reached.headers)

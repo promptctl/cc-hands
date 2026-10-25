@@ -45,7 +45,7 @@ from hands.sessions.registry import EFFECT_KINDS, Performed, Sessions
 from hands.voice.tool import tool
 from hands.voice.tools import Called, audited
 from hands.core.status import Busy, Report, Stamp
-from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unfinished, Unreached
+from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unfinished, Unkept, Unreached
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -156,6 +156,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Reached(200, 0.0, 0.0, 2, Answered({"input_tokens": 3})),
         Reached(429, 0.0, 0.0, 2, Answered({"type": "error", "error": {"type": "rate_limit_error"}})),
         Reached(200, 0.0, 0.0, 2, Garbled("the stream ended early")),
+        Reached(200, 0.0, 0.0, 2, Unkept("the reply ended early: context canceled")),
         Unreached("ClientConnectorError: no route", 0.0),
         Uncopied("the copy broke off", 0.0),
         Unfinished("RuntimeError: the client broke", 0.0),
@@ -168,6 +169,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("Exchanged", "info"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),
+        ("Exchanged", "info"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),
         ("Exchanged", "error"),

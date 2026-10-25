@@ -285,7 +285,7 @@ async def _rest(reader: asyncio.StreamReader, feeder: Reader, came: _Came) -> Re
                 came.took(chunk)
                 feeder.feed(chunk.data)
             case End(at=at, error=error):
-                return came.reached(at, feeder.finish() if error is None else Garbled(error))
+                return came.reached(at, feeder.finish(error))
             case str() as broken:
                 return came.reached(came.head.at, Garbled(broken))
             case unexpected:

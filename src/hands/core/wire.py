@@ -607,7 +607,14 @@ class Answered:
 class Unkept:
     """A reply from an endpoint other than the model's, read none of and kept none of: what those hold - the account, a
     key made for it, Remote Control's tokens - is the user's credentials, never the session speaking. Its size is on its
-    exchange."""
+    exchange.
+
+    `cut` is how it ended before its end, as fritter told it - the server reset the stream, the client hung up - or None
+    when it came whole. Nothing of it was read, so nothing of the reading failed: an early end is the reply's, passed on
+    to the client as it came, never `Garbled`.
+    """
+
+    cut: str | None
 
 
 Body = Written | Garbled | Answered | Unkept

@@ -80,6 +80,18 @@ def _reset(reset: str) -> Seconds | None:
 
 
 class Reader(Protocol):
+    """A reply's bytes as they come, and its body once it has ended: read to its end when `cut` is None, and otherwise
+    ended early, as `cut` says."""
+
+    def feed(self, plain: bytes, /) -> None: ...
+    # [LAW:single-enforcer] the one place that says what a reply cut short is: garbled when hands was reading it, unkept
+    # when it was reading none of it.
+    def finish(self, cut: str | None, /) -> Body: ...
+
+
+class _Plain(Protocol):
+    """What reads a model reply's bytes once their Content-Encoding is off; how the reply ended is `_Decoded`'s."""
+
     def feed(self, plain: bytes, /) -> None: ...
     def finish(self) -> Body: ...
 
@@ -104,8 +116,8 @@ class _Unread:
     def feed(self, plain: bytes) -> None:
         pass
 
-    def finish(self) -> Body:
-        return Unkept()
+    def finish(self, cut: str | None) -> Body:
+        return Unkept(cut)
 
 
 class _Events:
@@ -155,7 +167,7 @@ class _Whole:
 class _Decoded:
     """A reader handed the reply's bytes with their Content-Encoding taken off; what cannot be read is the reply's record."""
 
-    def __init__(self, encoding: str, reader: Reader) -> None:
+    def __init__(self, encoding: str, reader: _Plain) -> None:
         self._decode = _decoder(encoding)
         self._reader = reader
         self._error: str | None = None
@@ -168,7 +180,9 @@ class _Decoded:
         except Exception as error:
             self._fail(error)
 
-    def finish(self) -> Body:
+    def finish(self, cut: str | None) -> Body:
+        if cut is not None:
+            return Garbled(cut)
         if self._error is None:
             try:
                 return self._reader.finish()
