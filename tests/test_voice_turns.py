@@ -808,6 +808,21 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
     assert timeline.frames[-1].audio == bytes(len(SPEECH))
 
 
+async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The limit as engaged conversation schedules it: engaged.deadline reads its own name for it.
+    monkeypatch.setattr("hands.voice.engaged.TURN_LIMIT_SECONDS", 3.0)
+    engage = [(0.0, Pressed(0.0)), (1.0, Released())]
+    # Speech that never stops and is never judged ended.
+    timeline = engaged_conversation([*engage, (2.0, engaged.SpeechStarted(2.0))], 6.0)
+    assert timeline.moves == ["listen", "arm", "start", "timeout"]
+    await rig.worker.queue_frames(timeline.frames)
+    await rig.texts.put("what I said before the limit")
+    assert await rig.everything_sent(holds=1) == ["what I said before the limit"]
+    # The three seconds up to the limit, every one, after the second the desk heard before it.
+    assert timeline.held() == 150
+    assert rig.heard[0].rstrip(b"\x00") == SPEECH * (timeline.held() + 50)
+
+
 async def test_a_hold_dropped_while_the_last_is_transcribed_leaves_the_last_to_be_sent(rig: Rig) -> None:
     # The second press joins the turn the first is still open in; its drop must not end that turn before the first
     # hold's words are in it.
@@ -890,6 +905,17 @@ async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_tur
     await held(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
     assert rig.told == ["released", "failed"]
+
+
+async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The least a transcription is given, made far shorter than this turn's transcription takes.
+    monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
+    timeline = held_key([(0.0, Pressed(0.0)), (180.0, Released())], 181.0)
+    await rig.worker.queue_frames(timeline.frames)
+    await rig.until(lambda: len(rig.heard) == 1)
+    await asyncio.sleep(0.5)
+    await rig.texts.put("three minutes of dictation")
+    assert await rig.everything_sent(holds=1) == ["three minutes of dictation"]
 
 
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -349,8 +349,9 @@ async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     whisper = Whisper(prompt=unprimed, record=lambda _: None)
-    # What the pipeline's start sets: a sent hold is wrapped as a WAV at this rate.
+    # What the pipeline's setup and start set: a sent hold is wrapped as a WAV at this rate, a second of it this many bytes.
     whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
+    whisper._audio_buffer_size_1s = 32_000  # pyright: ignore[reportPrivateUsage]
 
     async def push(_frame: Frame, _direction: object = None) -> None:
         pass

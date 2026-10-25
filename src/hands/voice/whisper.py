@@ -57,10 +57,18 @@ _REPEATING = 2.4
 # -0.89 to -1.11 (hands-dictation-d7i).
 _GUESSED = -1.5
 
-# The longest a hold's transcription may take before it fails. The model takes about a third of a second a hold, and the
-# longest hold the key keeps open (TURN_LIMIT_SECONDS, ten minutes) took 17 s on this Mac, so a minute is a
-# transcription that is not coming back.
+# The least a hold's transcription is given before it fails. The model hears a hold of a few seconds in about a third of
+# a second, so a minute is a transcription that is not coming back; see `_transcribing_seconds` for a long one.
 TRANSCRIBING_SECONDS = 60.0
+
+
+def _transcribing_seconds(held: float) -> float:
+    """The longest a hold `held` seconds long may take to transcribe before it fails: a minute, or the hold's own length.
+
+    Ten minutes of speech (TURN_LIMIT_SECONDS) took 17 s on this Mac, so a model still running after as long as the hold
+    took to say is not coming back; a bound that did not grow with the hold would fail a long one whole on a busier Mac,
+    which is a turn lost to its length (promptctl-voice-je8.d20)."""
+    return max(TRANSCRIBING_SECONDS, held)
 
 # How much more audio a hold still open gathers before Whisper hears it again, where its cut waits on words: a word or two
 # said, and about a third of a second for the model to hear it, so hands is cut off within a second of the user speaking
@@ -75,9 +83,10 @@ _IN_LINE = b"in line"
 
 @dataclass(frozen=True)
 class _Recorded:
-    """A hold of the key's, its audio in Pipecat's queue, and how loud it was."""
+    """A hold of the key's, its audio in Pipecat's queue, how many seconds of it there are, and how loud it was."""
 
     hold: Hold
+    seconds: float
     levels: Levels
 
 
@@ -155,8 +164,8 @@ class Whisper(SegmentedSTTService):
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
-        # The one thread the model transcribes on: a transcription given up on (TRANSCRIBING_SECONDS) is still running,
-        # and the next must not run beside it.
+        # The one thread the model transcribes on: a transcription given up on is still running, and the next must not
+        # run beside it.
         self._model = SerialThread("Whisper")
         # The key the last frame of microphone audio was captured under.
         self._captured: Key = "up"
@@ -217,7 +226,8 @@ class Whisper(SegmentedSTTService):
                 # Sent: the hold's audio is queued, to be transcribed and sent.
                 stopped = VADUserStoppedSpeakingFrame()
                 # Measured as the hold is cut, before Pipecat pads it with silence for Whisper.
-                self._transcribing.append(_Recorded(self._opened.hold, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
+                seconds = len(self._audio_buffer) / self._audio_buffer_size_1s
+                self._transcribing.append(_Recorded(self._opened.hold, seconds, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
                 # Heard whole next: a hearing of it still waiting is moot.
                 self._opened.overhearing = "over"
                 await super()._handle_user_stopped_speaking(stopped)
@@ -310,11 +320,11 @@ class Whisper(SegmentedSTTService):
                 yield TurnResolved(hold=queued.hold)
             case _Discarded(hold=hold):
                 yield TurnResolved(hold=hold)
-            case _Recorded(hold=hold, levels=levels):
-                async for frame in self._transcribed(hold, levels, audio):
+            case _Recorded() as recorded:
+                async for frame in self._transcribed(recorded, audio):
                     yield frame
                 # [LAW:dataflow-not-control-flow] heard, heard nothing, or failed, Whisper is done with the hold.
-                yield TurnResolved(hold=hold)
+                yield TurnResolved(hold=recorded.hold)
 
     async def _overheard(self, partial: _Partial, audio: bytes) -> tuple[InterimWords, ...]:
         """The words heard in a hold still open: none where nothing was said in it lately, or where it closed before they
@@ -367,15 +377,16 @@ class Whisper(SegmentedSTTService):
             case prompt:
                 return prompt
 
-    async def _transcribed(self, hold: Hold, levels: Levels, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def _transcribed(self, recorded: _Recorded, audio: bytes) -> AsyncGenerator[Frame, None]:
         """The words said in a hold of the key's, none, or why it could not be transcribed."""
         # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but
         # Whisper resolving its holds ends one: it fails instead. A model that is running cannot be stopped, so the next
         # hold's transcription waits behind it, on the one thread, inside its own bound.
-        bound = asyncio.timeout(TRANSCRIBING_SECONDS)
+        hold, seconds = recorded.hold, _transcribing_seconds(recorded.seconds)
+        bound = asyncio.timeout(seconds)
         try:
             async with bound:
-                heard = await self._heard(hold.number, levels, audio, await self._prompt())
+                heard = await self._heard(hold.number, recorded.levels, audio, await self._prompt())
             # Recorded, so "I spoke and nothing happened" can be looked into.
             self._record(heard)
             match heard.said:
@@ -387,7 +398,7 @@ class Whisper(SegmentedSTTService):
                     yield Words(said, self._user_id, time_now_iso8601(), LANGUAGE)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from Whisper aloud.
-            why = f"nothing after {TRANSCRIBING_SECONDS:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
+            why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
 
     async def _heard(self, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
