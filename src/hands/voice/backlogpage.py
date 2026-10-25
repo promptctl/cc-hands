@@ -186,9 +186,10 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
             fail(f"cannot read the backlog: {error}")
             return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
 
-    # [LAW:no-ambient-temporal-coupling] the one owner of a project's lit writes from this page: a drop and a level in it
-    # each run alone, from the read they are checked against to the read that shows them, so two pages pressing at once
-    # never both make one level's epic, or rank against an order the other is changing.
+    # [LAW:no-ambient-temporal-coupling] the one owner of a project's lit writes from this page: a drop, a level, and a
+    # note in it each run alone, a drop and a level from the read they are checked against to the read that shows them,
+    # so two pages pressing at once never both make one level's epic, rank against an order the other is changing, or
+    # find lit's store held by the other's write.
     writing: defaultdict[Path, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     @keyed("backlog.ranked", record, key, counts=("tickets", "summarised"))
@@ -217,7 +218,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
         except Rejected as error:
             return _refused(400, f"not moved: {error}")
         try:
-            said = await rank(project, move)
+            said = await rank(project, move, person)
         except LitFailed as error:
             if error.refused:
                 return _refused(502, f"not moved: {error}")
@@ -279,7 +280,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
                     raise Halted(409, f"not leveled: lit made {found}, {title}, at the bottom of its frame, and it cannot be ranked {place}: {error}") from error
                 epic = found
                 try:
-                    await rank(project, move)
+                    await rank(project, move, person)
                 except LitFailed as error:
                     raise _unwritten(
                         error,
@@ -304,7 +305,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
             raise Halted(409, f"lit moved {ticket} into {epic}, and it cannot be ranked last there: {error}") from error
         for last in lasts:
             try:
-                await rank(project, last)
+                await rank(project, last, person)
             except LitFailed as error:
                 raise _unwritten(error, "placed", f"lit moved {ticket} into {epic}, and did not rank it last there", f"lit moved {ticket} into {epic}, and whether it ranked it last there is not known") from error
             annotate(placed="yes")
@@ -318,11 +319,14 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
 
     @keyed("backlog.noted", record, key)
     async def noted(request: web.Request) -> web.Response:
-        # A note changes no order, so it takes no turn among the writes that do.
         try:
             project, ticket, text = parse_note(await request.read())
         except Rejected as error:
             return _refused(400, f"not noted: {error}")
+        async with writing[project]:
+            return await noting(project, ticket, text)
+
+    async def noting(project: Path, ticket: str, text: str) -> web.Response:
         # [LAW:nothing-unseen] whether lit kept the note, "no", "yes", or "unknown", is on the event however it ends.
         annotate(project=project, ticket=ticket, chars=len(text), noted="no")
         try:
@@ -339,7 +343,8 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
 
 
 def _refused(status: int, why: str) -> web.Response:
-    """A drop's or a leveling's answer when it did not end as asked: its event fails saying why, and the page is told the same."""
+    """A drop's, a leveling's, or a note's answer when it did not end as asked: its event fails saying why, and the page is
+    told the same."""
     fail(why)
     return web.Response(status=status, text=why)
 

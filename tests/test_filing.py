@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import get_args
@@ -343,7 +344,7 @@ def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_pat
 
 
 def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def silent(project: Path, *arguments: str, by: backlog.Person | None) -> bytes:
+    async def silent(project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
         return b"\n"
 
     monkeypatch.setattr(backlog, "_lit", silent)

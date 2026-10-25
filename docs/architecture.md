@@ -2052,13 +2052,16 @@ the card, out of its flow. The requests go to hands in the order pressed, and a 
 nothing more, its check made on `read_backlog`. The header, one line of fixed height, says how many presses are still
 sending, and leaving the page while any are is asked about first. Once the last press for a card has ended, a failed one
 puts the card at the level lit holds for the ticket, read again, since lit may have moved it before the failure; a press
-made on it meanwhile is left alone. Once a press has moved a ticket the tree is out of date: the header offers Reload,
-and a drag on the old tree is refused. Each card also carries a note field: a note saved there is `lit comment add` on
-the ticket, for whoever changes the ticket next. Drafts, saves under way, and the last note kept are the page's state by
-ticket, so a redraw keeps them, and the field keeps its height while it empties, says the note, or takes back one lit did
-not keep. Every write from the page is signed by the person hands runs as: `_lit`'s `by` gives lit `--by` and no
-`CLAUDE_CODE_SESSION_ID`, which it would sign with instead (lit records no one for a rank); `hands file-tickets` passes no
-one, and is signed by the session it is run from. Each note is one `backlog.noted` event, with the ticket, its length, and whether lit kept it.
+made on it meanwhile is left alone, and until lit is read after a card's last press, any redraw draws that press. Once a
+press has moved a ticket the tree is out of date: the header offers Reload, and a drag on the old tree is refused. Each
+card also carries a note field: a note saved there is `lit comment add` on the ticket, for whoever changes the ticket
+next, taking its turn among the project's writes, since lit refuses a second writer. Drafts, saves under way, the last
+note kept, and what last went wrong are the page's state by ticket, so a redraw keeps them, and the field keeps its
+height while it empties, says the note, or takes back one lit did not keep. Every write from the page is signed by the
+person hands runs as: a `Person` is the name lit is given with `--by` and the environment hands was started in without
+`CLAUDE_CODE_SESSION_ID`, which lit would sign with instead; every command run for them runs in it, a `lit rank`, which
+takes no `--by`, too. `hands file-tickets` writes as `Inherited`, signed by the session it is run from. Each note is one
+`backlog.noted` event, with the ticket, its length, and whether lit kept it.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

@@ -19,7 +19,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import LEVELS, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.sentences import Sentences
 from hands.sessions.wide import WideEvent, unit
@@ -664,7 +664,6 @@ async def test_a_level_epic_made_from_a_topics_high_one_goes_between_it_and_the_
     await level(page, workspace, first, "high")
     await level(page, workspace, second, "low")
     items = await level(page, workspace, first, "normal")
-    items = items
     assert [title for title, _ in titled(items)] == ["wake word - normal", "wake word - low"]
     ids = {node["title"]: node["id"] for node in items}
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
@@ -853,7 +852,43 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(workspace.root, hey, "Seen again.", None)
+    await comment(workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
+
+
+@real_lit
+async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    # lit keeps the comment, then dies before it can say so.
+    (bin / "lit").write_text(f'#!/bin/sh\nif [ "$1" = comment ]; then\n{LIT} "$@" >/dev/null\nkill -9 $$\nfi\nexec {LIT} "$@"\n')
+    (bin / "lit").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
+    status, body = await noted(page, workspace, hey, "Split it")
+    assert status == 502 and body.startswith(f"whether lit kept the note on {hey} is not known: ")
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "failed" and event.facts["noted"] == "unknown"
+
+
+@real_lit
+async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    seen = tmp_path / "seen"
+    # lit rank takes no --by, and still runs in the person's environment, not the session's.
+    workspace.shim(tmp_path / "bin", f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/bin:/usr/bin")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
+    status, _ = await moved(page, workspace, parser, above=mic)
+    assert status == 200 and seen.read_text() == "session=\n"
+
+
+@real_lit
+async def test_a_note_saved_while_a_ticket_is_leveled_waits_its_turn_and_is_kept(page: Page, workspace: Workspace) -> None:
+    _, hey, custom = epic(workspace, "Train a new wake word", "Hey hands", "Custom wake word", topic="wake-word")
+    leveling, noting = await asyncio.gather(leveled(page, workspace, hey, "high"), noted(page, workspace, custom, "Say which word"))
+    assert (leveling, noting) == ((204, ""), (204, ""))
+    shown = subprocess.run([str(LIT), "show", custom], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
+    assert "Say which word" in shown

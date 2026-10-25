@@ -101,8 +101,11 @@ const EDGE_PX = 48, SCROLL_PX = 24;
 let levels = [];
 // The epics shown open, by id: the page's own state, kept across every redraw.
 const opened = new Set();
-// Each ticket's level presses still sending, by id, and what went wrong with any of them: the page's own state.
+// Each ticket's level presses still sending, by id: how many, the level of the last, and what went wrong with any of
+// them. The page's own state, so a redraw from a lit that has not had them yet still draws the last.
 const presses = new Map();
+// What last went wrong with each ticket's press or note, by id, said over its card across every redraw until put away.
+const alarms = new Map();
 // Each ticket's note, by id, kept across every redraw: its unsaved draft, how many saves are sending, and the last note
 // lit kept.
 const notes = new Map();
@@ -178,6 +181,7 @@ function cardsOf(id) {
 
 // What went wrong with a ticket's press or note, said over its card; empty puts it away.
 function alarm(id, why) {
+  alarms.set(id, why);
   for (const card of cardsOf(id)) card.querySelector(".alarm").textContent = why;
 }
 
@@ -248,7 +252,8 @@ function item(ticket) {
   alarmed.setAttribute("role", "alert");
   // Tapping it puts it away, and is never a drag of the card nor a tap that opens or shuts an epic.
   alarmed.addEventListener("pointerdown", event => event.stopPropagation());
-  alarmed.addEventListener("click", event => { event.stopPropagation(); alarmed.textContent = ""; });
+  alarmed.addEventListener("click", event => { event.stopPropagation(); alarm(ticket.id, ""); });
+  alarmed.textContent = alarms.get(ticket.id) ?? "";
   card.append(grip, title, summary);
   if (ticket.standing !== null) card.append(leveler(ticket));
   card.append(noter(ticket), alarmed);
@@ -286,7 +291,7 @@ function leveler(ticket) {
     button.addEventListener("click", () => pressedAt(ticket.id, level));
     return button;
   }));
-  marked(buttons, ticket.standing.level);
+  marked(buttons, presses.has(ticket.id) ? presses.get(ticket.id).level : ticket.standing.level);
   return buttons;
 }
 
@@ -309,16 +314,21 @@ function shownAt(id, level) {
 }
 
 // A ticket put at a level: the press shows on its card at once and nothing is redrawn, so the next card is where it was
-// and a person goes down the list pressing; the ticket is drawn in its new epic at the next redraw. When the last of its
-// presses still sending has ended, one that failed has its card shown at the level lit holds for the ticket.
+// and a person goes down the list pressing; the ticket is drawn in its new epic at the next redraw. Until lit is read
+// after the last of its presses, the card shows the last one, however it is redrawn meanwhile; once that has ended, one
+// that failed has its card shown at the level lit holds for the ticket.
 function pressedAt(id, level) {
   shownAt(id, level);
   alarm(id, "");
-  const press = presses.get(id) ?? {pending: 0, failed: null};
+  const press = presses.get(id) ?? {pending: 0, failed: null, level};
   presses.set(id, press);
   press.pending += 1;
+  press.level = level;
   headed();
-  putAt(id, level).then(() => { stale = true; }, error => { press.failed = error.message; }).finally(() => {
+  putAt(id, level).then(() => {
+    stale = true;
+    shownAt(id, press.level);
+  }, error => { press.failed = error.message; }).finally(() => {
     press.pending -= 1;
     if (press.pending === 0) {
       presses.delete(id);
@@ -329,23 +339,26 @@ function pressedAt(id, level) {
 }
 
 // [LAW:one-source-of-truth] a failed press leaves its card at the level lit holds, read again, never at a guess: lit may
-// have moved the ticket before the press failed. A press made on the card meanwhile owns its buttons, and they are left.
-async function restored(id, why) {
-  let level, said;
-  try {
-    const read = await answered(TICKETS, {}, "hands is out of reach");
-    const node = read.tracked ? [...everyNode(read.items)].find(each => each.id === id) : undefined;
-    level = node?.standing?.level ?? null;
-    said = node === undefined ? `${why}\nlit's open backlog no longer holds ${id}.` : why;
-  } catch (error) {
-    level = null;
-    said = `${why}\nWhat lit holds for ${id} could not be read again, so no level is shown: ${error.message}`;
-  }
-  if (presses.has(id)) return;
-  alarm(id, said);
-  shownAt(id, level);
-  for (const buttons of levelsOf(id)) stale ||= buttons.dataset.drawn !== (level ?? "");
-  headed();
+// have moved the ticket before the press failed. The read takes its turn behind every request made before it, and a
+// press made on the card by the time it lands owns its buttons, which are left.
+function restored(id, why) {
+  return inTurn(async () => {
+    let level, said;
+    try {
+      const read = await answered(TICKETS, {}, "hands is out of reach");
+      const node = read.tracked ? [...everyNode(read.items)].find(each => each.id === id) : undefined;
+      level = node?.standing?.level ?? null;
+      said = node === undefined ? `${why}\nlit's open backlog no longer holds ${id}.` : why;
+    } catch (error) {
+      level = null;
+      said = `${why}\nWhat lit holds for ${id} could not be read again, so no level is shown: ${error.message}`;
+    }
+    if (presses.has(id)) return;
+    alarm(id, said);
+    shownAt(id, level);
+    for (const buttons of levelsOf(id)) stale ||= buttons.dataset.drawn !== (level ?? "");
+    headed();
+  });
 }
 
 // A note on how to change the ticket, kept by lit as a comment on it. Its draft and what was last noted are the page's
@@ -563,8 +576,10 @@ document.addEventListener("lostpointercapture", ended);
 window.addEventListener("blur", ended);
 // Agents rank, file, and close tickets while the page is away: it is read again whenever it is looked at again.
 reload.addEventListener("click", () => read());
-// A press not yet sent is lost with the page.
-window.addEventListener("beforeunload", event => { if (sending() > 0) event.preventDefault(); });
+// A press or a note not yet kept, and a draft not yet saved, are lost with the page.
+window.addEventListener("beforeunload", event => {
+  if (sending() > 0 || [...notes.values()].some(note => note.saving > 0 || note.draft.trim())) event.preventDefault();
+});
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && key && project) read(); });
 
 if (!key) say("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.", true);
