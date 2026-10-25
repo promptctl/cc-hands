@@ -154,7 +154,9 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     # Refused before its first heartbeat: the one there is left to whatever wrote it, a running hands or a crash, and
     # the reason is in the audit log.
     assert not (tmp_path / "status.json").exists()
-    [refused] = [json.loads(line) for line in audit.tail(Home(tmp_path).audit, 10)[0]]
+    # The run took the home first, which its hands.hold says by naming no holder, and its start was refused after.
+    [took, refused] = [json.loads(line) for line in audit.tail(Home(tmp_path).audit, 10)[0]]
+    assert (took["event"], took["outcome"], took["facts"]["holder"]) == ("hands.hold", "ok", None)
     assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
 
 
@@ -200,8 +202,10 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         assert home.status.read_bytes() == live
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as shim:
             shim.connect(str(home.socket))
-        [refused] = [json.loads(line) for line in audit.tail(home.audit, 10)[0]]
-        assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "already running" in refused["error"]
+        # The lock's answer, and no start: hands is running, which is no fault, so the line is info and is never filed.
+        [answered] = [json.loads(line) for line in audit.tail(home.audit, 10)[0]]
+        assert (answered["event"], answered["level"], answered["outcome"]) == ("hands.hold", "info", "ok")
+        assert answered["facts"]["holder"] == {"type": "Running", "pid": holder.pid}
     finally:
         listening.close()
         holder.kill()
@@ -220,8 +224,8 @@ def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
         assert holder.stdout.readline() == "1\n"
         # And still holds it against every other process.
-        other = subprocess.run([sys.executable, "-c", holds(tmp_path, "held")], capture_output=True, text=True)
-        assert other.returncode != 0 and f"hands is already running on {tmp_path}, as pid {holder.pid}" in other.stderr
+        other = subprocess.run([sys.executable, "-c", f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nprint(cli.hold(Home(Path({str(tmp_path)!r}))))\n"], capture_output=True, text=True, check=True)
+        assert other.stdout == f"Running(pid={holder.pid})\n"
     finally:
         holder.kill()
         holder.wait()

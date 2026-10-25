@@ -145,7 +145,7 @@ async def cancelled[T](tasks: Collection[asyncio.Task[T]]) -> None:
 
 
 class Start:
-    """A start of hands, from `hands run` beginning to its pipeline reported started, or to what ended it first.
+    """A start of hands, from `hands run` holding its home to its pipeline reported started, or to what ended it first.
 
     Its one event, `hands.start`, is timed from the start's first moment, so its duration is how long hands took to be
     ready. Its facts say which run it is (`pid`, `restarted`, `after_crash`, and what became of the `previous_indicator`
