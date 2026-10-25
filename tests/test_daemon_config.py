@@ -429,7 +429,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
 
     home = Home(tmp_path)
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    # No indicator is shown, and the test's own log sinks are kept.
+    # No indicator is shown.
     def unshown(_home: Home) -> int:
         return 0
 
@@ -438,8 +438,6 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
 
     monkeypatch.setattr(cli, "start_indicator", unshown)
     monkeypatch.setattr(cli, "reap", kept)
-    monkeypatch.setattr(cli, "to_terminal", kept)
-    monkeypatch.setattr(cli.logger, "remove", kept)
 
     def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = Sessions(clock=time.monotonic, record=record)
@@ -477,8 +475,6 @@ def test_a_start_refused_as_a_task_fails_is_still_said_and_the_failure_raised(tm
 
     monkeypatch.setattr(cli, "start_indicator", unshown)
     monkeypatch.setattr(cli, "reap", kept)
-    monkeypatch.setattr(cli, "to_terminal", kept)
-    monkeypatch.setattr(cli.logger, "remove", kept)
 
     def loaded(*_: object) -> cli.Run:
         async def refused(stop: Stop) -> Ended:
@@ -505,12 +501,7 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
     def unshown(_home: Home) -> int:
         raise OSError("no indicator")
 
-    def kept(*_: object) -> None:
-        pass
-
     monkeypatch.setattr(cli, "start_indicator", unshown)
-    monkeypatch.setattr(cli, "to_terminal", kept)
-    monkeypatch.setattr(cli.logger, "remove", kept)
     with pytest.raises(OSError, match="no indicator"):
         cli.main(["--home", str(home.root), "run"])
     [failed] = [line for line in map(json.loads, audit.tail(home.audit, 100)[0]) if line.get("event") == "hands.start"]

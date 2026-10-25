@@ -1,3 +1,3 @@
-from hands.daemon.cli import main
+from hands.daemon.cli import entry
 
-raise SystemExit(main())
+raise SystemExit(entry())

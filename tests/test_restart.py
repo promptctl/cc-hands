@@ -338,8 +338,6 @@ def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: 
     monkeypatch.setattr(cli, "retire", retired)
     monkeypatch.setattr(cli, "start_indicator", start_indicator)
     monkeypatch.setattr(cli, "reap", kept)
-    monkeypatch.setattr(cli, "to_terminal", kept)
-    monkeypatch.setattr(cli.logger, "remove", kept)
     monkeypatch.setattr(cli, "loaded", loaded)
     assert cli.main(["--home", str(home.root), "run", "--restarted", str(previous)]) == 0
     assert steps == ["retired", "started"]

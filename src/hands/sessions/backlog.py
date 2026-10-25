@@ -9,6 +9,7 @@ import asyncio
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cached_property
 from pathlib import Path
 from typing import Literal, get_args
@@ -85,6 +86,11 @@ class Ticket:
     topic: str
     # None for an epic: lit exports no status for one, since an epic's state is its children's.
     status: Status | None
+    labels: frozenset[str]
+    # The ticket lit closed this one into, as a duplicate of it or superseded by it; None for one it closed into none.
+    redirect_target: str | None
+    # When lit closed it; None for a ticket open or in progress, and for an epic.
+    closed_at: datetime | None
 
     @property
     def text(self) -> str:
@@ -157,6 +163,8 @@ class Backlog:
     """Every ticket lit holds for one project, in rank order, with each one's children in rank order."""
 
     tickets: Mapping[str, Ticket]
+    # Every ticket lit keeps, listed or archived: an archived ticket still says what it said, and what it was closed into.
+    kept: Mapping[str, Ticket]
     # [LAW:one-source-of-truth] the one parent relation lit's export gives: each ticket's parent where lit lists it or
     # archived it. lit ranks a ticket among the others inside the same parent, an archived one included; one whose
     # parent was deleted, or is not in the export, it ranks among the roots, and so it has none here.
@@ -330,6 +338,21 @@ async def adopt(project: Path, ticket: str, epic: str) -> None:
     await _lit(project, "parent", "set", "--child", ticket, "--parent", epic)
 
 
+async def file_ticket(project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
+    """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
+    the first word lit says. Raises LitFailed when it fails, or says no id."""
+    filed = await _lit(project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description)
+    said = filed.decode(errors="replace").split()
+    if not said:
+        raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
+    return said[0]
+
+
+async def comment(project: Path, ticket: str, body: str) -> None:
+    """Have lit in `project` add a comment to `ticket`; raises LitFailed when it fails."""
+    await _lit(project, "comment", "add", ticket, "--body", body)
+
+
 async def _lit(project: Path, *arguments: str) -> bytes:
     """What lit run in `project` with `arguments` wrote out; raises LitFailed when it could not run, did not answer, or exited non-zero.
 
@@ -356,8 +379,12 @@ def parse_export(raw: bytes) -> Backlog:
     if (version := export.integer("version")) not in EXPORT_VERSIONS:
         raise Rejected(f"lit export is version {version}, and hands reads versions {', '.join(map(str, EXPORT_VERSIONS))}")
     every = [Payload.of(entry, "an issue") for entry in export.items("issues")]
-    issues = sorted((issue for issue in every if _listed(issue)), key=lambda issue: issue.text("rank"))
-    tickets = {issue.text("id"): _ticket(issue) for issue in issues}
+    labels: dict[str, frozenset[str]] = {}
+    for label in (Payload.of(entry, "a label") for entry in export.items("labels")):
+        labels[label.text("issue_id")] = labels.get(label.text("issue_id"), frozenset()) | {label.text("name")}
+    issues = sorted((issue for issue in every if issue.optional_text("deleted_at") is None), key=lambda issue: issue.text("rank"))
+    kept = {issue.text("id"): _ticket(issue, labels.get(issue.text("id"), frozenset())) for issue in issues}
+    tickets = {issue.text("id"): kept[issue.text("id")] for issue in issues if _listed(issue)}
     # An archived parent still frames its children's rank; a deleted or purged one frames nothing.
     framing = tickets.keys() | {issue.text("id") for issue in every if issue.optional_text("deleted_at") is None and issue.optional_text("archived_at") is not None}
     inside: dict[str, str] = {}
@@ -365,12 +392,12 @@ def parse_export(raw: bytes) -> Backlog:
         if relation.text("type") == "parent-child" and relation.text("src_id") in tickets and relation.text("dst_id") in framing:
             inside[relation.text("src_id")] = relation.text("dst_id")
     comments: dict[str, tuple[Comment, ...]] = {}
-    # A comment on a ticket that is none here is read by nothing, and kept by nothing.
-    kept = (comment for comment in (Payload.of(entry, "a comment") for entry in export.items("comments")) if comment.text("issue_id") in tickets)
-    for comment in sorted(kept, key=lambda comment: comment.text("created_at")):
+    # A comment on a ticket lit no longer keeps is read by nothing, and kept by nothing.
+    said = (comment for comment in (Payload.of(entry, "a comment") for entry in export.items("comments")) if comment.text("issue_id") in kept)
+    for comment in sorted(said, key=lambda comment: comment.text("created_at")):
         issue = comment.text("issue_id")
         comments[issue] = (*comments.get(issue, ()), Comment(comment.text("created_by"), comment.text("created_at"), comment.text("body")))
-    return Backlog(tickets, inside, comments)
+    return Backlog(tickets, kept, inside, comments)
 
 
 def _listed(issue: Payload) -> bool:
@@ -378,8 +405,20 @@ def _listed(issue: Payload) -> bool:
     return issue.optional_text("deleted_at") is None and issue.optional_text("archived_at") is None
 
 
-def _ticket(issue: Payload) -> Ticket:
-    return Ticket(issue.text("id"), issue.text("title"), issue.text("description"), issue.text("issue_type"), issue.text("topic"), _status(issue.optional_text("status")))
+def _ticket(issue: Payload, labels: frozenset[str]) -> Ticket:
+    status = _status(issue.optional_text("status"))
+    return Ticket(
+        issue.text("id"), issue.text("title"), issue.text("description"), issue.text("issue_type"), issue.text("topic"),
+        status, labels, issue.optional_text("redirect_target"), _closed_at(issue) if status == "closed" else None,
+    )
+
+
+def _closed_at(issue: Payload) -> datetime:
+    """[LAW:parse-dont-validate] when lit closed a closed ticket, which lit exports for every one."""
+    try:
+        return datetime.fromisoformat(issue.text("closed_at"))
+    except ValueError as error:
+        raise Rejected(f"a closed ticket's closed_at should be a time: {error}") from None
 
 
 def _status(status: str | None) -> Status | None:

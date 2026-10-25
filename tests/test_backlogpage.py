@@ -31,7 +31,7 @@ real_lit = pytest.mark.skipif(LIT is None, reason="the order is lit's, so it is 
 
 def issue(id: str, rank: str, title: str, status: str | None = "open", kind: str = "task", topic: str = "page", **extra: str) -> dict[str, object]:
     made: dict[str, object] = {"id": id, "title": title, "description": f"The words of {title}.", "issue_type": kind, "topic": topic, "rank": rank, **extra}
-    return made if status is None else {**made, "status": status}
+    return made if status is None else {**made, "status": status, **({"closed_at": "2026-10-19T10:00:00Z"} if status == "closed" else {})}
 
 
 def inside(parent: str, child: str) -> dict[str, object]:

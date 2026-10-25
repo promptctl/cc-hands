@@ -239,7 +239,7 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
     record = cli.told_on_terminal(recorded.append)
     terminal = io.StringIO()
     shown = cli.to_terminal(terminal)
-    failures = logger.add(audit.failures_to(record), level="ERROR", filter="hands")
+    failures = audit.logged_to(record, cli.on_terminal)
     try:
         with wide.unit("naming.pass", record):
             wide.fail("the naming model timed out\x1b[2J")
@@ -258,7 +258,7 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
     said = terminal.getvalue().splitlines()
     assert [line.split(" - ", 1)[1] for line in said] == ["naming.pass failed: the naming model timed out\\u001b[2J", "tool.call failed"]
     assert all("| ERROR    |" in line for line in said)
-    # Every event is written, and no Failure line beside the ones it says.
+    # Every event is written, and no Logged line beside the ones it says.
     assert [(entry.event, entry.outcome) for entry in recorded if isinstance(entry, wide.WideEvent)] == [
         ("naming.pass", "failed"), ("summary.pass", "ok"), ("tool.call", "failed"), ("brain.turn", "ok"), ("applied", "failed"), ("hook", "failed"),
     ]

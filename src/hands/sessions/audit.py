@@ -35,7 +35,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     # Defined only in loguru's type stubs.
-    from loguru import Message
+    from loguru import Message, Record as LogRecord
 
 from hands.core.effects import Input, Type
 from hands.core.session import SessionId
@@ -234,12 +234,18 @@ class Rolled:
     deleted: tuple[int, ...]
 
 
-@dataclass(frozen=True)
-class Failure:
-    """An error the daemon logged: the module and function that logged it, what it said, the file and line it was logged
-    at, and, when it was logged with an exception, that exception and each it was raised from or while handling, the
-    first cause first, each named and then followed by the frames it came up through, the raising one last."""
+# How bad a logged record is: loguru's WARNING, or its ERROR and above.
+Severity = Literal["warning", "error"]
 
+
+@dataclass(frozen=True)
+class Logged:
+    """A warning or an error hands logged, as the terminal showed it: how bad it was, the module and function that
+    logged it, what it said, the file and line it was logged at, and, when it was logged with an exception, that
+    exception and each it was raised from or while handling, the first cause first, each named and then followed by the
+    frames it came up through, the raising one last."""
+
+    level: Severity
     source: str
     message: str
     where: str
@@ -262,23 +268,28 @@ Entry = (
     | Cued
     | Refocused
     | Rolled
-    | Failure
+    | Logged
     | WideEvent
     | Exported
 )
 Record = Callable[[Entry], None]
-Level = Literal["error", "info"]
+Level = Literal[Severity, "info"]
 
 
 def level(entry: Entry) -> Level:
-    """Whether a line tells of something that went wrong: a Failure; a unit of work that failed, a start refused among them; a batch of wide events the collector did not take; an exchange the API refused or never answered, whose stream hands could not read, or whose copy
-    broke off."""
+    """Whether a line tells of something that went wrong: a Logged line, at the level it was logged at; a unit of work
+    that failed, a start refused among them; a batch of wide events the collector did not take, and one it took with a
+    warning; an exchange the API refused or never answered, whose stream hands could not read, or whose copy broke off."""
     # [LAW:one-source-of-truth] the one place a line is judged an error, so a reader finds every error by one field and
     # never by an "error" deep in a body the API sent. [LAW:types-are-the-program] every kind of line is named here,
     # so a record added to Entry is judged here before pyright passes, rather than read as info by default.
     match entry:
-        case Failure() | TypingFailed() | Exported(error=str()):
+        case Logged(level=logged):
+            return logged
+        case TypingFailed() | Exported(error=str()):
             return "error"
+        case Exported(warning=str()):
+            return "warning"
         case Exchanged(reply=reply):
             return _reply_level(reply)
         case WideEvent(outcome=outcome):
@@ -348,7 +359,7 @@ class AuditLog:
         try:
             body = _body(entry)
         except TypeError as error:
-            # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Failure line, whose fields always encode.
+            # [LAW:no-silent-failure] a bug in what was recorded: logged as an error, it is a Logged line, whose fields always encode.
             logger.error(f"the audit log cannot encode a {type(entry).__name__} line: {error}")
             return
         try:
@@ -374,8 +385,9 @@ class AuditLog:
                 for base in () if rolled is None else rolled.deleted:
                     segment(self._directory, base).unlink(missing_ok=True)
         except OSError as error:
-            # [LAW:no-silent-failure] said on stderr, as a warning: an error would be sent back to the log that just failed.
-            logger.warning(f"the audit log {self._directory} failed at a {type(entry).__name__} line: {error}")
+            # [LAW:no-silent-failure] said on the terminal alone: written to the log, it would go back to the log that
+            # just failed, and the sink writing it would be logging from inside itself.
+            logger.bind(**{_UNLOGGED: True}).warning(f"the audit log {self._directory} failed at a {type(entry).__name__} line: {error}")
 
 
 @contextmanager
@@ -457,34 +469,44 @@ def jsonable(value: object) -> object:
             raise TypeError(f"the audit log cannot encode a {type(value).__name__}: {value!r}")
 
 
-# The extra a logged line is bound with when it says a line the audit log already holds.
-_AUDITED = "audited"
+# The extra a logged line is bound with to keep it off the audit log: it says a line the log already holds, or that the
+# log itself failed.
+_UNLOGGED = "unlogged"
 
 
 def said(error: str) -> None:
     """Say on the terminal an error the audit log already holds, as a failed unit of work's event: logged, and never
-    written again as a Failure line beside it."""
+    written again as a Logged line beside it."""
     # At its caller's line, as the terminal names where each line was said.
-    logger.opt(depth=1).bind(**{_AUDITED: True}).error(error)
+    logger.opt(depth=1).bind(**{_UNLOGGED: True}).error(error)
 
 
 def told(line: str) -> None:
     """Say on the terminal a line drawn from an event the audit log already holds: logged, and never written again."""
-    logger.opt(depth=1).bind(**{_AUDITED: True}).info(line)
+    logger.opt(depth=1).bind(**{_UNLOGGED: True}).info(line)
 
 
-def failures_to(record: Record) -> "Callable[[Message], None]":
-    """A loguru sink that writes every error it is given as a Failure line, but one that says a line already written."""
+def logged_to(record: Record, shown: "Callable[[LogRecord], bool]") -> int:
+    """Have loguru write every warning and error `shown` admits as a Logged line through `record`, but one kept off the
+    log; the id of the sink that does.
+
+    [LAW:one-source-of-truth] the terminal's rule is the log's: `shown` is what the terminal shows, so the log keeps
+    every warning and error the terminal does. [LAW:single-enforcer] the one place a record is let onto the log, as a
+    filter: loguru asks it before it takes the sink's lock, so the log's own failure, logged from inside the sink, is
+    refused there rather than met by the lock the sink holds.
+    """
+    error = logger.level("ERROR").no
+
+    def admitted(logged: "LogRecord") -> bool:
+        return _UNLOGGED not in logged["extra"] and shown(logged)
 
     def sink(message: "Message") -> None:
         logged = message.record
-        # [LAW:one-source-of-truth] the error is the line it says, never a Failure line beside it.
-        if _AUDITED in logged["extra"]:
-            return
         exception = logged["exception"]
         detail = "" if exception is None or exception.value is None else f": {type(exception.value).__name__}: {exception.value}"
         record(
-            Failure(
+            Logged(
+                level="error" if logged["level"].no >= error else "warning",
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",
@@ -492,7 +514,7 @@ def failures_to(record: Record) -> "Callable[[Message], None]":
             )
         )
 
-    return sink
+    return logger.add(sink, level="WARNING", filter=admitted)
 
 
 def tail(directory: Path, count: int) -> tuple[list[str], int]:

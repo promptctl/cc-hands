@@ -25,12 +25,12 @@ from hands.sessions import audit
 from hands.sessions.audit import (
     AuditLog,
     Entry,
-    Failure,
+    Logged,
     Record,
     Replied,
     Transcribed,
     encoded,
-    failures_to,
+    logged_to,
     follow,
     jsonable,
     segment,
@@ -147,7 +147,7 @@ def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path)
 def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing_else_is(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
-    log.record(Failure(source="hands.x:f", message="broke", where="/x.py:1", trace=()))
+    log.record(Logged(level="error", source="hands.x:f", message="broke", where="/x.py:1", trace=()))
     with unit("name.judged", log.record):
         pass
     with unit("name.judged", log.record):
@@ -162,7 +162,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     ):
         log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
-        ("Failure", "error"),
+        ("Logged", "error"),
         ("WideEvent", "info"),
         ("WideEvent", "error"),
         ("Exchanged", "info"),
@@ -517,7 +517,7 @@ def _write_heartbeat() -> None:
 
 def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_was_logged_and_the_frames_it_came_up_through() -> None:
     recorded: list[Entry] = []
-    sink = logger.add(failures_to(recorded.append), level="ERROR")
+    sink = logged_to(recorded.append, lambda _: True)
     try:
         _write_heartbeat()
     finally:
@@ -525,15 +525,17 @@ def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_
     # Each line of _write_heartbeat and _out_of_space, counted from its def.
     at = {name: inspect.getsourcelines(function)[1] for name, function in (("write", _write_heartbeat), ("raise", _out_of_space))}
     assert recorded == [
-        Failure(
+        Logged(
+            level="error",
             source="test_audit:_write_heartbeat",
             message="cannot write the heartbeat: OSError: no space left",
             where=f"{__file__}:{at['write'] + 5}",
             trace=("OSError: no space left", f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
         ),
-        Failure(source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", trace=()),
+        Logged(level="error", source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", trace=()),
         # Raised from another, it comes after the one it was raised from: the first cause, where it began, is first.
-        Failure(
+        Logged(
+            level="error",
             source="test_audit:_write_heartbeat",
             message="the daemon is not beating: RuntimeError: the heartbeat is lost",
             where=f"{__file__}:{at['write'] + 13}",
@@ -546,6 +548,62 @@ def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_
             ),
         ),
     ]
+
+
+def _hands_logs() -> None:
+    """Logs as hands does: under this test module's name, which the terminal's rule counts as a library's."""
+    logger.info("an info line")
+    logger.warning("a warning")
+    logger.error("an error")
+    audit.said("an error the log already holds")
+
+
+def test_a_warning_and_an_error_the_terminal_shows_are_logged_lines_at_their_level_and_info_and_lines_kept_off_are_not() -> None:
+    recorded: list[Entry] = []
+    sink = logged_to(recorded.append, cli.on_terminal)
+    try:
+        _hands_logs()
+    finally:
+        logger.remove(sink)
+    # A library's warning is shown on the terminal, so it is on the log too: the terminal's rule is the log's.
+    assert [(entry.level, entry.message) for entry in recorded if isinstance(entry, Logged)] == [("warning", "a warning"), ("error", "an error")]
+    assert all(isinstance(entry, Logged) for entry in recorded)
+
+
+def test_the_log_keeps_only_what_the_terminal_shows() -> None:
+    recorded: list[Entry] = []
+    sink = logged_to(recorded.append, lambda logged: logged["level"].name == "ERROR")
+    try:
+        _hands_logs()
+    finally:
+        logger.remove(sink)
+    assert [(entry.level, entry.message) for entry in recorded if isinstance(entry, Logged)] == [("error", "an error")]
+
+
+def test_the_log_failing_while_it_keeps_warnings_is_said_on_the_terminal_and_never_written_back_to_it(tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "audit"
+    log = AuditLog(path, clock=lambda: AT)
+    # The log's directory is now a file: every line it is given fails to be written.
+    path.rmdir()
+    path.write_text("not a directory")
+    shown: list[str] = []
+    terminal = logger.add(lambda message: shown.append(message.record["message"]), level="WARNING")
+    sink = logged_to(log.record, lambda _: True)
+    try:
+        logger.warning("a warning")
+    finally:
+        logger.remove(sink)
+        logger.remove(terminal)
+    assert shown == ["a warning", f"the audit log {path} failed at a Logged line: [Errno 17] File exists: '{path}'"]
+    # The failure was refused before the sink's lock: loguru printed no error of its own.
+    assert "Logging error in Loguru Handler" not in capfd.readouterr().err
+
+
+def test_a_batch_the_collector_took_with_a_warning_is_a_warning_line() -> None:
+    took = audit.Exported("http://otel.example:4318", "logs", ("00f067aa0ba902b7",), 3.0, None, "2 attributes dropped")
+    refused = audit.Exported("http://otel.example:4318", "logs", ("00f067aa0ba902b7",), 3.0, "refused", None)
+    whole = audit.Exported("http://otel.example:4318", "logs", ("00f067aa0ba902b7",), 3.0, None, None)
+    assert (audit.level(took), audit.level(refused), audit.level(whole)) == ("warning", "error", "info")
 
 
 async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is() -> None:
@@ -798,13 +856,13 @@ async def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_c
         """List."""
         return {"sessions": object()}
 
-    sink = logger.add(failures_to(log.record), level="ERROR", filter="hands")
+    sink = logged_to(log.record, lambda _: True)
     try:
         assert "sessions" in await audited(tool(list_sessions), log.record).body()
     finally:
         logger.remove(sink)
     [line] = lines(path)
-    assert line["type"] == "Failure"
+    assert (line["type"], line["level"]) == ("Logged", "error")
     assert line["message"].startswith("the audit log cannot encode a WideEvent line: the audit log cannot encode a object")
 
 

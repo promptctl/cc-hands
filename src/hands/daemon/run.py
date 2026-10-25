@@ -41,7 +41,7 @@ from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
-from hands.sessions.audit import Record, failures_to
+from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
@@ -229,9 +229,6 @@ async def run(
     # [LAW:single-enforcer] one owner lets go of all the run took, in reverse, whichever step of taking it raised: a run
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
-        # [LAW:no-silent-failure] every error hands logs is an audit line too, wherever it was raised.
-        failures = logger.add(failures_to(record), level="ERROR", filter="hands")
-        held.callback(logger.remove, failures)
         # What each turn changed in the repository it ran in, which no transcript record need name.
         deltas = Deltas(record, environment)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.

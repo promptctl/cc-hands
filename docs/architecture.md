@@ -1057,7 +1057,7 @@ turn with a concise, speakable overview. A turn the user stopped before it did a
 on like any other, its record adding that the user interrupted it. Each summary, and how it was
 delivered, are facts on the turn's utterance.
 A transcript that cannot be read is said as "cc-hands finished a turn, and I could not
-read it." without the model and out of the replies the audit log records, and logged as a `Failure` line.
+read it." without the model and out of the replies the audit log records, and logged as an error, a `Logged` line.
 
 For the brain, a narration waits in a lane of `BrainStage`'s own, and the user's turn goes ahead of it: a narration that waited while the brain
 was answering is asked only once no words of the user's are waiting. What the narrator
@@ -2193,11 +2193,17 @@ thing that failed `[LAW:no-silent-failure]`:
    `hands.voice.conversation.AssistantTurns`);
    the system channel writes `Announced` with whether it spoke or posted; each thing a
    session gives hands to say unasked is an `utterance` wide event, from heard to its fate; and a
-   loguru sink turns every error a `hands` module logs into a `Failure`. A dictation is
+   loguru sink turns every warning and error the terminal shows into a `Logged` line at its level, so the terminal's
+   warnings and errors are the log's (`audit.logged_to`, set up with the terminal by `cli.logging_to` for every hands
+   process, the terminal first, so what opening the log warns of is shown). `hands file-tickets <epic>`
+   (`hands.sessions.grouping`, `hands.sessions.filing`) groups the log's warning and error lines by cause, a failed unit
+   of work whose failure was a unit's inside it counted as `retold` and grouped as that unit, and files a ticket for
+   each group no open ticket has, keeping where each group was
+   last told on its tickets, as their `Last seen` line, so it files nothing twice. A dictation is
    traced from the words to the readback: `Transcribed`, then the `tool.run` of
    `stage_draft` with what hands said back, which no model rewords. The log watches
    and never steers: a line the disk will not take is lost with a warning on stderr,
-   a value it cannot encode is a `Failure` line instead, and the draft, the question, or the tick it described goes on. `hands log` follows
+   a value it cannot encode is a `Logged` error instead, and the draft, the question, or the tick it described goes on. `hands log` follows
    the file by inode and offset, so a log moved aside is read from its first line.
 
 The daemon runs in the foreground of a terminal, so a crash is seen there, as down by

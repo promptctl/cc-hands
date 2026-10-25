@@ -400,7 +400,10 @@ hands update                            # install hands from the current master 
                                         # exits 0 only once hands runs master; a step that fails stops it, naming the step, and hands is not restarted;
                                         # install-fritter finding another claude first on the caller's PATH is said, and gone past;
                                         # it builds hands, so Go is needed
-uv run hands log                        # the audit log: what hands heard, said, called, and failed at
+uv run hands log                        # the audit log: what hands heard, said, called, warned of, and failed at
+hands file-tickets <epic>               # run in a lit project: a ticket at the top of <epic> for each kind of warning and error in the audit log
+                                        # no open ticket there has, grouped by cause, and a comment on the ticket that has one seen again;
+                                        # files nothing twice however often it runs, and follows a ticket closed as a duplicate to the one it was closed into
 uv run hands recall token helper        # what was said, sent to a session, and answered there that holds every word; the brain recalls with it
 uv run hands phone                      # the addresses a phone opens the talk page at, the first as a QR code; served while `hands run` is up
                                         # the talk page also shows what the brain is doing, its running tool call live, and a Stop that ends the brain's turn

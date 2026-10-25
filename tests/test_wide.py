@@ -37,7 +37,7 @@ def test_a_unit_that_raises_is_a_failed_event_saying_what_it_raised_and_the_erro
             raise RuntimeError("git is on fire")
     [event] = emitted
     assert (event.outcome, event.error, event.facts) == ("failed", "RuntimeError: git is on fire", {"step": "reading"})
-    # As a Failure line does: what was raised, and the frames it came up through.
+    # As a Logged line does: what was raised, and the frames it came up through.
     assert event.trace[0] == "RuntimeError: git is on fire" and any("in test_a_unit_that_raises" in line for line in event.trace)
 
 
