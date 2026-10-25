@@ -161,9 +161,14 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
 
 
+def asking(home: Path, then: str) -> str:
+    """Python that asks the lock for `home`, as a run that is no restart's, then runs `then` on its answer, `answer`."""
+    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nanswer = cli.hold(Home(Path({str(home)!r})), lambda event: None, restarted=False)\n{then}\n"
+
+
 def holds(home: Path, said: str) -> str:
     """Python that holds `home` as a running daemon does, then prints `said`; raises, and prints nothing, where it is held."""
-    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nassert cli.hold(Home(Path({str(home)!r})), lambda event: None, restarted=False) is None\nprint({said!r}, flush=True)\n"
+    return asking(home, f"assert answer is None\nprint({said!r}, flush=True)")
 
 
 def holding(home: Path, then: str) -> subprocess.Popen[str]:
@@ -250,7 +255,7 @@ def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
         assert holder.stdout.readline() == "1\n"
         # And still holds it against every other process.
-        other = subprocess.run([sys.executable, "-c", f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nprint(cli.hold(Home(Path({str(tmp_path)!r})), lambda event: None, restarted=False))\n"], capture_output=True, text=True, check=True)
+        other = subprocess.run([sys.executable, "-c", asking(tmp_path, "print(answer)")], capture_output=True, text=True, check=True)
         assert other.stdout == f"Running(pid={holder.pid})\n"
     finally:
         holder.kill()
