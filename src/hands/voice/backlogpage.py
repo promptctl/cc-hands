@@ -23,7 +23,7 @@ from pathlib import Path
 from aiohttp import web
 
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Place, Standing, Status, Untracked, adopt, make_epic, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Place, Standing, Status, Untracked, adopt, make_epic, note, parse_level, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
@@ -79,6 +79,20 @@ def parse_leveling(body: bytes) -> tuple[Path, str, Level]:
             return parse_project(project), ticket, level
         case _:
             raise Rejected(f"a leveling is {{project, ticket, and level: one of {', '.join(LEVELS)}}}")
+
+
+def parse_note(body: bytes) -> tuple[Path, str, str]:
+    """The note a page left on a ticket, as its request's body: the project, the ticket, and what it says, trimmed;
+    raises Rejected naming what is wrong with it."""
+    try:
+        sent: object = json.loads(body)
+    except ValueError as error:
+        raise Rejected(f"a note is JSON: {error}") from error
+    match sent:
+        case {"project": str(project), "ticket": str(ticket), "text": str(text)} if text.strip():
+            return parse_project(project), ticket, text.strip()
+        case _:
+            raise Rejected("a note is {project, ticket, and text: what it says, not blank}")
 
 
 @dataclass(frozen=True)
@@ -138,13 +152,14 @@ def shown(read: Sighted | Untracked) -> dict[str, object]:
 
 
 def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.RouteDef]:
-    """The page, the read of a project's backlog, a drop that ranks one ticket next to another, and a level that moves a
-    ticket into its topic's epic for it.
+    """The page, the read of a project's backlog, a drop that ranks one ticket next to another, a level that moves a
+    ticket into its topic's epic for it, and a note left on a ticket as a lit comment.
 
     [LAW:nothing-unseen] each read is one `backlog.read` event, how many open tickets it showed and how many of them had a
     sentence; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
     and what it showed after; each level one `backlog.leveled`, which ticket at which level, the epic it went into,
-    whether lit made that epic, ranked it, moved the ticket, and ranked it last there, and what it showed after; each refused or failed says why.
+    whether lit made that epic, ranked it, moved the ticket, and ranked it last there, and what it showed after; each note
+    one `backlog.noted`, which ticket, how long, and whether lit kept it; each refused or failed says why.
     """
     page = resources.files("hands.voice").joinpath("backlog.html").read_text()
 
@@ -297,7 +312,26 @@ def backlog_routes(store: SummaryStore, key: str, record: Record) -> list[web.Ro
             raise Halted(409, f"the backlog lit holds after the leveling does not have {ticket} last in {epic} where it was put: it changed while it was leveled")
         return web.json_response(shown(after))
 
-    return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked), web.post("/backlog/level", leveled)]
+    @keyed("backlog.noted", record, key)
+    async def noted(request: web.Request) -> web.Response:
+        # A note changes no order, so it takes no turn among the writes that do.
+        try:
+            project, ticket, text = parse_note(await request.read())
+        except Rejected as error:
+            return _refused(400, f"not noted: {error}")
+        # [LAW:nothing-unseen] whether lit kept the note, "no", "yes", or "unknown", is on the event however it ends.
+        annotate(project=project, ticket=ticket, chars=len(text), noted="no")
+        try:
+            await note(project, ticket, text)
+        except LitFailed as error:
+            if error.refused:
+                return _refused(502, f"not noted: {error}")
+            annotate(noted="unknown")
+            return _refused(502, f"whether lit kept the note on {ticket} is not known: {error}")
+        annotate(noted="yes")
+        return web.Response(status=204)
+
+    return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked), web.post("/backlog/level", leveled), web.post("/backlog/note", noted)]
 
 
 def _refused(status: int, why: str) -> web.Response:

@@ -6,6 +6,8 @@ order is changed by `lit rank` alone.
 """
 
 import asyncio
+import getpass
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -338,6 +340,12 @@ async def adopt(project: Path, ticket: str, epic: str) -> None:
     await _lit(project, "parent", "set", "--child", ticket, "--parent", epic)
 
 
+async def note(project: Path, ticket: str, text: str) -> None:
+    """Have lit in `project` add `text` to `ticket` as a comment, signed by the person this hands runs as; raises
+    LitFailed when it fails."""
+    await _lit(project, "comment", "add", ticket, "--body", text, "--by", getpass.getuser())
+
+
 async def file_ticket(project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
@@ -360,7 +368,9 @@ async def _lit(project: Path, *arguments: str) -> bytes:
     """
     command = f"lit {arguments[0]}"
     try:
-        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project)
+        # hands' own lit calls are no Claude Code session's: lit takes CLAUDE_CODE_SESSION_ID for who acts, so a hands
+        # started from inside a session would sign what a person does on the backlog page as that session.
+        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env={name: value for name, value in os.environ.items() if name != "CLAUDE_CODE_SESSION_ID"})
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except OSError as error:

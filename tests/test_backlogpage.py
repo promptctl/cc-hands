@@ -2,7 +2,9 @@
 level that moves a ticket into its topic's epic for it."""
 
 import asyncio
+import getpass
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import AsyncGenerator
@@ -19,7 +21,7 @@ from hands.sessions.backlog import LEVELS, Level, Leveling, Move, NewEpic, Place
 from hands.sessions.payload import Rejected
 from hands.sessions.sentences import Sentences
 from hands.sessions.wide import WideEvent, unit
-from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_project, shown
+from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.sentences import Sighted, SummaryStore, sighted
 from conftest import events
 
@@ -269,6 +271,23 @@ class Page:
         return events(self.recorded, name)
 
 
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        (b"{", "a note is JSON"),
+        (b'{"project": "/tmp", "ticket": "a"}', "a note is {project, ticket, and text"),
+        (b'{"project": "/tmp", "ticket": "a", "text": "  \\n "}', "not blank"),
+    ],
+)
+def test_a_note_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why: str) -> None:
+    with pytest.raises(Rejected, match=re.escape(why)):
+        parse_note(body)
+
+
+def test_a_note_the_page_sends_is_its_project_resolved_its_ticket_and_its_words_trimmed(tmp_path: Path) -> None:
+    assert parse_note(json.dumps({"project": str(tmp_path / "."), "ticket": "a", "text": " split it \n"}).encode()) == (tmp_path.resolve(), "a", "split it")
+
+
 @pytest.fixture
 async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
@@ -338,8 +357,9 @@ async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_al
     assert (await page.client.get("/backlog/tickets?project=/tmp")).status == 401
     assert (await page.client.post("/backlog/rank", json={})).status == 401
     assert (await page.client.post("/backlog/level", json={})).status == 401
-    keyless = page.events("backlog.read") + page.events("backlog.ranked") + page.events("backlog.leveled")
-    assert [event.error for event in keyless] == ["asked without the phone's key"] * 3
+    assert (await page.client.post("/backlog/note", json={})).status == 401
+    keyless = page.events("backlog.read") + page.events("backlog.ranked") + page.events("backlog.leveled") + page.events("backlog.noted")
+    assert [event.error for event in keyless] == ["asked without the phone's key"] * 4
 
 
 @pytest.mark.parametrize(
@@ -769,3 +789,28 @@ async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_suc
     monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body == f"not leveled: lit made the epic wake word - high, and lit no longer tracks {workspace.root}"
+
+
+async def noted(page: Page, workspace: Workspace, ticket: str, text: str) -> tuple[int, str]:
+    response = await page.client.post("/backlog/note", json={"project": str(workspace.root), "ticket": ticket, "text": text}, headers=KEYED)
+    return response.status, await response.text()
+
+
+@real_lit
+async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    # A hands started from inside a Claude Code session carries its id, which lit would sign the note with.
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "a-session")
+    assert await noted(page, workspace, hey, "  Say which word wakes it \n") == (204, "")
+    shown = subprocess.run([str(LIT), "show", hey], cwd=workspace.root, check=True, capture_output=True, text=True).stdout
+    assert f"[{getpass.getuser()}] Say which word wakes it" in shown
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "ok" and (event.facts["ticket"], event.facts["chars"], event.facts["noted"]) == (hey, 23, "yes")
+
+
+@real_lit
+async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_with_lits_verdict(page: Page, workspace: Workspace) -> None:
+    status, body = await noted(page, workspace, "page-nope", "Split it")
+    assert status == 502 and body.startswith("not noted: lit comment") and "entity_not_found" in body
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "failed" and event.facts["noted"] == "no"

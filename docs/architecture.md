@@ -2046,6 +2046,12 @@ the ticket last in the epic and a made epic where it was ranked, or the answer i
 moved the ticket, and ranked it last there, each "yes", "no", or "unknown" where lit stopped without saying why, and why
 it was refused or failed. A level epic carries its topic, so a ticket in `wake word - high` pressed Low goes to `wake
 word - low`.
+A press shows on its card at once and nothing is redrawn, so the next card is where it was and a person goes down the
+list pressing; the requests go to hands in the order pressed, a refused one turns its button back with why on its card,
+and the tickets are drawn in their new epics at the next read. Each card also carries a note field: a note saved there is
+`lit comment add` on the ticket (`backlog.note`), signed by the person hands runs as, for whoever changes the ticket next;
+hands' lit calls run without `CLAUDE_CODE_SESSION_ID`, which lit would otherwise sign them with. Each note is one
+`backlog.noted` event, with the ticket, its length, and whether lit kept it.
 
 A browser gives a page the microphone only over HTTPS. Under the tailnet name,
 hands shows the certificate `tailscale cert` issues for it, which the phone trusts

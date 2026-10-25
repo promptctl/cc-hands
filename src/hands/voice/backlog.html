@@ -47,6 +47,14 @@
   .levels button { flex: 1; max-width: 7rem; min-height: 40px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
     border: 1px solid var(--ring); border-radius: 8px; cursor: pointer; touch-action: manipulation; }
   .levels button[aria-pressed="true"] { background: var(--mark); color: var(--bg); border-color: var(--mark); cursor: default; }
+  .failed { color: var(--bad); font-size: 13px; white-space: pre-wrap; }
+  .note { grid-column: 2; margin-top: 8px; }
+  .noting { display: flex; gap: 8px; align-items: flex-start; }
+  .noting textarea { flex: 1; min-height: 36px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--ring); border-radius: 8px; padding: 7px 9px; resize: vertical; field-sizing: content; cursor: text; user-select: text; }
+  .noting button { min-height: 36px; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--ring); border-radius: 8px; padding: 0 14px; cursor: pointer; touch-action: manipulation; }
+  .failed:empty { display: none; }
   .dragged > .card { opacity: .45; }
   body.busy .card { cursor: progress; }
   body.dragging, body.dragging .card { cursor: grabbing; }
@@ -60,7 +68,7 @@
   <span id="project"></span>
   <a id="phone" href="/">Phone</a>
 </header>
-<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into the epic of its epic's topic for that level, such as "wake word - high", made the first time it is needed; then rank those epics like any other.</p>
+<p id="how">Every epic in lit's rank order, top first, which is the order its work is pulled in. The line under a title is hands' one-sentence summary; an epic also says how many open tickets it holds, and a tap or click on it shows them, another hides them. To rank an epic or a ticket, drag its card up or down among the cards beside it: by the ⠿ grip on a phone, or from anywhere on the card with a mouse. High, Normal, and Low move a ticket into the epic of its epic's topic for that level, such as "wake word - high", made the first time it is needed; a press shows at once and the page stays still, so go down the list pressing, then reload to see the tickets in their new epics and rank those epics like any other. A note under a ticket, saved with Save or ⌘/Ctrl+Enter, is kept by lit as a comment on it, for whoever changes the ticket next.</p>
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
@@ -178,6 +186,7 @@ function item(ticket) {
   summary.textContent = ticket.summary ?? "Not summarised yet.";
   card.append(grip, title, summary);
   if (ticket.standing !== null) card.append(leveler(ticket));
+  card.append(noter(ticket));
   card.addEventListener("pointerdown", event => pressed(event, row));
   row.append(card);
   if (ticket.children.length) row.append(listed(ticket.children));
@@ -196,23 +205,118 @@ function toggled(row, card) {
   card.setAttribute("aria-expanded", String(open));
 }
 
-// A button for each level; the one the ticket is at already is shown pressed, and does nothing.
+// A button for each level; the one the ticket is at is shown pressed, and does nothing.
 function leveler(ticket) {
+  const box = document.createElement("div");
   const buttons = document.createElement("div");
   buttons.className = "levels";
+  const failed = document.createElement("div");
+  failed.className = "failed";
+  failed.setAttribute("role", "alert");
+  // The level the card shows: lit's, then each press's from the moment it is made.
+  let shown = ticket.standing.level;
+  const show = level => {
+    shown = level;
+    for (const button of buttons.children) {
+      const at = button.dataset.level === level;
+      button.disabled = at;
+      button.setAttribute("aria-pressed", String(at));
+    }
+  };
   buttons.append(...levels.map(level => {
     const button = document.createElement("button");
-    const at = ticket.standing.level === level;
     button.type = "button";
+    button.dataset.level = level;
     button.textContent = level[0].toUpperCase() + level.slice(1);
-    button.disabled = at;
-    button.setAttribute("aria-pressed", String(at));
     // A press on a button is never the start of a drag of its card.
     button.addEventListener("pointerdown", event => event.stopPropagation());
-    button.addEventListener("click", () => wrote("/backlog/level", {project, ticket: ticket.id, level}, "Moving…", `hands did not answer, so whether lit moved ${ticket.id} is not known; lit's backlog is read again.`));
+    button.addEventListener("click", () => {
+      const before = shown;
+      show(level);
+      failed.textContent = "";
+      putAt(ticket.id, level).catch(error => {
+        show(before);
+        failed.textContent = error.message;
+      });
+    });
     return button;
   }));
-  return buttons;
+  show(shown);
+  box.append(buttons, failed);
+  return box;
+}
+
+// A note on how to change the ticket, kept by lit as a comment on it. Saving clears the field at once and the emptied
+// field says the note, so nothing below it moves; one lit did not keep comes back into the field with why.
+function noter(ticket) {
+  const box = document.createElement("div");
+  box.className = "note";
+  const field = document.createElement("textarea");
+  field.rows = 1;
+  field.placeholder = "Note on how to change this ticket";
+  field.setAttribute("aria-label", `Note on ${ticket.id}`);
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Save";
+  const failed = document.createElement("div");
+  failed.className = "failed";
+  failed.setAttribute("role", "alert");
+  const saved = () => {
+    const text = field.value.trim();
+    if (!text) return;
+    field.value = "";
+    failed.textContent = "";
+    const before = field.placeholder;
+    field.placeholder = `Saving: ${text}`;
+    noted(ticket.id, text).then(() => { field.placeholder = `Noted: ${text}`; }, error => {
+      field.placeholder = before;
+      field.value = field.value ? `${text}\n${field.value}` : text;
+      failed.textContent = error.message;
+    });
+  };
+  save.addEventListener("click", saved);
+  field.addEventListener("keydown", event => {
+    // The card's own keys (an epic's Enter and Space) are not this field's.
+    event.stopPropagation();
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saved(); }
+  });
+  // Typing in the field, or pressing Save, is never a drag of the card, nor a tap that opens or shuts an epic.
+  for (const part of [field, save]) {
+    part.addEventListener("pointerdown", event => event.stopPropagation());
+    part.addEventListener("click", event => event.stopPropagation());
+  }
+  const row = document.createElement("div");
+  row.className = "noting";
+  row.append(field, save);
+  box.append(row, failed);
+  return box;
+}
+
+// A note sent to hands; resolves once lit has it, rejects with what hands said.
+async function noted(ticket, text) {
+  let response;
+  try {
+    response = await asked("/backlog/note", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, text})});
+  } catch {
+    throw new Error(`hands did not answer, so whether lit kept the note on ${ticket} is not known.`);
+  }
+  if (!response.ok) throw new Error(await response.text().catch(() => `hands refused the note on ${ticket}.`));
+}
+
+// A ticket put at a level: the press shows on its card at once and nothing is redrawn, so the next card is where it was
+// and a person goes down the list pressing; the ticket is drawn in its new epic at the next redraw. Its request waits its
+// turn behind every one made before it, so lit moves tickets in the order they were pressed. Rejects with what hands said.
+function putAt(ticket, level) {
+  return new Promise((resolve, reject) => inTurn(async () => {
+    let response;
+    try {
+      response = await asked("/backlog/level", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({project, ticket, level})});
+    } catch {
+      reject(new Error(`hands did not answer, so whether lit moved ${ticket} is not known; reload the page to see lit's backlog.`));
+      return;
+    }
+    if (response.ok) resolve(); else reject(new Error(await response.text().catch(() => `hands refused to move ${ticket}.`)));
+  }));
 }
 
 function read() {
@@ -226,7 +330,7 @@ function read() {
   });
 }
 
-// A change asked of lit: a drop's rank or a ticket's level, answered with the backlog lit holds after it.
+// A drop's rank asked of lit, answered with the backlog lit holds after it.
 function wrote(path, sent, doing, unanswered) {
   return inTurn(async () => {
     say(doing);
