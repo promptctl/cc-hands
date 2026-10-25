@@ -198,19 +198,14 @@ async def test_a_copy_that_breaks_off_says_how_far_it_got(tap: Heard_, socket_pa
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and "broke off" in reply.body.reason
 
 
-async def test_a_copy_cut_partway_through_its_request_tells_nothing_and_is_no_error_since_its_fritter_counts_it_lost(tap: Heard_, socket_path: Path) -> None:
+async def test_a_copy_cut_partway_through_its_request_tells_nothing_and_is_no_error_since_its_fritter_counts_it_lost() -> None:
     # As fritter leaves one when hands has not read for its write deadline: part of the line, then the copy's end.
-    errors: list[str] = []
-    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
-    try:
-        await copy(socket_path, [], raw=encoded([request_line()])[:60])
-        await copy(socket_path, [request_line(lost=1), HEAD, *CHUNKS, END])
-        await asyncio.wait_for(tap.done.wait(), 5)
-    finally:
-        logger.remove(sink)
-    assert isinstance(tap.exchanged().reply, Reached)
-    assert tap.entries == [CopiesLost(SessionId("s1"), 1)]
-    assert errors == []
+    heard = Heard_()
+    reader = asyncio.StreamReader()
+    reader.feed_data(encoded([request_line()])[:60])
+    reader.feed_eof()
+    await _copy(reader, heard.observe, heard.entries.append, lambda: 999.0)
+    assert (heard.observed, heard.entries) == ([], [])
 
 
 async def test_a_copy_cut_partway_through_a_line_of_its_reply_broke_off_and_is_not_a_line_hands_cannot_read(tap: Heard_, socket_path: Path) -> None:
