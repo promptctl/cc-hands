@@ -170,6 +170,14 @@ async def test_a_reply_cut_short_upstream_is_garbled_with_what_cut_it(tap: Heard
     assert isinstance(reply := tap.exchanged().reply, Reached) and reply.body == Garbled("the reply ended early: EOF")
 
 
+async def test_a_reply_hands_could_not_read_before_it_was_cut_short_is_garbled_with_what_hands_could_not_read(tap: Heard_, socket_path: Path) -> None:
+    unreadable = {"kind": "bytes", "at": 102.0, "bytes": b64(b"event: content_block_delta\ndata: \xff\xfe\n\n")}
+    await copy(socket_path, [request_line(), HEAD, CHUNKS[0], unreadable, {**END, "error": "the reply ended early: EOF"}])
+    await asyncio.wait_for(tap.done.wait(), 5)
+    assert isinstance(reply := tap.exchanged().reply, Reached) and isinstance(reply.body, Garbled)
+    assert reply.body.reason.startswith("hands could not read it: UnicodeDecodeError")
+
+
 async def test_an_upstream_never_reached_is_unreached(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), {"kind": "unreached", "at": 100.2, "error": "connection refused"}])
     await asyncio.wait_for(tap.done.wait(), 5)

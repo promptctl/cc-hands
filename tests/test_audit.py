@@ -174,6 +174,8 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         ("Exchanged", "error"),
         ("Exchanged", "error"),
     ]
+    # How a reply from elsewhere ended is on its own line, for the reply it cut.
+    assert lines(path)[6]["reply"]["body"] == {"type": "Unkept", "cut": "the reply ended early: context canceled"}
 
 
 def test_text_cut_mid_emoji_is_a_line_that_reads_back_as_it_was_and_whole_characters_are_written_as_themselves(tmp_path: Path) -> None:

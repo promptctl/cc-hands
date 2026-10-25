@@ -610,8 +610,7 @@ class Unkept:
     exchange.
 
     `cut` is how it ended before its end, as fritter told it - the server reset the stream, the client hung up - or None
-    when it came whole. Nothing of it was read, so nothing of the reading failed: an early end is the reply's, passed on
-    to the client as it came, never `Garbled`.
+    when it came whole. Nothing of it was read, so nothing of the reading failed: an early end is the reply's.
     """
 
     cut: str | None

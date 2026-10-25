@@ -84,8 +84,9 @@ class Reader(Protocol):
     ended early, as `cut` says."""
 
     def feed(self, plain: bytes, /) -> None: ...
-    # [LAW:single-enforcer] the one place that says what a reply cut short is: garbled when hands was reading it, unkept
-    # when it was reading none of it.
+    # [LAW:single-enforcer] the one place that says what a reply known to have ended early is: garbled when hands was
+    # reading it, unkept when it was reading none of it. The proxy cannot yet tell an early end from its own failure
+    # (promptctl-warnings-2d80.sj1), so it never has a cut to pass.
     def finish(self, cut: str | None, /) -> Body: ...
 
 
@@ -181,20 +182,22 @@ class _Decoded:
             self._fail(error)
 
     def finish(self, cut: str | None) -> Body:
+        # hands' reading failing comes before the reply's end, and is what the record says when both happened.
+        if self._error is not None:
+            return Garbled(self._error)
         if cut is not None:
             return Garbled(cut)
-        if self._error is None:
-            try:
-                return self._reader.finish()
-            except Exception as error:
-                self._fail(error)
-        return Garbled(f"hands could not read it: {self._error}")
+        try:
+            return self._reader.finish()
+        except Exception as error:
+            return Garbled(self._fail(error))
 
-    def _fail(self, error: Exception) -> None:
+    def _fail(self, error: Exception) -> str:
         # [LAW:single-enforcer] what hears the wire never changes it: whatever hands' reading raises, the reply still
         # reaches the client whole. [LAW:no-silent-failure] the failure is the reply's record, and its trace is logged.
         logger.opt(exception=error).warning("the proxy could not read a reply it forwarded")
-        self._error = f"{type(error).__name__}: {error}"
+        self._error = f"hands could not read it: {type(error).__name__}: {error}"
+        return self._error
 
 
 def _decoder(encoding: str) -> Callable[[bytes], bytes]:
