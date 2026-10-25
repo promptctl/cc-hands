@@ -308,6 +308,23 @@ Need 8. Where the microphone is.
   every desk microphone buffer, lifting the half-duplex mute and closing the own-voice
   bleed bug. Done when barge-in with speakers on yields a clean transcript.
 
+## Speaker diarization (`promptctl-diarization-lkvp`)
+
+So that in conversation hands can tell the owner from another person, and from its own voice.
+
+- **Who spoke in each hold.** NVIDIA's Nemotron 3 Diarization hears every hold as it is
+  spoken, in one stream for the run, so a speaker keeps the same number from hold to hold;
+  each hold the key sent or dropped is a `diarization.hold` event with its speakers and the
+  seconds each spoke (`hands.voice.diarization`). Measured 2026-10-25 through that code by
+  `scripts/measure-diarization.py`, in holds: 73.7 min of one LibriVox reader in 1492 holds,
+  all of it one speaker and none of it anyone else; AMI test meetings ES2004a, 4 speakers found
+  of 4, 26 of 28 holds given their own speaker and the other 2 heard as nobody, and IS1009a,
+  3 of 4, 28 of 29, the miss one woman's only hold given to another's speaker. Quiet holds of
+  0.8 to 2 s at 20 to 30 dB down, the kind the first speaker check filed as a guest's, were
+  one speaker in 24 of 24. Two LibriVox readers alternating turns of 6 s or less were one
+  speaker, even to the model run offline, and two at 12 s turns. Built:
+  tests/test_diarization.py; not verified live.
+
 ## Endurance (`hands-memory-5qk`)
 
 Need 9, the memory half.

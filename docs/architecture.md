@@ -1781,7 +1781,18 @@ frames a hold is made of, so each hold's `HoldHeard` line says its mean power in
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
 reply's echo left over reads loud captured and quiet heard, one of the room with nobody
 speaking reads quiet on both. A level is null for digital silence, and at the phone,
-heard through no canceller, the two are equal. Measured on
+heard through no canceller, the two are equal.
+
+Who spoke in each hold is diarized beside it (`hands.voice.diarization`): NVIDIA's Nemotron 3
+Diarization, a Streaming Sortformer, on the CPU, in one stream for the run. While the key is
+down, Whisper gives the stream what its buffer gained, so the stream hears exactly the audio
+the hold is transcribed from, as it is spoken; at the hold's end it is followed by silence
+until every 10 ms frame of it is scored. The model's arrival-order speaker cache carries
+who has been heard from hold to hold, so speaker 0 is the first voice of the run in every
+hold. Each hold the key sent or dropped is one `diarization.hold` event: its fate, its
+speakers with the seconds each was heard, longest first, and how far behind the hold's
+speech they settled; a step that failed is the event's failure. Whisper never waits on it,
+and a hold still unsettled when the next ends is logged as diarization running behind. Measured on
 2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
 nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
 one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept

@@ -20,6 +20,8 @@ dependencies = [
     "livekit>=1.1.20,<2",
     "openwakeword>=0.6,<0.7",
     "tomlkit>=0.15.1",  # hands.daemon.config sets the model chosen by voice in config.toml, every other line kept
+    "transformers>=5.20.2,<6",  # hands.voice.diarization runs Nemotron 3 Diarization through it, the first release that has it
+    "librosa>=1.0",  # transformers' feature extractor for it builds its mel filters with librosa
 ]
 
 [project.scripts]

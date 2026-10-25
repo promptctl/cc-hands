@@ -39,7 +39,7 @@ from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
 from hands.sessions.wide import annotate, fail, unit
 from hands.core.place import Place
 from hands.threads import SerialThread
-from hands.voice import transcription
+from hands.voice import diarization, transcription
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import Hold, HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
@@ -118,14 +118,15 @@ class _Unread:
 @dataclass
 class _Open:
     """The hold the key last opened, as Whisper hears it while it is open: the bytes of its audio in the hop before its
-    last hearing was queued and gathered since, where hearing it stands, and the vocabulary every hearing of it is primed
-    with, read for the first."""
+    last hearing was queued and gathered since, where hearing it stands, the vocabulary every hearing of it is primed
+    with, read for the first, and the bytes of its audio given to the diarizer so far."""
 
     hold: Hold
     hop: int
     gathered: int
     overhearing: Overhearing
     prompt: str | None | _Unread = _Unread()
+    diarized: int = 0
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,12 @@ class Whisper(SegmentedSTTService):
         with unit("whisper.loaded", record):
             transcription.load()
             annotate(model=transcription.MODEL)
+        # [LAW:nothing-unseen] the diarizer's load is a unit of its own beside the transcriber's.
+        with unit("diarization.loaded", record):
+            stream = diarization.load()
+            annotate(model=diarization.MODEL, revision=diarization.REVISION)
+        # Who spoke in each hold, told beside it: nothing Whisper does waits on it.
+        self._diarizer = diarization.Diarizer(stream, record)
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
@@ -228,6 +235,7 @@ class Whisper(SegmentedSTTService):
                 # Measured as the hold is cut, before Pipecat pads it with silence for Whisper.
                 seconds = len(self._audio_buffer) / self._audio_buffer_size_1s
                 self._transcribing.append(_Recorded(self._opened.hold, seconds, Levels(_dbfs(self._uncancelled), _dbfs(self._audio_buffer))))
+                self._diarizer.ended(self._opened.hold.number, "sent")
                 # Heard whole next: a hearing of it still waiting is moot.
                 self._opened.overhearing = "over"
                 await super()._handle_user_stopped_speaking(stopped)
@@ -241,6 +249,7 @@ class Whisper(SegmentedSTTService):
                 self._audio_buffer.clear()
                 # What a hearing of it still waiting hears is no one's.
                 self._opened.overhearing = "over"
+                self._diarizer.ended(self._opened.hold.number, "dropped")
                 await self.push_frame(HoldDiscarded())
                 # [LAW:no-ambient-temporal-coupling] resolved by the one task that pushes what Whisper heard, in line, so
                 # nothing heard in the hold can land behind its resolution.
@@ -287,7 +296,23 @@ class Whisper(SegmentedSTTService):
         self._uncancelled += frame.captured
         del self._uncancelled[: len(self._uncancelled) - len(self._audio_buffer)]
         self._opened.gathered += len(frame.audio)
+        match self._captured:
+            case "down":
+                self._diarize()
+            case _:
+                pass
         await self._overhear()
+
+    def _diarize(self) -> None:
+        """Give the diarizer what the buffer gained since it was last given any of the hold open: the hold's first
+        frame brings the second the desk heard before it, as the hold's transcription does."""
+        opened = self._opened
+        self._diarizer.heard(bytes(self._audio_buffer[opened.diarized :]))
+        opened.diarized = len(self._audio_buffer)
+
+    async def cleanup(self) -> None:
+        await super().cleanup()
+        self._diarizer.stopped()
 
     async def _overhear(self) -> None:
         """Queue the hold open to be heard, its last two hops, where its cut waits on words, none was heard in it yet, no

@@ -37,6 +37,13 @@ jobs:
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
+      # The diarization tests run Nemotron 3 Diarization on real speech, fetched into the Hugging Face cache at the revision
+      # diarization.py pins; kept the same way, for the same reason. The whole hub: a model's directory holds only links
+      # into the hub's shared store of blobs, where its weights are.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: nemotron-diarization-${{ hashFiles('src/hands/voice/diarization.py') }}
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
