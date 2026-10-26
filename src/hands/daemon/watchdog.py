@@ -1,5 +1,5 @@
-"""The run's watchdog timer: a run whose heartbeat stops for HUNG ends itself, saying where every thread was, so whatever
-supervises hands starts it again.
+"""The run's watchdog timer: a run whose heartbeat stops for HUNG ends itself, saying where every thread was, rather than
+stay up unable to hear, so whatever supervises hands, where something does, can start it again.
 
 [LAW:one-source-of-truth] the heartbeat is the run's proof that its loop still turns, the one `heartbeat.judge` reads as
 not responding; each beat kicks the watchdog, so the two cannot disagree about whether the run is making progress.
@@ -51,11 +51,8 @@ def watching(path: Path, after: timedelta) -> Generator[Watchdog]:
         tracebacks = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         tracebacks = ""
-    match tracebacks:
-        case "":
-            pass
-        case _:
-            logger.error(f"the run before stopped beating, and its watchdog ended it; where every thread was:\n{tracebacks}")
+    if tracebacks:
+        logger.error(f"the run before stopped beating, and its watchdog ended it; where every thread was:\n{tracebacks}")
     with path.open("w", encoding="utf-8") as dump:
         watchdog = Watchdog(after, dump)
         try:
