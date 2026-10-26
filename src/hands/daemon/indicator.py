@@ -108,8 +108,8 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
     text = describe(verdict, now)
     match before:
         case None:
-            # A daemon found already down at the first look is shown, not announced: only leaving up, or a degradation
-            # arriving, is news.
+            # A daemon found already down at the first look is shown, not announced: only a light other than up that the
+            # look before did not show, or a degradation arriving, is news.
             return Shown(after, degraded, shown, text, (), frozenset(), None)
         case Shown(light=was, degraded=had, owed=owed, posted_at=posted_at):
             # News is a light other than up that the look before did not show, stuck turning down as the watchdog ends a hung run

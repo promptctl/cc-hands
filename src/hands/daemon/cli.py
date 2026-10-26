@@ -187,7 +187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("status", help="say whether the daemon is up, from its heartbeat; exits 0 only when it is")
     checking = commands.add_parser("check", help="list each step of the README's install, ✓ done, ✗ missing with the command that fixes it, or ? when it could not be looked at: Claude Code, PortAudio, `hands` on PATH, the claude shim on PATH, the plugin, the brain's login, this terminal's Input Monitoring grant, hands running, and the running sessions; exits 0 only when every step is done, 1 when one is missing, 2 when one could not be looked at")
     checking.add_argument("-v", "--verbose", action="store_true", help="say each step in full beneath its line, every running session among them")
-    showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it stops being up, until whatever started it exits (`hands run` starts one)")
+    showing = commands.add_parser("indicator", help="show the daemon's verdict in the menu bar, posting a notification when it turns to a light other than up that it was not showing, until whatever started it exits (`hands run` starts one)")
     showing.add_argument("--parent", type=int, help="the pid of the process that started it, whose exit ends it (default: its parent now)")
     commands.add_parser("tmux-status", help="print the menu bar's title for a tmux status line, coloured by the daemon's verdict; always exits 0, since tmux shows what is printed whatever the exit")
     logging_in = commands.add_parser("login", help="set the brain up on a home with none, or log it in again or onto another account, at this terminal; exits 0 only when it holds the login asked for after")
@@ -255,9 +255,6 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
-        # [LAW:nothing-unseen] a run its watchdog ended wrote nothing else as it went: its tracebacks reach the log here,
-        # read before this run's watchdog empties the file.
-        run_start.heard(hung_before=watchdog.dumped(home.hang))
         with watchdog.watching(home.hang, watchdog.HUNG) as watched:
             heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, watched.kick)
             try:

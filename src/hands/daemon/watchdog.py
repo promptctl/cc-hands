@@ -13,9 +13,12 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TextIO
 
+from loguru import logger
+
 # How long a run may go without a heartbeat before it ends itself. Well past the stalls a working run recovers from,
-# which the indicator shows as not responding after three missed beats; a voice app frozen this long is gone to its
-# user, and a start again costs seconds.
+# which the indicator shows as not responding after three missed beats, and past the steps of a run that no beater
+# covers, the brain's launch and stop and the exporter's last flush among them, each bounded in seconds; a voice app
+# frozen this long is gone to its user, and a start again costs seconds.
 HUNG = timedelta(seconds=60)
 
 
@@ -32,25 +35,31 @@ class Watchdog:
         faulthandler.dump_traceback_later(self.after.total_seconds(), exit=True, file=self.dump)
 
 
-def dumped(path: Path) -> str | None:
-    """What the watchdog of the run before wrote: its tracebacks where it ended that run, "" where it did not, and None
-    where no run before kept one here."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return None
-
-
 @contextmanager
 def watching(path: Path, after: timedelta) -> Generator[Watchdog]:
-    """The watchdog for one run, dumping into `path`, emptied for it; disarmed when the run ends.
+    """The watchdog for one run, dumping into `path`, emptied for it; armed as the run begins, and disarmed as it ends.
 
-    [LAW:no-ambient-temporal-coupling] the timer is the process's, so its life is bound to the run that owns it: armed
-    by the run's first beat, cancelled as the run ends. A restart execs inside it, which ends the timer's thread and
-    closes the dump with the process image it belonged to.
+    [LAW:nothing-unseen] a run its watchdog ended wrote nothing else as it went: what it dumped is logged as an error, on
+    the terminal and in the audit log, before the file is emptied for this run, so a run that hangs before it is ready
+    still leaves the hang before it on the log. [LAW:no-ambient-temporal-coupling] the timer is the process's, so its
+    life is bound to the run that owns it: armed as the run begins, so a run stuck before its first beat ends too, and
+    cancelled as it ends. A restart execs inside it, which ends the timer's thread and closes the dump with the process
+    image it belonged to.
     """
+    try:
+        # The run before's tracebacks where its watchdog ended it, and nothing where it did not.
+        tracebacks = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        tracebacks = ""
+    match tracebacks:
+        case "":
+            pass
+        case _:
+            logger.error(f"the run before stopped beating, and its watchdog ended it; where every thread was:\n{tracebacks}")
     with path.open("w", encoding="utf-8") as dump:
+        watchdog = Watchdog(after, dump)
         try:
-            yield Watchdog(after, dump)
+            watchdog.kick()
+            yield watchdog
         finally:
             faulthandler.cancel_dump_traceback_later()

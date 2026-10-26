@@ -1,10 +1,11 @@
 """`hands run` under its watchdog, which ends whatever process it is in, so it is watched here and not in the test's.
 
-    python watched_run.py <home> hangs|returns|beats
+    python watched_run.py <home> <deadline seconds> hangs|stalls|returns|beats
 
 hangs: `hands run` beats starting, then is stuck as the daemon once was, its loop's thread waiting on the GIL a thread in
-a backtracking regex holds. returns: `hands run` beats its refusal and returns, then the process idles past the deadline,
-exiting 10 more than the run's code. beats: a watchdog kicked well within its deadline, past several deadlines.
+a backtracking regex holds. stalls: `hands run` is stuck the same way at its door, before its first beat. returns:
+`hands run` beats its refusal and returns, then the process idles past the deadline, exiting 10 more than the run's code.
+beats: a watchdog kicked well within its deadline, past two deadlines.
 Only the door and the run's launch are stood in for, so the heartbeat and watchdog are the ones `hands run` makes.
 """
 
@@ -19,7 +20,8 @@ from hands.daemon import cli, watchdog
 from hands.daemon.starting import CannotStart
 from hands.sessions.home import Home
 
-watchdog.HUNG = timedelta(milliseconds=500)
+# How often `beats` kicks: a twentieth of the deadline, so only a stall of nearly all of it ends the run.
+KICKS_PER_DEADLINE = 20
 
 
 def stuck_in_a_regex() -> None:
@@ -27,13 +29,21 @@ def stuck_in_a_regex() -> None:
     re.search(r"(a+)+$", "a" * 40 + "b")
 
 
+def stuck() -> None:
+    threading.Thread(target=stuck_in_a_regex, name="worker").start()
+    while True:
+        time.sleep(0.05)
+
+
 def hung(*arguments: object) -> None:
     heart = arguments[4]
     assert isinstance(heart, cli.heartbeat.Heart)
     heart.beat("starting", None, 0, listening=False, degraded=())
-    threading.Thread(target=stuck_in_a_regex, name="worker").start()
-    while True:
-        time.sleep(0.05)
+    stuck()
+
+
+def stalled_at_the_door(*_arguments: object) -> None:
+    stuck()
 
 
 def opened(*_arguments: object) -> None:
@@ -45,23 +55,27 @@ def refused(*_arguments: object) -> None:
 
 
 def main() -> None:
-    home, mode = Home(Path(sys.argv[1])), sys.argv[2]
+    home, deadline, mode = Home(Path(sys.argv[1])), timedelta(seconds=float(sys.argv[2])), sys.argv[3]
+    watchdog.HUNG = deadline
     match mode:
         case "hangs":
             setattr(cli, "door", opened)
             setattr(cli, "run_here", hung)
             sys.exit(cli.main(["--home", str(home.root), "run"]))
+        case "stalls":
+            setattr(cli, "door", stalled_at_the_door)
+            sys.exit(cli.main(["--home", str(home.root), "run"]))
         case "returns":
             # A restart's run holds the heartbeat from the outset, so its refusal beats, and kicks the watchdog.
             setattr(cli, "door", refused)
             code = cli.main(["--home", str(home.root), "run", "--restarted", "0"])
-            time.sleep(watchdog.HUNG.total_seconds() * 2)
+            time.sleep(deadline.total_seconds() * 2)
             sys.exit(10 + code)
         case "beats":
-            with watchdog.watching(home.hang, watchdog.HUNG) as watched:
-                for _ in range(int(watchdog.HUNG.total_seconds() * 3 / 0.05)):
+            with watchdog.watching(home.hang, deadline) as watched:
+                for _ in range(2 * KICKS_PER_DEADLINE):
                     watched.kick()
-                    time.sleep(0.05)
+                    time.sleep(deadline.total_seconds() / KICKS_PER_DEADLINE)
         case other:
             raise SystemExit(f"no such mode: {other}")
 

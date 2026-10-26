@@ -2168,11 +2168,11 @@ thing that failed `[LAW:no-silent-failure]`:
    1.75 s after the key release. The pipeline's start is spoken too: "hands is up",
    or "hands is back after a crash" when the last heartbeat names a pid that is gone
    without having said `stopped`.
-   A run that goes `watchdog.HUNG` (a minute) without a heartbeat ends itself: every beat kicks a
-   `faulthandler` watchdog timer, whose C thread fires where no Python thread or signal handler can, a
-   worker holding the GIL included; it writes every thread's traceback to `~/.hands/hang.txt` and exits 1, so a
-   supervisor can start hands again. The next start reads the file into its `hands.start` as `hung_before`
-   (None where there was none, empty where the run before did not hang) and empties it for its own run.
+   A run that goes `watchdog.HUNG` (a minute) without a heartbeat ends itself: a `faulthandler` watchdog timer
+   is armed as the run begins and kicked by every beat, and its C thread fires where no Python thread or signal
+   handler can, a worker holding the GIL included; it writes every thread's traceback to `~/.hands/hang.txt` and
+   exits 1, so a supervisor can start hands again. The next run logs the file as an error before anything else
+   it does, so a run that hangs in turn still leaves the hang before it on the log, and empties it for its own.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
    open, and each way it is running degraded (the microphone is open on no device; the

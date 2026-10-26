@@ -444,10 +444,9 @@ silent for words not meant for it. Its exit codes mean the same.
 hands runs only while `hands run` does, in the terminal it was started in: `q` or
 Ctrl-C stops it, and nothing starts it again.
 
-A run whose heartbeat stops for a minute is hung, and ends itself, exiting 1, so whatever
-supervises it can start it again. As it ends it writes every thread's traceback to
-`~/.hands/hang.txt`, and the next start carries them to the log as `hung_before` on its
-`hands.start` line.
+A run whose heartbeat stops for a minute is hung: it ends itself, exiting 1, rather than stay
+up unable to hear you. As it ends it writes every thread's traceback to `~/.hands/hang.txt`,
+and the next `hands run` shows them as an error, on its terminal and in the log.
 
 `hands run` starts the menu-bar indicator beside it. The indicator's title is ✋ while
 the daemon is up. It reads "hands stuck", "hands down", "hands refused to start", or "hands unreadable"
