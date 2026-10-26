@@ -107,7 +107,7 @@ def test_a_heartbeat_that_says_a_degradation_twice_or_also_in_the_old_way_is_ref
 
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT, kick_watchdog=lambda: None)
     heart.beat("starting", None, 0, listening=False, degraded=DEAF)
     first = heartbeat.read(heart.path)
     heart.beat("running", NOW, 2, listening=True, degraded=())
@@ -123,7 +123,7 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
 
 
 async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_loads_begins(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     imported = threading.Event()
     ran: list[bool] = []
 
@@ -151,7 +151,7 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
 
 
 async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     never = threading.Event()
 
     def load() -> Run:
@@ -484,10 +484,22 @@ def shown_over(looks: Sequence[tuple[heartbeat.Verdict, datetime]]) -> list[tupl
     return posted
 
 
-def test_a_notification_is_posted_when_the_verdict_leaves_up_and_only_then(tmp_path: Path) -> None:
-    down, up = heartbeat.Down(beat()), heartbeat.Up(beat())
-    looks: list[heartbeat.Verdict] = [down, up, up, down, down, heartbeat.Unreadable(tmp_path, "x")]
-    assert shown_over([(verdict, NOW) for verdict in looks]) == [(), (), (), (heartbeat.describe(down, NOW),), (), ()]
+def test_a_notification_is_posted_when_the_verdict_turns_to_a_light_other_than_up_it_did_not_show_and_only_then(tmp_path: Path) -> None:
+    down, up, unreadable = heartbeat.Down(beat()), heartbeat.Up(beat()), heartbeat.Unreadable(tmp_path, "x")
+    looks: list[heartbeat.Verdict] = [down, up, up, down, down, unreadable]
+    at = [NOW + timedelta(seconds=100 * look) for look in range(len(looks))]
+    assert shown_over(list(zip(looks, at))) == [(), (), (), (heartbeat.describe(down, at[3]),), (), (heartbeat.describe(unreadable, at[5]),)]
+
+
+def test_a_hung_run_its_watchdog_ends_is_announced_down_after_stuck() -> None:
+    # Stuck six seconds in, ended at a minute: the quiet window holds the death back, and the way out says it.
+    up, stuck, down = heartbeat.Up(beat()), heartbeat.Unresponsive(beat()), heartbeat.Down(beat())
+    before = None
+    for verdict, seconds in [(up, 0), (stuck, 6), (down, 60)]:
+        before = indicator.show(before, verdict, NOW + timedelta(seconds=seconds))
+    assert indicator.last_words(before) == (heartbeat.describe(down, NOW + timedelta(seconds=60)),)
+    # Ended once the window has closed, the death is posted as it is seen.
+    assert shown_over([(up, NOW), (stuck, NOW + timedelta(seconds=6)), (down, NOW + timedelta(seconds=70))])[2] == (heartbeat.describe(down, NOW + timedelta(seconds=70)),)
 
 
 def test_a_daemon_that_keeps_stalling_is_announced_once_a_quiet_window(tmp_path: Path) -> None:

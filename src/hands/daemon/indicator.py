@@ -112,10 +112,11 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
             # arriving, is news.
             return Shown(after, degraded, shown, text, (), frozenset(), None)
         case Shown(light=was, degraded=had, owed=owed, posted_at=posted_at):
-            # News is leaving up for a warning, or a degradation the look before did not show arriving, from anywhere,
-            # stuck included, or beside others. News held back by the quiet window is owed, not dropped: it goes out
-            # when the window closes if it still holds then, a departure until hands is back up, a degradation until it clears.
-            left: set[News] = {after} if after != "up" and was == "up" else set()
+            # News is a light other than up that the look before did not show, stuck turning down as the watchdog ends a hung run
+            # included, or a degradation the look before did not show arriving, from anywhere, stuck included, or beside
+            # others. News held back by the quiet window is owed, not dropped: it goes out when the window closes if it
+            # still holds then, a departure until hands is back up, a degradation until it clears.
+            left: set[News] = {after} if after not in ("up", was) else set()
             owing = frozenset[News](news for news in left | (set(degraded) - set(had)) | owed if holds(news, after, degraded))
             quiet = posted_at is not None and now - posted_at < QUIET
             notices = (text,) if owing and not quiet else ()

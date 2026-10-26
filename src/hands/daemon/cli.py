@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.daemon import exits, indicator, readiness, update
+from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
@@ -249,44 +249,48 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     run_start = Start(restarted=restarted is not None)
     # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
     run_start.heard(model_flag=model)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
     # or a crash the next run must read. A restart's run holds it already, since it holds the home: the run before it
     # beat starting under this pid, which it keeps. Before the settings are read there is no collector: the start ends
     # on the log alone. [LAW:nothing-unseen] so does a start anything else ends before the run's launch could end it.
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
-        try:
-            held = None if restarted is None else heart
-            # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
-            # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
-            after_crash = restarted is None and crashed_before(home)
-            run_start.heard(after_crash=after_crash)
-            settings = door(home, run_start, model)
-        except CannotStart as cannot:
-            run_start.ended(audit_log.record, cannot)
-            refuse(cannot, held)
-            return 1
-        try:
-            ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
-        except* CannotStart as cannot:
-            # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
-            # refused once, and said so even where another error raised with it is raised on past this block.
-            match cannot.exceptions:
-                case (CannotStart() as reason,):
-                    refuse(reason, heart)
-                    ran = reason
-                case _:
-                    raise
-        match ran:
-            case CannotStart():
+        # [LAW:nothing-unseen] a run its watchdog ended wrote nothing else as it went: its tracebacks reach the log here,
+        # read before this run's watchdog empties the file.
+        run_start.heard(hung_before=watchdog.dumped(home.hang))
+        with watchdog.watching(home.hang, watchdog.HUNG) as watched:
+            heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, watched.kick)
+            try:
+                held = None if restarted is None else heart
+                # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
+                # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
+                after_crash = restarted is None and crashed_before(home)
+                run_start.heard(after_crash=after_crash)
+                settings = door(home, run_start, model)
+            except CannotStart as cannot:
+                run_start.ended(audit_log.record, cannot)
+                refuse(cannot, held)
                 return 1
-            case ("quit", _):
-                return 0
-            case ("restart", shown):
-                # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
-                # one argument, so an id that begins with a dash is never read as an option.
-                again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
+            try:
+                ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+            except* CannotStart as cannot:
+                # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
+                # refused once, and said so even where another error raised with it is raised on past this block.
+                match cannot.exceptions:
+                    case (CannotStart() as reason,):
+                        refuse(reason, heart)
+                        ran = reason
+                    case _:
+                        raise
+            match ran:
+                case CannotStart():
+                    return 1
+                case ("quit", _):
+                    return 0
+                case ("restart", shown):
+                    # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
+                    # one argument, so an id that begins with a dash is never read as an option.
+                    again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:

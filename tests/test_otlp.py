@@ -545,7 +545,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
     # It takes the log records all along: only the spans are failing.
     refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503, refusing=("traces",))
     home = Home(tmp_path)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
     entries: list[Entry] = []
     exports = Exports(entries.append, lambda: datetime.now(UTC))
     exporter = Exporter(refusing.url, exports.record, linger=0.01)

@@ -444,11 +444,16 @@ silent for words not meant for it. Its exit codes mean the same.
 hands runs only while `hands run` does, in the terminal it was started in: `q` or
 Ctrl-C stops it, and nothing starts it again.
 
+A run whose heartbeat stops for a minute is hung, and ends itself, exiting 1, so whatever
+supervises it can start it again. As it ends it writes every thread's traceback to
+`~/.hands/hang.txt`, and the next start carries them to the log as `hung_before` on its
+`hands.start` line.
+
 `hands run` starts the menu-bar indicator beside it. The indicator's title is ✋ while
 the daemon is up. It reads "hands stuck", "hands down", "hands refused to start", or "hands unreadable"
 when something is wrong, and "✋ off" when the daemon was stopped or never ran. It posts a
-notification when the daemon stops being up, and once the daemon is gone it posts that
-and goes away too.
+notification when it turns to a light other than ✋ that it was not showing, stuck turning down as a hung run
+ends included, and once the daemon is gone it posts that and goes away too.
 
 Inside tmux, the same title shows in the status line: green while up, yellow when stuck
 or degraded, red when down, refused, or unreadable, and grey when off. Add these lines to
