@@ -850,7 +850,7 @@ def test_the_brain_says_its_account_and_never_a_key() -> None:
 
 def beating(home: Home) -> None:
     home.root.mkdir(parents=True, exist_ok=True)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
     heart.beat("running", None, 0, listening=True, degraded=())
 
 

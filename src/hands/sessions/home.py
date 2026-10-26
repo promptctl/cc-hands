@@ -27,6 +27,12 @@ class Home:
         return self.root / "status.json"
 
     @property
+    def hang(self) -> Path:
+        """Where the run's watchdog says what every thread was doing as it ends a run that stopped beating, written by
+        the daemon alone, emptied as each run starts."""
+        return self.root / "hang.txt"
+
+    @property
     def lock(self) -> Path:
         """Locked by the daemon for its whole run: the one test of whether a daemon already runs on this home."""
         return self.root / "hands.lock"

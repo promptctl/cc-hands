@@ -2168,6 +2168,11 @@ thing that failed `[LAW:no-silent-failure]`:
    1.75 s after the key release. The pipeline's start is spoken too: "hands is up",
    or "hands is back after a crash" when the last heartbeat names a pid that is gone
    without having said `stopped`.
+   A run that goes `watchdog.HUNG` (a minute) without a heartbeat ends itself: a `faulthandler` watchdog timer
+   is armed as the run begins and kicked by every beat, and its C thread fires where no Python thread or signal
+   handler can, a worker holding the GIL included; it writes every thread's traceback to `~/.hands/hang.txt` and
+   exits 1, so a supervisor can start hands again. The next run logs the file as an error before anything else
+   it does, so a run that hangs in turn still leaves the hang before it on the log, and empties it for its own.
 2. **Screen.** The daemon writes `~/.hands/status.json` every heartbeat with its pid,
    uptime, pipeline state, last audio out, the count of live sessions, whether a turn is
    open, and each way it is running degraded (the microphone is open on no device; the
@@ -2188,7 +2193,7 @@ thing that failed `[LAW:no-silent-failure]`:
    responding, down, refused (a start that ended before it ran, with its reason), off (stopped or never ran), and unreadable. An unreadable heartbeat
    is warned of as loudly as a dead daemon. Up with any degradation is still the up light, its title
    a warning naming every degradation, and a turn open beside it; a daemon with no microphone never says a turn is open. It posts a notification when the light
-   leaves up for a warning, or a degradation the look before did not show arrives, at most once a minute, so a loop that
+   turns to a light other than up that it was not showing (stuck turning down, as a hung run's watchdog ends it, included), or a degradation the look before did not show arrives, at most once a minute, so a loop that
    stalls and recovers over and over is not announced every time. A departure inside that
    minute is held, and posted when the minute is up if what it held still holds: hands still not up, or the degradation still there. A daemon it finds already
    down on its first look is shown but not announced. A heartbeat whose pid is outside

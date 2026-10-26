@@ -7,6 +7,7 @@ reads it and imports only the standard library and hands' data modules.
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -116,9 +117,13 @@ class Heart:
     pid: int
     started_at: datetime
     period: timedelta
+    # Told of every beat written, the proof the run's loop still turns: the run's watchdog, which ends a run that stops.
+    kick_watchdog: Callable[[], None]
 
     def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...]) -> None:
         write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, degraded, Path(sys.prefix)))
+        # [LAW:single-enforcer] every beat, from every path that writes one, kicks the watchdog.
+        self.kick_watchdog()
 
 
 def read(path: Path) -> Status | None:

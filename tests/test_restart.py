@@ -133,7 +133,7 @@ def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_session
 
 
 async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     edit = asyncio.Event()
 
     async def run(stop: Stop) -> Ended:
@@ -153,7 +153,7 @@ async def test_settings_edited_end_a_run_as_a_restart(tmp_path: Path) -> None:
 
 
 async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_not_said(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     edit = asyncio.Event()
 
     async def run(stop: Stop) -> Ended:
@@ -174,7 +174,7 @@ async def test_settings_edited_as_a_run_ends_are_taken_up_by_the_next_start_and_
 
 
 async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
 
     async def run(stop: Stop) -> Ended:
         await stop.wait()
@@ -209,7 +209,7 @@ def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_pa
 def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, plugin: Path) -> None:
     # Its pid is this test's, which a restart signal would end: being refused, it is never sent.
     home = Home(tmp_path / "home")
-    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT).beat("starting", None, 0, listening=False, degraded=())
+    heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None).beat("starting", None, 0, listening=False, degraded=())
     done = restart(plugin, home, tmp_path)
     assert done.returncode == 1
     assert done.stderr.startswith(f"hands was not restarted: hands is up: pid {os.getpid()}, ")
@@ -217,7 +217,7 @@ def test_a_daemon_still_starting_is_not_asked(tmp_path: Path, plugin: Path) -> N
 
 
 async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_says_starting(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     told: list[Stop] = []
 
     async def run(stop: Stop) -> Ended:
@@ -238,7 +238,7 @@ async def test_the_restart_signal_ends_a_run_as_a_restart_whose_last_heartbeat_s
 
 
 async def test_a_restart_asked_while_a_quit_winds_the_run_down_does_not_start_it_again(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10))
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
     winding_down = asyncio.Event()
 
     async def run(stop: Stop) -> Ended:

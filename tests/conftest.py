@@ -11,6 +11,7 @@ import wave
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import mlx_whisper
@@ -24,6 +25,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
+from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import MARKING, READING, Deltas
 from hands.sessions.home import Home
@@ -98,6 +100,14 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
                     patience.reschedule(loop.time() + PATIENCE_SECS)
     except TimeoutError:
         raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done!r}") from None
+
+
+@pytest.fixture(autouse=True)
+def watchdog_past_the_timeout(monkeypatch: pytest.MonkeyPatch, pytestconfig: pytest.Config) -> None:
+    """A `hands run` in the test's own process waits on no watchdog of its own: its timer ends the whole process, so a run
+    that stalls is failed by pytest-timeout, named, with its stack, and the watchdog ends only one that holds the GIL
+    past it. [LAW:single-enforcer] pytest-timeout is the one owner of a test that never finishes."""
+    monkeypatch.setattr(watchdog, "HUNG", timedelta(seconds=2 * float(pytestconfig.getini("timeout"))))
 
 
 @pytest.fixture(autouse=True)
