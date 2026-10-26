@@ -73,10 +73,12 @@ RUNNERS: tuple[Runner, ...] = (
         # continues on indented further. A block is a reason only where it ends in a failure: under -v a test's lines
         # come before its `--- FAIL:` or `--- PASS:`, and without it only a failed test's lines are printed, after its
         # `--- FAIL:`, up to the next, the package's `FAIL` or the test's `panic:`. Go's own result lines, indented under a
-        # parent for its subtests, bound a block and are never part of one; a panic's frames have no `: ` after the line and
-        # start none.
+        # parent for its subtests, bound a block and are never part of one. The reason starts at the block's first log
+        # line: what the test printed indented before it is not its reason, and a panic's frames, with no `: ` after the
+        # line, start none.
         why=re.compile(
             r"(?m)^(?:(?:(?![ \t])|[ \t]*--- (?:FAIL|PASS|SKIP): ).*\n|\A)"
+            r"(?:[ \t](?![ \t]*--- (?:FAIL|PASS|SKIP): |[ \t]*\S+\.go:\d+: ).*\n)*+"
             r"([ \t]+\S+\.go:\d+: .*\n(?:[ \t](?![ \t]*--- (?:FAIL|PASS|SKIP): ).*\n)*+)"
             r"(?=[ \t]*--- FAIL: |FAIL\b|panic: )"
         ),

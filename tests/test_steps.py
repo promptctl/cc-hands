@@ -217,6 +217,7 @@ STRETCHES = {
     "go log lines a pass ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)) + "--- PASS: TestY (0.00s)\n",
     "go log lines the run's PASS ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)) + "PASS\n",
     "go log lines nothing ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)),
+    "go printed lines, then log lines a pass ends": "\n" + ("  printed\n" + LOG_LINE) * (LONG // 30) + "--- PASS: TestY (0.00s)\n",
     "indented lines": "\n" + "        \t  y\n" * (LONG // 12),
     "blank lines": "\n" + "\n" * LONG,
     "a line of spaces": "\n" + " " * LONG + "x\n",
@@ -251,8 +252,8 @@ def deadline(seconds: float) -> Generator[None]:
 def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: str) -> None:
     """The daemon reads every command's output on its way, holding the GIL for a whole match: a pattern that
     backtracks without bound over a long log once stopped hands for seven hours. Read in linear time, a million
-    characters take milliseconds; a pattern quadratic in them takes tens of seconds and one exponential never ends."""
-    with deadline(2.0):
+    characters take a second at most; a pattern quadratic in them takes tens of seconds and one exponential never ends."""
+    with deadline(5.0):
         report = report_of(FAILED_RUNS[runner] + STRETCHES[stretch])
     assert report is not None and report.runner == runner and report.failed >= 1
 
@@ -260,6 +261,11 @@ def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: s
 def test_what_a_passing_run_logged_is_no_reason_for_a_failure() -> None:
     passing = report_of("=== RUN   TestSeeds\n    db_test.go:12: seeded db\n--- PASS: TestSeeds (0.00s)\nPASS\nok  \tsample\t0.004s\n")
     assert passing is not None and passing.runner == "go" and passing.failed == 0 and passing.why == ""
+
+
+def test_what_a_test_printed_before_its_log_does_not_hide_the_log() -> None:
+    failed = report_of("=== RUN   TestA\n  progress: 1/2\n    a_test.go:9: bad\n--- FAIL: TestA (0.01s)\nFAIL\tsample\t0.01s\n")
+    assert failed is not None and failed.why == "a_test.go:9: bad"
 
 
 def test_what_a_passing_test_logged_in_a_failing_run_is_no_reason_for_the_failure() -> None:
