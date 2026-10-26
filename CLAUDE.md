@@ -3,7 +3,7 @@
 - NO WORK PROCEEDS WITHOUT A LIT TICKET.  ALL TICKETS MUST BE IN AN EPIC
 - NO WORK PROCEEDS WHEN THERE ARE FAILING TESTS.   Create a ticket and fix the tests first.
 - No work proceeds except on a fresh work tree.  the work tree is cleaned up when the ticket is finished.
-- HANDS NEVER STARTS A CLAUDE CODE PROCESS OF ITS OWN, OR ANYTHING LIKE ONE.  The brain is the one Claude Code hands runs.  Brandon: "HANDS CANNOT START ADDITIONAL CLAUDE CODE PROCESSES AT ANY TIME."  "Use subagents or /btw."  "Hands can rewrite requests: approved."  hands is a realtime voice application, and a proxy already sits between Claude Code and Anthropic: whatever hands needs from the model goes through the brain (a subagent, /btw) or through requests at that proxy, never through a process started for it.  The per-question Claude Code in `src/hands/brain/asides.py` is the mistake this rule exists for (its removal: promptctl-brain-lq3.3ck); do not build on it, copy it, cite it as a pattern, or propose a design shaped like it (a second responder, a helper session, a model process per task).  Effort spent on that is not just wasted: someone has to clean it up later.
+- HANDS CANNOT START ADDITIONAL CLAUDE CODE PROCESSES AT ANY TIME.  "Use subagents or /btw."  Brandon, on hands starting a separate Claude Code for each side question: "I don't know why you thought that was ok in a realtime voice application when WE ARE ALREADY RUNNING A PROXY IN BETWEEN CLAUDE CODE AND ANTHROPIC.  But I need every future session to understand that any effort put into that or anything similar is not only a waste of time, it's actively adding more work when we are forced to go clean up their garbage later"
 
 <!-- BEGIN LIT INTEGRATION -->
 ## lit Agent-Native Workflow
