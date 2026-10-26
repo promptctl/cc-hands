@@ -15,21 +15,22 @@
     --- PASS: TestCases/empty (0.00s)
     --- FAIL: TestCases/negative (0.00s)
 === RUN   TestPanics
+    sample_test.go:23: about to panic
 --- FAIL: TestPanics (0.00s)
 panic: assignment to entry in nil map [recovered, repanicked]
 
-goroutine 25 [running]:
-testing.tRunner.func1.2({0x100712c40, 0x10075ce10})
+goroutine 23 [running]:
+testing.tRunner.func1.2({0x102be2c40, 0x102c2ce10})
 	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:1974 +0x1a0
 testing.tRunner.func1()
 	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:1977 +0x318
-panic({0x100712c40?, 0x10075ce10?})
+panic({0x102be2c40?, 0x102c2ce10?})
 	/opt/homebrew/Cellar/go/1.26.5/libexec/src/runtime/panic.go:860 +0x12c
-sample.TestPanics(0x29cf21d5ad88?)
-	/tmp/krx-go/sample_test.go:24 +0x34
-testing.tRunner(0x29cf21d5ad88, 0x10073bf00)
+sample.TestPanics(0x1e55f2e62d88?)
+	/tmp/krx-go/sample_test.go:25 +0x5c
+testing.tRunner(0x1e55f2e62d88, 0x102c0bf00)
 	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:2036 +0xc4
 created by testing.(*T).Run in goroutine 1
 	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:2101 +0x3a8
-FAIL	sample	0.007s
+FAIL	sample	0.010s
 FAIL

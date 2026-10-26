@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from hands.core.session import Membership, SessionId
 from hands.core.status import Stamp
 from hands.core.steps import Call, Result, recognise
-from hands.core.testrun import report_of
+from hands.core.testrun import RUNNERS, report_of
 from hands.core.delta import Committed
 from hands.core.turn import Asked, Delegated, Edited, Looked, Other, Planned, Questioned, Ran, Ref, Step, Tested
 from hands.sessions.tail import Tails
@@ -157,7 +157,7 @@ def test_a_call_that_failed_recorded_no_result_to_be_recognised_by_and_is_told_a
         ),
         ("gotest.txt", "go", None, 2, ("TestDivides", "TestNames"), "sample_test.go:7: want 1, got 0\nsample_test.go:8: want B, got A"),
         # Captured from go1.26 with and without -v: a passing test's log, a message on three lines, a passing and a
-        # failing subtest, and a test that panics. The panic's frames say nothing a reason is made of.
+        # failing subtest, and a test that logs and then panics. The panic's frames say nothing a reason is made of.
         *(
             (
                 capture,
@@ -165,7 +165,7 @@ def test_a_call_that_failed_recorded_no_result_to_be_recognised_by_and_is_told_a
                 None,
                 3,
                 ("TestTotals", "TestCases", "TestPanics"),
-                "sample_test.go:10: totals differ\nwant: 3\ngot:  4\nsample_test.go:18: want error, got nil",
+                "sample_test.go:10: totals differ\nwant: 3\ngot:  4\nsample_test.go:18: want error, got nil\nsample_test.go:23: about to panic",
             )
             for capture in ("gotest-subtests.txt", "gotest-subtests-v.txt")
         ),
@@ -245,7 +245,8 @@ def deadline(seconds: float) -> Generator[None]:
         signal.signal(signal.SIGALRM, previous)
 
 
-@pytest.mark.parametrize("runner", FAILED_RUNS)
+# Every runner reads the stretches: one added to RUNNERS without a failed run here fails this test, not skips it.
+@pytest.mark.parametrize("runner", [runner.name for runner in RUNNERS])
 @pytest.mark.parametrize("stretch", STRETCHES)
 def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: str) -> None:
     """The daemon reads every command's output on its way, holding the GIL for a whole match: a pattern that

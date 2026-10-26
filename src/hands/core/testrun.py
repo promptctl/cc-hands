@@ -40,7 +40,8 @@ class Runner:
     why: re.Pattern[str]
 
 
-# Patterns fitted to output captured from each runner on 2026-09-21, passing and failing.
+# Patterns fitted to output captured from each runner on 2026-09-21, passing and failing, and go's reasons to go1.26's
+# subtests and panics, captured on 2026-10-26.
 # The first runner whose mark is found reads the output, so a mark says one runner and not another.
 # Every pattern reads its input in time linear in its length: Python's re holds the GIL for a whole match, so one
 # pattern that backtracks without bound over a long log stops the whole daemon. A quantifier that must not give
@@ -71,12 +72,13 @@ RUNNERS: tuple[Runner, ...] = (
         # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it, with the lines its message
         # continues on indented further. A block is a reason only where it ends in a failure: under -v a test's lines
         # come before its `--- FAIL:` or `--- PASS:`, and without it only a failed test's lines are printed, after its
-        # `--- FAIL:`, up to the next or the package's `FAIL`. Go's own result lines, indented under a parent for its
-        # subtests, bound a block and are never part of one; a panic's frames have no `: ` after the line and start none.
+        # `--- FAIL:`, up to the next, the package's `FAIL` or the test's `panic:`. Go's own result lines, indented under a
+        # parent for its subtests, bound a block and are never part of one; a panic's frames have no `: ` after the line and
+        # start none.
         why=re.compile(
             r"(?m)^(?:(?:(?![ \t])|[ \t]*--- (?:FAIL|PASS|SKIP): ).*\n|\A)"
             r"([ \t]+\S+\.go:\d+: .*\n(?:[ \t](?![ \t]*--- (?:FAIL|PASS|SKIP): ).*\n)*+)"
-            r"(?=[ \t]*--- FAIL: |FAIL\b)"
+            r"(?=[ \t]*--- FAIL: |FAIL\b|panic: )"
         ),
     ),
     Runner(
@@ -111,10 +113,11 @@ def report_of(output: str) -> Report | None:
     spelled: `make test`, `just check` and a script all reach the same runners [LAW:one-source-of-truth].
     """
     text = ESCAPES.sub("", output)
+    lines = text.splitlines()
     for runner in RUNNERS:
         # [LAW:one-source-of-truth] a run is counted by the summaries its mark found and by nothing else in the
         # scrollback: a workspace writes one summary per binary, and the line above them counts files, not tests.
-        summaries = tuple(line for line in text.splitlines() if runner.mark.search(line))
+        summaries = tuple(line for line in lines if runner.mark.search(line))
         if not summaries:
             continue
         failing = tuple(match.group(1) for match in runner.failing.finditer(text))
@@ -123,7 +126,7 @@ def report_of(output: str) -> Report | None:
         # A run with nothing failed has no why: what its tests logged on passing, as `go test -v` prints, says nothing
         # about a failure.
         # A reason reads flush: each of its lines without the indent the runner drew it at.
-        reasons = (line.strip() for match in runner.why.finditer(text) for line in match.group(1).strip().splitlines())
+        reasons = (line.strip() for match in runner.why.finditer(text) for line in match.group(1).splitlines())
         why = "\n".join(reasons) if failed else ""
         return Report(runner.name, _count(runner.passed, summaries), failed, failing, why)
     return None
