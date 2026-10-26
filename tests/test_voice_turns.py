@@ -37,7 +37,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import CHUNKING, running, unprimed
+from conftest import CHUNKING, patiently, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -69,10 +69,6 @@ CLOSING = "that is all"
 
 # Whisper's own transcribing of a hold, which the rig stands in for.
 WHISPER_HEARD: object = vars(Whisper)["_heard"]
-
-# Nothing but the key's holds ends a turn, so a turn left open fails here instead of ending late.
-PATIENCE_SECS = 2.0
-
 
 class Recorded(FrameProcessor):
     """What leaves the user aggregator for the model, the turns it ended, and the holds Whisper opened."""
@@ -131,18 +127,10 @@ class Recorded(FrameProcessor):
 
 
 async def until(out: Recorded, what: Callable[[], bool]) -> None:
-    """Until `what` holds, failing once `PATIENCE_SECS` pass with none of the captured audio coming through to `out`.
-
-    [LAW:no-ambient-temporal-coupling] the patience bounds a stall, not the audio queued ahead: three minutes of it
-    take longer to come through on a loaded machine than a turn is given to end once it has."""
-    loop = asyncio.get_running_loop()
-    async with asyncio.timeout(PATIENCE_SECS) as patience:
-        through = out.audio
-        while not what():
-            await asyncio.sleep(0.01)
-            if out.audio != through:
-                through = out.audio
-                patience.reschedule(loop.time() + PATIENCE_SECS)
+    """Until `what` holds, moved by the captured audio coming through to `out`: three minutes of it take longer to come
+    through on a loaded machine than a turn is given to end once it has. Nothing but the key's holds ends a turn, so a
+    turn left open fails here instead of ending late."""
+    await patiently(what, lambda: out.audio)
 
 
 class NoSpeech(FrameProcessor):

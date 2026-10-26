@@ -54,6 +54,50 @@ def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) 
 
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
+# How long a test's wait may see nothing move before it fails on a stall.
+PATIENCE_SECS = 2.0
+
+
+class ManualClock:
+    """Time that passes only when a test moves it: `now` reads it, `pause` waits until it has moved on that far, as the
+    clock and pause a unit takes in place of `time.monotonic` and `asyncio.sleep`."""
+
+    def __init__(self) -> None:
+        self.at = 0.0
+        self._pauses: list[tuple[float, asyncio.Future[None]]] = []
+
+    def now(self) -> float:
+        return self.at
+
+    async def pause(self, seconds: float) -> None:
+        woken = asyncio.get_running_loop().create_future()
+        self._pauses.append((self.at + seconds, woken))
+        await woken
+
+    def advance(self, seconds: float) -> None:
+        self.at += seconds
+        for until, woken in self._pauses:
+            if until <= self.at and not woken.done():
+                woken.set_result(None)
+        self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+
+
+async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:
+    """Until `done` holds, failing once PATIENCE_SECS pass with `moved` standing still.
+
+    [LAW:no-ambient-temporal-coupling] the patience bounds a stall, not the work queued ahead of what is awaited, so a
+    loaded machine that is slow but moving is waited on. A run that moves for ever is ended by the suite's timeout."""
+    loop = asyncio.get_running_loop()
+    seen = moved()
+    try:
+        async with asyncio.timeout(PATIENCE_SECS) as patience:
+            while not done():
+                await asyncio.sleep(0.01)
+                if (now := moved()) != seen:
+                    seen = now
+                    patience.reschedule(loop.time() + PATIENCE_SECS)
+    except TimeoutError:
+        raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done!r}") from None
 
 
 @pytest.fixture(autouse=True)

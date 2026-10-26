@@ -17,11 +17,12 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.pocket_tts.tts import PocketTTSSettings
 from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 
-from conftest import Running, running
+from conftest import Running, patiently, running
 from hands.sessions.audit import Entry, Replied
 from hands.voice.conversation import AssistantTurns, record_turns, turns
 from hands.voice.player import Mark, Marks
@@ -32,9 +33,16 @@ class Speaker(TTSService):
     """The speaker with the synthesis taken out: started, stopped, and its text pushed by Pipecat's service as pocket-tts's are."""
 
     def __init__(self) -> None:
+        # Pipecat's own idle time before a context's TTSStoppedFrame, as PocketTTSService is made with it.
         super().__init__(  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-            push_start_frame=True, push_stop_frames=True, stop_frame_timeout_s=0.05, settings=PocketTTSSettings(model=None, voice="alba", language=Language.EN)
+            push_start_frame=True, push_stop_frames=True, settings=PocketTTSSettings(model=None, voice="alba", language=Language.EN)
         )
+        # How many frames it has handed on: what a test's wait sees move while the pipeline works through what it was sent.
+        self.pushed = 0
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        self.pushed += 1
+        await super().push_frame(frame, direction)
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         yield TTSAudioRawFrame(b"\x00\x00", self.sample_rate, 1, context_id=context_id)
@@ -46,14 +54,17 @@ class Conversation:
 
     pipeline: Running
     assistant: AssistantTurns
+    speaker: Speaker
     recorded: list[Entry] = field(default_factory=list[Entry])
-    written: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def moved(self) -> tuple[int, int]:
+        return self.speaker.pushed, len(self.recorded)
 
     async def said(self, *frames: Frame) -> None:
         """Send the frames as the model's stage sends them, and wait until the last of them has been taken."""
         taken = asyncio.Event()
         await self.pipeline.worker.queue_frames([*frames, Mark(taken.set)])
-        await asyncio.wait_for(taken.wait(), 2.0)
+        await patiently(taken.is_set, self.moved)
 
     async def barge_in(self) -> None:
         """A barge-in, which overtakes whatever is still on its way and drops a mark sent behind it."""
@@ -61,23 +72,17 @@ class Conversation:
 
     async def replies(self, count: int) -> list[Entry]:
         """What the audit log is told, once `count` replies are written."""
-        while len(self.recorded) < count:
-            self.written.clear()
-            await asyncio.wait_for(self.written.wait(), 2.0)
+        await patiently(lambda: len(self.recorded) >= count, self.moved)
         return self.recorded
 
 
 @asynccontextmanager
 async def conversing() -> AsyncGenerator[Conversation]:
     user, assistant = turns(LLMUserAggregatorParams())
-    async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), Speaker(), assistant, Marks()]) as pipeline:
-        conversation = Conversation(pipeline, assistant)
-
-        def record(entry: Entry) -> None:
-            conversation.recorded.append(entry)
-            conversation.written.set()
-
-        record_turns(user, assistant, record)
+    speaker = Speaker()
+    async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), speaker, assistant, Marks()]) as pipeline:
+        conversation = Conversation(pipeline, assistant, speaker)
+        record_turns(user, assistant, conversation.recorded.append)
         yield conversation
 
 

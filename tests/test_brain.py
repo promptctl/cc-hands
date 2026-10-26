@@ -1187,10 +1187,17 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
 # in the stop of the brain it started, as the daemon stops the brain it holds.
 # Run in a process of its own, since a loop that never closes would take the test run down with it.
 SHUT_DOWN = """
-import asyncio, os, pickle, sys, time
+import asyncio, contextlib, math, os, pickle, sys
 from hands.brain.process import start
+from hands.sessions import pseudoterminal
 
 launch = pickle.load(sys.stdin.buffer)
+# A close that only a fallback would end, the stop's kill or giving up on the terminal, is a hang here, and so fails,
+# where on the real clock it was a close seconds late that only a bound on the time could tell from a loaded machine.
+pseudoterminal.STOP_SECONDS = pseudoterminal.DRAIN_SECONDS = math.inf
+
+class Ended(Exception):
+    pass
 
 async def run() -> None:
     brain = await start(launch, lambda _entry: None)
@@ -1201,23 +1208,26 @@ async def ends(ticks: int, seconds: float) -> None:
     for _ in range(ticks):
         await asyncio.sleep(0)
     await asyncio.sleep(seconds)
-    raise RuntimeError(time.monotonic())
+    raise Ended
 
-slowest = 0.0
 for ticks, seconds in [*((ticks, 0.0) for ticks in range(40)), *((0, tenths / 10) for tenths in range(1, 16))]:
-    try:
+    with contextlib.suppress(Ended):
         asyncio.run(ends(ticks, seconds))
-    except RuntimeError as ended:
-        slowest = max(slowest, time.monotonic() - ended.args[0])
     try:
         os.waitpid(-1, os.WNOHANG)
         sys.exit(f"a fritter was left unreaped when the loop ended {ticks} ticks and {seconds}s into the launch")
     except ChildProcessError:
         pass
-print(slowest)
+    # This loop closed, with nothing it started left unreaped.
+    print(ticks, seconds, flush=True)
 """
+# One loop is a launch and its close, each in a process of its own: 0.4 s at most at load 50. A loop this long without
+# closing is not closing.
+LOOP_SECS = 30.0
 
 
+# The suite's timeout is for a test that hangs; this one's 55 loops each have LOOP_SECS, and the run must outlast them.
+@pytest.mark.timeout(600)
 async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path) -> None:
     """The daemon's shutdown cancels the brain's launch wherever it is, and must not then wait for ever on what it spawned.
 
@@ -1225,17 +1235,28 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
     nothing would deliver."""
     temp = Path(tempfile.mkdtemp(dir="/tmp"))  # short: the sockets in it are held to the unix socket path limit
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", pinned_to(fake_claude) + SHUT_DOWN, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
+    assert hands.stdin is not None and hands.stdout is not None and hands.stderr is not None
+    errors = asyncio.ensure_future(hands.stderr.read())
+    closed: list[str] = []
     try:
-        out, err = await asyncio.wait_for(hands.communicate(pickle.dumps(launch(tmp_path))), 60)
+        hands.stdin.write(pickle.dumps(launch(tmp_path)))
+        await hands.stdin.drain()
+        hands.stdin.close()
+        # [LAW:no-ambient-temporal-coupling] a bound on each loop's close, never on the fifty-five of them together.
+        while line := await asyncio.wait_for(hands.stdout.readline(), LOOP_SECS):
+            closed.append(line.decode().strip())
+        await asyncio.wait_for(hands.wait(), LOOP_SECS)
     except TimeoutError:
-        raise AssertionError("a loop ended as the brain started never finished closing") from None
+        hands.kill()
+        await hands.wait()
+        said = (await errors).decode()[-2000:]
+        raise AssertionError(f"a loop ended as the brain started never finished closing: the one after {closed[-1:] or 'none'}\n{said}") from None
     finally:
         if hands.returncode is None:
             hands.kill()
             await hands.wait()
         shutil.rmtree(temp)
-    assert hands.returncode == 0, err.decode()[-2000:]
-    assert float(out) < 1.0, f"the slowest loop took {out.decode().strip()}s to close"
+    assert hands.returncode == 0, (await errors).decode()[-2000:]
     # The claude each fritter started ends with the terminal its fritter's end hangs up.
     await until(lambda: not running(tmp_path))
 

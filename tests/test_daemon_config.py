@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import onboard
+from conftest import onboard, patiently
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
@@ -801,18 +801,29 @@ async def test_a_comment_added_is_no_edit(tmp_path: Path) -> None:
 async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Path) -> None:
     home = Home(tmp_path)
     recorded: list[Entry] = []
+    checked: list[Config] = []
 
     def overwritten(settings: Config) -> None:
+        checked.append(settings)
         # The first edit is saved over with a typo while its backend is checked.
         if settings.llm == Claude(model="claude-opus-5-5"):
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01), 0.5))
-    await asyncio.sleep(0.05)
-    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-    with pytest.raises(TimeoutError):
-        await watching
-    assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
+    # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
+    watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01))
+    try:
+        home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
+        # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
+        await patiently(lambda: bool(recorded) or watching.done(), lambda: len(checked))
+        # Had the edit saved over been taken, the watch would have ended on it before ever weighing the typo.
+        assert not watching.done(), watching.result()
+        assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
+        # And it is still watching: the next edit is the one it takes.
+        home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+        await patiently(watching.done, lambda: len(checked))
+        assert watching.result() == SettingsEdited(path=str(home.config), refused=None)
+    finally:
+        watching.cancel()
 
 
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

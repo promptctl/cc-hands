@@ -2,9 +2,11 @@
 silence wait for nobody to be speaking and for their spacing, and play each kind once however often it was owed."""
 
 import asyncio
+from typing import Literal
 
 import numpy as np
 
+from conftest import ManualClock, patiently
 from hands.sessions.audit import Cued, Entry
 from hands.sessions.audit import Played
 from hands.voice.cues import CUE_LEVEL, CUE_SECONDS, DROPPED, OPENED, RECEIVED, SENT, WORKING, Cue, QuietCue, QuietCues, cues, sound
@@ -63,62 +65,79 @@ def test_receiving_is_high_and_rising_in_steps_and_working_is_one_steady_tone() 
     assert [len(cue.glides) == 1 and cue.glides[0][0] == cue.glides[0][1] for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue)] == [False, False, False, False, True]
 
 
+class Quiet(asyncio.Event):
+    """Whether nobody is speaking, which also counts each time the player comes to wait for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.awaited = 0
+
+    async def wait(self) -> Literal[True]:
+        self.awaited += 1
+        return await super().wait()
+
+
 class Speaker:
     def __init__(self) -> None:
-        self.quiet = asyncio.Event()
+        self.quiet = Quiet()
         self.played: list[Cue] = []
 
     def cue(self, cue: Cue) -> Played:
         self.played.append(cue)
         return "desk"
 
+    async def heard(self, count: int) -> list[Cue]:
+        """What it has played, once it has played `count` cues."""
+        await patiently(lambda: len(self.played) >= count, lambda: len(self.played))
+        return self.played
 
-async def settled() -> None:
-    for _ in range(5):
-        await asyncio.sleep(0)
+    async def waited_for(self) -> list[Cue]:
+        """What it has played, once the player has come to wait for it to be quiet."""
+        await patiently(lambda: self.quiet.awaited > 0, lambda: len(self.played))
+        return self.played
 
 
 async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> None:
-    now = [0.0]
-    owed, speaker, recorded = QuietCues(lambda: now[0]), Speaker(), list[Entry]()
+    clock = ManualClock()
+    owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
     cueing = asyncio.create_task(owed.keep_playing(speaker, recorded.append))
     try:
         owed.owe(RECEIVED)
-        now[0] = 0.5
+        clock.advance(0.5)
         owed.owe(WORKING)
         owed.owe(WORKING)
-        await settled()
-        assert speaker.played == []  # someone is speaking
-        now[0] = 2.0
+        assert await speaker.waited_for() == []  # someone is speaking
+        clock.advance(1.5)
         speaker.quiet.set()
-        await settled()
-        assert speaker.played == [RECEIVED.cue, WORKING.cue]
+        assert await speaker.heard(2) == [RECEIVED.cue, WORKING.cue]
         assert recorded == [Cued("turn: received", 1, 2.0, "desk"), Cued("working", 2, 1.5, "desk")]
         owed.owe(RECEIVED)
-        await settled()
-        assert speaker.played == [RECEIVED.cue, WORKING.cue, RECEIVED.cue]  # quiet and unspaced, so at once
+        assert await speaker.heard(3) == [RECEIVED.cue, WORKING.cue, RECEIVED.cue]  # quiet and unspaced, so at once
     finally:
         cueing.cancel()
 
 
 async def test_a_burst_of_acts_in_silence_is_one_tone_per_spacing() -> None:
-    owed, speaker, recorded = QuietCues(), Speaker(), list[Entry]()
+    clock = ManualClock()
+    owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
     speaker.quiet.set()
     spaced = QuietCue(WORKING.cue, 0.05)
     cueing = asyncio.create_task(owed.keep_playing(speaker, recorded.append))
     try:
         owed.owe(spaced)
-        await settled()
+        await speaker.heard(1)
         owed.owe(spaced)
         owed.owe(spaced)
         owed.owe(RECEIVED)
-        await settled()
-        # The receipt is never held behind the working tone's spacing; the two acts after the first wait it out as one.
-        assert speaker.played == [WORKING.cue, RECEIVED.cue]
-        await asyncio.sleep(0.1)
-        assert speaker.played == [WORKING.cue, RECEIVED.cue, WORKING.cue]
+        # The receipt is never held behind the working tone's spacing; the two acts after the first wait it out as one,
+        # and the clock has not moved, so its spacing is not up.
+        assert await speaker.heard(2) == [WORKING.cue, RECEIVED.cue]
+        clock.advance(0.05)
+        assert await speaker.heard(3) == [WORKING.cue, RECEIVED.cue, WORKING.cue]
         assert [(entry.line, entry.folded) for entry in recorded if isinstance(entry, Cued)] == [("working", 1), ("turn: received", 1), ("working", 2)]
-        await asyncio.sleep(0.1)
-        assert len(speaker.played) == 3  # nothing owed, nothing played
+        clock.advance(10.0)
+        owed.owe(RECEIVED)
+        # A cue still due would have played ahead of the receipt.
+        assert await speaker.heard(4) == [WORKING.cue, RECEIVED.cue, WORKING.cue, RECEIVED.cue]
     finally:
         cueing.cancel()

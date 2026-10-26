@@ -5,9 +5,6 @@ per shape the recognisers claim, in the order asserted below. `tests/fixtures/te
 test runners wrote, passing and failing, captured on 2026-09-21, and go's subtests and panics, captured on 2026-10-26.
 """
 
-import signal
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -229,33 +226,17 @@ STRETCHES = {
 }
 
 
-@contextmanager
-def deadline(seconds: float) -> Generator[None]:
-    """Fails what runs inside it once `seconds` pass. re checks for signals while it matches, so an alarm stops a
-    match that would otherwise never return, and the test fails rather than hanging the suite."""
-
-    def expire(signum: int, frame: object) -> None:
-        raise TimeoutError(f"still matching after {seconds} seconds")
-
-    previous = signal.signal(signal.SIGALRM, expire)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
-
-
 # Every runner reads the stretches: one added to RUNNERS without a failed run here fails this test, not skips it.
 @pytest.mark.parametrize("runner", [runner.name for runner in RUNNERS])
 @pytest.mark.parametrize("stretch", STRETCHES)
+# re checks for signals while it matches, so the suite's timeout stops a match that would never return.
+@pytest.mark.timeout(10)
 def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: str) -> None:
     """The daemon reads every command's output on its way, holding the GIL for a whole match: a pattern that
-    backtracks without bound over a long log once stopped hands for seven hours. The deadline tells linear from worse,
-    not fast from slow: a million characters read in linear time take about a second here, a pattern quadratic in them
-    takes tens of seconds, and one exponential never ends."""
-    with deadline(5.0):
-        report = report_of(FAILED_RUNS[runner] + STRETCHES[stretch])
+    backtracks without bound over a long log once stopped hands for seven hours. The timeout tells linear from worse,
+    not fast from slow: a million characters read in linear time take about a second on a quiet machine and a few under
+    load, a pattern quadratic in them takes tens of seconds, and one exponential never ends."""
+    report = report_of(FAILED_RUNS[runner] + STRETCHES[stretch])
     assert report is not None and report.runner == runner and report.failed >= 1
 
 

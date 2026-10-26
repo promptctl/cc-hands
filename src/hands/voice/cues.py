@@ -9,7 +9,7 @@ is speaking, so none is ever heard over a voice.
 import asyncio
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cache
 from typing import Protocol
@@ -110,10 +110,13 @@ class Quiet(Protocol):
 class QuietCues:
     """The cues owed to silence, and their one player: anything may owe one, before or after the speaker exists."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic, pause: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
         # [LAW:no-shared-mutable-globals] written only by `owe`, read only by `keep_playing`.
         self._owed: asyncio.Queue[tuple[QuietCue, float]] = asyncio.Queue()
+        # [LAW:effects-at-boundaries] the time a spacing is counted in and the waiting it out are one clock's, as the
+        # brain's stage takes them, so the spacing is waited on the clock it is read from.
         self._clock = clock
+        self._pause = pause
 
     def owe(self, cue: QuietCue) -> None:
         self._owed.put_nowait((cue, self._clock()))
@@ -142,13 +145,22 @@ class QuietCues:
                 record(Cued(cue.cue.line, len(ats), now - ats[0], played))
 
     async def _owed_within(self, seconds: float) -> list[tuple[QuietCue, float]]:
-        """Every cue owed now, waiting up to `seconds` for one if none is."""
-        if self._owed.empty() and seconds > 0:
-            try:
-                return [await asyncio.wait_for(self._owed.get(), None if math.isinf(seconds) else seconds), *self._drained()]
-            except TimeoutError:
-                return []
-        return self._drained()
+        """Every cue owed now, waiting up to `seconds` of the clock's time for one if none is."""
+        if not self._owed.empty() or seconds <= 0:
+            return self._drained()
+        owed = asyncio.ensure_future(self._owed.get())
+        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._pause(seconds))}
+        try:
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            # A get cancelled after a cue was put leaves the cue in the queue, where the next drain finds it.
+            for wait in waits:
+                wait.cancel()
+        # [LAW:no-silent-failure] a pause that failed says so, and is not taken for the spacing being up.
+        for wait in waits - {owed}:
+            if wait.done() and not wait.cancelled():
+                wait.result()
+        return [owed.result(), *self._drained()] if owed.done() else self._drained()
 
     def _drained(self) -> list[tuple[QuietCue, float]]:
         owed: list[tuple[QuietCue, float]] = []
