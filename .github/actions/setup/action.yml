@@ -1,7 +1,8 @@
 # [LAW:one-source-of-truth] the environment test.yml gates on and release.yml builds in: Go for fritter, uv on the
-# Python floor requires-python names, and Homebrew's PortAudio, which PyAudio builds against on a Mac.
+# Python floor requires-python names, Homebrew's PortAudio, which PyAudio builds against on a Mac, and Bun, which runs the
+# mock of Anthropic's API the brain's end-to-end tests run against.
 name: setup
-description: Go, uv on Python 3.12, and PortAudio, for a checkout that has its history and tags
+description: Go, uv on Python 3.12, PortAudio, and Bun, for a checkout that has its history and tags
 runs:
   using: composite
   steps:
@@ -18,3 +19,7 @@ runs:
     - name: PortAudio
       shell: bash
       run: brew install portaudio
+    # tests/test_brain_e2e.py runs promptctl/mock-anthropic, which is TypeScript run by Bun.
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: "1.3.14"
