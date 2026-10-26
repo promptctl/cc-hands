@@ -29,7 +29,7 @@ dependencies = [
 hands = "hands.daemon.cli:entry"
 
 [dependency-groups]
-dev = ["pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24"]
+dev = ["pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-timeout>=2.3"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -55,8 +55,10 @@ reportMatchNotExhaustive = "error"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# Every test here is a function, so nothing is collected by class name. Without this a domain type whose name
-# begins with Test, such as the Tested step, is taken for a test case the moment a test module imports it.
+# [LAW:single-enforcer] the one owner of "no test hangs": one that never finishes fails here, named, with the stack it
+# was stuck in. A wait inside a test (conftest's `patiently`) is for failing fast on a stall, and leans on this to end
+# a run that keeps moving for ever. The slowest test takes 14 s on a quiet machine, and load slows it 3 to 5 times.
+timeout = 120
 
 [tool.uv]
 # hands is a Mac app (CoreAudio, Quartz event taps), so the lock is resolved for macOS alone: openWakeWord's Linux-only

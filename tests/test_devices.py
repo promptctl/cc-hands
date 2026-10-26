@@ -8,7 +8,7 @@ import pytest
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
-from conftest import events
+from conftest import events, patiently
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.devices import follow
 from hands.voice.microphone import Devices
@@ -16,7 +16,6 @@ from hands.voice.system import AudioMoved, SystemFact, system_text
 
 HEADSET = Devices(input="headset", output="headset")
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
-PATIENCE_SECS = 2.0
 
 
 class Notices(asyncio.Event):
@@ -75,13 +74,8 @@ class Follower:
         self.changes.set()
 
     async def until(self, event: asyncio.Event) -> None:
-        """Return once `event` is set, however slowly the loop runs; raise what stopped the follower if it stops first."""
-        waiting = asyncio.ensure_future(event.wait())
-        try:
-            async with asyncio.timeout(PATIENCE_SECS):
-                await asyncio.wait({waiting, self.task}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            waiting.cancel()
+        """Return once `event` is set, moved by what the follower records; raise what stopped it if it stops first."""
+        await patiently(lambda: event.is_set() or self.task.done(), lambda: len(self.recorded))
         if self.task.done():
             self.task.result()
             raise AssertionError("the follower returned, which it never does until cancelled")
