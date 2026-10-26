@@ -1226,6 +1226,8 @@ for ticks, seconds in [*((ticks, 0.0) for ticks in range(40)), *((0, tenths / 10
 LOOP_SECS = 30.0
 
 
+# The suite's timeout is for a test that hangs; this one's 55 loops each have LOOP_SECS, and the run must outlast them.
+@pytest.mark.timeout(600)
 async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path) -> None:
     """The daemon's shutdown cancels the brain's launch wherever it is, and must not then wait for ever on what it spawned.
 

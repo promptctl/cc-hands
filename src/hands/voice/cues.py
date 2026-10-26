@@ -156,6 +156,10 @@ class QuietCues:
             # A get cancelled after a cue was put leaves the cue in the queue, where the next drain finds it.
             for wait in waits:
                 wait.cancel()
+        # [LAW:no-silent-failure] a pause that failed says so, and is not taken for the spacing being up.
+        for wait in waits - {owed}:
+            if wait.done() and not wait.cancelled():
+                wait.result()
         return [owed.result(), *self._drained()] if owed.done() else self._drained()
 
     def _drained(self) -> list[tuple[QuietCue, float]]:

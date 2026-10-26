@@ -811,16 +811,19 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
 
     # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
     watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01))
-    home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
-    # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
-    await patiently(lambda: bool(recorded) or watching.done(), lambda: len(checked))
-    # Had the edit saved over been taken, the watch would have ended on it before ever weighing the typo.
-    assert not watching.done(), watching.result()
-    assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
-    # And it is still watching: the next edit is the one it takes.
-    home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
-    await patiently(watching.done, lambda: len(checked))
-    assert watching.result() == SettingsEdited(path=str(home.config), refused=None)
+    try:
+        home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
+        # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
+        await patiently(lambda: bool(recorded) or watching.done(), lambda: len(checked))
+        # Had the edit saved over been taken, the watch would have ended on it before ever weighing the typo.
+        assert not watching.done(), watching.result()
+        assert [type(entry) for entry in recorded] == [SettingsEdited] and "'claud'" in str(recorded[0])
+        # And it is still watching: the next edit is the one it takes.
+        home.config.write_text('[llm]\nmodel = "claude-haiku-4-5-20251001"\n')
+        await patiently(watching.done, lambda: len(checked))
+        assert watching.result() == SettingsEdited(path=str(home.config), refused=None)
+    finally:
+        watching.cancel()
 
 
 async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

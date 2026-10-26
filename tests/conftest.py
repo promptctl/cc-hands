@@ -97,7 +97,7 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
                     seen = now
                     patience.reschedule(loop.time() + PATIENCE_SECS)
     except TimeoutError:
-        raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done.__qualname__}") from None
+        raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done!r}") from None
 
 
 @pytest.fixture(autouse=True)
