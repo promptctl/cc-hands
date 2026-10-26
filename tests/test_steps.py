@@ -2,9 +2,12 @@
 
 `tests/fixtures/steps.jsonl` is fourteen real call-and-result pairs cut out of this machine's transcripts, one
 per shape the recognisers claim, in the order asserted below. `tests/fixtures/testruns/` is the output four real
-test runners wrote, passing and failing, captured on 2026-09-21.
+test runners wrote, passing and failing, captured on 2026-09-21, and go's subtests and panics, captured on 2026-10-26.
 """
 
+import signal
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -153,6 +156,19 @@ def test_a_call_that_failed_recorded_no_result_to_be_recognised_by_and_is_told_a
             "test_divides\nassert (1 / 2) == 1\ntest_names\nAssertionError: assert 'A' == 'B'\n- B\n+ A",
         ),
         ("gotest.txt", "go", None, 2, ("TestDivides", "TestNames"), "sample_test.go:7: want 1, got 0\nsample_test.go:8: want B, got A"),
+        # Captured from go1.26 with and without -v: a passing test's log, a message on three lines, a passing and a
+        # failing subtest, and a test that panics. The panic's frames say nothing a reason is made of.
+        *(
+            (
+                capture,
+                "go",
+                None,
+                3,
+                ("TestTotals", "TestCases", "TestPanics"),
+                "sample_test.go:10: totals differ\nwant: 3\ngot:  4\nsample_test.go:18: want error, got nil",
+            )
+            for capture in ("gotest-subtests.txt", "gotest-subtests-v.txt")
+        ),
         (
             "cargotest.txt",
             "cargo",
@@ -183,6 +199,61 @@ def test_each_runner_is_read_from_the_output_it_really_writes(
     assert report.failing == failing
     # And says why in its own lines, which are what opening the tests tells.
     assert report.why == why
+
+
+# A run each runner reports as failed, so that what it says of why is read at all.
+FAILED_RUNS = {
+    "cargo": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "go": "--- FAIL: TestX (0.00s)",
+    "vitest": "      Tests  1 failed (1)",
+    "pytest": "1 failed in 0.01s",
+}
+LONG = 1_000_000
+LOG_LINE = "    x_test.go:1: a ’\n"
+# Long stretches of the shapes the patterns repeat over, each about a million characters, going on from the end of the
+# run's summary line: digits on that line, where the counts are read, and every other stretch on lines of its own.
+STRETCHES = {
+    # The shape that hung the daemon for seven hours: go's log lines, in a block no failure ends.
+    "go log lines a pass ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)) + "--- PASS: TestY (0.00s)\n",
+    "go log lines the run's PASS ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)) + "PASS\n",
+    "go log lines nothing ends": "\n" + LOG_LINE * (LONG // len(LOG_LINE)),
+    "indented lines": "\n" + "        \t  y\n" * (LONG // 12),
+    "blank lines": "\n" + "\n" * LONG,
+    "a line of spaces": "\n" + " " * LONG + "x\n",
+    "a line of spaced words": "\n" + "x " * (LONG // 2) + "\n",
+    "digits on the summary line": " " + "9" * LONG + "\n",
+    "underscores": "\n" + "_" * LONG + "\n",
+    "pytest-shaped rules": "\n" + "___ " + " ___ x" * (LONG // 6) + "\nE " + " ___ a" * (LONG // 6) + "\n",
+    "repeated panics": "\n" + "thread '" + "panicked at " * (LONG // 12) + "\n\n",
+}
+
+
+@contextmanager
+def deadline(seconds: float) -> Generator[None]:
+    """Fails what runs inside it once `seconds` pass. re checks for signals while it matches, so an alarm stops a
+    match that would otherwise never return, and the test fails rather than hanging the suite."""
+
+    def expire(signum: int, frame: object) -> None:
+        raise TimeoutError(f"still matching after {seconds} seconds")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.parametrize("runner", FAILED_RUNS)
+@pytest.mark.parametrize("stretch", STRETCHES)
+def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: str) -> None:
+    """The daemon reads every command's output on its way, holding the GIL for a whole match: a pattern that
+    backtracks without bound over a long log once stopped hands for seven hours. Read in linear time, a million
+    characters take milliseconds; a pattern quadratic in them takes tens of seconds and one exponential never ends."""
+    with deadline(2.0):
+        report = report_of(FAILED_RUNS[runner] + STRETCHES[stretch])
+    assert report is not None and report.runner == runner and report.failed >= 1
 
 
 def test_what_a_passing_run_logged_is_no_reason_for_a_failure() -> None:

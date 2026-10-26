@@ -1,0 +1,25 @@
+--- FAIL: TestTotals (0.00s)
+    sample_test.go:10: totals differ
+        want: 3
+        got:  4
+--- FAIL: TestCases (0.00s)
+    --- FAIL: TestCases/negative (0.00s)
+        sample_test.go:18: want error, got nil
+--- FAIL: TestPanics (0.00s)
+panic: assignment to entry in nil map [recovered, repanicked]
+
+goroutine 39 [running]:
+testing.tRunner.func1.2({0x1049dec40, 0x104a28e10})
+	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:1974 +0x1a0
+testing.tRunner.func1()
+	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:1977 +0x318
+panic({0x1049dec40?, 0x104a28e10?})
+	/opt/homebrew/Cellar/go/1.26.5/libexec/src/runtime/panic.go:860 +0x12c
+sample.TestPanics(0x67a713062d88?)
+	/tmp/krx-go/sample_test.go:24 +0x34
+testing.tRunner(0x67a713062d88, 0x104a07f00)
+	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/opt/homebrew/Cellar/go/1.26.5/libexec/src/testing/testing.go:2101 +0x3a8
+FAIL	sample	0.007s
+FAIL
