@@ -47,8 +47,9 @@ ACCOUNT = Account("claude.ai", "user@example.com")
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
 TURN = "mcp__hands__stay_silent"
-# How the auto mode classifier's own request opens its system prompt (2.1.289).
-CLASSIFIER = "You are a security monitor for autonomous AI coding agents."
+# What only a request carrying a tool's result holds, as Claude Code's compact JSON writes the block. The same words in
+# a prompt's text are escaped inside a JSON string, so they never match.
+RESULT = '"type":"tool_result"'
 
 
 @dataclass(frozen=True)
@@ -60,15 +61,11 @@ class MockApi:
     scenarios: Path
 
     def script(self, name: str, match: dict[str, list[str]], *content: dict[str, object], stop: str = "end_turn") -> None:
-        """The model's reply to every Messages request `match` accepts: `content` blocks, ending on `stop`. Scenarios are
-        tried in the order of their names, so a narrower match is named ahead of a wider one."""
-        scenario = {"endpoint": "messages", "match": match, "reply": {"kind": "assistant", "content": list(content), "stopReason": stop}, "eventDelayMs": 0}
-        (self.scenarios / f"{name}.json").write_text(json.dumps(scenario))
-
-    def allow(self) -> None:
-        """The auto mode classifier, which the brain's Claude Code asks before it runs a command, judging every one
-        routine: below 50 is allowed."""
-        self.script("0-classifier", {"bodyContains": [CLASSIFIER]}, {"type": "text", "text": "<severity>5</severity>"})
+        """The model's reply to every Messages request `match` accepts: `content` blocks, ending on `stop`. Scripts are
+        tried in the order of their names, so a narrower match is named ahead of a wider one. Claude Code's own calls
+        beside a turn (a title, the auto mode classifier, which allows) are the mock's built-in answers."""
+        script = {"match": match, "reply": {"kind": "message", "content": list(content), "stop_reason": stop}}
+        (self.scenarios / f"{name}.json").write_text(json.dumps(script))
 
 
 def mock(checkout: Path, *argv: str) -> tuple[str, ...]:
@@ -188,9 +185,8 @@ async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_an
     it owes, and the sentence it answers with is said (promptctl-silence-bsog.sfi)."""
     made = tmp_path / "made"
     # Tried in name order: the refusal's answer ahead of the silence, which would match the request carrying it too.
-    mock_api.allow()
     mock_api.script("1-owed", {"bodyContains": [OWED[:60]]}, {"type": "text", "text": "I made the file."})
-    mock_api.script("2-silent", {"lastUserContains": ["tool_result"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
+    mock_api.script("2-silent", {"bodyContains": [TURN, RESULT]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
     mock_api.script("3-act", {"lastUserContains": ["make the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"touch {made}"}}, stop="tool_use")
     await hands.say("make the file")
     await hands.until(lambda: "I made the file." in "".join(hands.out.said()))
@@ -200,7 +196,6 @@ async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_an
 async def test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_the_next_is_answered(mock_api: MockApi, hands: Hands) -> None:
     """While the brain runs a long command, its work shows the call and its input; a stop pressed on that turn ends it, the
     brain is idle, and the turn after it is answered (promptctl-backlog-7qoh.8nx)."""
-    mock_api.allow()
     mock_api.script("1-wait", {"lastUserContains": ["wait a while"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 120"}}, stop="tool_use")
     mock_api.script("2-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
     await hands.say("wait a while")
