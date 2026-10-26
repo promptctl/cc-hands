@@ -251,8 +251,9 @@ def deadline(seconds: float) -> Generator[None]:
 @pytest.mark.parametrize("stretch", STRETCHES)
 def test_any_output_is_read_in_time_linear_in_its_length(runner: str, stretch: str) -> None:
     """The daemon reads every command's output on its way, holding the GIL for a whole match: a pattern that
-    backtracks without bound over a long log once stopped hands for seven hours. Read in linear time, a million
-    characters take a second at most; a pattern quadratic in them takes tens of seconds and one exponential never ends."""
+    backtracks without bound over a long log once stopped hands for seven hours. The deadline tells linear from worse,
+    not fast from slow: a million characters read in linear time take about a second here, a pattern quadratic in them
+    takes tens of seconds, and one exponential never ends."""
     with deadline(5.0):
         report = report_of(FAILED_RUNS[runner] + STRETCHES[stretch])
     assert report is not None and report.runner == runner and report.failed >= 1
