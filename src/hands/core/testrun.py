@@ -40,19 +40,23 @@ class Runner:
     why: re.Pattern[str]
 
 
-# Patterns fitted to output captured from each runner on 2026-09-21, passing and failing.
+# Patterns fitted to output captured from each runner on 2026-09-21, passing and failing, and go's reasons to go1.26's
+# subtests and panics, captured on 2026-10-26.
 # The first runner whose mark is found reads the output, so a mark says one runner and not another.
+# Every pattern reads its input in time linear in its length: Python's re holds the GIL for a whole match, so one
+# pattern that backtracks without bound over a long log stops the whole daemon. A quantifier that must not give
+# characters back is possessive or atomic, and a run of digits is matched only from its first digit.
 RUNNERS: tuple[Runner, ...] = (
     Runner(
         name="cargo",
         # `test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s`
         mark=re.compile(r"(?m)^test result:"),
-        passed=re.compile(r"(\d+) passed"),
-        failed=re.compile(r"(\d+) failed"),
+        passed=re.compile(r"(?<!\d)(\d+) passed"),
+        failed=re.compile(r"(?<!\d)(\d+) failed"),
         # Each failing test prints its own captured output under this heading, and again under `failures:`.
         failing=re.compile(r"(?m)^---- (\S+) stdout ----"),
         # `thread 'tests::names' (1541058) panicked at src/lib.rs:9:26:` and the message on the line under it.
-        why=re.compile(r"(?m)^(thread '.*panicked at .*\n.+)$"),
+        why=re.compile(r"(?m)^(thread '(?>.*?panicked at ).*+\n.+)$"),
     ),
     Runner(
         name="go",
@@ -65,18 +69,27 @@ RUNNERS: tuple[Runner, ...] = (
         # A case of a table-driven test prints this indented under the test it belongs to. `go test` counts
         # nothing, so these names are the count, and counting a test's cases counts one failure several times.
         failing=re.compile(r"(?m)^--- FAIL: (\S+)"),
-        # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it. A line is a reason only where its
-        # indented block ends in a failure: under -v a test's lines come before its `--- FAIL:` or `--- PASS:`, and
-        # without it only a failed test's lines are printed, after its `--- FAIL:`, up to the next or the package's `FAIL`.
-        why=re.compile(r"(?m)^[ \t]+(\S+\.go:\d+: .*)$(?=(?:\n[ \t]+.*)*\n(?:--- FAIL: |FAIL\b))"),
+        # `    sample_test.go:7: want 1, got 0`, indented under the test that logged it, with the lines its message
+        # continues on indented further. A block is a reason only where it ends in a failure: under -v a test's lines
+        # come before its `--- FAIL:` or `--- PASS:`, and without it only a failed test's lines are printed, after its
+        # `--- FAIL:`, up to the next, the package's `FAIL` or the test's `panic:`. Go's own result lines, indented under a
+        # parent for its subtests, bound a block and are never part of one. The reason starts at the block's first log
+        # line: what the test printed indented before it is not its reason, and a panic's frames, with no `: ` after the
+        # line, start none.
+        why=re.compile(
+            r"(?m)^(?:(?:(?![ \t])|[ \t]*--- (?:FAIL|PASS|SKIP): ).*\n|\A)"
+            r"(?:[ \t](?![ \t]*--- (?:FAIL|PASS|SKIP): |[ \t]*\S+\.go:\d+: ).*\n)*+"
+            r"([ \t]+\S+\.go:\d+: .*\n(?:[ \t](?![ \t]*--- (?:FAIL|PASS|SKIP): ).*\n)*+)"
+            r"(?=[ \t]*--- FAIL: |FAIL\b|panic: )"
+        ),
     ),
     Runner(
         name="vitest",
         # `      Tests  2 failed | 2 passed (4)`, and one ` FAIL  src/sample.test.ts > names` per failure.
         mark=re.compile(r"(?m)^\s*Tests\s+\d"),
-        passed=re.compile(r"(\d+) passed"),
-        failed=re.compile(r"(\d+) failed"),
-        failing=re.compile(r"(?m)^\s*FAIL\s+(\S.*?)\s*$"),
+        passed=re.compile(r"(?<!\d)(\d+) passed"),
+        failed=re.compile(r"(?<!\d)(\d+) failed"),
+        failing=re.compile(r"(?m)^[^\S\n]*FAIL[^\S\n]+(\S(?:.*\S)?)[^\S\n]*$"),
         # ` FAIL  src/sample.test.ts > names` and the error on the line under it.
         why=re.compile(r"(?m)^ (FAIL  .+\n.+)$"),
     ),
@@ -84,8 +97,8 @@ RUNNERS: tuple[Runner, ...] = (
         name="pytest",
         # `2 failed, 2 passed in 0.02s`, bare under -q and inside a rule of `=` otherwise.
         mark=re.compile(r"(?m)^(?:=+ )?\d+ (?:passed|failed|error|skipped)[^\n]* in \d"),
-        passed=re.compile(r"(\d+) passed"),
-        failed=re.compile(r"(\d+) (?:failed|errors?)"),
+        passed=re.compile(r"(?<!\d)(\d+) passed"),
+        failed=re.compile(r"(?<!\d)(\d+) (?:failed|errors?)"),
         failing=re.compile(r"(?m)^(?:FAILED|ERROR) (\S+)"),
         # Each failure's heading, `____ test_names ____`, and the `E` lines under it: the summary line's own reason is
         # cut to the terminal's width, `- Asser...`, in a run whose output is not a terminal. The heading is carried as
@@ -102,10 +115,11 @@ def report_of(output: str) -> Report | None:
     spelled: `make test`, `just check` and a script all reach the same runners [LAW:one-source-of-truth].
     """
     text = ESCAPES.sub("", output)
+    lines = text.splitlines()
     for runner in RUNNERS:
         # [LAW:one-source-of-truth] a run is counted by the summaries its mark found and by nothing else in the
         # scrollback: a workspace writes one summary per binary, and the line above them counts files, not tests.
-        summaries = tuple(line for line in text.splitlines() if runner.mark.search(line))
+        summaries = tuple(line for line in lines if runner.mark.search(line))
         if not summaries:
             continue
         failing = tuple(match.group(1) for match in runner.failing.finditer(text))
@@ -113,7 +127,9 @@ def report_of(output: str) -> Report | None:
         failed = len(failing) if counted is None else counted
         # A run with nothing failed has no why: what its tests logged on passing, as `go test -v` prints, says nothing
         # about a failure.
-        why = "\n".join(match.group(1).strip() for match in runner.why.finditer(text)) if failed else ""
+        # A reason reads flush: each of its lines without the indent the runner drew it at.
+        reasons = (line.strip() for match in runner.why.finditer(text) for line in match.group(1).splitlines())
+        why = "\n".join(reasons) if failed else ""
         return Report(runner.name, _count(runner.passed, summaries), failed, failing, why)
     return None
 

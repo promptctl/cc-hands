@@ -832,10 +832,14 @@ three lines of the design above were wrong:
   there was nothing to diff it against. `Edited.change` is therefore the hunks for an edit
   and the whole file for a create.
 
-`Tested` is a `Ran` whose output a test runner wrote. Each runner is four patterns in one
-table — what proves it ran, how it counts what passed and what failed, and how it names a
-failure — fitted to output captured from pytest, vitest, cargo test and go test, passing and
-failing, and kept in `tests/fixtures/testruns/`. `go test` counts nothing it did not fail, so
+`Tested` is a `Ran` whose output a test runner wrote. Each runner is five patterns in one table
+— what proves it ran, how it counts what passed and what failed, how it names a failure, and
+the lines that say why — fitted to output captured from pytest, vitest, cargo test and go test,
+passing and failing, and kept in `tests/fixtures/testruns/`. Every pattern reads output in time
+linear in its length: the daemon matches every command's output as it reads a transcript, and
+Python's `re` holds the GIL for a whole match, so one pattern that backtracks without bound
+stops all of hands. `tests/test_steps.py` holds every runner to that over a million characters
+of each shape the patterns repeat over. `go test` counts nothing it did not fail, so
 `Tested.passed` is None there and a run's failures are counted by the names it printed. A run
 is counted by the summary lines its mark found and by nothing else in the scrollback, added up
 across them: a workspace prints one summary per test binary, and vitest counts its files on the
