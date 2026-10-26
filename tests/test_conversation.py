@@ -33,7 +33,7 @@ class Speaker(TTSService):
     """The speaker with the synthesis taken out: started, stopped, and its text pushed by Pipecat's service as pocket-tts's are."""
 
     def __init__(self) -> None:
-        # Pipecat's own wait for a context's first audio, as PocketTTSService is made with it.
+        # Pipecat's own idle time before a context's TTSStoppedFrame, as PocketTTSService is made with it.
         super().__init__(  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             push_start_frame=True, push_stop_frames=True, settings=PocketTTSSettings(model=None, voice="alba", language=Language.EN)
         )

@@ -2,6 +2,7 @@
 silence wait for nobody to be speaking and for their spacing, and play each kind once however often it was owed."""
 
 import asyncio
+from typing import Literal
 
 import numpy as np
 
@@ -64,9 +65,21 @@ def test_receiving_is_high_and_rising_in_steps_and_working_is_one_steady_tone() 
     assert [len(cue.glides) == 1 and cue.glides[0][0] == cue.glides[0][1] for cue in (OPENED, SENT, DROPPED, RECEIVED.cue, WORKING.cue)] == [False, False, False, False, True]
 
 
+class Quiet(asyncio.Event):
+    """Whether nobody is speaking, which also counts each time the player comes to wait for it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.awaited = 0
+
+    async def wait(self) -> Literal[True]:
+        self.awaited += 1
+        return await super().wait()
+
+
 class Speaker:
     def __init__(self) -> None:
-        self.quiet = asyncio.Event()
+        self.quiet = Quiet()
         self.played: list[Cue] = []
 
     def cue(self, cue: Cue) -> Played:
@@ -76,6 +89,11 @@ class Speaker:
     async def heard(self, count: int) -> list[Cue]:
         """What it has played, once it has played `count` cues."""
         await patiently(lambda: len(self.played) >= count, lambda: len(self.played))
+        return self.played
+
+    async def waited_for(self) -> list[Cue]:
+        """What it has played, once the player has come to wait for it to be quiet."""
+        await patiently(lambda: self.quiet.awaited > 0, lambda: len(self.played))
         return self.played
 
 
@@ -88,7 +106,7 @@ async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> 
         clock.advance(0.5)
         owed.owe(WORKING)
         owed.owe(WORKING)
-        assert speaker.played == []  # someone is speaking
+        assert await speaker.waited_for() == []  # someone is speaking
         clock.advance(1.5)
         speaker.quiet.set()
         assert await speaker.heard(2) == [RECEIVED.cue, WORKING.cue]
@@ -120,6 +138,6 @@ async def test_a_burst_of_acts_in_silence_is_one_tone_per_spacing() -> None:
         clock.advance(10.0)
         owed.owe(RECEIVED)
         # A cue still due would have played ahead of the receipt.
-        assert await speaker.heard(4) == [WORKING.cue, RECEIVED.cue, WORKING.cue, RECEIVED.cue]  # nothing owed, nothing played
+        assert await speaker.heard(4) == [WORKING.cue, RECEIVED.cue, WORKING.cue, RECEIVED.cue]
     finally:
         cueing.cancel()

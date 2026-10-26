@@ -88,13 +88,16 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
     [LAW:no-ambient-temporal-coupling] the patience bounds a stall, not the work queued ahead of what is awaited, so a
     loaded machine that is slow but moving is waited on. A run that moves for ever is ended by the suite's timeout."""
     loop = asyncio.get_running_loop()
-    async with asyncio.timeout(PATIENCE_SECS) as patience:
-        seen = moved()
-        while not done():
-            await asyncio.sleep(0.01)
-            if (now := moved()) != seen:
-                seen = now
-                patience.reschedule(loop.time() + PATIENCE_SECS)
+    seen = moved()
+    try:
+        async with asyncio.timeout(PATIENCE_SECS) as patience:
+            while not done():
+                await asyncio.sleep(0.01)
+                if (now := moved()) != seen:
+                    seen = now
+                    patience.reschedule(loop.time() + PATIENCE_SECS)
+    except TimeoutError:
+        raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done.__qualname__}") from None
 
 
 @pytest.fixture(autouse=True)

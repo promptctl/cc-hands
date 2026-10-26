@@ -809,7 +809,8 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
         if settings.llm == Claude(model="claude-opus-5-5"):
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
-    watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), period=0))
+    # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
+    watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01))
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
     await patiently(lambda: bool(recorded) or watching.done(), lambda: len(checked))

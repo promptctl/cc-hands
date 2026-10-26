@@ -1192,9 +1192,9 @@ from hands.brain.process import start
 from hands.sessions import pseudoterminal
 
 launch = pickle.load(sys.stdin.buffer)
-# A close that only the stop's kill would end is a hang here, and so fails, where on the real clock it was a close five
-# seconds late that only a bound on the time could tell from a loaded machine.
-pseudoterminal.STOP_SECONDS = math.inf
+# A close that only a fallback would end, the stop's kill or giving up on the terminal, is a hang here, and so fails,
+# where on the real clock it was a close seconds late that only a bound on the time could tell from a loaded machine.
+pseudoterminal.STOP_SECONDS = pseudoterminal.DRAIN_SECONDS = math.inf
 
 class Ended(Exception):
     pass
@@ -1245,7 +1245,10 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
             closed.append(line.decode().strip())
         await asyncio.wait_for(hands.wait(), LOOP_SECS)
     except TimeoutError:
-        raise AssertionError(f"a loop ended as the brain started never finished closing: the one after {closed[-1:] or 'none'}") from None
+        hands.kill()
+        await hands.wait()
+        said = (await errors).decode()[-2000:]
+        raise AssertionError(f"a loop ended as the brain started never finished closing: the one after {closed[-1:] or 'none'}\n{said}") from None
     finally:
         if hands.returncode is None:
             hands.kill()

@@ -27,6 +27,9 @@ SHOWN_BYTES = 16 * 1024
 SHOWN_LINES = 20
 # How long a Claude Code told to stop has before it is killed.
 STOP_SECONDS = 5.0
+# How long what a Claude Code showed last is read for, once it has ended, before a terminal some child of it still holds
+# is given up on.
+DRAIN_SECONDS = 1.0
 
 # What a terminal is told rather than shown, and the keys it is sent.
 _CONTROL = re.compile(rf"{ESCAPES.pattern}|[\x00-\x09\x0b-\x1f\x7f]")
@@ -91,7 +94,7 @@ class ClaudeCode:
         code = await asyncio.shield(self._child.ended)
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
-            await asyncio.wait_for(asyncio.shield(self._terminal.closed), 1.0)
+            await asyncio.wait_for(asyncio.shield(self._terminal.closed), DRAIN_SECONDS)
         except TimeoutError:
             pass
         return code

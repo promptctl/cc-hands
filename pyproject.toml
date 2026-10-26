@@ -59,6 +59,9 @@ testpaths = ["tests"]
 # was stuck in. A wait inside a test (conftest's `patiently`) is for failing fast on a stall, and leans on this to end
 # a run that keeps moving for ever. The slowest test takes 14 s on a quiet machine, and load slows it 3 to 5 times.
 timeout = 120
+# A signal raised in the stuck test, which also stops a match `re` holds the GIL for: the thread method ends the whole
+# run on one, and tests/test_steps.py's linear-time gate leans on this.
+timeout_method = "signal"
 
 [tool.uv]
 # hands is a Mac app (CoreAudio, Quartz event taps), so the lock is resolved for macOS alone: openWakeWord's Linux-only
