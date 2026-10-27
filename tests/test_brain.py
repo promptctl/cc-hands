@@ -558,6 +558,20 @@ async def test_a_brain_that_never_lists_its_tools_fails_the_turn_untyped_and_say
         await brain.stop()
 
 
+async def test_a_brain_that_exits_while_its_turn_waits_for_the_listing_ends_the_turn_with_how_it_exited(tmp_path: Path, fake_claude: Path) -> None:
+    # The listing never comes, and the brain's Claude Code exits meanwhile: the turn ends with that exit, not with the listing it never got.
+    brain = await start(replace(launch(tmp_path), mcp_listed=asyncio.Event()), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait for the tools", unasked))
+        await until(lambda: brain._turn is not None)  # pyright: ignore[reportPrivateUsage]
+        os.kill(brain.pid, signal.SIGKILL)
+        with pytest.raises(BrainGone, match="exited"):
+            await asyncio.wait_for(asking, 20)
+        assert typed(tmp_path) == []
+    finally:
+        await brain.stop()
+
+
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
