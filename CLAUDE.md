@@ -4,7 +4,7 @@
 - NO WORK PROCEEDS WHEN THERE ARE FAILING TESTS.   Create a ticket and fix the tests first.
 - No work proceeds except on a fresh work tree.  the work tree is cleaned up when the ticket is finished.
 - No test anywhere may require a human to log into Anthropic as part of an automated test suite.  Tests use appropriate mocks and APIs.
-- HANDS NEVER STARTS A CLAUDE CODE PROCESS TO GET WHAT THE RUNNING BRAIN ALREADY GIVES IT.  hands is a realtime voice application, and every Claude Code started on the way to an answer is latency the user hears.  What the brain's Claude Code can do, hands gets without starting another: a request of its own through the proxy, completely consistent with the requests Claude Code itself sends (a shorthand for running the command inside Claude Code, the same in principle); a change to the brain's request that piggybacks on it; a command sent to the brain's stdin; or some other way.  hands may write and rewrite the brain's requests, and the responses the API streams back to them.  A separate Claude Code started for each side question is this mistake.  One-shot `claude` CLI checks at startup are fine; repeated `claude` CLI commands for anything that can be done another way are not.  Effort spent on a design that breaks this is wasted, and someone has to clean it up later.
+- HANDS NEVER STARTS A CLAUDE CODE PROCESS TO GET WHAT THE RUNNING BRAIN ALREADY GIVES IT.  hands is a realtime voice application, and every Claude Code started on the way to an answer is latency the user hears.  What the brain's Claude Code can do, hands gets without starting another: a request of its own through the proxy, completely consistent with the requests Claude Code itself sends (a shorthand for running the command inside Claude Code, the same in principle); a change to the brain's request that piggybacks on it, or to the response it gets back; a command sent to the brain's stdin; or some other way.  hands may write and rewrite the brain's requests and the API responses it receives.  A separate Claude Code started for each side question is this mistake.  One-shot `claude` CLI checks at startup are fine; repeated `claude` CLI commands for anything that can be done another way are not.  Effort spent on a design that breaks this is wasted, and someone has to clean it up later.
 
 <!-- BEGIN LIT INTEGRATION -->
 ## lit Agent-Native Workflow
@@ -12,5 +12,7 @@
 This repository uses `lit` for agent-native issue tracking.
 
 Start by running `lit quickstart` to load the workflow instructions. It prints how tickets are found, created, updated, and closed here, so running it first means the rest of your work follows the conventions this repo expects. It's a quick, read-only command — no need to check in before running it.
+
+As you work a ticket, record its phase at each move: `lit phase <id> --to impl` when you start writing code, `lit phase <id> --to review` when its PR opens, `lit phase <id> --to merge` when review is done and the merge is under way. `lit start` puts it in `plan`, and `lit done <id>` ends it.
 
 <!-- END LIT INTEGRATION -->
