@@ -115,8 +115,6 @@ TAKE_SECONDS = 30.0
 # How many times a turn is typed at most: once, and once more when a prompt that is no turn's ran through its wait and
 # was stopped, which leaves nothing ahead of it.
 TYPINGS = 2
-# How many times a typed turn's Return is pressed within its take budget: the first with its text, the rest each in turn.
-RETURNS = 10
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
@@ -692,6 +690,7 @@ class Brain:
                     # Stopped before it was typed: it is never typed, and it ends as its stop ends it.
                     self._over(turn, BrainStopped())
                 elif not taken:
+                    # [LAW:nothing-unseen] what Claude Code showed when the turn was not taken is the first thing to read.
                     raise Untaken(f"the brain did not take the turn typed into it {turn.typings} time(s), {turn.take:g}s each; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{self._claude.shown()}")
             except (BrainGone, Untaken, Unconnected) as error:
                 self._over(turn, error)
@@ -738,17 +737,9 @@ class Brain:
                     return True
             turn.typings += 1
             await self._type(lambda typist: typist.type(turn.typed))
-            # [LAW:no-silent-failure] Claude Code can drop the Return that follows a turn's text as the text lands: the text then
-            # waits in its input, untaken (CI and the load run, 2.1.308: the screen showed the turn in the input, unsubmitted). So
-            # the Return is pressed again, each time logged, RETURNS presses in all within the turn's own budget.
-            for returned in range(1, RETURNS + 1):
-                await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take / RETURNS, return_when=asyncio.FIRST_COMPLETED)
-                if turn.taken.done() or turn.answered.done():
-                    return True
-                if returned < RETURNS:
-                    # Routine when a queue or a slow start takes the turn late, so informational; the failure to take it is an error.
-                    logger.info(f"the brain did not take the turn's Return within {turn.take / RETURNS:g}s; pressing it again ({returned + 1}/{RETURNS})")
-                    await self._type(lambda typist: typist.press("enter"))
+            await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
+            if turn.taken.done() or turn.answered.done():
+                return True
             if turn.typings == TYPINGS or not self._unowned:
                 return False
 
