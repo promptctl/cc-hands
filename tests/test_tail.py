@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
+from hands.core.events import CarriedOut, Continued, Dequeued, Interrupted, Launched, Progressed, Read, Removed, ReportedBack, Taken, Transcribed, Unqueued
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
@@ -730,7 +730,7 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
     transcript.write_text(lines(ASKED, LOOPING))
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(said_busy(at=1.0))
     tails = Tails(sessions)
     with transcript.open("a") as more:
@@ -771,7 +771,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
     transcript.write_text("")
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p0")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p0"), text=""))
     tails = Tails(sessions)
     for _ in range(3):
         for transcribed in await tails.catch_up():
@@ -780,7 +780,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
     await sessions.apply(said_idle(at=2.0))
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle) and isinstance(live.turn, Untold)
-    await sessions.apply(Prompted(SID, at=4.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=4.0, mode=None, prompt=PromptId("p1"), text=""))
     transcript.write_text(lines(ASKED))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
@@ -798,7 +798,7 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
     transcript.write_text(lines(ASKED, WRITING))
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     tailing = asyncio.create_task(keep_tailing(Tails(sessions), 0.01, sessions.apply))
     try:
         await sessions.apply(said_idle(at=2.0))
@@ -903,12 +903,12 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     transcript.write_text(lines(ASKED, WRITING))
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     tails = Tails(sessions)
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
     await sessions.apply(said_idle(at=4.0))
-    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
+    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2"), text=""))
     with transcript.open("a") as more:
         more.write(lines(CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
@@ -942,10 +942,10 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=transcript), "startup"))
     tails = Tails(sessions)
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     (root / "rivers.md").write_text("# Rivers\n")
     await sessions.apply(said_idle(at=4.0))
-    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
+    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2"), text=""))
     (root / "shorter.md").write_text("Rivers.\n")
     transcript.write_text(lines(ASKED, WRITING, CUT_OFF, NEXT_ASKED, DONE))
     for transcribed in await tails.catch_up():
@@ -1014,6 +1014,43 @@ async def test_a_transcript_that_cannot_be_read_is_waited_on_no_longer(tmp_path:
 # Then the turn it is in, whose record Claude Code wrote before the busy it set again after a dialog.
 HISTORY = (ASKED, LOOPING, FLUSHED, FLUSHING, QUEUED, BANANA, NEXT_ASKED.replace('"p2"', '"p9"'), CUT_OFF.replace('"p1"', '"p9"'), PROMPT.replace('"type":"user"', '"type":"user","promptId":"p3"'), DONE)
 RUNNING = '{"type":"user","promptId":"p4","timestamp":"1970-01-01T00:00:02Z","message":{"role":"user","content":"Now the tests."}}'
+
+
+WORDS = "Also: what is 3+3?"
+ENQUEUED = f'{{"type":"queue-operation","operation":"enqueue","timestamp":"1970-01-01T00:00:01Z","content":"{WORDS}"}}'
+DEQUEUED = '{"type":"queue-operation","operation":"dequeue","timestamp":"1970-01-01T00:00:02Z"}'
+REMOVED = f'{{"type":"queue-operation","operation":"remove","timestamp":"1970-01-01T00:00:02Z","content":"{WORDS}","reason":"absorbed_mid_turn"}}'
+PULLED_BACK = f'{{"type":"queue-operation","operation":"popAll","timestamp":"1970-01-01T00:00:02Z","content":"{WORDS}"}}'
+
+
+async def test_what_claude_code_takes_out_of_its_queue_is_heard_in_the_order_read_and_an_enqueue_is_not(tmp_path: Path) -> None:
+    """An enqueue says nothing the prompt's hook did not say first; what leaves the queue names the message it took, all but
+    a dequeue, which takes the oldest."""
+    _, said = await followed_on(tmp_path / "t.jsonl", ENQUEUED, REMOVED, DEQUEUED, PULLED_BACK)
+    assert said == [Unqueued(SID, Removed(WORDS)), Unqueued(SID, Dequeued()), Unqueued(SID, Removed(WORDS))]
+
+
+@pytest.mark.parametrize("record", [
+    '{"type":"queue-operation","operation":"shuffle","timestamp":"1970-01-01T00:00:02Z"}',
+    '{"type":"queue-operation","operation":"remove","timestamp":"1970-01-01T00:00:02Z","reason":"absorbed_mid_turn"}',
+    '{"type":"queue-operation","operation":"popAll","timestamp":"1970-01-01T00:00:02Z"}',
+])
+async def test_a_queue_record_hands_cannot_read_is_a_line_and_skipped(tmp_path: Path, record: str) -> None:
+    """An operation hands does not know, or one that does not name the message it took out, which nothing could match."""
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR", filter="hands.sessions.tail")
+    try:
+        _, said = await followed_on(tmp_path / "t.jsonl", record, DEQUEUED)
+    finally:
+        logger.remove(sink)
+    assert said == [Unqueued(SID, Dequeued())] and len(errors) == 1
+
+
+async def test_a_queue_record_of_a_turn_over_before_hands_followed_the_session_is_not_heard(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(*HISTORY[:2], DEQUEUED, *HISTORY[2:], RUNNING, REMOVED, LOOPING))
+    said = heard(await Tails(Registry([member(transcript)])).catch_up())
+    assert said == [Taken(SID, PromptId("p4"), Stamp(2000), 7.0), Unqueued(SID, Removed(WORDS)), Continued(SID, was=PromptId("p3"), now=PromptId("p4"))]
 
 
 async def test_a_transcript_read_from_its_start_hands_on_only_the_turn_it_is_in(tmp_path: Path) -> None:

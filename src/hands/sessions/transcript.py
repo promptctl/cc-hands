@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
+from hands.core.events import Dequeued, Removed, Unqueuing
 from hands.core.session import ESCAPES, PromptId
 from hands.core.status import Stamp
 from hands.core.steps import launched
@@ -82,6 +83,35 @@ _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_com
 # took. Written for the turn that launched a subagent in the background too, though the session stays busy until the
 # subagent's report is answered. The second is missing from about one stop in five.
 _ENDED = ("stop_hook_summary", "turn_duration")
+
+
+_QUEUE_RECORD = b'"type":"queue-operation"'
+
+
+def unqueuing(line: bytes) -> Unqueuing | None:
+    """What a line of Claude Code's queue says it took out of the queue; None for an enqueue and for any other line.
+
+    Raises Rejected for an operation hands does not know, and for a remove or popAll that names no message: every one
+    since the releases docs/claude-code-behavior.md names carries what it took out, which is how it is matched to the
+    words filed under a turn.
+    """
+    if _QUEUE_RECORD not in line:
+        return None
+    record = Payload.parse(line)
+    match record.fields.get("type"), record.fields.get("operation"), record.fields.get("content"):
+        case "queue-operation", "enqueue", _:
+            return None
+        case "queue-operation", "dequeue", _:
+            return Dequeued()
+        case "queue-operation", ("remove" | "popAll"), str() as content:
+            return Removed(content)
+        case "queue-operation", ("remove" | "popAll") as operation, other:
+            raise Rejected(f"a queue {operation} record should name the message it took out, got {type(other).__name__}")
+        case "queue-operation", operation, _:
+            raise Rejected(f"a queue-operation record's operation {operation!r} is not one hands knows")
+        case _:
+            # Another record that holds a queue-operation nested in it.
+            return None
 
 
 def turn_record(line: bytes) -> Payload | None:

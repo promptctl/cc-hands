@@ -15,9 +15,9 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.core.effects import Audit, Compare, Deny, Effect, Holding, Reply, Snapshot, Summarise, Unmatched, Unregistered, Withdraw
+from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
-from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick
+from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed
 from hands.core.permissions import Answer, NotWaiting, Permission
 from hands.core.session import Membership, PromptId, RequestId, SessionId, Told
 from hands.daemon import cli
@@ -647,7 +647,7 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
     sink = logger.add(full, level="WARNING", catch=False)
     try:
         sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
-        never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"))
+        never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"), text="")
         with pytest.raises(OSError):
             await sessions.apply(never)
     finally:
@@ -689,8 +689,8 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=Marking(recorded.append))
     await sessions.apply(Joined(member(), "startup"))
     with unit("hook", recorded.append):
-        await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
-    sessions.hear(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2")))
+        await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
+    sessions.hear(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"), text=""))
     await asyncio.wait_for(asyncio.gather(*sessions._hearing), 1.0)  # pyright: ignore[reportPrivateUsage]
     hook = next(entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hook")
     marks = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
@@ -706,7 +706,7 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
     hanging = Hanging()
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=hanging)
     await sessions.apply(Joined(member(), "startup"))
-    prompts = [Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")), Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"))]
+    prompts = [Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""), Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"), text="")]
     for prompted in prompts:
         sessions.hear(prompted)
     await asyncio.wait_for(hanging.begun.wait(), 1.0)
@@ -744,11 +744,41 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     assert (Audit(Unmatched(stop.session, stop.prompt)), "ok") in performed(applied(recorded)[-1])
 
 
+async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_marks_the_turn_they_run_as() -> None:
+    """[LAW:nothing-unseen] the facts the queue gives a Stop land on the applied event that decided them."""
+    recorded: list[Entry] = []
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text="Open the turn."))
+    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p1"), text="Also: what is 3+3?"))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
+    await sessions.apply(stop)
+    assert (Audit(HoldingBehind(stop.session, stop.prompt, 1)), "ok") in performed(applied(recorded)[-1])
+    await sessions.apply(Read(member().id, STOP_HEARD))
+    assert (Audit(QueuedBehind(stop.session, stop.prompt, 1)), "ok") in performed(applied(recorded)[-1])
+    await sessions.apply(Unqueued(member().id, Removed("a notification")))
+    assert (Audit(Unfiled(stop.session, Removed("a notification"))), "ok") in performed(applied(recorded)[-1])
+
+
+async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a_line_as_it_is_let_go_unmarked() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text="Open the turn."))
+    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p1"), text="Also: what is 3+3?"))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
+    await sessions.apply(stop)
+    await sessions.apply(Unqueued(member().id, Removed("Also: what is 3+3?")))
+    assert (Audit(NoneBehind(stop.session, stop.prompt)), "ok") in performed(applied(recorded)[-1])
+
+
 async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:
     recorded: list[Entry] = []
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
-    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     # Its transcript is read once a status is, so a record could name the Stop.
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
@@ -766,7 +796,7 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     """Claude Code waits on the hook, so what deciding the Stop calls for is done before it goes on."""
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
-    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     # Its transcript is read once a status is, so a record could name the Stop.
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     hook = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
@@ -780,7 +810,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
     """A Stop decided just before shutdown began was decided, though shutdown has since let every hook go."""
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
-    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     decided = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
     await asyncio.sleep(0)
@@ -788,7 +818,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
     sessions._reply(member().id, STOP_REQUEST, Withdraw())  # pyright: ignore[reportPrivateUsage]
     sessions.release_waiting()
     assert await asyncio.wait_for(decided, 1.0) == "decided"
-    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p3")))
+    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p3"), text=""))
     let_go = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p4"), again=False, heard=Stamp(STOP_HEARD + 2000), request=RequestId("let-go"))))
     await asyncio.sleep(0)
     sessions.release_waiting()
@@ -800,7 +830,7 @@ async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_l
     recorded: list[Entry] = []
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
     await sessions.apply(Joined(member(), "startup"))
-    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await asyncio.wait_for(sessions.stop(stop), 1.0)
@@ -813,7 +843,7 @@ async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
     """Letting every hook go at shutdown lets go of its wait, not of what it says happened."""
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(), "startup"))
-    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.release_waiting()
     await asyncio.wait_for(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)), 3.0)
     live = sessions.live_session(member().id)
@@ -873,7 +903,7 @@ async def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_c
 async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> None:
     recorded: list[Entry] = []
     logged: list[str] = []
-    never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"))
+    never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"), text="")
 
     def full(message: object) -> None:
         if "Prompted for session never-joined" in str(message):

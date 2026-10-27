@@ -14,7 +14,7 @@ from typing import Literal, Protocol
 
 from loguru import logger
 
-from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed
+from hands.core.events import CarriedOut, Continued, Interrupted, Launched, Progressed, Read, ReportedBack, Taken, Transcribed, Unqueued, Unqueuing
 from hands.core.progress import Doing, doing
 from hands.core.session import Instant, Membership, PromptId, SessionId
 from hands.core.status import Stamp
@@ -22,7 +22,7 @@ from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Continuing
 from hands.core.steps import Call
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.subagents import meta_of, started_from, subagents_of, transcript_of
-from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_of, turn_record, written_of
+from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_of, turn_record, unqueuing, written_of
 from hands.sessions.turning import Turning
 
 
@@ -405,7 +405,11 @@ class Tails:
         # What each record says that no hook does, by the turn it was read into.
         heard: list[tuple[int, Transcribed]] = []
         went_on, carried = False, following.printed
-        for record in _records(read.lines, f"session {session}"):
+        for record in _session_records(read.lines, f"session {session}"):
+            if not isinstance(record, Payload):
+                # In the order read, by the turn it was read into, as every other record's event is.
+                heard.append((following.reading.number, Unqueued(session, record)))
+                continue
             # The prompt first: a prompt's first record can be the one that interrupts it, and it was taken to be.
             # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
             prompted = following.prompted(session, record, self._known.now())
@@ -586,15 +590,22 @@ def _appended(path: Path, at: Position) -> Appended:
 
 def _records(lines: Iterable[bytes], whose: str) -> Iterator[Payload]:
     """The records a turn is made of among these lines."""
+    return (record for record in _read_lines(lines, whose, turn_record) if record is not None)
+
+
+def _session_records(lines: Iterable[bytes], whose: str) -> Iterator[Payload | Unqueuing]:
+    """Among a session's own lines, the records a turn is made of, and what each queue-operation took out of Claude
+    Code's queue: a queue record is never read into a turn, only heard."""
+    return (record for record in _read_lines(lines, whose, lambda line: unqueuing(line) or turn_record(line)) if record is not None)
+
+
+def _read_lines[T](lines: Iterable[bytes], whose: str, read: Callable[[bytes], T]) -> Iterator[T]:
     for line in lines:
         try:
-            record = turn_record(line)
+            yield read(line)
         except Rejected as error:
             # [LAW:no-silent-failure] one unreadable line is skipped and said; the rest of the work is still told.
             logger.error(f"a record in the transcript of {whose} could not be read, so it is not told: {error}")
-            continue
-        if record is not None:
-            yield record
 
 
 def _read_delegate(session: SessionId, delegate: Delegate, transcript: Path) -> list[Doing]:

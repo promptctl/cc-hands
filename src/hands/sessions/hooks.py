@@ -70,7 +70,7 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
     """What a hook of a running session says happened in it."""
     match payload.text("hook_event_name"):
         case "UserPromptSubmit":
-            return Prompted(session, at, _mode(payload), _prompt(payload))
+            return Prompted(session, at, _mode(payload), _prompt(payload), payload.text("prompt"))
         case "Stop":
             return Stopped(session, narration(payload, "last_assistant_message"), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
         case "PermissionRequest":

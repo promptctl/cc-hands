@@ -122,7 +122,7 @@ def delegating() -> Registry:
     held = registry(Unreported())
     for event in (
         StatusReported(ONE.id, Report(status.Idle(), Stamp(900)), at=1.0),
-        Prompted(ONE.id, at=2.0, mode=None, prompt=turn),
+        Prompted(ONE.id, at=2.0, mode=None, prompt=turn, text=""),
         StatusReported(ONE.id, Report(Busy(), Stamp(1000)), at=2.1),
         Launched(ONE.id, AgentId("a1"), Stamp(1200)),
         Stopped(ONE.id, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(1500), request=RequestId("stop")),

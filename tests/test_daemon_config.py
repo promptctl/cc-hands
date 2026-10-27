@@ -284,6 +284,13 @@ def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_sw
         backend(Claude(), home, os.environ)
 
 
+def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_run_naming_the_modes(fake_claude: Path, tmp_path: Path) -> None:
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "acceptedits"}}')
+    with pytest.raises(Rejected, match='a defaultMode Claude Code does not take, "acceptedits": name one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan, manual in'):
+        backend(Claude(), home, os.environ)
+
+
 def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)

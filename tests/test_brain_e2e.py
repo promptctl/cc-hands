@@ -135,10 +135,6 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     (brain / "pinned-claude").symlink_to(claude_code)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
     assert starting_settings(brain)
-    # On CI, with these settings, Claude Code offered to make auto mode the default, and the first turn typed answered it
-    # (promptctl-brain-lq3.mcw, which says what is not yet known of when it shows); answered here as a person answers it.
-    state = brain / ".claude.json"
-    state.write_text(json.dumps({**json.loads(state.read_text()), "hasSeenAutoDefaultNudge": True}))
     # The commands the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
