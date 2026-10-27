@@ -515,6 +515,20 @@ async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_st
     assert said == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
 
 
+async def test_a_stop_before_the_brain_lists_its_tools_ends_the_turn_untyped(tmp_path: Path, fake_claude: Path) -> None:
+    # Claude Code has not listed hands' MCP server yet, so the turn waits for it; a stop that comes meanwhile ends the turn
+    # without its typing, whichever of the stop and the listing comes first.
+    brain = await start(replace(launch(tmp_path), mcp_listed=asyncio.Event()), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait for the tools", unasked))
+        await until(lambda: brain._turn is not None)  # pyright: ignore[reportPrivateUsage]
+        assert brain.interrupt() is True
+        assert await asyncio.wait_for(asking, 10) == BrainStopped()
+        assert typed(tmp_path) == []
+    finally:
+        await brain.stop()
+
+
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
@@ -1098,7 +1112,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]

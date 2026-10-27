@@ -533,6 +533,8 @@ class _Turn:
     taken: asyncio.Future[None]  # resolved when Claude Code first took the turn
     # Resolved once the turn's typing is over, however it went: then it is taken, or never will be.
     tried: asyncio.Future[None]
+    # Resolved once the turn is stopped: a turn stopped before it is typed is never typed.
+    stopping: asyncio.Future[None]
     # Told of each permission the turn holds at its hook, to put it to the user.
     asks: Callable[[Asked], None]
     # The turn's own unit of work, begun as it was asked: each dialog it holds is a part of it.
@@ -619,7 +621,7 @@ class Brain:
             raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
         loop = asyncio.get_running_loop()
         # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, Text(pasted(text)).typed)
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, Text(pasted(text)).typed)
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(turn), turn)
         return await asyncio.shield(turn.answered)
@@ -674,12 +676,17 @@ class Brain:
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
                 # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
                 try:
-                    await self._connected()
-                    async with self._input:
-                        taken = await self._taking(turn)
+                    stopped = not await self._connected(turn)
+                    taken = False
+                    if not stopped:
+                        async with self._input:
+                            taken = await self._taking(turn)
                 finally:
                     turn.tried.set_result(None)
-                if not taken:
+                if stopped:
+                    # Stopped before it was typed: it is never typed, and it ends as its stop ends it.
+                    self._over(turn, BrainStopped())
+                elif not taken:
                     raise Untaken(f"the brain did not take the turn typed into it {turn.typings} time(s), {turn.take:g}s each; if it is on one of Claude Code's first screens, `hands login` answers them")
             except (BrainGone, Untaken, Unconnected) as error:
                 self._over(turn, error)
@@ -695,17 +702,20 @@ class Brain:
                 case failed:
                     fail(f"the brain failed the turn: {failed}")
 
-    async def _connected(self) -> None:
-        """Returns once hands' tools are listed, the first thing a turn needs to reach the model with them.
-
-        [LAW:no-ambient-temporal-coupling] Claude Code turns its input on before it connects its MCP servers, so input being
-        up says nothing about them: a turn typed on input alone went to the model without hands' tools (CI, the brain end to
-        end test). The wait is the cold start's own budget, TAKE_SECONDS, and past it the turn fails with the reason."""
+    async def _connected(self, turn: _Turn) -> bool:
+        """Says whether hands' tools are listed before `turn` is stopped: False if its stop came first, and it is then never
+        typed. [LAW:no-ambient-temporal-coupling] Claude Code turns its input on before it connects its MCP servers, so input
+        being up says nothing about them: a turn typed on input alone went to the model without hands' tools (CI, the brain
+        end to end test). The wait is the cold start's own budget, TAKE_SECONDS; past it the turn fails with the reason."""
+        listed = asyncio.ensure_future(self._mcp_listed.wait())
         try:
             async with asyncio.timeout(TAKE_SECONDS):
-                await self._mcp_listed.wait()
+                await asyncio.wait({listed, turn.stopping}, return_when=asyncio.FIRST_COMPLETED)
         except TimeoutError as error:
             raise Unconnected(f"the brain's Claude Code did not list hands' MCP server within {TAKE_SECONDS:g}s, so the turn was not typed") from error
+        finally:
+            listed.cancel()
+        return not turn.stopping.done()
 
     async def _taking(self, turn: _Turn) -> bool:
         """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it
@@ -770,10 +780,15 @@ class Brain:
     async def _escape(self, turn: _Turn) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
         # nothing of the turn's runs for it to stop.
+        if not turn.stopping.done():
+            turn.stopping.set_result(None)
         await asyncio.wait({turn.taken, turn.tried}, return_when=asyncio.FIRST_COMPLETED)
         if self._turn is not turn:
             return
         if not turn.taken.done():
+            if turn.answered.done():
+                # Stopped before it was typed, which is what this stop was for.
+                return
             logger.warning(f"the brain was not stopped: its turn was not taken, typed {turn.typings} time(s)")
             return
         try:
