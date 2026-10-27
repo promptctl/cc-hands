@@ -1,7 +1,8 @@
 """The brain end to end: hands' stage, its proxy, and the pinned Claude Code in a terminal of hands' own, with the
-model's replies scripted by the mock of Anthropic's API. No login, no subscription, no network: the mock is the upstream
-hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth login is one the mock
-accepts. What each test proves is what hands does with the replies it scripts, the same on every run."""
+model's replies scripted by the mock of Anthropic's API. No login, no subscription, and no network while a test runs: the
+mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
+login is one the mock accepts. The pinned Claude Code and the mock are fetched once, into pytest's cache. What each test
+proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
 import json
@@ -14,13 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from pipecat.frames.frames import ErrorFrame
 
 from conftest import running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent
 from hands.brain import pinned
-from hands.brain.process import KEPT_OUT, workdir
+from hands.brain.process import starting_settings, workdir
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
@@ -75,12 +77,15 @@ def mock_binary(pytestconfig: pytest.Config) -> Path:
     cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
     binary = cache / f"mock-anthropic-{MOCK_RELEASE[:12]}"
     if not binary.is_file():
-        # [LAW:no-silent-failure] a fetch or a build that fails stops the session in git's or go's own words.
+        # [LAW:no-silent-failure] a fetch or a build that fails stops the session in git's or go's own words. The build is
+        # named the binary only once it is whole, so a build cut off is never taken for one.
+        built = binary.with_name(f"{binary.name}.partial")
         with tempfile.TemporaryDirectory() as source:
             subprocess.run(["git", "init", "--quiet"], cwd=source, check=True)
             subprocess.run(["git", "fetch", "--quiet", "--depth", "1", MOCK_REPOSITORY, MOCK_RELEASE], cwd=source, check=True)
             subprocess.run(["git", "checkout", "--quiet", "FETCH_HEAD"], cwd=source, check=True)
-            subprocess.run(["go", "build", "-o", str(binary), "."], cwd=source, check=True)
+            subprocess.run(["go", "build", "-o", str(built), "."], cwd=source, check=True)
+        built.replace(binary)
     return binary
 
 
@@ -128,8 +133,8 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     (brain / "pinned-claude").symlink_to(claude_code)
-    # [LAW:one-source-of-truth] the settings a brain must keep off are the brain's to name.
-    (brain / "settings.json").write_text(json.dumps(dict.fromkeys(KEPT_OUT, False)))
+    # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
+    assert starting_settings(brain)
 
 
 @dataclass(frozen=True)
@@ -144,15 +149,18 @@ class Hands:
     sent: list[Sent]
     # What the run keeps beside the pipeline: the brain itself, its turns, its context.
     watches: list[asyncio.Task[None]]
+    # What the pipeline raised, which the system channel would say.
+    errors: list[ErrorFrame]
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECONDS):
             while not what():
-                # [LAW:no-silent-failure] a watch that ends stops hands' run, so here it fails the test, with its reason,
-                # not a minute later as a timeout.
+                # [LAW:no-silent-failure] a watch that ends stops hands' run, and an error the pipeline raises is said to the
+                # user, so here each fails the test with its reason, not a minute later as a timeout.
+                assert not self.errors, self.errors
                 for watch in self.watches:
                     if watch.done():
-                        raise AssertionError(f"{watch.get_name()} ended") from watch.exception()
+                        raise AssertionError(f"{watch.get_name()} ended") from (None if watch.cancelled() else watch.exception())
                 await asyncio.sleep(0.05)
 
 
@@ -174,7 +182,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     home = tmp_path / "home"
     home.mkdir()
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
-    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost"}
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost"}
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
@@ -184,13 +192,14 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches)
+                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches, run.errors)
                 finally:
                     for watch in watches:
                         watch.cancel()
-                    # [LAW:no-silent-failure] a watch that failed after the test's last wait fails it here.
+                    # [LAW:no-silent-failure] a watch that failed, or an error raised, after the test's last wait fails it here.
                     failed = [ended for ended in await asyncio.gather(*watches, return_exceptions=True) if isinstance(ended, Exception)]
                     assert not failed, failed
+                    assert not run.errors, run.errors
     finally:
         await proxy.close()
         # [LAW:nothing-unseen] what the brain sent is kept beside the mock's log, for a failure to be read from.
@@ -221,8 +230,8 @@ async def test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
     work = hands.stage.work()
     assert isinstance(work, Working)
-    [running] = work.calls
-    assert isinstance(running, Running) and running.input == {"command": "sleep 120"}
+    [call] = work.calls
+    assert isinstance(call, Running) and call.input == {"command": "sleep 120"}
     assert hands.stage.stop(work.turn) == Stopping()
     await hands.until(lambda: hands.stage.work() == Idle())
     await hands.say("say hello")
