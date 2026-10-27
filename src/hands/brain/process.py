@@ -708,10 +708,10 @@ class Brain:
             finally:
                 pausing.cancel()
                 await asyncio.wait({pausing})
-                # [LAW:no-silent-failure] a pause that failed, however it was ended and whatever ended the wait, says so,
-                # and is not taken for the take's time running out.
-                if not pausing.cancelled():
-                    pausing.result()
+            # [LAW:no-silent-failure] a pause that failed, however its take ended it, says so, and is not taken for the take's
+            # time running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on.
+            if not pausing.cancelled():
+                pausing.result()
             if turn.taken.done() or turn.answered.done():
                 return True
             if turn.typings == TYPINGS or not self._unowned:
