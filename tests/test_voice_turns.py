@@ -9,6 +9,7 @@ than hoped for. Whisper, the user aggregator, and the stop strategy are the ones
 import asyncio
 import heapq
 import itertools
+import queue
 import struct
 import threading
 from pathlib import Path
@@ -56,7 +57,7 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.holds import Hold
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import diarization, engaged, hold, holdowner
+from hands.voice import diarization, engaged, hold, holdowner, streaming
 from hands.voice.engaged import Act
 from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.holdowner import HoldOwner
@@ -143,6 +144,31 @@ class NoSpeech(FrameProcessor):
 
 
 @dataclass
+class Streamed:
+    """The streaming recognizer's session as the rig scripts it: each time it is fed, the next text the test said it
+    decodes, or the failure it raises, oldest first, and none once there is none; it decodes nothing while `flowing` is
+    clear, so a test can hold the words back until the hold they were said in has ended."""
+
+    said: "queue.SimpleQueue[str | Exception]" = field(default_factory=queue.SimpleQueue[str | Exception])
+    flowing: threading.Event = field(default_factory=threading.Event)
+
+    def __post_init__(self) -> None:
+        self.flowing.set()
+
+    def decoded(self, samples: streaming.Samples) -> str:
+        assert self.flowing.wait(timeout=60), "the test never let the words through"
+        try:
+            text = self.said.get_nowait()
+        except queue.Empty:
+            return ""
+        match text:
+            case Exception() as failure:
+                raise failure
+            case str():
+                return text
+
+
+@dataclass
 class Clock:
     """The floor's clock, read where the test sets it."""
 
@@ -177,6 +203,8 @@ class Rig:
     conversation: tuple[UserTurns, AssistantTurns] = field(kw_only=True)
     # Each time Whisper read the vocabulary, which is none.
     primed: list[None] = field(kw_only=True)
+    # What the streaming recognizer hears in each hold while it is open.
+    streamed: Streamed = field(kw_only=True)
 
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
@@ -239,6 +267,8 @@ async def rigged(
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
     primed: list[None] = []
+    streamed = Streamed()
+    monkeypatch.setattr(streaming, "load", lambda: streamed)
 
     async def vocabulary() -> None:
         primed.append(None)
@@ -269,7 +299,7 @@ async def rigged(
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed)
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -482,17 +512,17 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
         assert user_turns(rig)[0] == ("on words", True)
 
 
-# A second of the user speaking, in 20 ms frames: twice what a hold still open gathers before Whisper hears it again.
+# A second of the user speaking, in 20 ms frames: six of the streaming recognizer's hearings.
 SPEAKING: list[Captured] = ["down"] * 50
 
 
 def hearings(rig: Rig) -> list[WideEvent]:
-    """The event of each of Whisper's hearings of a hold still open, in order."""
-    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "hearing" and entry.facts["listener"] == "whisper"]
+    """The event of each of the streaming recognizer's hearings, in order."""
+    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "hearing" and entry.facts["listener"] == "streaming"]
 
 
 def overheard(rig: Rig) -> list[Fact]:
-    """What came of each hearing of a hold still open, in order."""
+    """What came of each hearing, in order."""
     return [event.facts["heard"] for event in hearings(rig)]
 
 
@@ -500,109 +530,77 @@ async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while
     # As the audit log had it (hands-voice-o6o): engaged conversation, hands reading a reply, and the user speaking over
     # it for seconds; hands was cut off only once end-of-turn detection closed the hold and Whisper heard it whole.
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        rig.streamed.said.put("wait, not")
         await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
-        await rig.texts.put("wait, not")
         await rig.until(line.done)
         # Cut while the hold is still open: the user has not stopped speaking.
         assert (line.result(), rig.out.released) == (False, 0)
         assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
         await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("wait, not yet, read me the diff first")
-        # What was heard while the hold was open only cut; the hold heard whole is what is sent.
+        # What was heard while the hold was open only cut; the hold heard whole by the transcriber is what is sent.
         assert await rig.everything_sent(holds=1) == ["wait, not yet, read me the diff first"]
         assert user_turns(rig)[0] == ("on words", True)
-        assert overheard(rig) == ["words"]
         # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
-        [hearing] = hearings(rig)
-        assert isinstance(heard := hearing.facts["hearing"], HoldHeard) and (hearing.facts["hold"], heard.said) == (1, "wait, not")
+        [first, *_] = hearings(rig)
+        assert (first.facts["hold"], first.facts["heard"], first.facts["cut"], first.facts["added"]) == (1, "words", True, "wait, not")
 
 
-async def test_a_hold_the_voice_opened_heard_while_open_cuts_nothing_off_where_whisper_hears_no_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # Hands' own reply heard back through the canceller, or a cough, for as long as a user's sentence.
+async def test_a_hold_the_voice_opened_cuts_nothing_off_where_no_words_are_heard_in_it_while_it_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Hands' own reply heard back through the canceller as no word, or a cough, for as long as a user's sentence.
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
-        await rig.until(lambda: len(rig.heard) == 1)
-        await rig.texts.put("")
-        await rig.until(lambda: overheard(rig) == ["nothing"])
-        await rig.hold(["listening"], by="engaged conversation")
+        await rig.hold(["listening", "arming", *SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
+        assert set(overheard(rig)) == {"nothing"}
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
 
-async def test_a_hold_the_voice_opened_dropped_while_it_is_heard_open_cuts_nothing_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_a_hold_the_voice_opened_dropped_before_its_words_are_heard_cuts_nothing_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
-        await rig.until(lambda: len(rig.heard) == 1)
-        # Thrown away while Whisper hears it: what Whisper heard in it is no one's, and cuts nothing.
-        await rig.hold(["dropped"], by="engaged conversation")
+        # The model is behind: what was said in the hold is decoded only once it has been thrown away.
+        rig.streamed.flowing.clear()
+        await rig.hold(["listening", "arming", *SPEAKING, "dropped"], by="engaged conversation")
         await rig.until(lambda: rig.out.released == 1)
-        await rig.texts.put("stop")
+        rig.streamed.said.put("stop")
+        rig.streamed.flowing.set()
+        await rig.until(lambda: len(hearings(rig)) == 7)
+        # What it heard in a hold thrown away is no one's, and cuts nothing.
+        assert (overheard(rig)[0], {event.facts["cut"] for event in hearings(rig)}) == ("words", {False})
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
-        await rig.until(lambda: len(hearings(rig)) == 1)
-        [hearing] = hearings(rig)
-        assert (hearing.facts["heard"], hearing.facts["cut"]) == ("words", False)
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
         assert await rig.everything_sent(holds=1) == []
 
 
-# Half a second of a hold, in 20 ms frames of sound: what it gathers before Whisper hears it again.
-HOP: list[Captured] = ["down"] * 25
-# A 20 ms frame of sound that is not digital silence, so the silence Whisper's segments are padded with comes off it.
-SOUND = b"\x01\x01" * 320
-
-
-async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    # Hands' echo, or a cough, keeping a hold open: each hearing costs the same however long the hold has been open.
+async def test_a_hold_the_voice_opened_is_heard_open_and_only_its_transcription_reads_the_vocabulary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Hands' echo, or a cough, keeping a hold open: it is heard at every chunk the model decodes, which no vocabulary primes.
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        await rig.hold(["listening", "arming", *HOP], sound=SOUND, by="engaged conversation")
-        for hearings_so_far in (1, 2, 3):
-            await rig.until(lambda: len(rig.heard) == hearings_so_far)
-            await rig.texts.put("")
-            await rig.until(lambda: len(overheard(rig)) == hearings_so_far)
-            await rig.hold(HOP, sound=SOUND, by="engaged conversation")
-        await rig.until(lambda: len(rig.heard) == 4)
-        await rig.texts.put("")
-        await rig.until(lambda: len(overheard(rig)) == 4)
-        await rig.hold(["listening"], sound=SOUND, by="engaged conversation")
+        await rig.hold(["listening", "arming", *SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
-        # What the desk heard before the hold and a hop, then two hops each, however much the hold has gathered; and the hold
-        # heard whole as it closes.
-        assert [len(audio.rstrip(b"\x00")) // len(SOUND) for audio in rig.heard] == [27, 50, 50, 50, 102]
-        assert [event.facts["seconds"] for event in hearings(rig)] == [0.54, 1.0, 1.0, 1.0]
-        assert overheard(rig) == ["nothing"] * 4
-        # The vocabulary is read once for the hearings of the hold while it was open, and once for it heard whole.
-        assert len(rig.primed) == 2
+        await rig.until(lambda: len(hearings(rig)) == 7)
+        # Six while it is open, for the 1.04 s it gathered, and one as it ends.
+        assert [event.facts.get("fate") for event in hearings(rig)] == [None] * 6 + ["sent"]
+        assert len(rig.primed) == 1
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
 
-async def test_a_hold_the_voice_opened_whisper_could_not_hear_while_open_cuts_on_the_words_it_is_heard_whole_with(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_a_hold_the_voice_opened_not_heard_while_open_cuts_on_the_words_it_is_heard_whole_with(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        heard = vars(Whisper)["_heard"]
-
-        async def refused_open(self: Whisper, hold: int, audio: bytes, prompt: str | None) -> HoldHeard:
-            match hearings(rig), self._opened.overhearing:  # pyright: ignore[reportPrivateUsage]
-                case [], "queued":
-                    raise ConnectionError("LowTalker is not serving")
-                case _:
-                    return await heard(self, hold, audio, prompt)
-
-        monkeypatch.setattr(Whisper, "_heard", refused_open)
+        rig.streamed.said.put(RuntimeError("Metal ran out of memory"))
         await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
-        await rig.until(lambda: len(hearings(rig)) == 1)
-        [failed] = hearings(rig)
-        assert (failed.outcome, failed.error, failed.facts["hold"]) == ("failed", "ConnectionError: LowTalker is not serving", 1)
-        # Not heard again while it is open; heard whole as it closes, and cut on its words then.
+        await rig.until(lambda: len(hearings(rig)) == 6)
+        # Its words are not known, so nothing heard while it is open cuts.
+        assert (set(overheard(rig)), line.done()) == ({"nothing"}, False)
+        # Heard whole as it closes, and cut on its words then; its end says why it was not heard open.
         await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("wait, not yet")
         await rig.until(line.done)
         assert line.result() is False
         assert cut == [CutOff("The parser is fixed.", 1)]
         await rig.until(lambda: user_turns(rig) == [("on words", True)])
-        assert len(hearings(rig)) == 1
+        *_, whole = hearings(rig)
+        assert (whole.outcome, whole.error, whole.facts["hold"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
 
 
 async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_ends_once_every_hold_resolves(rig: Rig) -> None:
@@ -1093,8 +1091,7 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 def owned() -> HoldOwner:
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
-    return HoldOwner(whisper, (whisper,), lambda _: None)
+    return HoldOwner(Whisper(prompt=unprimed, record=lambda _: None), (), lambda _: None)
 
 
 async def test_the_hold_owner_hears_only_the_keyed_microphone() -> None:

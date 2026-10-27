@@ -32,7 +32,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import diarization
+from hands.voice import diarization, streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 
@@ -136,6 +136,21 @@ def no_diarization_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building a Whisper diarizes with a model that hears nobody: its load would fetch 400 MB of weights and import
     torch, which no test is about but the ones that ask for the real model."""
     monkeypatch.setattr(diarization, "load", lambda: diarization.Model(unheard, CHUNKING))
+
+
+@dataclass
+class Unspoken:
+    """The run's streaming session of a model that hears no word in anything it is fed."""
+
+    def decoded(self, samples: streaming.Samples) -> str:
+        return ""
+
+
+@pytest.fixture(autouse=True)
+def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building the voice hears holds with a model that hears no word: its load would fetch 2.3 GB of weights, which no
+    test is about but the ones that ask for the real model."""
+    monkeypatch.setattr(streaming, "load", Unspoken)
 
 
 async def unprimed() -> None:

@@ -38,8 +38,8 @@ _LANGUAGE = Language(LANGUAGE)
 TRANSCRIBING_SECONDS = 60.0
 
 # The longest a listener's hearing may take, from when the listener returned it, so a hearing that waits behind a slow one
-# is given what is left of its own. Whisper hears half a second of a hold open in about a third of a second, so a minute
-# is a hearing that is not coming back.
+# is given what is left of its own. The streaming recognizer hears 160 ms of a hold open in about 20 ms, so a minute is a
+# hearing that is not coming back.
 HEARING_SECONDS = 60.0
 
 

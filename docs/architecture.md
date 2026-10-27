@@ -1701,11 +1701,11 @@ turn after the brain listed it is left alone, even before its busy status is rea
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
-it was captured under, and Whisper pushes the VAD frames where those keys change,
-numbering each hold, so the turn the strategies see and the audio Whisper transcribes
-are cut at the same frame. How a turn ended is not a key position: the gate counts the
-turns it has sent and thrown away, every frame carries both counts, and Whisper ends
-its hold as they move. A frame is captured every 20 ms, and a turn can end and the next
+it was captured under, and the hold owner (`hands.voice.holdowner`) pushes the VAD frames
+where those keys change, numbering each hold, so the turn the strategies see and the audio
+every model hears are cut at the same frame. How a turn ended is not a key position: the gate counts the
+turns it has sent and thrown away, every frame carries both counts, and the hold owner
+ends its hold as they move. A frame is captured every 20 ms, and a turn can end and the next
 arm between two of them. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
 only their content changes. The microphone opens on the press, and a hold's audio
@@ -1722,12 +1722,15 @@ from the gate, as it carries the key. A hold the user's hand opens, the held key
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose,
 whose detector hears nothing while hands speaks. A hold engaged conversation opens cuts
-only once a listener hears words in it while it is open (Whisper, today), Pipecat's
+only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
+Nemotron Speech Streaming on MLX, one stream for the run, fed only the holds), Pipecat's
 transcription start, because under
 engaged conversation the desk's detector hears through the echo canceller, and the
 reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
 on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
-reading held no words for Whisper. Such a turn cuts nothing, so nothing has to be
+reading held no words for Whisper. The streaming model decodes silence, hiss and clicks to
+no words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech,
+and it hears that as words. Such a turn cuts nothing, so nothing has to be
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
@@ -2437,7 +2440,11 @@ large-v3-turbo on MLX, in hands' own process (`hands.voice.transcription`), load
 pipeline is built (the `whisper.loaded` event): the transcript lands about 0.3 s after the
 key's release. LowTalker (~/code/low-talker) serves the same weights from the Neural
 Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
-alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The
+alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The words of a hold
+still open come from NVIDIA's Nemotron Speech Streaming on MLX (`hands.voice.streaming`), at
+its 160 ms look-ahead: on this Mac a hold's first word is out about 0.6 s into it, and each
+160 ms is heard in about 20 ms. It loads on a thread of its own (the `streaming.loaded`
+event), so nothing waits on it. The
 model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
