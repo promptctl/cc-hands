@@ -626,6 +626,10 @@ class Brain:
         self._keep(self._send(turn), turn)
         return await asyncio.shield(turn.answered)
 
+    def shown(self) -> str:
+        """The last lines Claude Code showed on its terminal: what a wait that gave up on the brain says it was on."""
+        return self._claude.shown()
+
     def interrupt(self) -> bool:
         """Stops the turn in flight, as Escape at the brain's keyboard stops it, and says whether there was one to stop.
 

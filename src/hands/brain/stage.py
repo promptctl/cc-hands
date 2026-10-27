@@ -93,7 +93,7 @@ from hands.voice.tool import Result, Tool, silent, whole
 
 class Asking(Protocol):
     """What the stage needs of the brain: the session its requests carry, a turn asked, told of each permission it holds
-    for the user, and the turn in flight stopped, saying whether there was one."""
+    for the user, the turn in flight stopped, saying whether there was one, and what its Claude Code shows."""
 
     @property
     def session(self) -> SessionId: ...
@@ -101,6 +101,8 @@ class Asking(Protocol):
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
 
     def interrupt(self) -> bool: ...
+
+    def shown(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -863,6 +865,10 @@ class BrainStage(FrameProcessor):
         await self._pause(ACKNOWLEDGE_SECONDS)
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
+
+    def screen(self) -> str:
+        """The last lines the brain's Claude Code showed, read from its terminal, for a failure to be read from."""
+        return self._brain.shown()
 
     def work(self) -> BrainWork:
         """What the brain is doing now: the turn in flight, if any, and each call its replies made that is still running,

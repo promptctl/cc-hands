@@ -154,6 +154,10 @@ class FakeBrain:
         self.interrupts += 1
         return bool(self.turns) and not self.turns[-1].done()
 
+    def shown(self) -> str:
+        """What the fake's Claude Code shows: nothing, there being no terminal behind it."""
+        return ""
+
     def end(self, answered: BrainEnded = ANSWERED) -> None:
         self.turns[-1].set_result(answered)
 
