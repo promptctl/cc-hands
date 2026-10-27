@@ -1,5 +1,6 @@
 """The Claude Code release the brain runs: one version, hands' own copy of it under the brain's directory, so what hands
-has measured of Claude Code (every "2.1.289" in this package) stays true of the brain until the pin is moved on purpose.
+has measured of Claude Code (each claim names the release it was measured on) stays true of the brain until the pin is
+moved on purpose, and a move re-measures those claims.
 
 The person's own claude is never it: their sessions run whatever release their install holds, and its updater moves
 ~/.local/bin/claude and prunes ~/.local/share/claude/versions whenever a release lands.
@@ -18,12 +19,12 @@ from pathlib import Path
 import aiohttp
 
 # [LAW:one-source-of-truth] the pin: the version, and the SHA-256 Anthropic's manifest for it gives each macOS build
-# (downloads.claude.ai/claude-code-releases/2.1.289/manifest.json). Moving the pin is one commit that changes both, after
+# (downloads.claude.ai/claude-code-releases/2.1.299/manifest.json). Moving the pin is one commit that changes both, after
 # measuring again what the comments that name the old version say.
-VERSION = "2.1.289"
+VERSION = "2.1.299"
 CHECKSUMS = {
-    "darwin-arm64": "03d66745e3bb69ec727d66023696f3820bc0a00a8a5ba725eb6706d0c67cbe69",
-    "darwin-x64": "358aa0e31666c48b2340ad9fa4003436105086ca12e1ecd4c5266d18598c2f7f",
+    "darwin-arm64": "ba5ab7b8c195fa03ab8d5bf3915c76153b576a2c40e79a5c46e265e7ed9744b3",
+    "darwin-x64": "099dcc53dabbbefabed8926dab25b0318775c175a7c87bb6ba6c54fde9f8ece2",
 }
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
