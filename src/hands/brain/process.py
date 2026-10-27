@@ -576,7 +576,8 @@ class Brain:
         self._record = record
         # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
         self._launched = launched
-        # [LAW:no-ambient-temporal-coupling] how a take's time passes: the clock is the brain's to be handed.
+        # [LAW:no-ambient-temporal-coupling] how a take's time passes is the brain's to be handed, and is that alone: each
+        # typing waits on one pause, and no other wait of the brain's is one.
         self._pause = pause
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
         # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
@@ -706,8 +707,10 @@ class Brain:
                 await asyncio.wait({turn.taken, turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 pausing.cancel()
-            # [LAW:no-silent-failure] a pause that failed says so, and is not taken for the take's time running out.
-            if pausing.done() and not pausing.cancelled():
+                await asyncio.wait({pausing})
+            # [LAW:no-silent-failure] a pause that failed, however it ended, says so, and is not taken for the take's time
+            # running out.
+            if not pausing.cancelled():
                 pausing.result()
             if turn.taken.done() or turn.answered.done():
                 return True

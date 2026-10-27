@@ -1073,16 +1073,28 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
 
 
-async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(tmp_path: Path, fake_claude: Path) -> None:
-    async def broken(_take: float) -> None:
-        raise RuntimeError("no clock")
+async def _fails_at_once(_take: float) -> None:
+    raise RuntimeError("no clock")
 
+
+async def _fails_as_it_is_ended(_take: float) -> None:
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        raise RuntimeError("no clock") from None
+
+
+@pytest.mark.parametrize(("pause", "typed"), [(_fails_at_once, "deaf"), (_fails_as_it_is_ended, "wait")])
+async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(
+    tmp_path: Path, fake_claude: Path, pause: Callable[[float], Awaitable[None]], typed: str
+) -> None:
+    # A pause that fails as the turn's taking ends it fails as surely as one that fails while it runs.
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append, broken)
+    brain = await start(launch(tmp_path), recorded.append, pause)
     said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no clock"):
-            await brain.ask("deaf", unasked)
+            await brain.ask(typed, unasked)
     finally:
         logger.remove(sink)
         await brain.stop()
