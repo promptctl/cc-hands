@@ -6,8 +6,8 @@ accepts. What each test proves is what hands does with the replies it scripts, t
 import asyncio
 import json
 import os
-import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -15,13 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import running
+from conftest import running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent
-from hands.core.front import FrontUnread, InFront
 from hands.brain import pinned
-from hands.brain.process import workdir
+from hands.brain.process import KEPT_OUT, workdir
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
@@ -69,50 +68,50 @@ class MockApi:
         (self.scenarios / f"{name}.json").write_text(json.dumps(script))
 
 
-def mock(binary: Path, *argv: str) -> tuple[str, ...]:
-    """The mock's command line: its binary, built at MOCK_RELEASE."""
-    return (str(binary), *argv)
-
-
 @pytest.fixture(scope="session")
 def mock_binary(pytestconfig: pytest.Config) -> Path:
-    """The mock built at MOCK_RELEASE, once, into pytest's cache: the commit is fetched by its id and built with go."""
+    """The mock built at MOCK_RELEASE, once, into pytest's cache: the commit is fetched by its id and built with go, and
+    only the binary is kept, beside the certificates it makes."""
     cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
     binary = cache / f"mock-anthropic-{MOCK_RELEASE[:12]}"
     if not binary.is_file():
         # [LAW:no-silent-failure] a fetch or a build that fails stops the session in git's or go's own words.
-        source = cache / f"source-{MOCK_RELEASE[:12]}"
-        shutil.rmtree(source, ignore_errors=True)
-        source.mkdir()
-        subprocess.run(["git", "init", "--quiet"], cwd=source, check=True)
-        subprocess.run(["git", "fetch", "--quiet", "--depth", "1", MOCK_REPOSITORY, MOCK_RELEASE], cwd=source, check=True)
-        subprocess.run(["git", "checkout", "--quiet", "FETCH_HEAD"], cwd=source, check=True)
-        subprocess.run(["go", "build", "-o", str(binary), "."], cwd=source, check=True)
+        with tempfile.TemporaryDirectory() as source:
+            subprocess.run(["git", "init", "--quiet"], cwd=source, check=True)
+            subprocess.run(["git", "fetch", "--quiet", "--depth", "1", MOCK_REPOSITORY, MOCK_RELEASE], cwd=source, check=True)
+            subprocess.run(["git", "checkout", "--quiet", "FETCH_HEAD"], cwd=source, check=True)
+            subprocess.run(["go", "build", "-o", str(binary), "."], cwd=source, check=True)
     return binary
+
+
+# The outcomes the mock writes its records under that are no fault: a request served, a connection closed, a request
+# whose client left before its answer, as Claude Code leaves a call it no longer needs, and the serve command's own end.
+FINE = ("SERVED ", "CLOSED ", "ABORTED ", "OK ")
 
 
 @pytest.fixture
 async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]:
     scenarios = tmp_path / "scenarios"
     scenarios.mkdir()
-    served = await asyncio.create_subprocess_exec(
-        *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
-    )
+    log = tmp_path / "mock.log"
+    with log.open("w") as stderr:
+        served = await asyncio.create_subprocess_exec(str(mock_binary), "serve", "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=stderr)
     assert served.stdout is not None
     try:
         # [LAW:no-silent-failure] a mock that never says where it listens fails the test with what it logged.
         line = await asyncio.wait_for(served.stdout.readline(), PATIENCE_SECONDS)
         if not line:
-            raise AssertionError(f"the mock exited before it listened: {(tmp_path / 'mock.log').read_text()}")
+            raise AssertionError(f"the mock exited before it listened: {log.read_text()}")
         ready = json.loads(line)
         yield MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
     finally:
         served.terminate()
         await served.wait()
-    # [LAW:no-silent-failure] a request the mock had no answer for is a gap in the test or in the mock, never noise: Claude
-    # Code was told 400 and went on some way the test did not script.
-    unanswered = [line for line in (tmp_path / "mock.log").read_text().splitlines() if line.startswith(("UNMATCHED", "REFUSED"))]
-    assert not unanswered, "\n".join(unanswered)
+    # [LAW:no-silent-failure] every other record is a gap in the test or in the mock, never noise: a request it had no
+    # answer for, a script or a handler that failed, a connection it refused; Claude Code went on some way the test did not
+    # script. An outcome the mock adds later fails here until it is named.
+    faults = [line for line in log.read_text().splitlines() if not line.startswith(FINE)]
+    assert not faults, "\n".join(faults)
 
 
 @pytest.fixture(scope="session")
@@ -127,9 +126,10 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
     its pinned Claude Code the cached one."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
-    subprocess.run(mock(mock_binary, "login", str(brain), "--trust", str(workdir(brain).resolve())), check=True)
+    subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     (brain / "pinned-claude").symlink_to(claude_code)
-    (brain / "settings.json").write_text(json.dumps({"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}))
+    # [LAW:one-source-of-truth] the settings a brain must keep off are the brain's to name.
+    (brain / "settings.json").write_text(json.dumps(dict.fromkeys(KEPT_OUT, False)))
 
 
 @dataclass(frozen=True)
@@ -142,10 +142,17 @@ class Hands:
     recorded: list[Entry]
     # Every request the brain sent, as it left hands' proxy for the mock.
     sent: list[Sent]
+    # What the run keeps beside the pipeline: the brain itself, its turns, its context.
+    watches: list[asyncio.Task[None]]
 
     async def until(self, what: Callable[[], bool]) -> None:
         async with asyncio.timeout(PATIENCE_SECONDS):
             while not what():
+                # [LAW:no-silent-failure] a watch that ends stops hands' run, so here it fails the test, with its reason,
+                # not a minute later as a timeout.
+                for watch in self.watches:
+                    if watch.done():
+                        raise AssertionError(f"{watch.get_name()} ended") from watch.exception()
                 await asyncio.sleep(0.05)
 
 
@@ -153,10 +160,6 @@ async def connected(hands: Hands) -> None:
     """Waits until the brain has listed hands' tools over MCP. Claude Code connects to hands' server after it starts, not
     before, so a turn typed sooner goes to the model without them, and whether it does is a race the test must not have."""
     await hands.until(lambda: any(isinstance(entry, WideEvent) and entry.event == "mcp.request" and entry.facts.get("method") == "tools/list" for entry in hands.recorded))
-
-
-async def unread() -> InFront:
-    return FrontUnread("not read in this test")
 
 
 @pytest.fixture
@@ -179,12 +182,15 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     try:
         async with mind(config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off) as minded:
             async with running([minded.llm, out]) as run:
-                watches = [asyncio.create_task(watch.run()) for watch in minded.watches]
+                watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent)
+                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches)
                 finally:
                     for watch in watches:
                         watch.cancel()
+                    # [LAW:no-silent-failure] a watch that failed after the test's last wait fails it here.
+                    failed = [ended for ended in await asyncio.gather(*watches, return_exceptions=True) if isinstance(ended, Exception)]
+                    assert not failed, failed
     finally:
         await proxy.close()
         # [LAW:nothing-unseen] what the brain sent is kept beside the mock's log, for a failure to be read from.
@@ -196,7 +202,7 @@ async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_an
     it owes, and the sentence it answers with is said (promptctl-silence-bsog.sfi)."""
     made = tmp_path / "made"
     # Tried in name order: the refusal's answer ahead of the silence, which would match the request carrying it too.
-    mock_api.script("1-owed", {"bodyContains": [OWED[:60]]}, {"type": "text", "text": "I made the file."})
+    mock_api.script("1-owed", {"bodyContains": [TURN, OWED[:60]]},{"type": "text", "text": "I made the file."})
     mock_api.script("2-silent", {"bodyContains": [TURN, RESULT]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
     mock_api.script("3-act", {"lastUserContains": ["make the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"touch {made}"}}, stop="tool_use")
     await connected(hands)

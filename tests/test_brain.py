@@ -20,7 +20,6 @@ import aiohttp
 import pytest
 from loguru import logger
 
-from hands.core.front import FrontUnread, InFront
 from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
@@ -32,7 +31,7 @@ from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import PATIENCE_SECS, events, located, onboard, patiently, pin, pinned_to
+from conftest import PATIENCE_SECS, events, located, onboard, patiently, pin, pinned_to, unread
 from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
@@ -1527,9 +1526,6 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
-    async def unread() -> InFront:
-        return FrontUnread("not read in this test")
-
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut) as minded:
         assert isinstance(minded.llm, BrainStage)
@@ -1563,9 +1559,6 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
-    async def unread() -> InFront:
-        return FrontUnread("not read in this test")
-
     def minding(llm: ClaudeCodeBackend):
         return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut)
 
@@ -1588,9 +1581,6 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
 
-    async def unread() -> InFront:
-        return FrontUnread("not read in this test")
-
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
         async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut):
@@ -1608,9 +1598,6 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
-
-    async def unread() -> InFront:
-        return FrontUnread("not read in this test")
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     # The words `hands install-fritter` refuses the same hands with.

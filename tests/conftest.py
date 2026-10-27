@@ -25,6 +25,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
+from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import MARKING, READING, Deltas
@@ -230,6 +231,11 @@ def plugin(tmp_path: Path) -> Path:
 # Where the plugin's hooks and skills run: a PATH with no Python new enough for hands, since /usr/bin's python3 on macOS
 # is 3.9, so the launcher can only be running the interpreter it names.
 NO_PYTHON = "/usr/bin:/bin"
+
+
+async def unread() -> InFront:
+    """What is in front, for a run whose test never reads it."""
+    return FrontUnread("not read in this test")
 
 
 @dataclass
