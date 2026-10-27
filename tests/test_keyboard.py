@@ -117,7 +117,7 @@ def test_a_command_is_typed_with_its_slash_and_its_arguments_behind_a_space() ->
 
 def delegating() -> Registry:
     """At its prompt after a turn that started a subagent in the background, as the reducer holds it: Claude Code busy
-    from that turn on (2.1.289)."""
+    from that turn on."""
     turn = PromptId("p1")
     held = registry(Unreported())
     for event in (

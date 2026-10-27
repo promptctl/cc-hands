@@ -116,7 +116,7 @@ class Plan:
     text: str
 
 
-# The permission modes Claude Code 2.1.281 has, named as every hook's permission_mode names them. Shift-tab cycles
+# The permission modes Claude Code has, named as every hook's permission_mode names them. Shift-tab cycles
 # them at the keyboard, and no hook fires when it does: a change is heard at the session's next hook.
 PermissionMode = Literal["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]
 
@@ -202,7 +202,7 @@ def status_stamp(state: SessionState) -> Stamp | None:
 # [LAW:types-are-the-program] the turn as hooks and records tell it, one phase at a time, each carrying the ids the turn
 # goes by: its prompt's, or the one Claude went on answering under, and every other id it was read going on under (a
 # flush's is taken seconds before Claude answers under it and the turn is moved to it, and a message queued in between
-# carries it, 2.1.281). A Stop ends only a turn it names, so one applied late never ends the turn after it.
+# carries it. A Stop ends only a turn it names, so one applied late never ends the turn after it.
 @dataclass(frozen=True)
 class Opened:
     """A turn a prompt or its record opened, and no end of it heard."""
@@ -210,7 +210,7 @@ class Opened:
     turn: PromptId
     others: frozenset[PromptId] = frozenset()
     # A message the user sent while it ran, waiting behind it: Claude Code runs it once the turn's Stop hook returns,
-    # under an id no hook names (2.1.282).
+    # under an id no hook names.
     queued: bool = False
     # [LAW:types-are-the-program] progress lives only on a turn that runs: whatever a turn gathered and did not tell
     # is let go of with it as it ends, since its result is told instead.
@@ -222,7 +222,7 @@ class Opened:
 @dataclass(frozen=True)
 class Untold:
     """A turn Claude Code said is over and hands has not told yet. Claude Code sets idle before the transcript says how
-    the turn ended (an interrupt's record is written 37 ms after, 2.1.283), so the turn is told once that record or its
+    the turn ended (an interrupt's record is written 37 ms after), so the turn is told once that record or its
     Stop is read, or a turn after it opens, or with what was read once the transcript has been read through `by`."""
 
     turn: PromptId
@@ -252,7 +252,7 @@ def ids(turn: Turn) -> frozenset[PromptId]:
 @dataclass(frozen=True)
 class Unnamed:
     """A Stop under an id no record hands has read names yet. Claude Code writes a turn's records before it fires the
-    turn's Stop, and they reach the transcript within ~40 ms of it (2.1.285, measured), so the transcript says whose it
+    turn's Stop, and they reach the transcript within ~40 ms of it, so the transcript says whose it
     is: the turn a record carried onto its id, or opened under it. Held until one is read, or until the transcript is
     read through `by` without one."""
 
@@ -269,7 +269,7 @@ class Session:
     membership: Membership
     state: SessionState
     # [LAW:one-source-of-truth] the permission_mode of the last hook that carried one. None until one does:
-    # SessionStart, idle_prompt, and SessionEnd carry none (verified live on 2.1.281).
+    # SessionStart, idle_prompt, and SessionEnd carry none.
     mode: Mode | None
     turn: Turn = Told()
     dialog: Held | None = None

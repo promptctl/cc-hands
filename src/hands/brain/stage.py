@@ -203,7 +203,7 @@ class _Call:
 
 @dataclass(frozen=True)
 class Broken:
-    """A reply the API broke before any block of it finished, which Claude Code asked again whole (2.1.289): the request
+    """A reply the API broke before any block of it finished, which Claude Code asked again whole: the request
     that asked it again, what the user heard of it, and whether the reply asked again opened with that, so the user heard
     it once and the brain's history holds it."""
 
@@ -448,7 +448,7 @@ class BrainStage(FrameProcessor):
         self._waiting = asyncio.Event()
         self._turn: _Turn | None = None
         # What the user did not hear of the last turn, told to the brain with its next turn: what the API broke off, which
-        # Claude Code keeps out of the brain's history (2.1.285), or what the user barged in on, which only hands knows
+        # Claude Code keeps out of the brain's history, or what the user barged in on, which only hands knows
         # was never said.
         self._broken_off = ""
 
@@ -897,8 +897,8 @@ class BrainStage(FrameProcessor):
         turn.held_reply = turn.held_reply or (isinstance(observed, Heard) and isinstance(observed.event, BlockStopped) and observed.exchange in turn.exchanges)
         match observed:
             # Said as it arrives. A reply the API breaks once a block of it is finished is not asked for again; the turn
-            # ends in StopFailure, with the broken reply kept out of the brain's history (2.1.285, hands-wire-6ic.6dz).
-            # One broken before then is asked again without a stream (2.1.289): the reply asked again goes on from where
+            # ends in StopFailure, with the broken reply kept out of the brain's history (hands-wire-6ic.6dz).
+            # One broken before then is asked again without a stream: the reply asked again goes on from where
             # the user stopped hearing the broken one when it opens as that did, and is said whole when it does not.
             case Heard(exchange=exchange, event=BlockStarted(index=index, block={"type": "text"})) if exchange in turn.exchanges:
                 turn.ahead = turn.between

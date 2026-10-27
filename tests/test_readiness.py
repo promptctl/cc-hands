@@ -492,20 +492,20 @@ def test_processes_that_could_not_be_looked_at_leave_unknown_whether_any_is_a_se
 
 
 def test_a_process_not_described_is_unknown_unless_hands_knows_it_or_it_is_a_runs_helper() -> None:
-    run = terminal(1, "/v/2.1.288")
+    run = terminal(1, "/v/1.0.0")
     stranger, member, helper = (Undescribed(pid, parent, "kern.procargs2", errno.EIO) for pid, parent in ((7, 0), (8, 0), (9, 1)))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([run], [stranger, member, helper]), {1, 8}, reads_its_terminal)
     assert found.unread == [stranger]
 
 
 def test_a_run_of_claude_whose_terminal_the_kernel_will_not_say_is_unknown_not_a_failed_scan() -> None:
-    told, piped = terminal(1, "/v/2.1.288"), terminal(2, "/v/2.1.288", tty=PIPED)
+    told, piped = terminal(1, "/v/1.0.0"), terminal(2, "/v/1.0.0", tty=PIPED)
     refusal = Undescribed(1, 0, "proc_pidfdinfo of fd 0", errno.EIO)
 
     def refusing(process: Terminal) -> bool | Undescribed:
         return refusal if process is told else reads_its_terminal(process)
 
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([told, piped], []), set(), refusing)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([told, piped], []), set(), refusing)
     assert (found.sessions, found.others, found.unread) == ([], {"piped": 1}, [refusal])
 
 
@@ -583,17 +583,17 @@ def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = 
 
 def test_a_session_is_a_terminal_process_of_any_version_of_the_real_claudes_install() -> None:
     terminals = [
-        terminal(1, "/v/2.1.286", "/code/old"),
-        terminal(2, "/v/2.1.288", "/code/joined"),
+        terminal(1, "/v/0.9.0", "/code/old"),
+        terminal(2, "/v/1.0.0", "/code/joined"),
         terminal(3, "/bin/zsh", "/code/shell"),
-        terminal(4, "/elsewhere/v/2.1.288", "/code/other-install"),
+        terminal(4, "/elsewhere/v/1.0.0", "/code/other-install"),
     ]
-    assert unjoined("/v/2.1.288", terminals, {2}) == [terminals[0]]
+    assert unjoined("/v/1.0.0", terminals, {2}) == [terminals[0]]
 
 
 def test_a_cask_keeps_each_version_in_a_directory_named_for_it() -> None:
-    old = terminal(1, "/opt/homebrew/Caskroom/claude-code/2.1.286/claude")
-    assert unjoined("/opt/homebrew/Caskroom/claude-code/2.1.288/claude", [old]) == [old]
+    old = terminal(1, "/opt/homebrew/Caskroom/claude-code/0.9.0/claude")
+    assert unjoined("/opt/homebrew/Caskroom/claude-code/1.0.0/claude", [old]) == [old]
 
 
 def test_a_version_named_directory_above_claude_code_is_part_of_its_install() -> None:
@@ -602,8 +602,8 @@ def test_a_version_named_directory_above_claude_code_is_part_of_its_install() ->
 
 
 def test_a_pre_release_is_a_version_of_the_same_install() -> None:
-    beta = terminal(1, "/v/2.1.300-beta.1")
-    assert unjoined("/v/2.1.299", [beta]) == [beta]
+    beta = terminal(1, "/v/1.0.1-beta.1")
+    assert unjoined("/v/1.0.0", [beta]) == [beta]
 
 
 def test_a_plain_claude_is_itself_and_not_its_directorys_other_programs() -> None:
@@ -612,17 +612,17 @@ def test_a_plain_claude_is_itself_and_not_its_directorys_other_programs() -> Non
 
 
 def test_a_session_under_another_config_as_the_brain_is_has_other_plugins_and_is_not_named() -> None:
-    brain = terminal(1, "/v/2.1.288", config=Path("/h/brain"))
-    assert unjoined("/v/2.1.288", [brain]) == []
+    brain = terminal(1, "/v/1.0.0", config=Path("/h/brain"))
+    assert unjoined("/v/1.0.0", [brain]) == []
 
 
 @pytest.mark.parametrize("checked, started", [(".claude", "dotfiles/claude"), ("dotfiles/claude", ".claude")])
 def test_a_session_under_the_same_config_by_way_of_a_link_is_named(tmp_path: Path, checked: str, started: str) -> None:
     (tmp_path / "dotfiles" / "claude").mkdir(parents=True)
     (tmp_path / ".claude").symlink_to(tmp_path / "dotfiles" / "claude")
-    session = terminal(1, "/v/2.1.288", config=tmp_path / started)
+    session = terminal(1, "/v/1.0.0", config=tmp_path / started)
     config = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(tmp_path / checked)}, Path("/"))
-    found = readiness.unjoined(Home(Path("/h")), Path("/v/2.1.288"), config, Terminals([session], []), set(), reads_its_terminal)
+    found = readiness.unjoined(Home(Path("/h")), Path("/v/1.0.0"), config, Terminals([session], []), set(), reads_its_terminal)
     assert [joined.process for joined in found.sessions] == [session]
 
 
@@ -640,34 +640,34 @@ def test_a_config_named_through_a_link_loop_is_a_config_no_session_runs_under(tm
 
 
 def test_a_sessions_own_helper_run_from_its_executable_is_not_a_session() -> None:
-    session, helper = terminal(10, "/v/2.1.288"), terminal(11, "/v/2.1.288", parent=10)
-    assert unjoined("/v/2.1.288", [session, helper], {10}) == []
+    session, helper = terminal(10, "/v/1.0.0"), terminal(11, "/v/1.0.0", parent=10)
+    assert unjoined("/v/1.0.0", [session, helper], {10}) == []
 
 
 def test_a_claude_the_shim_would_not_have_run_as_a_session_is_not_named() -> None:
-    printing, piped = terminal(1, "/v/2.1.288", arguments=("-p", "hello")), terminal(2, "/v/2.1.288", tty=PIPED)
-    prompted = terminal(3, "/v/2.1.288", arguments=("--", "-p"))
-    controlling = terminal(4, "/v/2.1.288", arguments=("remote-control", "--spawn", "worktree"))
-    asked = terminal(5, "/v/2.1.288", arguments=("fix the readme",))
+    printing, piped = terminal(1, "/v/1.0.0", arguments=("-p", "hello")), terminal(2, "/v/1.0.0", tty=PIPED)
+    prompted = terminal(3, "/v/1.0.0", arguments=("--", "-p"))
+    controlling = terminal(4, "/v/1.0.0", arguments=("remote-control", "--spawn", "worktree"))
+    asked = terminal(5, "/v/1.0.0", arguments=("fix the readme",))
     found = readiness.unjoined(
-        Home(Path("/h")), Path("/v/2.1.288"), CHECKED, Terminals([printing, piped, prompted, controlling, asked], []), set(), reads_its_terminal
+        Home(Path("/h")), Path("/v/1.0.0"), CHECKED, Terminals([printing, piped, prompted, controlling, asked], []), set(), reads_its_terminal
     )
     assert [session.process for session in found.sessions] == [prompted, asked]
     assert found.others == {"print": 1, "piped": 1, "subcommand": 1}
 
 
 def test_the_helper_of_a_claude_that_is_no_session_is_no_session_either() -> None:
-    printing, helper = terminal(10, "/v/2.1.288", arguments=("-p", "hello")), terminal(11, "/v/2.1.288", parent=10)
-    assert unjoined("/v/2.1.288", [printing, helper]) == []
+    printing, helper = terminal(10, "/v/1.0.0", arguments=("-p", "hello")), terminal(11, "/v/1.0.0", parent=10)
+    assert unjoined("/v/1.0.0", [printing, helper]) == []
 
 
 def test_a_session_hands_has_no_record_of_is_told_to_reload_where_it_can_be_typed_into_and_to_restart_where_not(root: Path) -> None:
     home = Home(root / "home")
     fritter = terminal(5, str(home.fritter))
-    inside, outside = terminal(10, "/v/2.1.288", "/code/in", parent=5), terminal(11, "/v/2.1.288", "/code/out", parent=6)
-    paned, behind = terminal(12, "/v/2.1.288", "/code/paned", parent=6), terminal(13, "/v/2.1.288", "/code/behind", parent=6)
-    unread = terminal(14, "/v/2.1.288", "/code/unread", parent=6)
-    sessions = readiness.unjoined(home, Path("/v/2.1.288"), CHECKED, Terminals([fritter, inside, outside, paned, behind, unread], []), set(), reads_its_terminal)
+    inside, outside = terminal(10, "/v/1.0.0", "/code/in", parent=5), terminal(11, "/v/1.0.0", "/code/out", parent=6)
+    paned, behind = terminal(12, "/v/1.0.0", "/code/paned", parent=6), terminal(13, "/v/1.0.0", "/code/behind", parent=6)
+    unread = terminal(14, "/v/1.0.0", "/code/unread", parent=6)
+    sessions = readiness.unjoined(home, Path("/v/1.0.0"), CHECKED, Terminals([fritter, inside, outside, paned, behind, unread], []), set(), reads_its_terminal)
     # The fritter that wrapped a session types into it whatever its pane is.
     panes: dict[int, Keyboard] = {10: PaneUnread("no tmux"), 11: NotInTmux(), 12: PANE, 13: Behind(PANE), 14: PaneUnread("tmux did not answer")}
     found = readiness.sessions_found([], set(), [], sessions, panes)
@@ -737,8 +737,8 @@ def test_a_claude_code_whose_path_names_no_version_is_named_without_one(root: Pa
 def test_a_version_named_directory_above_claude_code_is_not_its_version(root: Path) -> None:
     executable(root / "tools" / "1.4.0" / "bin" / "claude", "\x7fELF")
     assert readiness.claude(f"{root / 'tools' / '1.4.0' / 'bin'}:/usr/bin:/bin").step == "Claude Code"
-    executable(root / "Caskroom" / "claude-code" / "2.1.288" / "claude", "\x7fELF")
-    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '2.1.288'}:/usr/bin:/bin").step == "Claude Code 2.1.288"
+    executable(root / "Caskroom" / "claude-code" / "1.0.0" / "claude", "\x7fELF")
+    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '1.0.0'}:/usr/bin:/bin").step == "Claude Code 1.0.0"
 
 
 # Claude Code

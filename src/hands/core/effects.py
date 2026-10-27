@@ -259,7 +259,7 @@ class Text:
 
         [LAW:single-enforcer] Claude Code reads `/`, `@` and `!` at the start of a prompt as a command, a file mention
         and shell mode, and behind a space as the characters they are. Always a space, so nothing anywhere asks what a
-        prompt starts with. Measured on 2.1.283: the transcript's record keeps the space.
+        prompt starts with. The transcript's record keeps the space.
         """
         return PromptText(f" {self.prompt}")
 

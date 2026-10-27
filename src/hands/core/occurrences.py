@@ -48,8 +48,7 @@ class SubagentStarted:
 @dataclass(frozen=True)
 class SubagentStopped:
     """A subagent the session started finished responding. `closing` is its last text, as the hook carries it: None
-    where it carried none, as for a subagent that handed its report back through a tool (SubagentHandback, seen on
-    2.1.289), whose report is told with the turn it reports back to (hands.core.subagents)."""
+    where it carried none, as for a subagent that handed its report back through a tool (SubagentHandback), whose report is told with the turn it reports back to (hands.core.subagents)."""
 
     agent_type: str
     closing: str | None

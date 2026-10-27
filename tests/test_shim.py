@@ -224,7 +224,7 @@ def _entered_worktree(tmp_path: Path) -> tuple[dict[str, object], dict[str, obje
 
 
 async def test_a_hook_naming_the_transcript_claude_code_moved_moves_the_session_there_and_says_so(home: Home, tmp_path: Path) -> None:
-    """Claude Code 2.1.299 renames the transcript into the worktree's project as a session enters one, and every hook
+    """Claude Code renames the transcript into the worktree's project as a session enters one, and every hook
     after names it there, the EnterWorktree call's own PostToolUse first. The file and the registry follow it; the cwd
     stays the start's, since a hook's cwd is the shell's, which a `cd` moves too."""
     recorded: list[Entry] = []

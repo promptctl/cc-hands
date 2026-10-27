@@ -26,7 +26,7 @@ class MainTurn:
     """The session's own loop asking the model for its next step: the one kind of request whose reply is the session speaking.
 
     `prompt` is the turn it asks for, the id its hooks carry as prompt_id; None when the request names none. Claude Code
-    names it only when its ANTHROPIC_BASE_URL is Anthropic's API (2.1.285): a session given a gateway, and the brain
+    names it only when its ANTHROPIC_BASE_URL is Anthropic's API: a session given a gateway, and the brain
     through hands' proxy, name none.
     """
 
@@ -86,7 +86,7 @@ SIDE_QUESTION_OPENING = "<system-reminder>This is a side question from the user.
 # The line Claude Code opens its system prompt with, in its attribution header builder: `key=value;` pairs after it.
 BILLING_OPENING = "x-anthropic-billing-header:"
 # The header Claude Code names a request's class in, whenever CLAUDE_CODE_GATEWAY_HINT_HEADERS is on, as hands turns it on
-# for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts (2.1.299).
+# for every Claude Code it starts: derived from the request's querySource in its services/api/client.ts.
 CLASS_HEADER = "x-claude-code-request-class"
 
 
@@ -97,13 +97,13 @@ def classify(path: str, body: object, headers: Mapping[str, str] = {}) -> Kind:
     """Which kind of request this is, from its path, its parsed body, and its headers, decided before any reply exists.
 
     Claude Code names the class itself in CLASS_HEADER, and a class that is one kind decides it. A request it names
-    auxiliary is told by its body, since 2.1.289 names its forks so too; so is one without the header, from a Claude Code
+    auxiliary is told by its body, since it names its forks so too; so is one without the header, from a Claude Code
     started before hands turned the header on. Claude Code's own loop puts its newest message-level cache marker on the
     last message; a fire-and-forget fork (skipCacheWrite in services/api/claude.ts) puts it on the one before, the last
     point it shares with the loop.
     Compaction and side questions are told by the words Claude Code opens their prompts with, not by where their marker
     lands: a side question asked during a turn is merged into the turn's prompt and followed by another message, and one
-    asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o, 2.1.285).
+    asked before any turn has finished carries no marker at all (hands-wire-6ic.l2o).
     """
     # [LAW:dataflow-not-control-flow] every rule is a value test on the request; a request no rule can read is Unknown,
     # and says what about it could not be read.
@@ -129,8 +129,7 @@ def _classify_messages(body: object, named: str | None) -> Kind:
     request = cast(Mapping[str, object], body)
     model = str(request.get("model"))
     billing = _billing(request)
-    # A class Claude Code names that is one kind outranks every reading of the body: it is Claude Code's own (OIs in
-    # 2.1.299 lists them).
+    # A class Claude Code names that is one kind outranks every reading of the body: it is Claude Code's own.
     match named:
         case "main":
             return _turn(billing)
@@ -141,7 +140,7 @@ def _classify_messages(body: object, named: str | None) -> Kind:
         case "side_reply":
             return Fork()
         case "auxiliary":
-            # Not one kind: 2.1.289's es() names every request that is neither its loop's nor a subagent's auxiliary, its
+            # Not one kind: Claude Code's es() names every request that is neither its loop's nor a subagent's auxiliary, its
             # side questions and prompt suggestions among them. The body tells which, all but the loop's kinds it rules out.
             match _by_body(request, model, billing):
                 case MainTurn() | Subagent():
@@ -160,18 +159,18 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
     if not messages:
         return Unknown(f"a messages request to {model!r} with no messages")
     # Any block of any message since the last reply: Claude Code merges adjacent user messages, so a prompt of its own
-    # can follow a prompt just typed or a tool's result, and a message of its own can follow it (2.1.285).
+    # can follow a prompt just typed or a tool's result, and a message of its own can follow it.
     texts = asked(request)
     if any(text.startswith(COMPACTION_OPENING) for text in texts):
         return Compaction()
     if any(text.startswith(SIDE_QUESTION_OPENING) for text in texts):
         return Fork()
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
-    # message of a long history (2.1.285, markers on messages 5 and 7 of 8), and offers no tools in the body (2.1.296).
+    # message of a long history, and offers no tools in the body.
     newest = next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
     last = len(messages) - 1
     if newest == last and billing.get("cc_is_subagent") == "true":
-        # A subagent's requests carry its parent's session header and shape; only this line tells them apart (2.1.285).
+        # A subagent's requests carry its parent's session header and shape; only this line tells them apart.
         return Subagent()
     if newest == last:
         return _turn(billing)
@@ -210,7 +209,7 @@ def tool_names(body: object) -> tuple[str, ...]:
 
 def streams(body: object) -> bool:
     """Whether a messages request asks for its reply as a stream: Claude Code's main turns do, all but the one it asks
-    again whole after a stream that broke before any block of it finished (2.1.289)."""
+    again whole after a stream that broke before any block of it finished."""
     return isinstance(body, Mapping) and cast(Mapping[str, object], body).get("stream") is True
 
 
@@ -580,7 +579,7 @@ class Message:
 @dataclass(frozen=True)
 class Written:
     """A message the model wrote, every part of it read: streamed to message_stop, or sent whole when the request asked
-    for no stream, as Claude Code asks again after a stream that fails before any block of it is finished (2.1.289)."""
+    for no stream, as Claude Code asks again after a stream that fails before any block of it is finished."""
 
     message: Message
     streamed: bool
@@ -864,7 +863,7 @@ class Hold:
     """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
 
     Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
-    2.1.285 answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
+    answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
     history keeps the tool results with no reply after them.
     """
 

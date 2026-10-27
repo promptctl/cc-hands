@@ -1,4 +1,4 @@
-"""Claude Code's status of a session, read from the bytes of files it wrote (2.1.282), and heard each time it is set.
+"""Claude Code's status of a session, read from the bytes of files it wrote, and heard each time it is set.
 
 The fixtures are status files copied as a live session wrote them, with only the remote-control session id blanked.
 """
@@ -89,7 +89,7 @@ def test_a_file_that_is_not_this_sessions_status_is_refused(fields: dict[str, ob
 
 
 def unset(name: str, **fields: object) -> bytes:
-    """The file as Claude Code first writes it, as its session starts: no status set in it yet (2.1.299)."""
+    """The file as Claude Code first writes it, as its session starts: no status set in it yet."""
     record = json.loads(written(name))
     return json.dumps({**{key: value for key, value in record.items() if key not in ("status", "statusUpdatedAt")}, **fields}).encode()
 

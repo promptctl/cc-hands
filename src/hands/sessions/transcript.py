@@ -80,7 +80,7 @@ class Titles:
 _TURN_RECORDS = (b'"type":"user"', b'"type":"assistant"', b'"subtype":"local_command"', b'"commandMode":"task-notification"', b'"subtype":"stop_hook_summary"', b'"subtype":"turn_duration"')
 # The records Claude Code writes when a turn ends, one after the other: what its Stop hooks did, and how long the turn
 # took. Written for the turn that launched a subagent in the background too, though the session stays busy until the
-# subagent's report is answered. Seen on 2.1.289; the second is missing from about one stop in five.
+# subagent's report is answered. The second is missing from about one stop in five.
 _ENDED = ("stop_hook_summary", "turn_duration")
 
 
@@ -119,7 +119,7 @@ def reported_of(record: Payload) -> Reported | None:
 
     Claude Code writes such a notification as an attachment of the turn under way, `queued_command` with the
     notification's own markup as its prompt, where one handed to a waiting session is a user record that opens a turn.
-    Seen on 2.1.288. Raises Rejected for one with no prompt that is text.
+    Raises Rejected for one with no prompt that is text.
     """
     match record.fields.get("type"), record.fields.get("attachment"):
         case "attachment", {"type": "queued_command", "commandMode": "task-notification", "prompt": str() as text}:
@@ -135,7 +135,7 @@ _NO_RESPONSE = "No response requested."
 
 
 # The whole of the record Claude Code writes as a turn's last when the user stops it at the keyboard: the second when a
-# tool was running, the first otherwise. The same two texts in every version on this machine, 2.1.201 to 2.1.281.
+# tool was running, the first otherwise. The same two texts are in every release measured.
 # The text is the mark, not the record's interruptedMessageId: a turn stopped before Claude wrote anything names no
 # message, and 162 of the 2,000 such records here carry none.
 _INTERRUPTED = ("[Request interrupted by user]", "[Request interrupted by user for tool use]")
@@ -272,7 +272,7 @@ _AGENT = re.compile(r'<summary>Agent "([^<]+)" [^"<]*</summary>')
 
 # The markup Claude Code writes, at the start of a record of the user's side, for what the user ran rather than wrote:
 # a slash command (its name first when Claude Code carries it out, its message first when it hands Claude a skill),
-# a `!` command, and what either printed. Seen on 2.1.226 to 2.1.286.
+# a `!` command, and what either printed.
 _RAN = re.compile(r"\s*<(command-name|command-message|bash-input|local-command-stdout|local-command-stderr|bash-stdout|bash-stderr)>")
 # Each output tag, and how what it holds is told: what went to stderr is marked, so a command that failed is not told as
 # one that printed its answer.
@@ -302,8 +302,7 @@ def _typed(record: Payload, text: str) -> Typed | None:
     """A command Claude Code wrote as the words typed; None for anything Claude was sent, which may open with a slash too.
 
     Claude Code marks what it sends Claude with the prompt's source (`typed`, `queued`): ` /help reply pong` carries one,
-    and Claude answered it. The words a command was typed as carry none, and every prompt of a main session carries one
-    from 2.1.197 to 2.1.286.
+    and Claude answered it. The words a command was typed as carry none, and every prompt of a main session carries one.
     """
     match record.fields.get("promptSource"), _TYPED.fullmatch(text):
         case None, typed if typed is not None:

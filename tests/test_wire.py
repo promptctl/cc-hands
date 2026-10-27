@@ -70,7 +70,7 @@ def request(*messages: dict[str, object], tools: list[object] = TOOLS) -> dict[s
     return {"model": "claude-opus-5-5", "tools": tools, "system": [{"type": "text", "text": "you are"}], "messages": list(messages)}
 
 
-# The shapes below are the ones Claude Code 2.1.284 sent through the proxy on 2026-09-29: its own loop marks the last
+# The shapes below are the ones Claude Code sent through the proxy: its own loop marks the last
 # message, and its compaction marks the one before.
 
 
@@ -78,9 +78,9 @@ def test_the_loop_marks_its_last_message_and_is_a_main_turn() -> None:
     assert classify("/v1/messages?beta=true", request(said("hi"), said("ok"), said("go on", marked=True))) == MainTurn(None)
 
 
-# The line Claude Code 2.1.285 opens a working session's system prompt with toward Anthropic's API, from its attribution
+# The line Claude Code opens a working session's system prompt with toward Anthropic's API, from its attribution
 # header builder; a subagent's adds cc_is_subagent=true.
-BILLING = "x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_entrypoint=cli; cch=00000; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9; cc_prompt_index=1; cc_turn_index=2;"
+BILLING = "x-anthropic-billing-header: cc_version=1.0.0.a1b; cc_entrypoint=cli; cch=00000; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9; cc_prompt_index=1; cc_turn_index=2;"
 
 
 def billed(line: str, *messages: dict[str, object]) -> dict[str, object]:
@@ -93,12 +93,12 @@ def test_a_main_turn_names_the_turn_it_asks_for_by_the_prompt_id_its_billing_lin
 
 
 def test_a_billing_line_ends_at_its_line_when_more_of_the_system_prompt_follows_it() -> None:
-    body = {**request(said("go on", marked=True)), "system": "x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_prompt_id=p1\nYou are Claude Code; be brief."}
+    body = {**request(said("go on", marked=True)), "system": "x-anthropic-billing-header: cc_version=1.0.0.a1b; cc_prompt_id=p1\nYou are Claude Code; be brief."}
     assert classify("/v1/messages", body) == MainTurn(PromptId("p1"))
 
 
 def test_a_subagent_s_request_under_its_session_s_header_is_not_a_main_turn() -> None:
-    body = billed("x-anthropic-billing-header: cc_version=2.1.285.a1b; cc_entrypoint=cli; cc_is_subagent=true; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9;", said("go on", marked=True))
+    body = billed("x-anthropic-billing-header: cc_version=1.0.0.a1b; cc_entrypoint=cli; cc_is_subagent=true; cc_prompt_id=74fbc62d-8c76-4ce6-b21a-1057ac8e59f9;", said("go on", marked=True))
     assert classify("/v1/messages", body) == Subagent()
 
 
@@ -117,7 +117,7 @@ def reply(text: str, marked: bool = False) -> dict[str, object]:
     return {**said(text, marked), "role": "assistant"}
 
 
-# The three shapes of a side question 2.1.285 sent through the proxy (hands-wire-6ic.l2o), which differ in everything
+# The three shapes of a side question Claude Code sent through the proxy (hands-wire-6ic.l2o), which differ in everything
 # but the words the question is wrapped in.
 SIDE_QUESTIONS = {
     # Between turns: the question follows the last reply, which carries the marker.
@@ -141,7 +141,7 @@ def test_a_side_question_is_a_fork_by_its_wrapper_wherever_its_marker_lands(shap
 
 @pytest.mark.parametrize("shape", SIDE_QUESTIONS)
 def test_a_side_question_is_a_fork_though_claude_code_names_it_auxiliary(shape: str) -> None:
-    # 2.1.289, the release hands pins, names a side question auxiliary: read as that, no aside is ever heard.
+    # Claude Code names a side question auxiliary: read as that, no aside is ever heard.
     assert classify("/v1/messages?beta=true", SIDE_QUESTIONS[shape], {"x-claude-code-request-class": "auxiliary"}) == Fork()
 
 
@@ -158,7 +158,7 @@ def test_the_compaction_prompt_makes_a_compaction_whatever_its_marker() -> None:
     assert classify("/v1/messages", request(said("hi"), said("ok", marked=True), merged)) == Compaction()
 
 
-# /compact on a brain mid-history, as 2.1.285 sent it through the proxy (hands-wire-6ic.6tr in vivo): the prompt merged
+# /compact on a brain mid-history, as Claude Code sent it through the proxy (hands-wire-6ic.6tr in vivo): the prompt merged
 # into the message answering the last reply's call, the marker on that reply, and a message of Claude Code's own after.
 COMPACTING = request(
     said("read turn 2"),
@@ -198,14 +198,14 @@ def test_an_endpoint_behind_a_gateway_s_own_path_is_the_endpoint() -> None:
 
 
 def test_a_request_is_told_by_its_newest_cache_marker_whatever_marks_come_before_it() -> None:
-    # A working session marks an earlier message of a long history as well as its last (2.1.285).
+    # A working session marks an earlier message of a long history as well as its last.
     history = [said("hi"), reply("hello"), said("more", marked=True), reply("ok")]
     assert classify("/v1/messages", request(*history, said("go on", marked=True))) == MainTurn(None)
     assert classify("/v1/messages", request(*history[:-1], reply("ok", marked=True), said("suggest the next prompt"))) == Fork()
 
 
 def test_a_request_is_told_by_its_markers_whatever_tools_it_carries() -> None:
-    # A working session on 2.1.296 offers no tools in the body of the turns whose replies call them.
+    # A working session offers no tools in the body of the turns whose replies call them.
     assert classify("/v1/messages", request(said("hi"), reply("ok"), said("go on", marked=True), tools=[])) == MainTurn(None)
 
 
@@ -237,7 +237,7 @@ def test_a_main_turn_quoting_the_side_question_wrapper_is_still_a_main_turn() ->
 @pytest.mark.parametrize(
     ("body", "kind"),
     [
-        # A prompt suggestion: a fork that skips the cache write, which 2.1.289 names auxiliary.
+        # A prompt suggestion: a fork that skips the cache write, which Claude Code names auxiliary.
         (request(said("hi"), said("ok", marked=True), said("suggest the next prompt")), Fork()),
         (request(said("a"), said("b"), tools=[]), Auxiliary("claude-opus-5-5")),
         # Marked as a loop marks: still beside the loop, since Claude Code said it is not the loop's turn.
@@ -490,7 +490,7 @@ def test_tool_answers_are_every_result_in_the_request_by_the_call_it_answers() -
                 {"type": "tool_result", "tool_use_id": "b", "content": "exit 1", "is_error": True},
                 {"type": "text", "text": "<system-reminder>noted</system-reminder>"},
             ]},
-            # Claude Code 2.1.285 follows the results with a message of its own, as the brain's requests showed.
+            # Claude Code follows the results with a message of its own, as the brain's requests showed.
             {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>", "cache_control": {"type": "ephemeral"}}]},
         ]
     }

@@ -291,7 +291,7 @@ def pinned_to(script: Path) -> str:
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
+    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
@@ -334,7 +334,7 @@ def typed(line):
         log.write(json.dumps(line) + "\\n")
 # As a loaded machine starts it slowly.
 time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
-# Raw without flushing: Claude Code keeps what was typed while it started (2.1.289, measured 2026-10-04, keys typed
+# Raw without flushing: Claude Code keeps what was typed while it started (keys typed
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
@@ -342,7 +342,7 @@ os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
 # The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
 last, tail = None, 0.0
-# A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
+# A prompt as Claude Code's UserPromptSubmit says it took it: a paste of four lines or more in its tags, with a
 # line end added where it had none, and any other with its trailing whitespace trimmed.
 def taken(text):
     if text.count("\\n") < 3:
@@ -370,8 +370,7 @@ def submit(text):
     if time.monotonic() < tail:
         # Sent while the last prompt's other Stop hooks still run: queued, and taken as they end. Its UserPromptSubmit is
         # posted before it has a prompt id of its own, under the last prompt's, holding what was queued, which Claude Code
-        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names (2.1.289, the
-        # brain's transcript 15192e41, 2026-10-19 05:29:11).
+        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names.
         time.sleep(tail - time.monotonic())
         post("UserPromptSubmit", prompt_id=last, prompt=taken(text.lstrip()))
         typed(["prompt", text])
@@ -460,7 +459,7 @@ while True:
     if not data:
         break
     pending += data
-    # Claude Code reads what reaches it close together as one burst (2.1.286).
+    # Claude Code reads what reaches it close together as one burst.
     time.sleep(0.05)
     while select.select([0], [], [], 0)[0]:
         more = os.read(0, 65536)
@@ -500,7 +499,7 @@ while True:
         elif pending.startswith(b"\\r"):
             pending = pending[1:]
             if pending:
-                # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).
+                # A Return with more behind it in the same burst is read as pasted, and sends nothing.
                 continue
             text, box = box, ""
             submit(text)

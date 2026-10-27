@@ -69,7 +69,7 @@ def home(tmp_path: Path) -> Home:
         ),
         # A subagent that ended on empty text carried none.
         ({"hook_event_name": "SubagentStop", "agent_type": "Plan", "last_assistant_message": ""}, SubagentStopped("Plan", None)),
-        # As 2.1.289 sends it for a subagent that handed its report back through a tool: no last_assistant_message at all.
+        # As Claude Code sends it for a subagent that handed its report back through a tool: no last_assistant_message at all.
         ({"hook_event_name": "SubagentStop", "stop_hook_active": False, "agent_id": "af3e", "agent_type": "Explore", "agent_transcript_path": "/t/a.jsonl"}, SubagentStopped("Explore", None)),
         (
             {"hook_event_name": "TaskCompleted", "task_id": "task-001", "task_subject": "Ship it", "task_description": "All of it", "teammate_name": "implementer", "team_name": "t"},
@@ -158,7 +158,7 @@ def test_quiet_and_a_muted_session_hold_what_hooks_say_and_the_focus_does_not_ma
         ),
         (SubagentStarted("Explore"), "cc-hands started its Explore subagent.", "cc-hands started its Explore subagent."),
         (SubagentStopped("Explore", "Found 3 issues."), "cc-hands's Explore subagent finished.", "cc-hands's Explore subagent finished. It said: Found 3 issues."),
-        # Seen live on 2.1.289: a subagent that hands its report back through a tool stops with no closing text.
+        # Seen live: a subagent that hands its report back through a tool stops with no closing text.
         (SubagentStopped("Explore", None), "cc-hands's Explore subagent finished.", "cc-hands's Explore subagent finished."),
         (
             TaskCompleted("Ship it", "All of it", "implementer"),

@@ -215,7 +215,7 @@ def test_a_session_that_never_pauses_is_heard_at_its_longest_wait() -> None:
 def test_calls_read_and_text_displayed_late_move_nothing(turn: Turn) -> None:
     before = running(turn)
     assert reduce(before, Progressed(SID, (TURN,), (TESTS,), at=10.0)) == (before, [])
-    # Claude Code goes on displaying a reply for seconds after its turn's Stop (2.1.280).
+    # Claude Code goes on displaying a reply for seconds after its turn's Stop.
     assert reduce(before, Displayed(SID, (TURN,), "1. A line of it.\n", at=10.0)) == (before, [])
 
 
@@ -681,7 +681,7 @@ async def test_a_subagent_s_transcript_written_again_shorter_is_read_again_from_
 
 
 async def test_a_session_moved_into_a_worktree_is_read_on_from_where_it_was_subagents_and_all(tmp_path: Path) -> None:
-    """Claude Code 2.1.299 renames a session's transcript, its subagents' folder with it, into the worktree's project as
+    """Claude Code renames a session's transcript, its subagents' folder with it, into the worktree's project as
     the session enters one, and its hooks name the new path from then on: what was read of it still is, so its prompt
     is not taken again and the calls made after the move are heard, its subagent's among them."""
     transcript = tmp_path / "repo" / "t.jsonl"

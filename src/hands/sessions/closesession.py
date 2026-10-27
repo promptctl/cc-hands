@@ -1,7 +1,7 @@
 """Ending a Claude Code session the user is finished with: the `close_session` tool.
 
 The session's `claude` is sent SIGTERM, which Claude Code ends on as it ends on a closed terminal: it fires SessionEnd and
-exits (2.1.289, within two seconds). What ran it goes with it as it would at a terminal: a tmux window hands opened ran
+exits within two seconds. What ran it goes with it as it would at a terminal: a tmux window hands opened ran
 nothing but that `claude`, so tmux closes it, and a shell the user started it from takes their prompt again. The close
 returns once the registry no longer lists the session, or says why it did not.
 """

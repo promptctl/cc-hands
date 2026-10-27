@@ -613,7 +613,7 @@ async def test_a_side_question_is_answered_by_the_reply_on_its_own_session_whate
     asked = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "what did it say?", WAITED))
     await until(lambda: len(typed(tmp_path)) == 1)
     [[_, _, session]] = typed(tmp_path)
-    # After #310, 2.1.289's side questions read as Auxiliary, and a question heard only as a Fork waited out every deadline.
+    # Side questions read as Auxiliary, and a question heard only as a Fork waited out every deadline.
     asides.hear(answered(session, "It said four.", kind=kind))
     assert await asked == "It said four."
 
@@ -794,7 +794,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), None, body))
         assert errors == []
         brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), None, body))
-        # Deferred, as 2.1.288 offers MCP tools under tool search: the server may be connected, and is not blamed.
+        # Deferred, as Claude Code offers MCP tools under tool search: the server may be connected, and is not blamed.
         deferred = {**body, "tools": [{"name": "Read"}, {"name": "ToolSearch"}, {"name": "DeferredToolPlaceholder", "defer_loading": True}]}
         brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), None, deferred))
     finally:
@@ -1285,7 +1285,7 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
-    # As Claude Code 2.1.289 does with a transcript it cannot read.
+    # As Claude Code does with a transcript it cannot read.
     fake_claude.write_text("#!/bin/sh\necho No conversation found with session ID: c1\n")
     pin(monkeypatch, fake_claude)
     brain = tmp_path / "brain"

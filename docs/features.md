@@ -180,7 +180,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 - **The `Input` union, through fritter.** `Text` escapes a leading sigil, `Command`
   keeps it, `Key` sends a named chord; `send_command` and `interrupt_session` are the
   tools. A command is refused at a dialog, and an interrupt is Escape even there.
-  Built: on 2.1.283 "/compact" reached a live session as a command, "slash compact"
+  Built: "/compact" reached a live session as a command, "slash compact"
   as text, and "stop it" sent Escape, which ended a working turn and closed a
   question dialog.
 - **Questions through the permission hook.** `AskUserQuestion` arrives as a
@@ -192,7 +192,7 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
   `Plan`, and the model tells the plan at summary depth. `answer_plan` approves it
   back into the mode the session had before it planned, or into the mode the user
   names (edits auto-accepted, or each edit asked about), or keeps planning with
-  what to change. Built: verified live on 2.1.281, each approval left plan mode for
+  what to change. Built: verified live, each approval left plan mode for
   the mode meant, and a plan sent back stayed in plan mode with the feedback
   reaching the agent.
 - **Mode readback.** `permission_mode` from every hook payload lands in
@@ -209,8 +209,8 @@ Need 1. The acts a keyboard performs that the foundation does not yet cover.
 - **An interrupted turn.** Escape or Ctrl-C mid-turn fires no `Stop` and no later
   `idle_prompt`, so the tail reads the transcript's own record of the interrupt, which
   names the prompt of the turn it stopped. That turn, and no other, goes idle; it is
-  told as a stopped turn is, opening with "You interrupted it.". Built: verified live on
-  2.1.281 mid-tool, mid-text, at a permission dialog, and by Ctrl-C, each left idle and told.
+  told as a stopped turn is, opening with "You interrupted it.". Built: verified live
+  mid-tool, mid-text, at a permission dialog, and by Ctrl-C, each left idle and told.
 
 ## Attention (`hands-attention-ssy`)
 

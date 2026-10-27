@@ -594,7 +594,7 @@ RESETS = datetime(2026, 9, 30, 18, 0, tzinfo=UTC).timestamp()
 @pytest.mark.parametrize(
     ("status", "headers", "limit"),
     [
-        # As the API refuses a subscription whose limit is spent, and as Claude Code 2.1.285 reads it (hands-wire-6ic.gfq).
+        # As the API refuses a subscription whose limit is spent, and as Claude Code reads it (hands-wire-6ic.gfq).
         (429, {"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": "1790791200"}, UsageLimitReached(RESETS)),
         (429, {"Anthropic-Ratelimit-Unified-Status": "rejected"}, UsageLimitReached(None)),
         # A reset no clock can show, not in seconds or not a number: the limit is still said, without when it lifts.

@@ -171,7 +171,7 @@ COMPACTED = '{"uuid":"u8","parentUuid":"u7","type":"user","promptId":"p3","messa
 
 
 def test_compact_typed_as_words_ahead_of_its_compaction_is_one_command_with_what_it_printed(tmp_path: Path) -> None:
-    """As 2.1.286 writes it, live: the words `/compact`, the compaction, then its command record and what it printed, under
+    """As Claude Code writes it, live: the words `/compact`, the compaction, then its command record and what it printed, under
     a prompt id of their own and naming nothing of the words."""
     said: list[str] = []
     sink = logger.add(lambda message: said.append(message.record["message"]), level="DEBUG", filter="hands.sessions.turning")
@@ -192,7 +192,7 @@ def test_a_compact_typed_and_never_run_is_a_command_of_its_own_beside_the_next_o
 
 
 def test_a_prompt_claude_was_sent_is_asked_though_it_opens_with_a_slash_and_a_name(tmp_path: Path) -> None:
-    """Both as Claude Code wrote them on 2.1.283: Claude answered the first, and the second names a directory, not a command."""
+    """Both as Claude Code wrote them: Claude answered the first, and the second names a directory, not a command."""
     help = '{"uuid":"u5","type":"user","promptId":"p2","promptSource":"typed","message":{"role":"user","content":" /help reply with only the word pong"}}'
     path = '{"uuid":"u6","type":"user","promptId":"p3","promptSource":"queued","message":{"role":"user","content":"/tmp is full, clean it up"}}'
     happenings = read_transcript(written(tmp_path / "t.jsonl", PROMPT, DONE, help, DONE, path)).happenings

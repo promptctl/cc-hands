@@ -91,7 +91,7 @@ async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiti
 
 
 async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed_idle(tmp_path: Path) -> None:
-    """As seen live on 2.1.289: a session cleared while a background poll it started ran on reported shell, and sat at
+    """As seen live: a session cleared while a background poll it started ran on reported shell, and sat at
     its prompt doing nothing."""
     cleared = membership(tmp_path, "cleared")
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
@@ -102,7 +102,7 @@ async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed
 
 
 async def test_a_session_at_its_prompt_with_a_subagent_working_in_the_background_is_listed_idle(tmp_path: Path) -> None:
-    """2.1.289 keeps busy from a background subagent's launch until the turn reporting it back ends; the turn that
+    """Claude Code keeps busy from a background subagent's launch until the turn reporting it back ends; the turn that
     launched it has stopped, so the session sits at its prompt, and is said to."""
     waiting = membership(tmp_path, "waiting")
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)

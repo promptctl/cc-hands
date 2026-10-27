@@ -72,7 +72,7 @@ class Reading:
     turn: Turning = field(default_factory=Turning)
     # The turn's last words while nothing untold follows them.
     ended_on: Ending = None
-    # A turn goes by the id of the prompt that opened it, and by any it went on under after a flush (2.1.281): a Stop
+    # A turn goes by the id of the prompt that opened it, and by any it went on under after a flush: a Stop
     # or an interrupt may name either.
     ids: set[PromptId] = field(default_factory=set[PromptId])
     # The calls of it already handed on as progress, by tool use id: only the turn's own calls, so it ends with the turn.

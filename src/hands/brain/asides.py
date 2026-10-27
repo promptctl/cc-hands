@@ -5,11 +5,9 @@ the brain. The brain's input is the user's: a question that is slow, or stuck, o
 turn waits on, and nothing asked here is in the brain's conversation.
 
 Each question has a Claude Code of its own, on the brain's login and with no tools, because a side question's answer
-stays in the history of the ones asked after it (2.1.286, measured 2026-09-30: the third `/btw` typed into one process
-carried the first two and their answers; `x` over an answer cleared all but that answer, and `/clear` cleared none).
+stays in the history of the ones asked after it.
 Started for one question, it carries that question and nothing else, and it is ended with its answer. It leaves nothing
-of the question in the brain's config directory (2.1.286, measured 2026-09-30 over 12 questions: no transcript, no line
-of history, no session directory).
+of the question in the brain's config directory.
 
 It is Claude Code as anyone runs it, interactive on a terminal, and the question is the prompt it is started with:
 `claude ... -- "/btw ..."`. Claude Code asks its opening prompt itself once its input is up, so nothing is typed into it and

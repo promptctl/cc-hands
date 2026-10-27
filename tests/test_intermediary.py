@@ -66,7 +66,7 @@ def test_the_brain_is_told_of_the_log_of_lit_and_of_its_own_setup_and_it_keeps_t
     # Working a tracker is done from a shell, and the brain works one with lit.
     assert "lit quickstart" in told
     # Asked to install a skill and told nothing of its setup, the brain made it in ~/.claude/skills, the user's own
-    # (hands-brain-d8g.33b, 2.1.288): its skills are installed, listed, changed, and removed in its own config directory.
+    # (hands-brain-d8g.33b): its skills are installed, listed, changed, and removed in its own config directory.
     assert "/my home/brain/skills/haiku/SKILL.md" in told
     assert told.rindex("\n\n# ") == told.index("\n\n# Above all")
     # A home with a space in it is one argument to every command the brain is shown.

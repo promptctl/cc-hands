@@ -148,7 +148,7 @@ def test_no_hook_or_record_moves_a_session_between_running_and_not(before: Sessi
         (Unreported(), said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=None)),
         # Running since the idle before it: a record written after that idle is of this run.
         (IDLE, said(Busy(), 3000), Running(Busy(), Stamp(3000), idled=IDLE.stamp)),
-        # At its prompt, with a background shell command running: no turn runs (2.1.289).
+        # At its prompt, with a background shell command running: no turn runs.
         (BUSY, said(Shell(), 3000, at=10.0), Idle(Shell(), Stamp(3000), after=None)),
         (IDLE, said(Shell(), 3000), replace(IDLE, status=Shell(), stamp=Stamp(3000))),
         # Its background shell over: the same idle period, and the notification turn after it runs from that idle.
@@ -173,7 +173,7 @@ def test_an_end_is_gone_from_any_state(before: SessionState) -> None:
 
 
 def test_a_prompt_opens_a_turn_and_one_inside_an_open_turn_is_queued_in_it() -> None:
-    """One inside a turn is queued behind it, as 2.1.282 runs a message sent while a turn runs."""
+    """One inside a turn is queued behind it, as Claude Code runs a message sent while a turn runs."""
     opened, _ = reduce(holding(BUSY), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN))
     assert opened == in_turn()
     assert reduce(opened, Prompted(ONE.id, at=6.0, mode=None, prompt=TURN))[0] == holding(BUSY, Opened(TURN, queued=True))
@@ -221,7 +221,7 @@ def test_a_prompt_inside_an_open_turn_leaves_the_mark_where_that_turn_began(befo
 
 
 def test_a_prompt_heard_after_the_busy_it_set_was_read_opens_and_marks_its_turn() -> None:
-    """Claude Code sets busy before a prompt's hooks run (2.1.282), and the status can be read before the hook lands."""
+    """Claude Code sets busy before a prompt's hooks run, and the status can be read before the hook lands."""
     assert reduce(holding(BUSY, Told(TURN)), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT)) == (holding(BUSY, Opened(NEXT), earlier=frozenset({TURN})), [Snapshot(ONE.id, ONE.cwd)])
 
 
@@ -254,7 +254,7 @@ def test_a_prompt_marks_where_the_repository_stands_before_the_turn_can_change_i
 
 
 def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until_claude_code_says_idle() -> None:
-    """Seen live on 2.1.282 (hands-status-bpp.55k): the file says busy between the blocked Stop and the one after it."""
+    """Seen live (hands-status-bpp.55k): the file says busy between the blocked Stop and the one after it."""
     heard: list[Effect] = []
     state = in_turn()
     for event in [Stopped(ONE.id, "First.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST), Stopped(ONE.id, "Second.", mode=None, prompt=TURN, again=True, heard=STOP_HEARD, request=STOP_REQUEST)]:
@@ -587,7 +587,7 @@ def test_a_record_of_a_turn_hands_already_named_moves_nothing(before: Registry) 
 
 
 def test_a_prompt_cancelled_while_its_hooks_ran_is_over_when_claude_code_says_idle() -> None:
-    """As seen live on 2.1.282: Escape during UserPromptSubmit puts the prompt back in the box and sets idle ~70 ms
+    """As seen live: Escape during UserPromptSubmit puts the prompt back in the box and sets idle ~70 ms
     later, with no Stop and no record. Resent, it is a prompt of its own."""
     state, tellings = told([Prompted(ONE.id, at=5.0, mode=None, prompt=TURN), said(status.Idle(), at=5.1)], holding(IDLE))
     assert state == holding(Idle(status.Idle(), Stamp(2000), after=TURN), Untold(TURN, frozenset(), by=WINDOW))
@@ -673,7 +673,7 @@ def test_a_prompts_record_read_before_its_own_late_hook_opens_the_turn_and_the_s
 
 
 def test_an_escape_and_a_new_prompt_inside_one_status_read_open_two_turns() -> None:
-    """hands-status-tlo.tmp, seen live on 2.1.283: Claude Code set idle at the Escape and busy for the next prompt 93 ms
+    """hands-status-tlo.tmp, seen live: Claude Code set idle at the Escape and busy for the next prompt 93 ms
     later, so no status read saw the idle. The prompt's hook carries an id of its own, which Claude Code gives only at
     its prompt: the turn before is told as itself, compared before the new one is marked, and the new one opens."""
     state, tellings = told([Prompted(ONE.id, at=9.0, mode=None, prompt=NEXT), said(Busy(), 2100), INTERRUPT, Taken(ONE.id, NEXT, Stamp(2090), 9.1)])
@@ -685,7 +685,7 @@ def test_an_escape_and_a_new_prompt_inside_one_status_read_open_two_turns() -> N
 
 def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_queued_into_the_turn() -> None:
     """The flush's records carry its new id at once, and Claude's first answer under it — the Continued — comes seconds
-    later. A message queued in between carries the new id (2.1.281), and is queued, not the turn ended."""
+    later. A message queued in between carries the new id, and is queued, not the turn ended."""
     flushed = PromptId("q")
     state, effects = reduce(in_turn(), Taken(ONE.id, flushed, None, 9.0))
     assert effects == [] and live(state).turn == Opened(TURN, frozenset({flushed}))
@@ -755,7 +755,7 @@ def test_a_session_left_at_its_prompt_says_nothing_however_long_it_waits() -> No
 
 
 def test_a_queued_prompt_does_not_let_the_interrupt_that_flushes_it_end_the_turn_it_opens() -> None:
-    """As seen live on 2.1.281: a prompt queued while a tool ran fires UserPromptSubmit at once, with the running turn's
+    """As seen live: a prompt queued while a tool ran fires UserPromptSubmit at once, with the running turn's
     prompt_id. Escape then flushes it, and the interrupt record names the queued prompt's own new id, whose turn is
     already running. That turn's Stop, not the interrupt, is what ends it."""
     state = in_turn()
@@ -819,7 +819,7 @@ def test_busy_or_waiting_said_of_an_open_turn_leaves_it_open(status_: Busy | Wai
 
 
 def test_the_interrupt_record_written_after_claude_code_said_idle_is_when_the_turn_is_told() -> None:
-    """Escape mid-tool: idle is set ~100 ms before the interrupt record is written (2.1.282)."""
+    """Escape mid-tool: idle is set ~100 ms before the interrupt record is written."""
     state, tellings = told([said(status.Idle()), INTERRUPT, Tick(20.0)])
     assert tellings == TOLD
     assert state == holding(Idle(status.Idle(), Stamp(2000), after=TURN), Told(TURN))
@@ -893,7 +893,7 @@ def test_a_double_escape_before_claude_answers_a_flushed_message_leaves_the_sess
 
 
 def test_a_single_escape_that_flushes_a_queued_message_leaves_the_turn_running_on_to_its_stop() -> None:
-    """Measured on 2.1.282: the flush sets busy again, not idle, and Claude answers under the flushed id."""
+    """Measured: the flush sets busy again, not idle, and Claude answers under the flushed id."""
     state, tellings = told([Taken(ONE.id, NEXT, None, 9.0), said(Busy()), Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST), said(status.Idle(), 3000, at=20.0), Tick(30.0)])
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
     assert isinstance(live(state).state, Idle)
@@ -912,7 +912,7 @@ QUEUED = Prompted(ONE.id, at=5.0, mode=None, prompt=TURN)
 
 
 def test_a_message_queued_while_a_turn_ran_is_its_own_turn_named_from_when_it_is_taken() -> None:
-    """hands-status-bpp.44l, seen live on 2.1.282: the queued message's hook carries the running turn's id, and once that
+    """hands-status-bpp.44l, seen live: the queued message's hook carries the running turn's id, and once that
     turn's Stop lands Claude Code runs it under a new id no hook names. It is marked while that Stop's hook holds Claude
     Code, after the turn before is handed over to be told."""
     state, tellings = told([QUEUED, STOP, taken(NEXT, Stamp(1500))], in_turn(RUNNING))
@@ -925,7 +925,7 @@ def test_a_message_queued_while_a_turn_ran_is_its_own_turn_named_from_when_it_is
 
 @pytest.mark.parametrize(("written", "opens"), [(Stamp(2003), True), (Stamp(2000), True), (Stamp(1990), False), (None, False)])
 def test_a_prompt_taken_at_the_prompt_opens_a_turn_only_if_written_since_claude_code_last_said_idle(written: Stamp | None, opens: bool) -> None:
-    """Claude Code sets idle for ~3 ms between a turn and the one queued behind it (2.1.282), and a read can land on it.
+    """Claude Code sets idle for ~3 ms between a turn and the one queued behind it, and a read can land on it.
     An idle set after the record was written is that turn over, before any of it was read."""
     state, _ = told([STOP, said(status.Idle()), taken(NEXT, written)], in_turn(RUNNING))
     assert isinstance(live(state).turn, Opened) == opens
@@ -945,7 +945,7 @@ def test_a_queued_turn_whose_stop_lands_before_its_record_is_read_is_told_once()
 
 
 def test_a_bang_command_is_running_from_its_status_and_claudes_answer_to_it_is_told_as_itself() -> None:
-    """Seen live on 2.1.282 and 2.1.283: Claude Code is busy while the command runs, writes its record under a new id
+    """Seen live: Claude Code is busy while the command runs, writes its record under a new id
     stamped before that busy, Claude answers it, and a Stop names it."""
     bang = PromptId("bang")
     at_prompt = holding(Idle(status.Idle(), Stamp(2000), after=TURN), Told(TURN))
@@ -958,7 +958,7 @@ def test_a_bang_command_is_running_from_its_status_and_claudes_answer_to_it_is_t
 
 
 def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_told_once_it_is_over() -> None:
-    """Seen live on 2.1.282: /compact is busy for its whole run and writes records under a new id, with no Stop. What is
+    """Seen live: /compact is busy for its whole run and writes records under a new id, with no Stop. What is
     told of it is what happened in it, which for a command is nothing, and the narrator says nothing of that."""
     at_prompt = holding(Idle(status.Idle(), Stamp(2000), after=TURN), Told(TURN))
     compact = PromptId("compact")
@@ -969,7 +969,7 @@ def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_t
 
 
 def test_a_stop_with_nothing_queued_behind_it_marks_nothing() -> None:
-    """A message 2.1.281 took into the running turn is in that turn, and waits behind nothing: a mark taken at its Stop
+    """A message taken into the running turn is in that turn, and waits behind nothing: a mark taken at its Stop
     would be read, however much later, as the start of the next turn no prompt marks."""
     state, tellings = told([QUEUED, taken(NEXT, Stamp(1200)), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], in_turn(RUNNING))
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
@@ -1193,7 +1193,7 @@ def test_a_turn_whose_stop_came_first_is_not_told_again_by_its_reply_on_the_wire
 
 @pytest.mark.parametrize("wire_first", [True, False])
 def test_a_turn_that_goes_on_after_a_blocked_stop_has_each_of_its_endings_told_once(wire_first: bool) -> None:
-    """Seen live on 2.1.285 (/tmp/stopprobe): a blocked Stop's turn goes on under the same prompt id, and its Stop fires again."""
+    """Seen live (/tmp/stopprobe): a blocked Stop's turn goes on under the same prompt id, and its Stop fires again."""
 
     def ending(closing: str, again: bool) -> list[Event]:
         heard: list[Event] = [Closed(ONE.id, TURN, closing), stop(closing, again)]
@@ -1263,7 +1263,7 @@ def out(state: SessionState, turn: Turn, *agents: AgentId) -> Registry:
 
 
 def test_a_turn_that_launched_a_subagent_in_the_background_leaves_the_session_at_its_prompt_once_it_stops() -> None:
-    """hands-session-mgmt-a7t.9qr, 2.1.289: Claude Code stays busy from the launch until the turn reporting it back ends,
+    """hands-session-mgmt-a7t.9qr: Claude Code stays busy from the launch until the turn reporting it back ends,
     through the Stop of the turn that launched it, so only the turn and the subagent out say no turn runs."""
     state, _ = told([launched(), STOP], in_turn(RUNNING))
     assert (delegating(live(state)), live(state).turn, live(state).background) == (True, Told(TURN), frozenset({AGENT}))
