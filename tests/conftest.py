@@ -57,7 +57,7 @@ def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) 
 
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
-# How long a test's wait may see nothing move before it fails on a stall.
+# How long a test's wait may look and see nothing move before it fails on a stall.
 PATIENCE_SECS = 2.0
 # How long a wait sleeps between two looks at what it waits on, while the loop has nothing else to run.
 LOOK_SECS = 0.01
@@ -95,13 +95,13 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
     time between two looks that the loop spent on other work is that work's, however long one step of it holds the loop,
     since a stage that takes a burst of frames in one step moves nothing anyone can see until the step ends.
     [LAW:single-enforcer] a run that never ends, moving or holding the loop, is ended by the suite's timeout."""
-    seen, stood = moved(), 0.0
+    patience, seen, still = round(PATIENCE_SECS / LOOK_SECS), moved(), 0
     while not done():
+        if still == patience:
+            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, at {seen!r}, while waiting on {done!r}")
         await asyncio.sleep(LOOK_SECS)
         now = moved()
-        stood, seen = (0.0 if now != seen else stood + LOOK_SECS), now
-        if stood >= PATIENCE_SECS:
-            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, at {seen!r}, while waiting on {done!r}")
+        still, seen = (0 if now != seen else still + 1), now
 
 
 @pytest.fixture(autouse=True)
