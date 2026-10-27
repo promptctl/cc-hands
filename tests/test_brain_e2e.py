@@ -24,6 +24,7 @@ from hands.brain import pinned
 from hands.brain.process import workdir
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
+from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.registry import Sessions
@@ -37,10 +38,10 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Spoken
 
-# The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
-# CI's cache of it is keyed on it.
+# The canonical mock of Anthropic's API, at the commit these tests were written against: the mock has no release tag yet,
+# so the commit is the pin. Moving it is one commit, and CI's cache of it is keyed on it.
 MOCK_REPOSITORY = "https://github.com/promptctl/mock-anthropic"
-MOCK_RELEASE = "v0.1.0"
+MOCK_RELEASE = "9484421303230b9281a458c0d925e9e2716a93f0"
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
@@ -68,30 +69,34 @@ class MockApi:
         (self.scenarios / f"{name}.json").write_text(json.dumps(script))
 
 
-def mock(checkout: Path, *argv: str) -> tuple[str, ...]:
-    """The mock's command line, run from `checkout`."""
-    return ("bun", str(checkout / "src" / "cli.ts"), *argv)
+def mock(binary: Path, *argv: str) -> tuple[str, ...]:
+    """The mock's command line: its binary, built at MOCK_RELEASE."""
+    return (str(binary), *argv)
 
 
 @pytest.fixture(scope="session")
-def mock_checkout(pytestconfig: pytest.Config) -> Path:
-    """The mock at MOCK_RELEASE, cloned once into pytest's cache with its locked dependencies installed."""
+def mock_binary(pytestconfig: pytest.Config) -> Path:
+    """The mock built at MOCK_RELEASE, once, into pytest's cache: the commit is fetched by its id and built with go."""
     cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    checkout = cache / MOCK_RELEASE
-    if not (checkout / "node_modules").is_dir():
-        # [LAW:no-silent-failure] a clone or an install that fails stops the session in git's or bun's own words.
-        shutil.rmtree(checkout, ignore_errors=True)
-        subprocess.run(["git", "clone", "--quiet", "--depth", "1", "--branch", MOCK_RELEASE, MOCK_REPOSITORY, str(checkout)], check=True)
-        subprocess.run(["bun", "install", "--frozen-lockfile", "--production"], cwd=checkout, check=True)
-    return checkout
+    binary = cache / f"mock-anthropic-{MOCK_RELEASE[:12]}"
+    if not binary.is_file():
+        # [LAW:no-silent-failure] a fetch or a build that fails stops the session in git's or go's own words.
+        source = cache / f"source-{MOCK_RELEASE[:12]}"
+        shutil.rmtree(source, ignore_errors=True)
+        source.mkdir()
+        subprocess.run(["git", "init", "--quiet"], cwd=source, check=True)
+        subprocess.run(["git", "fetch", "--quiet", "--depth", "1", MOCK_REPOSITORY, MOCK_RELEASE], cwd=source, check=True)
+        subprocess.run(["git", "checkout", "--quiet", "FETCH_HEAD"], cwd=source, check=True)
+        subprocess.run(["go", "build", "-o", str(binary), "."], cwd=source, check=True)
+    return binary
 
 
 @pytest.fixture
-async def mock_api(tmp_path: Path, mock_checkout: Path) -> AsyncGenerator[MockApi]:
+async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]:
     scenarios = tmp_path / "scenarios"
     scenarios.mkdir()
     served = await asyncio.create_subprocess_exec(
-        *mock(mock_checkout, "serve"), "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
+        *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
     )
     assert served.stdout is not None
     try:
@@ -118,11 +123,11 @@ async def claude_code(pytestconfig: pytest.Config) -> Path:
     return cache / "pinned-claude"
 
 
-def logged_in(brain: Path, claude_code: Path, mock_checkout: Path) -> None:
+def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
     its pinned Claude Code the cached one."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
-    subprocess.run(mock(mock_checkout, "login", str(brain), "--trust", str(workdir(brain).resolve())), check=True)
+    subprocess.run(mock(mock_binary, "login", str(brain), "--trust", str(workdir(brain).resolve())), check=True)
     (brain / "pinned-claude").symlink_to(claude_code)
     (brain / "settings.json").write_text(json.dumps({"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}))
 
@@ -144,14 +149,20 @@ class Hands:
                 await asyncio.sleep(0.05)
 
 
+async def connected(hands: Hands) -> None:
+    """Waits until the brain has listed hands' tools over MCP. Claude Code connects to hands' server after it starts, not
+    before, so a turn typed sooner goes to the model without them, and whether it does is a race the test must not have."""
+    await hands.until(lambda: any(isinstance(entry, WideEvent) and entry.event == "mcp.request" and entry.facts.get("method") == "tools/list" for entry in hands.recorded))
+
+
 async def unread() -> InFront:
     return FrontUnread("not read in this test")
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, mock_api: MockApi, mock_checkout: Path, claude_code: Path) -> AsyncGenerator[Hands]:
+async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
-    logged_in(brain, claude_code, mock_checkout)
+    logged_in(brain, claude_code, mock_binary)
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
@@ -188,6 +199,7 @@ async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_an
     mock_api.script("1-owed", {"bodyContains": [OWED[:60]]}, {"type": "text", "text": "I made the file."})
     mock_api.script("2-silent", {"bodyContains": [TURN, RESULT]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
     mock_api.script("3-act", {"lastUserContains": ["make the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"touch {made}"}}, stop="tool_use")
+    await connected(hands)
     await hands.say("make the file")
     await hands.until(lambda: "I made the file." in "".join(hands.out.said()))
     assert made.exists()
@@ -198,6 +210,7 @@ async def test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_
     brain is idle, and the turn after it is answered (promptctl-backlog-7qoh.8nx)."""
     mock_api.script("1-wait", {"lastUserContains": ["wait a while"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 120"}}, stop="tool_use")
     mock_api.script("2-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
+    await connected(hands)
     await hands.say("wait a while")
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
     work = hands.stage.work()
