@@ -32,7 +32,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import diarization
+from hands.voice import diarization, streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 
@@ -136,6 +136,21 @@ def no_diarization_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building a Whisper diarizes with a model that hears nobody: its load would fetch 400 MB of weights and import
     torch, which no test is about but the ones that ask for the real model."""
     monkeypatch.setattr(diarization, "load", lambda: diarization.Model(unheard, CHUNKING))
+
+
+@dataclass
+class Unspoken:
+    """The run's streaming session of a model that hears no word in anything it is fed."""
+
+    def decoded(self, samples: streaming.Samples) -> str:
+        return ""
+
+
+@pytest.fixture(autouse=True)
+def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building the voice hears holds with a model that hears no word: its load would fetch 2.3 GB of weights, which no
+    test is about but the ones that ask for the real model."""
+    monkeypatch.setattr(streaming, "load", Unspoken)
 
 
 async def unprimed() -> None:
@@ -291,11 +306,13 @@ def pinned_to(script: Path) -> str:
 
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what 2.1.289 says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
+    """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
+    that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
+    ["played", name] once it has said all of it."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -334,7 +351,7 @@ def typed(line):
         log.write(json.dumps(line) + "\\n")
 # As a loaded machine starts it slowly.
 time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
-# Raw without flushing: Claude Code keeps what was typed while it started (2.1.289, measured 2026-10-04, keys typed
+# Raw without flushing: Claude Code keeps what was typed while it started (keys typed
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
@@ -342,12 +359,39 @@ os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
 # The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
 last, tail = None, 0.0
-# A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
+# A prompt as Claude Code's UserPromptSubmit says it took it: a paste of four lines or more in its tags, with a
 # line end added where it had none, and any other with its trailing whitespace trimmed.
 def taken(text):
     if text.count("\\n") < 3:
         return text.rstrip()
     return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
+# A turn as Claude Code was recorded running it: each hook posted, each record appended to the session's transcript and
+# each status set in its file, in the order Claude Code said them and each stamped as it is said, the words typed the
+# opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
+def play(name, text):
+    global prompts, last, tail
+    sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+    import turns
+    project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()))
+    os.makedirs(project, exist_ok=True)
+    transcript = os.path.join(project, session + ".jsonl")
+    status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
+    os.makedirs(os.path.dirname(status), exist_ok=True)
+    lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
+    for line in lines:
+        line = turns.shifted(line, time.time() - line.at)
+        if isinstance(line, turns.Posted):
+            post(line.body["hook_event_name"], transcript_path=transcript, cwd=os.getcwd(), **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
+        elif isinstance(line, turns.Written):
+            with open(transcript, "a") as written:
+                written.write(turns.transcribed(line.record))
+        else:
+            with open(status + ".tmp", "w") as file:
+                file.write(turns.status_file(line, pid=os.getpid(), session=session))
+            os.replace(status + ".tmp", status)
+    prompts += turns.prompts(turns.RECORDINGS[name]) - 1
+    last, tail = turns.stops(lines)[-1], time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
+    typed(["played", name])
 def submit(text):
     global turn, turn_text, prompts, late, running, last, tail
     if text.startswith("/btw "):
@@ -370,8 +414,7 @@ def submit(text):
     if time.monotonic() < tail:
         # Sent while the last prompt's other Stop hooks still run: queued, and taken as they end. Its UserPromptSubmit is
         # posted before it has a prompt id of its own, under the last prompt's, holding what was queued, which Claude Code
-        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names (2.1.289, the
-        # brain's transcript 15192e41, 2026-10-19 05:29:11).
+        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names.
         time.sleep(tail - time.monotonic())
         post("UserPromptSubmit", prompt_id=last, prompt=taken(text.lstrip()))
         typed(["prompt", text])
@@ -389,6 +432,9 @@ def submit(text):
         post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
         post("Stop", prompt_id=late[0], last_assistant_message="Late.")
         late = None
+    if said.startswith("play "):
+        play(said[len("play "):], text)
+        return
     if said == "deaf":
         return
     if said in ("late", "later"):
@@ -462,7 +508,7 @@ while True:
     if not data:
         break
     pending += data
-    # Claude Code reads what reaches it close together as one burst (2.1.286).
+    # Claude Code reads what reaches it close together as one burst.
     time.sleep(0.05)
     while select.select([0], [], [], 0)[0]:
         more = os.read(0, 65536)
@@ -510,7 +556,7 @@ while True:
         elif pending.startswith(b"\\r"):
             pending = pending[1:]
             if pending:
-                # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).
+                # A Return with more behind it in the same burst is read as pasted, and sends nothing.
                 continue
             text, box = box, ""
             submit(text)

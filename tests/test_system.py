@@ -13,10 +13,10 @@ from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import unprimed
+from conftest import running
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
-from hands.sessions.audit import Announced, Entry, HoldHeard, Levels
+from hands.sessions.audit import Announced, Entry
 from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
@@ -47,7 +47,8 @@ from hands.voice.microphone import Devices
 from hands.voice.hold import Move
 from hands.voice.ptt import Gate
 from hands.voice.turnstop import TurnResolved, Words
-from hands.voice.whisper import Whisper
+from hands.voice.holdowner import HoldOwner
+from hands.voice.holds import Hold
 
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
@@ -337,39 +338,56 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
     assert said(tts) == ["Speech recognition failed for that turn."]
 
 
-async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    said: list[str | None | Exception] = []
+class Said:
+    """A transcriber that says, for each hold in turn, the words given, nothing, or fails."""
 
-    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes, _prompt: str | None) -> HoldHeard:
-        match said.pop():
+    def __init__(self, *said: str | None | Exception) -> None:
+        self.said = list(said)
+
+    async def transcribed(self, hold: Hold, audio: bytes) -> str | None:
+        match self.said.pop(0):
             case Exception() as error:
                 raise error
             case text:
-                return HoldHeard(hold, text, (), levels)
+                return text
 
-    monkeypatch.setattr(Whisper, "_heard", transcribe)
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
-    # What the pipeline's setup and start set: a sent hold is wrapped as a WAV at this rate, a second of it this many bytes.
-    whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
-    whisper._audio_buffer_size_1s = 32_000  # pyright: ignore[reportPrivateUsage]
 
-    async def push(_frame: Frame, _direction: object = None) -> None:
-        pass
+class Told(FrameProcessor):
+    """What comes out of the hold owner for the turn: each hold's frames from its words, if any, to its resolution."""
 
-    monkeypatch.setattr(whisper, "push_frame", push)
-    # Three turns sent, one for each transcription below.
-    gate = Gate()
-    for _ in range(3):
-        for gate in (gate.after("start", "held key"), gate.after("start", "held key").after("stop", "held key")):
-            await whisper.process_audio_frame(gate.framed(b"\x00\x00", b"\x00\x00", 16000, 1, "desk"), FrameDirection.DOWNSTREAM)
-    # Every transcription ends with Whisper done with its hold, and one it heard nothing in yields nothing else: no
-    # frame that could reach the speaker. (Every frame has an id of its own, so frames made here are told by their kind.)
-    said.append(None)
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [TurnResolved]
-    said.append("what time is it")
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [Words, TurnResolved]
-    said.append(RuntimeError("model failed"))
-    assert [type(frame) async for frame in whisper.run_stt(b"")] == [ErrorFrame, TurnResolved]
+    def __init__(self) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self.holds: list[list[type[Frame]]] = [[]]
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case Words() | TurnResolved():
+                self.holds[-1].append(type(frame))
+                if isinstance(frame, TurnResolved):
+                    self.holds.append([])
+            case _:
+                pass
+        await self.push_frame(frame, direction)
+
+
+async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in() -> None:
+    owner, told = HoldOwner(Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
+    async with running([owner, told]) as run:
+        # Three turns sent, one for each transcription.
+        gate = Gate()
+        for _ in range(3):
+            for gate in (gate.after("start", "held key"), gate.after("start", "held key").after("stop", "held key")):
+                await run.worker.queue_frame(gate.framed(b"\x00\x00", b"\x00\x00", 16000, 1, "desk"))
+        async with asyncio.timeout(10):
+            while len(told.holds) < 4:
+                await asyncio.sleep(0.01)
+        # Every transcription ends with the owner done with its hold, and one it heard nothing in yields nothing else: no
+        # frame that could reach the speaker; one that failed is said aloud as an error from the owner.
+        assert told.holds[:3] == [[TurnResolved], [Words, TurnResolved], [TurnResolved]]
+        [failed] = run.errors
+        assert failed.processor is owner and "Hold 3 could not be transcribed: RuntimeError: model failed" == failed.error
+        assert failed.category is not None and not failed.category.is_permanent and owner.is_usable
 
 
 def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:

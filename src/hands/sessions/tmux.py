@@ -208,8 +208,7 @@ def _typing(pane: str, input: Input, buffer: str, pasted: str) -> list[str]:
             return ["send-keys", "-t", pane, KEYS[key]]
 
 
-# How long an Escape keeps the session's input to itself: fritter's loneEscape, measured on Claude Code 2.1.285
-# (fritter/control.go).
+# How long an Escape keeps the session's input to itself: fritter's loneEscape (fritter/control.go).
 LONE_ESCAPE = 0.1
 
 # [LAW:types-are-the-program] each chord hands speaks, as tmux names its key: every Keystroke has one.

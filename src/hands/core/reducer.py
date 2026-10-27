@@ -69,7 +69,7 @@ from hands.core.turn import AgentId, AgentTask
 
 # How long past the idle Claude Code set a turn waits to be told for the record of how it ended, and past a Stop hands
 # heard it waits for a record naming its id, in milliseconds on Claude Code's own clock: an interrupt's is written 37 ms
-# after the idle (2.1.283), a turn's reply up to 40 ms after its Stop fires (2.1.285), and some ways of stopping a turn
+# after the idle, a turn's reply up to 40 ms after its Stop fires, and some ways of stopping a turn
 # write none. The transcript read through this point holds it if it was ever coming.
 UNTOLD = 1000
 
@@ -248,7 +248,7 @@ def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
     id = session.membership.id
     match event:
         case Stopped(prompt=prompt, closing=closing, again=again, heard=heard, request=request):
-            # [LAW:no-ambient-temporal-coupling] its records reach the transcript up to ~40 ms after it fires (2.1.285).
+            # [LAW:no-ambient-temporal-coupling] its records reach the transcript up to ~40 ms after it fires.
             stop = Unnamed(prompt, closing, again, Stamp(heard + UNTOLD), request)
             match _stopping(session, stop):
                 case None:
@@ -365,14 +365,14 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             return Untold(opened.turn, opened.others, Stamp(stamp + UNTOLD)), []
         case (Prompted(prompt=prompt), Opened() as opened) if _names(opened, prompt):
             # Claude Code files what is submitted while a turn runs, a queued message or a task's notification, under
-            # the running turn's id, and leaves its status as it was (2.1.283, measured). It marks nothing, or the mark
+            # the running turn's id, and leaves its status as it was. It marks nothing, or the mark
             # would move into the middle of the work it is there to measure; that message's own turn opens when it is
             # taken. A turn's own prompt hook, heard after the shim gave up on a slow daemon, is read the same way.
             return replace(opened, queued=True), []
         case (Prompted(prompt=prompt), Opened() as opened):
             # A prompt under an id of its own is one Claude Code took at its prompt, the only place it gives one: the
             # open turn is over, though its idle may never have been read. An Escape and the next prompt set idle and
-            # busy again 93 ms apart (2.1.283), inside one status read. Told as it stands, and compared now, while this
+            # busy again 93 ms apart, inside one status read. Told as it stands, and compared now, while this
             # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
             return Opened(prompt), [*_over(id, opened)[1], Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
@@ -388,11 +388,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             return turn, []
         case (Taken(prompt=prompt), Opened() as opened):
             # A flush's id: an Escape sends a message queued behind the turn on in the same turn, under the message's own
-            # id, which the interrupt record carries first (2.1.281). Nothing waits behind the turn now running.
+            # id, which the interrupt record carries first. Nothing waits behind the turn now running.
             return replace(opened, others=opened.others | {prompt}, queued=False), []
         case (Taken(prompt=prompt, written=written), Untold() | Told()) if _opens(was, prompt, written):
             # A turn no hook opened: a message queued behind a turn, a `!` command, a command such as /compact
-            # (2.1.282). Named, so its Stop ends it, or what it printed for a command Claude Code carries out itself (see
+            # Named, so its Stop ends it, or what it printed for a command Claude Code carries out itself (see
             # CarriedOut). Not marked here, where a mark could land after Claude has begun changing the repository: a
             # queued message was marked while the Stop hook before it held Claude Code (see _following), and one nothing
             # was queued for, as a `!` command's answer, is told by its steps.
@@ -531,7 +531,7 @@ def _opens(session: Session, prompt: PromptId, written: Stamp | None) -> bool:
     since Claude Code last set the session idle."""
     # [LAW:one-source-of-truth] Claude Code's own two clocks, never the order hands read them in: a record written before
     # the idle it set is of a turn over by then. It sets idle for ~3 ms between a turn and the message queued behind it
-    # (2.1.282), which a read can land on, and which came first; and it stamps a `!` command's record before the busy it
+    # which a read can land on, and which came first; and it stamps a `!` command's record before the busy it
     # sets for it. Whether a record is from before hands followed the session is the tail's to say (see Tails._read).
     # [LAW:single-enforcer] a turn told is over, which `earlier` says of every one: a record of it read late opens
     # nothing, though no idle came between, as none does while a subagent works in the background.
@@ -621,7 +621,7 @@ def _dialogs(session: SessionId, before: Held | None, after: Held | None) -> lis
 
 def _gathered(turn: Turn, event: Progressed | Displayed) -> Turn:
     """The turn with the calls it made and the text it wrote gathered, until they settle; either of a turn since over
-    moves nothing, since that turn's result is told instead. Text is displayed for seconds after its turn's Stop (2.1.280)."""
+    moves nothing, since that turn's result is told instead. Text is displayed for seconds after its turn's Stop."""
     match turn, event:
         case Opened(gathering=None), Displayed(text=text) if not text.strip():
             # Blank lines alone are nothing said, so they begin no burst: one would be told as the session's name and

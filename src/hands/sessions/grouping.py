@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import get_args
 
 from hands.core.wire import Exchanged
@@ -46,11 +47,13 @@ def _ids(path: str) -> str:
 
 @dataclass(frozen=True)
 class Sighting:
-    """One warning or error line: where it came from, what it said, normalised, and when it was written."""
+    """One warning or error line: where it came from, what it said, normalised, when it was written, and what a ticket
+    names where it came from by."""
 
     origin: str
     cause: str
     at: datetime
+    named: str
 
     @property
     def stamp(self) -> str:
@@ -75,6 +78,11 @@ class Group:
     def label(self) -> str:
         """The lit label its tickets carry. lit keeps labels lowercase, which a hex digest is."""
         return f"audit-{self.fingerprint}"
+
+    @property
+    def named(self) -> str:
+        """What a ticket names the group's origin by: as its newest sighting names it, where the code is now."""
+        return self.last.named
 
     @property
     def first(self) -> Sighting:
@@ -134,6 +142,38 @@ def _exported(line: Payload) -> tuple[str, str]:
 def _said(field: str) -> Cause:
     """The cause of a line that names no origin of its own but its kind, and says what went wrong in `field`."""
     return lambda line: (line.text("type"), line.text(field))
+
+
+# hands' own package, which its repository keeps under src/.
+_OWN = "hands"
+
+
+def _file(source: str, where: str) -> str:
+    """The file a logged line was logged in, as the repository that holds it names it: the module that logged it, from
+    `source`, a package's own module being its __init__.py, which only the file `where` it was logged tells. A ticket
+    points no finer than a file: a function or a line goes stale the first time the code above it moves, and `where`'s
+    line and the user's install path stay in the log.
+    """
+    module = source.partition(":")[0].split(".")
+    inside = "/".join(module) + ("/__init__.py" if PurePosixPath(where.rpartition(":")[0]).stem == "__init__" else ".py")
+    return f"src/{inside}" if module[0] == _OWN else inside
+
+
+def _logged_file(line: Payload, origin: str) -> str:
+    """The file a Logged line, or a Failure line before it, was logged in. Its `where` tells only whether that is a
+    package's __init__.py, and a Failure line written before it said where tells nothing."""
+    where = line.fields.get("where")
+    return _file(origin, where if isinstance(where, str) else "")
+
+
+# What a ticket names the origin of each kind of line by, where that is not the origin itself: a logged line's origin is
+# the module and function that logged it, finer than a file. Every other kind's origin is already what the log names it
+# by: a unit of work, a request, a collector, a kind of line. Naming reads nothing that can refuse the line, so it never
+# moves a sighting to another group.
+NAMED: Mapping[str, Callable[[Payload, str], str]] = {
+    Logged.__name__: _logged_file,
+    "Failure": _logged_file,
+}
 
 
 # [LAW:one-source-of-truth] each kind of line the log judges a warning or an error, by its type's own name, and where it
@@ -218,8 +258,10 @@ def read(lines: Iterable[str]) -> Read:
             retold += 1
             continue
         origin, cause, parsed = _cause(kind, line)
+        # A line this hands cannot read is grouped by its kind, which names it as it is.
+        named = NAMED.get(kind, lambda _, origin: origin)(line, origin) if parsed else origin
         unparsed += 0 if parsed else 1
-        sightings.setdefault((origin, cause), []).append(Sighting(origin, cause, at))
+        sightings.setdefault((origin, cause), []).append(Sighting(origin, cause, at, named))
     groups = tuple(Group(origin, cause, tuple(seen)) for (origin, cause), seen in sightings.items())
     return Read(groups, count, unreadable, unparsed, retold, oldest, newest)
 

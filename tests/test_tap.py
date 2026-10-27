@@ -381,7 +381,7 @@ def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_it
     "observed",
     [
         Sent("e1", SessionId("s1"), MainTurn(TURN), None, {}),
-        # Claude Code asks again after an end_turn with no text (2.1.285): the turn goes on.
+        # Claude Code asks again after an end_turn with no text: the turn goes on.
         replied(MainTurn(TURN), "end_turn"),
         replied(MainTurn(TURN), "tool_use", Text("Reading."), ToolUse("t1", "Read", {})),
         replied(MainTurn(None), "end_turn", Text("Done.")),

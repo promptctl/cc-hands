@@ -96,7 +96,7 @@ def identifier(listing: Listing[Known]) -> str:
 
 
 # Each mode as the footer of a session's own screen names it, so what is heard is what the user would read there:
-# 2.1.281 shows the default mode as "manual mode on".
+# The footer shows the default mode as "manual mode on".
 _MODES: Mapping[PermissionMode, str] = {
     "default": "manual mode",
     "acceptEdits": "accept edits mode",

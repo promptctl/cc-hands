@@ -439,7 +439,7 @@ def answering(name: str, result: object, call_id: str = "t1") -> dict[str, objec
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": [{"type": "tool_use", "id": call_id, "name": name, "input": {}}]},
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": [{"type": "text", "text": json.dumps(result)}]}]},
-            # As Claude Code 2.1.285 sends it: a message of its own after the results.
+            # As Claude Code sends it: a message of its own after the results.
             {"role": "system", "content": [{"type": "text", "text": "<system-reminder>tokens left</system-reminder>"}]},
         ]
     }
@@ -1295,7 +1295,7 @@ def unreached(exchange: str) -> Exchanged:
 @pytest.mark.parametrize(
     ("answers", "failure", "fact"),
     [
-        # As Claude Code 2.1.285 meets each (measured, hands-wire-6ic.gfq): a spent limit is asked once, an API the proxy
+        # As Claude Code meets each (measured, hands-wire-6ic.gfq): a spent limit is asked once, an API the proxy
         # cannot reach eleven times, and what failed the turn is its latest answer.
         ([429], StopFailed("rate_limit", "You've hit your session limit · resets 12:00pm"), UsageLimitReached(RESETS)),
         ([None, None, None], StopFailed("server_error", "API Error: 502 hands' proxy could not reach https://api.anthropic.com"), ModelUnreachable()),
@@ -1339,7 +1339,7 @@ async def test_a_stop_failure_that_shows_no_text_is_told_by_its_kind_of_error(ri
 
 
 async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_then_the_failure(rig: Rig) -> None:
-    # As Claude Code 2.1.285 ends it (hands-wire-6ic.6dz, measured): no retry and no fallback request, only StopFailure.
+    # As Claude Code ends it (hands-wire-6ic.6dz, measured): no retry and no fallback request, only StopFailure.
     await rig.say("tell me about lighthouses")
     exchange, _ = rig.request()
     rig.stream(exchange, "1. Lighthouses stand ", "on rocky coasts and h")
@@ -1365,7 +1365,7 @@ async def test_a_reply_the_api_breaks_mid_stream_is_said_once_as_far_as_it_came_
 
 def broken_then_asked_again(rig: Rig, heard: Sequence[str], retried: str, ahead: Sequence[dict[str, object]] = ()) -> tuple[str, str]:
     """A reply the API breaks once `heard` has streamed, before its text block finishes, and the request Claude Code asks it
-    again with, without a stream, answered `retried` whole after the blocks `ahead` (2.1.289): each told as the proxy tells it."""
+    again with, without a stream, answered `retried` whole after the blocks `ahead`: each told as the proxy tells it."""
     broken, _ = rig.request()
     rig.stream(broken, *heard)
     overloaded = {"type": "overloaded_error", "message": "Overloaded"}
@@ -2028,7 +2028,7 @@ async def test_an_answer_waiting_behind_a_block_the_turn_ends_in_is_said(rig: Ri
     await rig.worker.queue_frame(UserWords("and the tests"))
     await asyncio.sleep(0.1)
     assert "Got it. I'll come to that when this is done." not in rig.out.said()
-    # The API breaks the reply past its retry, and the turn ends with the block open (2.1.285).
+    # The API breaks the reply past its retry, and the turn ends with the block open.
     rig.brain.end(BrainAnswered("p1", StopFailed("server_error", "API Error: Connection lost mid-response.")))
     await rig.until(lambda: "Got it. I'll come to that when this is done." in rig.out.said())
     await rig.turned()

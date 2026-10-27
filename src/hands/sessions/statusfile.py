@@ -23,7 +23,7 @@ _REASONS: dict[str, Reason] = {reason: reason for reason in get_args(Reason)}
 
 def status_file(membership: Membership) -> Path:
     """Where Claude Code keeps the session's status: `sessions/<pid>.json` in the config directory the session runs
-    under, which holds its transcript at `projects/<project>/<session>.jsonl` (2.1.282). Found from the transcript, not
+    under, which holds its transcript at `projects/<project>/<session>.jsonl`. Found from the transcript, not
     from this process's CLAUDE_CONFIG_DIR, because each session may have been started under its own."""
     if len(membership.transcript.parents) < 3:
         raise Rejected(f"the transcript {membership.transcript} is not in a config directory's projects")
@@ -33,7 +33,7 @@ def status_file(membership: Membership) -> Path:
 def parse_report(membership: Membership, raw: bytes) -> Report | None:
     """The status the file sets for the member's session, None while it sets none yet, refused if the file speaks for
     another process or session. Claude Code writes the file as the session starts and sets a status in it a moment later
-    (2.1.299), and its own reader passes over a session with none: until then there is nothing set to hear."""
+    and its own reader passes over a session with none: until then there is nothing set to hear."""
     record = Payload.parse(raw)
     # A pid is handed out again, and a process that /clears or resumes holds a new session: the file is only this
     # session's while it names both.
@@ -64,8 +64,8 @@ def _status(record: Payload, name: str) -> Status:
 
 
 # How long a session's status may go unread before that is said. Claude Code sets a status within a second of writing the
-# file (91 ms on 2.1.299, 793 ms seen on earlier versions), and runs the end hook 330 to 640 ms after removing it as its
-# process exits (2.1.283): a status unread for longer is a status hands does not have.
+# file (91 ms in the latest measurement, 793 ms in an earlier one), and runs the end hook 330 to 640 ms after removing
+# it as its process exits: a status unread for longer is a status hands does not have.
 UNREAD_SECONDS = 2.0
 
 
@@ -113,7 +113,7 @@ class Statuses:
         except FileNotFoundError:
             if status_stamp(session.state) is not None:
                 # Claude Code removes the file it kept as its process exits, then runs the end hook, which lands 330 to
-                # 640 ms later (2.1.283); a process killed before its hook runs is found dead by the sweep. Only a file
+                # 640 ms later; a process killed before its hook runs is found dead by the sweep. Only a file
                 # never read is a status hands cannot have.
                 return None
             return self._unheard(member, f"Claude Code keeps no status for it at {status_file(member)}")

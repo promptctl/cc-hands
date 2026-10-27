@@ -12,7 +12,7 @@ from hands.core.turn import AgentId, AgentTask
 
 # `fork` starts a new session forked from another, under its own id.
 StartSource = Literal["startup", "resume", "clear", "compact", "fork"]
-# Why Claude Code 2.1.270 says a session ended. `other` is what a closed terminal reports.
+# Claude Code reports why a session ended; a closed terminal reports `other`.
 EndReason = Literal["clear", "resume", "logout", "prompt_input_exit", "bypass_permissions_disabled", "other"]
 
 
@@ -58,11 +58,11 @@ class MovedOn:
 class Prompted:
     session: SessionId
     at: Instant
-    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    # The permission_mode the hook carried; None only when it carried none.
     mode: Mode | None
     # [LAW:no-ambient-temporal-coupling] the prompt_id that names the turn this prompt opens. Only the opening names the
     # turn: every hook of a background subagent carries the prompt_id of the turn that started it, even after that
-    # turn stopped and another opened (2.1.281), so a turn read off any later hook could be one already over.
+    # turn stopped and another opened, so a turn read off any later hook could be one already over.
     prompt: PromptId
 
 
@@ -70,13 +70,13 @@ class Prompted:
 class Stopped:
     session: SessionId
     closing: str | None  # the reply the turn closed with, as the Stop hook carries it; None when there was none
-    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    # The permission_mode the hook carried; None only when it carried none.
     mode: Mode | None
     # The prompt_id of the turn that stopped: the id it last went on under, and a turn a background task's notification
-    # opened has its own, which its UserPromptSubmit carried too (2.1.281).
+    # opened has its own, which its UserPromptSubmit carried too.
     prompt: PromptId
     # Whether this is the turn stopping again: another Stop hook blocked its last Stop, so Claude went on in it under the
-    # same id (stop_hook_active, verified live on 2.1.282). The one Stop that ends a turn already told.
+    # same id (stop_hook_active). The one Stop that ends a turn already told.
     again: bool
     # When hands heard it, on the clock Claude Code stamps a status and a record with: every record of the turn it ends
     # was written before it fired, so a transcript read through a moment past this holds them.
@@ -90,7 +90,7 @@ class Closed:
     """The model ended a turn with a reply of text (stop_reason end_turn), as it came back on the wire: the turn's closing
     reply, heard before Claude Code fires the Stop hook that carries it too.
 
-    Never made of a reply with no text, to which Claude Code answers by asking again (2.1.285): that turn goes on."""
+    Never made of a reply with no text, to which Claude Code answers by asking again: that turn goes on."""
 
     session: SessionId
     prompt: PromptId
@@ -126,14 +126,13 @@ class Taken:
     hooks are done and it was not cancelled.
 
     At the prompt it is a turn no hook opened, running as Claude Code says: a message queued while a turn ran, taken
-    once that turn's Stop lands; a `!` command, which Claude answers once it has run; a command such as /compact
-    (2.1.282). What happened in it is what is told, which for a command is nothing."""
+    once that turn's Stop lands; a `!` command, which Claude answers once it has run; a command such as /compact.
+    What happened in it is what is told, which for a command is nothing."""
 
     session: SessionId
     prompt: PromptId
     # When Claude Code wrote the record, on the clock it stamps a status with, so an idle it set after it can be told
-    # from one it set before. None when the record carried no time, which 2.1.282's always do, or one the tail could not
-    # read and said so: either way it opens nothing.
+    # from one it set before. None when the record's time could not be read: either way it opens nothing.
     written: Stamp | None
     at: Instant  # when the record was read
 
@@ -141,7 +140,7 @@ class Taken:
 @dataclass(frozen=True)
 class Continued:
     """Claude went on answering under another prompt's id without the turn ending: a queued message taken in mid-turn,
-    or flushed by an Escape, carries its own new id from then on, and no hook ever names it (2.1.281). Read from the
+    or flushed by an Escape, carries its own new id from then on, and no hook ever names it. Read from the
     transcript, where the user's side of every record Claude answers carries the id it answers under."""
 
     session: SessionId
@@ -197,7 +196,7 @@ class Progressed:
 @dataclass(frozen=True)
 class Displayed:
     """Claude Code displayed lines of Claude's text as it streamed them: its MessageDisplay hook, one batch of finished
-    lines, or every line since the last batch when the one before was slow to be taken (2.1.280)."""
+    lines, or every line since the last batch when the one before was slow to be taken."""
 
     session: SessionId
     # The id of the turn it was written in, as the hook names it; a tuple, as a Progressed's is, though a hook names one.
@@ -222,7 +221,7 @@ class PermissionRequested:
     at: Instant
     request: RequestId
     on: Blocker
-    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    # The permission_mode the hook carried; None only when it carried none.
     mode: Mode | None
 
 
@@ -233,7 +232,7 @@ class ToolFinished:
     session: SessionId
     at: Instant
     call: FinishedCall
-    # The permission_mode the hook carried; None only when it carried none, which 2.1.281's never do.
+    # The permission_mode the hook carried; None only when it carried none.
     mode: Mode | None
 
 

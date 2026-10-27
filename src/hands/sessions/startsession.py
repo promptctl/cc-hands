@@ -25,7 +25,7 @@ from hands.sessions.terminals import Process, process_table
 from hands.sessions.tmux import ran_at, shown
 from hands.sessions.untap import untap_script, untapped
 
-# What a session gives each process it runs, naming itself as their parent: Claude Code's (2.1.288), and fritter's
+# What a session gives each process it runs, naming itself as their parent: Claude Code's, and fritter's
 # address. A `claude` started under Claude Code's is a child of that session, not one of its own: it writes its turns
 # into the parent's transcript, and its own is never made, so hands has nothing to read; and one started outside hands'
 # shim under fritter's would join hands as that session's.
@@ -37,8 +37,7 @@ SESSION_GIVEN = (
 
 # The settings a started session is launched with. Claude Code's dialog for a project's new MCP servers holds the session
 # before its first hook, so it never joins: hands trusts them as the dialog's "use this and all future MCP servers in this
-# project" does, and one the user turned down stays down, since that is read first (2.1.299, measured: the dialog shows
-# without this and is gone with it; with it, a server in disabledMcpjsonServers is still not run).
+# project" does, and one the user turned down stays down, since that is read first.
 SETTINGS = json.dumps({"enableAllProjectMcpServers": True})
 
 # How long a started session has to join hands: Claude Code's start and its first hook. A folder it has never been

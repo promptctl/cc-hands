@@ -19,7 +19,7 @@ the speaker blocks for good. So the transport is reopened whole when the default
 change, which macOS does the moment the default device disappears.
 
 The phone is the other place hands can be (`hands.voice.phone`). The gate says which: the pipeline hears only that
-place's microphone, so Whisper is handed one stream of frames, and the speaker plays to that place, so a reply goes
+place's microphone, so the hold owner is handed one stream of frames, and the speaker plays to that place, so a reply goes
 where the user is.
 """
 
@@ -532,12 +532,12 @@ class KeyedMicrophone(LocalAudioInputTransport):
         loop = self.get_event_loop()
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
-        # [LAW:single-enforcer] the gate says which place is heard, by an edge as by Whisper: while hands is at the
+        # [LAW:single-enforcer] the gate says which place is heard, by an edge as by the hold owner: while hands is at the
         # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
         overheard = cleaned if gate.hears("desk") else bytes(len(cleaned))
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
-        # [LAW:single-enforcer] the gate alone says which place's microphone reaches Whisper; while hands is at the
+        # [LAW:single-enforcer] the gate alone says which place's microphone reaches the hold owner; while hands is at the
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
             return None, pyaudio.paContinue

@@ -55,7 +55,7 @@ def _json(body: bytes) -> object:
 
 
 # The headers the API refuses a subscription's spent usage limit with, and the second its access returns: the body names no
-# limit. Claude Code 2.1.285 says the same reset (measured, hands-wire-6ic.gfq).
+# limit. Claude Code reads that same reset (hands-wire-6ic.gfq).
 _LIMIT_STATUS = "anthropic-ratelimit-unified-status"
 _LIMIT_RESET = "anthropic-ratelimit-unified-reset"
 

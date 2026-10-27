@@ -13,7 +13,7 @@ class Account:
     # a token, or another it adds.
     method: str
     # Who holds it: the email a Claude plan or a Console login is under, or where Claude Code reads a key from; a token
-    # names no holder (2.1.289).
+    # names no holder.
     holder: str | None
 
     def __str__(self) -> str:

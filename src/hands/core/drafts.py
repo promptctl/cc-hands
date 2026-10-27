@@ -82,7 +82,7 @@ def decide(registry: Registry, request: Decidable) -> tuple[Registry, DraftOutco
     match registry.sessions.get(request.session):
         case None:
             # This is also what keeps a draft out of a session at a startup dialog - workspace trust, a project's new MCP
-            # servers - since Claude Code runs no hook, SessionStart included, until they are answered (measured on 2.1.283).
+            # servers - since Claude Code runs no hook, SessionStart included, until they are answered.
             return registry, UnknownSession(request.session)
         case known:
             return _decide(registry, request, known, registry.drafts.get(request.session))
@@ -110,5 +110,5 @@ def _decide(registry: Registry, request: Decidable, session: Known, staged: Stag
                     return registry, AtItsDialog(id)
                 case (_, Fritter() | Pane() as by):
                     # Sent the moment it is decided: the draft leaves the registry here, so there is never a second send
-                    # of it. A working session queues what is typed into it until its turn ends (measured on 2.1.270).
+                    # of it. A working session queues what is typed into it until its turn ends.
                     return registry.unstage(id), Type(id, by, Text(draft.text))

@@ -48,7 +48,7 @@ from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, 
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
 from hands.voice.backends import Account
 
-# What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu, 2.1.284).
+# What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu).
 # LSP needs no switch: it comes only from plugins, the brain's own setup installs none, and hands' own declares none.
 SLIM = {
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
@@ -58,11 +58,11 @@ SLIM = {
     # A background command's notification opens a turn of its own, under a prompt id no turn hands typed carries, which
     # would take a typed turn's place or leave it never ending (hands-wire-6ic.99l review).
     "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-    # A scheduled prompt opens a turn of its own the same way when it fires (hands-brain-d8g.9d6 review, 2.1.288).
+    # A scheduled prompt opens a turn of its own the same way when it fires (hands-brain-d8g.9d6 review).
     "CLAUDE_CODE_DISABLE_CRON": "1",
     # The account's claude.ai connectors are Brandon's, never the brain's: loaded, they joined every request after the
-    # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph, 2.1.284). The skills and plugins the account syncs
-    # are turned off in the brain's settings.json, the only place Claude Code reads that switch from (2.1.288).
+    # first (turn 2 grew from 8.7 KB to 112 KB; hands-wire-6ic.eph). The skills and plugins the account syncs
+    # are turned off in the brain's settings.json, the only place Claude Code reads that switch from.
     "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 }
 
@@ -78,7 +78,7 @@ PLUGIN_SKILLS = tuple(
 )
 
 # What Claude Code prefers to its own login: credentials, and the switches that send it to a provider other than
-# Anthropic's API (2.1.289). The brain's login is its config directory's, whichever Claude Code takes, a key in its
+# Anthropic's API. The brain's login is its config directory's, whichever Claude Code takes, a key in its
 # settings.json among them; inherited from hands' environment, any of these would put the brain on another account or
 # provider without a word, so none is passed on.
 FOREIGN_LOGINS = (
@@ -86,7 +86,7 @@ FOREIGN_LOGINS = (
     *(f"CLAUDE_CODE_USE_{provider}" for provider in ("BEDROCK", "VERTEX", "FOUNDRY", "ANTHROPIC_AWS", "ANTHROPIC_GOOGLE_CLOUD", "MANTLE", "GATEWAY")),
 )
 
-# A dialog nobody can see would hold its turn open forever with no hook to say so (2.1.288). A permission its setup asks
+# A dialog nobody can see would hold its turn open forever with no hook to say so. A permission its setup asks
 # about is held at its hook while the user is asked by voice, in a turn of theirs; anything else is answered no there,
 # and the brain hears why.
 NOBODY = "Nobody can be asked: no turn of the user's is in flight to ask in, so what this Claude Code's settings would ask about is refused."
@@ -99,11 +99,11 @@ STOPPED = "hands stopped this turn, so it did not run."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
 
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
-# dialog about to open. Escape ends a turn with none of them (measured on 2.1.285), so a turn told to stop is over when
+# dialog about to open. Escape ends a turn with none of them, so a turn told to stop is over when
 # it is told.
 HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
 # A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
-# where it had none, inside a tag pair (2.1.289, measured 2026-10-04).
+# where it had none, inside a tag pair.
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
 
 # `claude auth status` answers in about a second; one that has not answered in this long is not going to.
@@ -130,8 +130,7 @@ INTERRUPTED = "[Request interrupted by user"
 
 def _kept(prompt: str) -> str:
     """A prompt as Claude Code keeps what was typed: out of a paste's tags, and without the whitespace Claude Code trims
-    from what it takes: trailing from every prompt (2.1.289, measured 2026-10-04), leading too from one it queued (2.1.289,
-    the brain's transcript 15192e41, 2026-10-19 05:29:11)."""
+    from what it takes: trailing from every prompt, leading too from one it queued (the brain's transcript 15192e41, 2026-10-19 05:29:11)."""
     paste = PASTE.fullmatch(prompt)
     return (prompt if paste is None else paste[2]).strip()
 
@@ -202,7 +201,7 @@ def conversation(config_dir: Path, new: SessionId) -> Conversation:
     if session is None:
         return Fresh(new, None)
     # [LAW:one-source-of-truth] Claude Code's own transcript says whether there is a conversation to resume: named by
-    # its session, under any project directory, as Claude Code finds the session it resumes (2.1.289, measured).
+    # its session, under any project directory, as Claude Code finds the session it resumes.
     if glob.glob(glob.escape(str(config_dir / "projects")) + f"/*/{glob.escape(session)}.jsonl"):
         return Resumed(session)
     return Fresh(new, session)
@@ -247,7 +246,7 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
         case Fresh(session=session):
             return ("--session-id", session)
         case Resumed(session=session):
-            # Claude Code keeps the session it resumes unless told to fork it (2.1.289, --fork-session).
+            # Claude Code keeps the session it resumes unless told to fork it (--fork-session).
             return ("--resume", session)
 
 
@@ -256,8 +255,8 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
     return [
         *slim(claude, launch.station.model, launch.conversation),
         # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
-        # sends the system prompt its conversation first had until it is compacted (2.1.289, measured: a resume launched
-        # with a new --append-system-prompt sent the old one). Rendered fresh, it is byte-identical request to request.
+        # sends the system prompt its conversation first had until it is compacted, even for a resume launched with a new
+        # --append-system-prompt. Rendered fresh, it is byte-identical request to request.
         "--system-prompt-snapshot", "off",
         # Beside the MCP servers its own setup names, never in place of them.
         "--mcp-config", launch.mcp_config,
@@ -273,7 +272,7 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
             "hooks": {event: [{"hooks": [{"type": "http", "url": f"{hooks}/{event}", **declared(event)}]}] for event in HOOKS},
             # Tool search defers MCP tools behind ToolSearch, so hands' tools would reach the model only after a round trip
             # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
-            # which a process environment does not (2.1.288, measured behind a localhost base URL, hands-brain-8gb).
+            # which a process environment does not (hands-brain-8gb).
             "env": {"ENABLE_TOOL_SEARCH": "false"},
         }),
     ]
@@ -351,7 +350,7 @@ class Login:
 def unanswered(config_dir: Path) -> str | None:
     """Why the brain would start on one of Claude Code's first screens, or None when it would not: Claude Code records
     in its own .claude.json that its onboarding finished, that the directory the brain runs in, or one above it, is
-    trusted, and its answer on an API key its settings.json sets, by the key's last 20 characters (2.1.289). A config
+    trusted, and its answer on an API key its settings.json sets, by the key's last 20 characters. A config
     directory made by anything else, `claude auth status` among them, has none of them."""
     state = config_dir / ".claude.json"
     settings = config_dir / "settings.json"
@@ -399,7 +398,7 @@ def answered(config_dir: Path) -> None:
 # The logins `claude auth login` makes, each named by its own flag: a Claude plan, or an Anthropic Console key.
 type Method = Literal["claudeai", "console"]
 
-# [LAW:one-source-of-truth] the authMethod `claude auth status` says of each login once it is made (2.1.289).
+# [LAW:one-source-of-truth] the authMethod `claude auth status` says of each login once it is made.
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
@@ -452,8 +451,8 @@ def starting_settings(config_dir: Path) -> bool:
 def account_kept_out(config_dir: Path) -> None:
     """Raises Unstartable unless the brain's settings.json keeps out the skills and plugins its login's account syncs.
 
-    They are Brandon's, never the brain's, and settings.json is the only place Claude Code reads either switch from
-    (2.1.288): not --settings, and not the environment. Left out, each is on."""
+    They are Brandon's, never the brain's, and settings.json is the only place Claude Code reads either switch from:
+    not --settings, and not the environment. Left out, each is on."""
     settings = config_dir / "settings.json"
     fix = f'set "syncClaudeAiSkills": false and "syncClaudeAiPlugins": false in {settings}'
     try:
@@ -606,7 +605,7 @@ class Brain:
         self._turn: _Turn | None = None
         # The permissions held at their hooks now: one for each call of a reply that asks. Nothing is typed into the brain
         # while one is held but the Escape that stops its turn: what is typed goes to the dialog Claude Code draws, whose
-        # Return says yes (2.1.288, spike hands-brain-d8g.aur). A turn is typed only once the last has ended.
+        # Return says yes (spike hands-brain-d8g.aur). A turn is typed only once the last has ended.
         self._held: set[Asked] = set()
         self._typing: set[asyncio.Task[None]] = set()
         # The prompts Claude Code took that are no turn's, from their UserPromptSubmit until their Stop or the Escape that
@@ -690,7 +689,7 @@ class Brain:
                 # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it
                 # took the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
-                # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
+                # it.
                 try:
                     stopped = await self._stopped_before_listed(turn)
                     taken = False
@@ -767,13 +766,13 @@ class Brain:
         no turn's it stopped are its `others`. Escape posts no hook for the prompt it stops, so they are no longer running."""
         stopped = tuple(self._unowned)
         await self._type(lambda typist: typist.press("escape"))
-        # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (2.1.288, spike
+        # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (spike
         # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
         self._settle(Deny(STOPPED))
         # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
-        # prompt (2.1.289: its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
+        # prompt (its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
         # it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes,
-        # whatever was typed between (2.1.285, read from its source 2026-09-30); so no two are pressed that close,
+        # whatever was typed between; so no two are pressed that close,
         # counted from when each went and with room for Claude Code to read the first late.
         loop = asyncio.get_running_loop()
         await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
@@ -1114,7 +1113,7 @@ async def start(launch: Launch, record: Record) -> Brain:
                 typist = await _typist(running, sockets, launch.session)
             except Unstartable:
                 # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
-                # Claude Code keeps its transcript (2.1.289 exits "No conversation found" on one it cannot read).
+                # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
                 annotate(let_go=let_go(station.config_dir))
                 raise
             # Held once the brain is up in it, so the next start resumes what this one says.
@@ -1158,7 +1157,7 @@ async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typ
     it started.
 
     [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
-    its input (0.19s in, its terminal raw from 0.02s, 2.1.289, measured 2026-10-04), not a guess at how long that takes: a
+    its input, not a guess at how long that takes: a
     turn typed into a terminal not yet raw has its Return made a newline, which Claude Code takes as one more line."""
     deadline = asyncio.get_running_loop().time() + START_SECONDS
     waiting = "fritter had not started the brain and opened its socket"

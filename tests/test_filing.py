@@ -1,6 +1,7 @@
 """Warnings and errors from the audit log grouped by cause, and what `hands file-tickets` files for each group."""
 
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -245,8 +246,8 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
     assert cli.main(["--home", str(home), "file-tickets", epic]) == 0
     filed = bugs(repository)
     assert sorted(str(issue["title"]) for issue in filed) == [
-        "hands.sessions.delta:_git: git add in <path> did not answer in <n>s",
-        "hands.sessions.tap:read: hands could not read session <id>'s copy at <path>: not JSON at char <n> in <text>",
+        "src/hands/sessions/delta.py: git add in <path> did not answer in <n>s",
+        "src/hands/sessions/tap.py: hands could not read session <id>'s copy at <path>: not JSON at char <n> in <text>",
     ]
     assert all(issue["status"] == "open" for issue in filed)
     assert cli.main(["--home", str(home), "file-tickets", epic]) == 0
@@ -310,8 +311,28 @@ def test_a_failed_unit_is_a_sighting_of_its_own_unless_a_unit_inside_it_failed_f
 
 
 def test_a_title_is_one_line_whatever_the_cause_said() -> None:
-    group = grouping.Group("hands.x:f", "request failed:\n  <text>\tagain", (grouping.Sighting("hands.x:f", "c", START),))
-    assert filing.title(group) == "hands.x:f: request failed: <text> again"
+    group = grouping.Group("tool.call", "request failed:\n  <text>\tagain", (grouping.Sighting("tool.call", "c", START, "tool.call"),))
+    assert filing.title(group) == "tool.call: request failed: <text> again"
+
+
+@pytest.mark.parametrize(("source", "where", "named"), [
+    ("hands.sessions.statusfile:_unheard", "/Users/someone/.local/share/uv/tools/hands/lib/python3.12/site-packages/hands/sessions/statusfile.py:151", "src/hands/sessions/statusfile.py"),
+    ("hands.sessions:read", "/Users/someone/code/hands/src/hands/sessions/__init__.py:9", "src/hands/sessions/__init__.py"),
+    ("pipecat.services.stt_service:push_error", "/Users/someone/.venv/lib/python3.12/site-packages/pipecat/services/stt_service.py:212", "pipecat/services/stt_service.py"),
+])
+def test_a_ticket_names_a_logged_line_by_the_file_it_was_logged_in_and_its_group_is_known_as_before(tmp_path: Path, source: str, where: str, named: str) -> None:
+    log = AuditLog(tmp_path / "audit", clock=Clock())
+    log.record(Logged(level="warning", source=source, message="no status", where=where, trace=()))
+    [group] = groups_of(tmp_path)
+    assert group.named == named
+    assert filing.title(group) == f"{named}: no status"
+    description = filing.description(group, LOGS)
+    assert f"Origin: {named}" in description
+    # A ticket points no finer than a file: neither the function nor the line the log keeps reaches it.
+    function, line = source.partition(":")[2], where.rpartition(":")[2]
+    assert function not in description and f":{line}" not in description and "/Users/someone" not in description
+    # The label the group's tickets already carry is unchanged, so a ticket filed before is still found by it.
+    assert group.fingerprint == hashlib.sha256(f"{source}\nno status".encode()).hexdigest()[:12]
 
 
 def test_a_last_seen_line_the_pass_did_not_write_is_not_read_as_one(tmp_path: Path) -> None:
@@ -350,3 +371,23 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path,
     monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
         asyncio.run(backlog.file_ticket(tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
+
+
+def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:
+    def logged(kind: str, **where: object) -> str:
+        return json.dumps({"at": "2026-10-24T12:00:00.000+00:00", "level": "warning", "type": kind, "source": "hands.sessions.delta:_git", "message": "slow", **where, "trace": []})
+
+    lines = [
+        # A Failure line before it said where, one after, a Logged line, and Logged lines whose where says nothing.
+        logged("Failure"),
+        logged("Failure", where="/x/hands/sessions/delta.py:515"),
+        logged("Logged", where="/x/hands/sessions/delta.py:515"),
+        logged("Logged", where=7),
+        logged("Logged"),
+    ]
+    read = grouping.read(lines)
+    assert [(group.origin, group.cause, group.named, len(group.sightings)) for group in read.groups] == [
+        ("hands.sessions.delta:_git", "slow", "src/hands/sessions/delta.py", 5),
+    ]
+    assert [sighting.named for sighting in read.groups[0].sightings] == ["src/hands/sessions/delta.py"] * 5
+    assert read.unparsed == 0

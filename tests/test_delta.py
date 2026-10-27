@@ -1117,7 +1117,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
 
 
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
-    """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code (2.1.282)."""
+    """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)

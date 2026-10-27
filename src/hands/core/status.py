@@ -1,6 +1,6 @@
 """What Claude Code itself says a session is doing, as it publishes it in the session's own file.
 
-Claude Code 2.1.280 to 2.1.289 keep ~/.claude/sessions/<pid>.json for every interactive session and rewrite its
+Claude Code keeps ~/.claude/sessions/<pid>.json for every interactive session and rewrites its
 `status` as the session moves: busy while a turn, a `!` command or a background subagent runs, waiting at a dialog,
 idle at the prompt. It is the session's own word on whether it is at work, which no hook and no transcript record says
 for every way a turn can stop.
@@ -22,10 +22,10 @@ class Idle:
 @dataclass(frozen=True)
 class Busy:
     """A turn or a `!` command runs; or a subagent it started in the background does, from its launch until the turn
-    that reports it back ends, though every turn between has stopped (2.1.289)."""
+    that reports it back ends, though every turn between has stopped."""
 
 
-# The waitingFor reasons 2.1.282 writes.
+# The waitingFor reasons Claude Code writes.
 Reason = Literal["permission prompt", "input needed"]
 
 
@@ -46,7 +46,7 @@ class Waiting:
 @dataclass(frozen=True)
 class Shell:
     """At its prompt, with a shell command it ran in the background still running: Claude Code writes shell where it
-    would write idle while any of its background bash tasks has not ended (2.1.289). No turn runs; the task's end is
+    would write idle while any of its background bash tasks has not ended. No turn runs; the task's end is
     news to the session, which opens one. Claude Code's own session list labels it working, for the task; hands says
     what the session does, which is wait at its prompt, where a typed prompt runs at once."""
 

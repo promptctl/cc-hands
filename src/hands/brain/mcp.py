@@ -36,7 +36,7 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 PARSE_ERROR = -32700
 
-# Where Claude Code puts, in a tools/call's _meta, the id of the tool_use block the call runs (2.1.288).
+# Where Claude Code puts, in a tools/call's _meta, the id of the tool_use block the call runs.
 TOOL_USE_ID = "claudecode/toolUseId"
 
 
@@ -132,7 +132,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
                 fail(why)
                 return _error(id, INVALID_PARAMS, why)
             case "server/discover":
-                # Claude Code 2.1.284 asks for it first and, refused, opens with initialize: a known question with a known no.
+                # Claude Code asks for it first and, refused, opens with initialize: a known question with a known no.
                 return _error(id, METHOD_NOT_FOUND, f"no method {method}")
             case _:
                 fail(f"no method {method}")
@@ -140,7 +140,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
 
     async def call(id: str | int, tool: Tool, arguments: Mapping[str, object], used: str | None) -> Mapping[str, object]:
         if used is None:
-            # [LAW:no-silent-failure] Claude Code 2.1.288 names the tool_use block each call runs: a call naming none is
+            # [LAW:no-silent-failure] Claude Code names the tool_use block each call runs: a call naming none is
             # run as a trace of its own, cut off from the turn that made it.
             logger.warning(f"the brain called {tool.name} naming no tool_use in {TOOL_USE_ID}; its run is not joined to its turn")
         try:

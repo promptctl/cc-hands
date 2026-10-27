@@ -122,7 +122,7 @@ def called(payload: Payload) -> Blocker:
     approval, every other tool a permission to run it."""
     match payload.text("tool_name"):
         case "ExitPlanMode":
-            # Claude Code reads the plan file into the input before any hook sees it (2.1.281).
+            # Claude Code reads the plan file into the input before any hook sees it.
             return Plan(Payload(payload.mapping("tool_input")).text("plan"))
         case _:
             return _tool_call(payload)
@@ -132,7 +132,7 @@ def _ran(payload: Payload) -> FinishedCall:
     """A call that ran, named as its request was, so the two can be matched."""
     match payload.text("tool_name"):
         case "ExitPlanMode":
-            # Its input is what the approval sent, which is empty unless the plan was edited at the dialog (2.1.281).
+            # Its input is what the approval sent, which is empty unless the plan was edited at the dialog.
             return PlanApproved()
         case _:
             return _tool_call(payload)
@@ -177,14 +177,14 @@ def narration(payload: Payload, key: str) -> str | None:
 
 
 def _mode(payload: Payload) -> Mode | None:
-    """The session's permission mode as the hook reports it, which every hook hands reads a mode from carries (2.1.281)."""
+    """The session's permission mode as the hook reports it, which every hook hands reads a mode from carries."""
     # Not refused when it is missing or strange, as a hook that names no turn is: the hook's event and its turn are what
     # move the session, and refusing a Stop over its mode would lose that turn's telling.
     # [LAW:no-silent-failure] a hook with no mode, or a strange one, leaves the session in the mode it last reported, and the log says why.
     event = payload.fields.get("hook_event_name")
     match (payload.fields.get("agent_id"), payload.fields.get("permission_mode")):
         case (str(), _):
-            # Fired inside a subagent, which runs in its own mode (2.1.281): that mode is not the session's.
+            # Fired inside a subagent, which runs in its own mode: that mode is not the session's.
             return None
         case (_, str() as name):
             # An unknown mode is not logged: it is said by its name wherever the mode is, which is louder.
@@ -198,7 +198,7 @@ def _mode(payload: Payload) -> Mode | None:
 
 
 def _prompt(payload: Payload) -> PromptId:
-    """The prompt_id that names the turn a prompt opens or a Stop ends, which every one of them carries (2.1.281).
+    """The prompt_id that names the turn a prompt opens or a Stop ends, which every one of them carries.
 
     Raises Rejected for a hook that names no turn: nothing inland could match it to its records or its Stop.
     """
@@ -234,7 +234,7 @@ _MODE_AFTER_PLAN: Mapping[ModeAfterPlan, list[object]] = {
 
 
 def name_output(name: str) -> Mapping[str, object]:
-    """What a UserPromptSubmit hook prints to set its session's name, the title Claude Code shows on its terminal (2.1.286)."""
+    """What a UserPromptSubmit hook prints to set its session's name, the title Claude Code shows on its terminal."""
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": name}}
 
 
@@ -244,14 +244,14 @@ def hook_output(reply: Allow | AllowWith | Approve | Deny) -> Mapping[str, objec
 def hook_output(reply: HookReply) -> Mapping[str, object] | None: ...
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:
     """What a waiting PermissionRequest hook prints for Claude Code; None leaves the question to its dialog."""
-    # The reply shape Claude Code parses from a PermissionRequest hook's stdout (2.1.270; the plan's, 2.1.281).
+    # The reply shape Claude Code parses from a PermissionRequest hook's stdout.
     match reply:
         case Allow():
             decision: dict[str, object] = {"behavior": "allow"}
         case AllowWith(input=input):
             decision = {"behavior": "allow", "updatedInput": dict(input)}
         case Approve(mode=mode):
-            # What the plan dialog's own yeses send (2.1.281): an empty input, so the plan is read from its file as the
+            # What the plan dialog's own yeses send: an empty input, so the plan is read from its file as the
             # user left it, and the mode to leave plan mode for. Claude Code ignores an allow with no updatedInput for a
             # tool that asks the user something, and shows its dialog instead.
             decision = {"behavior": "allow", "updatedInput": {}, "updatedPermissions": _MODE_AFTER_PLAN[mode]}

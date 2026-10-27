@@ -189,8 +189,7 @@ necessary. The entire output of every command is a prompt, in essence."
 
 ## What Claude Code adds beyond what you typed
 
-From the newest recording (`ccdump-20260422-233238Z-2be307e3.har`, Claude Code
-2.1.111), so the slim brain knows what it is removing:
+From the newest recording (`ccdump-20260422-233238Z-2be307e3.har`), so the slim brain knows what it is removing:
 
 - System prompt: three blocks, 81 + 57 + 27,574 characters, the last two with 1h cache
   breakpoints. Body fields beyond the obvious: `thinking: adaptive`,

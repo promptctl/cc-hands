@@ -25,14 +25,15 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unconnected, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unconnected, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import events, located, onboard, pin, pinned_to
+from conftest import PATIENCE_SECS, events, located, onboard, patiently, pin, pinned_to
+from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
@@ -688,7 +689,7 @@ async def test_a_side_question_is_answered_by_the_reply_on_its_own_session_whate
     asked = asyncio.create_task(asides.ask(AsideKind.SUMMARY, "what did it say?", WAITED))
     await until(lambda: len(typed(tmp_path)) == 1)
     [[_, _, session]] = typed(tmp_path)
-    # After #310, 2.1.289's side questions read as Auxiliary, and a question heard only as a Fork waited out every deadline.
+    # Side questions read as Auxiliary, and a question heard only as a Fork waited out every deadline.
     asides.hear(answered(session, "It said four.", kind=kind))
     assert await asked == "It said four."
 
@@ -869,7 +870,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
         brain.hear(Sent("x3", SessionId("elsewhere"), MainTurn(None), None, body))
         assert errors == []
         brain.hear(Sent("x4", SessionId("b1"), MainTurn(None), None, body))
-        # Deferred, as 2.1.288 offers MCP tools under tool search: the server may be connected, and is not blamed.
+        # Deferred, as Claude Code offers MCP tools under tool search: the server may be connected, and is not blamed.
         deferred = {**body, "tools": [{"name": "Read"}, {"name": "ToolSearch"}, {"name": "DeferredToolPlaceholder", "defer_loading": True}]}
         brain.hear(Sent("x5", SessionId("b1"), MainTurn(None), None, deferred))
     finally:
@@ -1067,6 +1068,41 @@ class _Jammed:
         raise OSError("jammed")
 
     press = type
+
+
+# The recorded turns the brain does not meet yet, which promptctl-brain-vu2t.abp moves onto the one model of a turn. A
+# prompt posted under the running turn's id puts that id among the brain's unowned prompts, so the next turn is Escaped
+# and Ctrl-C'd for nothing; and a turn that goes on under an id the brain never typed is never answered.
+UNMET = {"joined_as_next_prompt", "joined_at_boundary", "notified_mid_turn", "sent_now", "sent_now_mcp", "sent_now_mid_batch"}
+
+
+def _played(tmp: Path) -> int:
+    """How much of a recorded turn the stand-in has written to the brain's transcripts so far."""
+    return sum(path.stat().st_size for path in (tmp / "brain" / "projects").glob("*/*.jsonl"))
+
+
+@pytest.mark.parametrize("name", [pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="promptctl-brain-vu2t.abp")) if name in UNMET else name for name in RECORDINGS])
+async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, name: str) -> None:
+    brain = await start(launch(tmp_path), lambda _: None)
+    asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
+    following: asyncio.Task[BrainEnded] | None = None
+    try:
+        # Played to its end, every hook of it answered: whatever the brain makes of the turn, it has made by then.
+        await patiently(lambda: ["played", name] in typed(tmp_path), lambda: (len(typed(tmp_path)), _played(tmp_path)))
+        # Its Stop was answered before its last line was played, so the answer has only to reach the asker, within the
+        # patience: one never given is the expected failure, not a stall. The typed turn ends at the first Stop posted.
+        await asyncio.wait({asking}, timeout=PATIENCE_SECS)
+        assert asking.done() and asking.result() == BrainAnswered(stops(RECORDINGS[name])[0], None)
+        following = asyncio.create_task(brain.ask("and then?", unasked))
+        # [LAW:no-silent-failure] a stall is a TimeoutError, never the expected failure.
+        await patiently(following.done, lambda: len(typed(tmp_path)))
+        assert following.result() == BrainAnswered(f"p{prompts(RECORDINGS[name]) + 1}", None)
+    finally:
+        asking.cancel()
+        if following is not None:
+            following.cancel()
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", f" play {name}"], ["played", name], ["prompt", " and then?"]]
 
 
 def failures() -> tuple[list[str], int]:
@@ -1362,7 +1398,7 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
-    # As Claude Code 2.1.289 does with a transcript it cannot read.
+    # As Claude Code does with a transcript it cannot read.
     fake_claude.write_text("#!/bin/sh\necho No conversation found with session ID: c1\n")
     pin(monkeypatch, fake_claude)
     brain = tmp_path / "brain"

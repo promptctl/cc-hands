@@ -39,15 +39,15 @@ HOOKS_FILE = "hooks/hooks.json"
 PLUGIN_ID = "hands@cc-hands"
 
 # [LAW:one-source-of-truth] where MessageDisplay is posted: Claude Code dispatches it synchronously for every batch of
-# lines it displays (2.1.270), so it is an HTTP hook, with no process spawned per batch. Its URL takes no variables
-# (2.1.288), so the port is fixed here and the daemon serves it, on loopback alone: over TCP any local user can reach a
+# lines it displays, so it is an HTTP hook, with no process spawned per batch. Its URL takes no variables, so the port
+# is fixed here and the daemon serves it, on loopback alone: over TCP any local user can reach a
 # route, so this one takes MessageDisplay and nothing else, and permissions stay on the home's unix socket.
 DISPLAY_HOST = "127.0.0.1"
 DISPLAY_PORT = 47615
 DISPLAY_PATH = "/hands/display"
 DISPLAY_URL = f"http://{DISPLAY_HOST}:{DISPLAY_PORT}{DISPLAY_PATH}"
 # How long Claude Code waits on each displayed batch: it waits in the agent's path, so a daemon that is slow, down, or
-# hung costs lines of narration and never the agent's speed (measured on 2.1.280).
+# hung costs lines of narration and never the agent's speed.
 DISPLAY_TIMEOUT_SECONDS = 2
 
 # The hooks whose occurrences hands only passes on (hands.core.occurrences), as the user sets each to be said.
