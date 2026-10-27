@@ -1,10 +1,10 @@
-"""The end of a user turn: once Whisper is done with every hold of the key the turn took in.
+"""The end of a user turn: once the hold owner is done with every hold the turn took in.
 
 A turn is Pipecat's; a hold is the key's. They are not one to one: Pipecat keeps a turn open until it ends, so a press
-while Whisper is still transcribing the last hold joins that turn rather than opening one. Whisper numbers each hold as
-it opens, and says when it is done with it, after pushing whatever text the hold had, or at once for a hold the key
-dropped. The turn ends when every hold it took in is done, so no hold's words are left out of it, and a hold with no
-words ends it as promptly as one with.
+while the last hold is still being transcribed joins that turn rather than opening one. The hold owner
+(`hands.voice.holdowner`) numbers each hold as it opens, and says when it is done with it, after pushing whatever text the
+hold had, or as soon as the holds ahead of it are done for a hold the key dropped. The turn ends when every hold it took
+in is done, so no hold's words are left out of it, and a hold with no words ends it as promptly as one with.
 """
 
 from dataclasses import dataclass
@@ -21,23 +21,15 @@ from pipecat.frames.frames import (
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
-from hands.voice.trigger import Opener
-
-
-@dataclass(frozen=True)
-class Hold:
-    """One hold, by the number Whisper gave it as it opened, and what opened it."""
-
-    number: int
-    opener: Opener
+from hands.voice.holds import Hold
 
 
 @dataclass(kw_only=True)
 class Typed(DataFrame, UninterruptibleFrame):
-    """Words the user typed and sent, queued into the pipeline for Whisper to take as a hold of their own, already heard.
+    """Words the user typed and sent, queued into the pipeline for the hold owner to take as a hold of their own, already heard.
 
     The user's own, as Words are, so no interruption drops it: the page was told they were taken, and a turn's cut can
-    land while they are still on their way to Whisper, or while Whisper is opening their hold.
+    land while they are still on their way to the hold owner, or while it is opening their hold.
     """
 
     text: str
@@ -55,19 +47,19 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
 
 
 class Words(TranscriptionFrame, UninterruptibleFrame):
-    """What Whisper heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
+    """What the transcriber heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
     are still on their way to it, since a turn the voice opened cuts hands off only once they are heard."""
 
 
 class InterimWords(InterimTranscriptionFrame, UninterruptibleFrame):
-    """Words Whisper heard in a hold still open, Pipecat's interim transcription: someone is speaking, so a turn the voice
+    """Words a listener heard in a hold still open, Pipecat's interim transcription: someone is speaking, so a turn the voice
     opened cuts hands off on them while the user speaks, not once they stop. Never sent: the hold's Words, heard whole as
     it closes, are what the turn says. The user's own, as Words are, so no interruption drops it."""
 
 
 @dataclass(kw_only=True)
 class TurnResolved(DataFrame, UninterruptibleFrame):
-    """Whisper is done with this hold: whatever text it had has been pushed ahead of this.
+    """The hold owner is done with this hold: whatever text it had has been pushed ahead of this.
 
     Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way: a hold dropped at once
     resolves right behind its own start.
@@ -81,7 +73,7 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
-        # [LAW:one-source-of-truth] Whisper opens and resolves the holds; this is the set it has opened and not yet
+        # [LAW:one-source-of-truth] the hold owner opens and resolves the holds; this is the set it has opened and not yet
         # resolved. A set, because a dropped hold is resolved at once, ahead of an earlier one still being transcribed.
         self._open: set[Hold] = set()
 
@@ -90,8 +82,8 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
             case TurnOpened(hold=hold):
                 self._open.add(hold)
             case TurnResolved(hold=hold):
-                # Whisper opens a hold, a system frame, before it pushes anything that resolves it, and a system frame is
-                # never overtaken; a hold resolved but never opened is Whisper's bug, so it fails here.
+                # The hold owner opens a hold, a system frame, before it pushes anything that resolves it, and a system frame is
+                # never overtaken; a hold resolved but never opened is the owner's bug, so it fails here.
                 self._open.remove(hold)
                 if not self._open:
                     # A turn whose holds had no text ends with nothing aggregated, so nothing is sent to the model.

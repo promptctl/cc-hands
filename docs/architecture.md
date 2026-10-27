@@ -1722,7 +1722,8 @@ from the gate, as it carries the key. A hold the user's hand opens, the held key
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose,
 whose detector hears nothing while hands speaks. A hold engaged conversation opens cuts
-only once Whisper pushes words for it, Pipecat's transcription start, because under
+only once a listener hears words in it while it is open (Whisper, today), Pipecat's
+transcription start, because under
 engaged conversation the desk's detector hears through the echo canceller, and the
 reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
 on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
@@ -1736,14 +1737,15 @@ the user. And the user aggregator takes none of them in until the assistant aggr
 at the end of the pipeline, says the reply the cut stopped is written as
 cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
 off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
-long after it opened it did, or that it never did. A turn ends once Whisper is done with every
+long after it opened it did, or that it never did. A turn ends once the hold owner is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
 one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no
 transcript, which a slow or queued transcription outlasts, so that timeout is set to
-never (`user_turn_stop_timeout` in `build_voice`). What bounds a turn instead is Whisper:
-a transcription that has not returned in a minute fails, said aloud like any other
-failure, and that resolves its hold (`TRANSCRIBING_SECONDS`).
+never (`user_turn_stop_timeout` in `build_voice`). What bounds a turn instead is the hold
+owner: a transcription that has not returned in a minute, or in the hold's own length if
+that is longer, fails, said aloud like any other failure, and that resolves its hold
+(`TRANSCRIBING_SECONDS`).
 
 **The mute is decided where sound is captured, and the speaker's echo is cancelled.**
 Measured on 2026-09-14 with MacBook Pro speakers and microphone: the interruption stops
@@ -1779,8 +1781,8 @@ playing, how many it dropped unheard because the microphone had stopped taking t
 how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
-was captured, before the canceller (`KeyedAudio.captured`), and Whisper keeps it for the
-frames a hold is made of, so each hold's `HoldHeard` line says its mean power in dBFS
+was captured, before the canceller (`KeyedAudio.captured`), and the hold owner keeps it for the
+frames a hold is made of, so each hold's `hold` event says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
 reply's echo left over reads loud captured and quiet heard, one of the room with nobody
 speaking reads quiet on both. A level is null for digital silence, and at the phone,
@@ -1791,19 +1793,30 @@ one in every hold. "Stop. What time is it?", said from 50 ms after the press, ke
 "Stop." in 8 of 8. The mute this replaced held the microphone shut until the reply's
 sound had died away, and lost that first word in 8 of 8.
 
+**One owner cuts every hold, and each model is a listener on it.** The hold owner
+(`hands.voice.holdowner`) cuts and numbers each hold where the gate's counts move, and gives
+every listener (`hands.voice.holds.Listener`) the same samples of it in capture order: what
+the hold kept from before it opened, each frame while it is open, and its end. A listener's
+slow work, while the hold is open or after it closes, is a hearing the owner runs on that
+listener's own lane, so a slow listener holds up only itself, under a bound of a minute.
+Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether its
+words cut hands off, which only words heard while their hold is still open do. The
+transcriber is given each spoken hold the key sent, whole, in the order the holds ended;
+each hold, spoken or typed, is one `hold` event, from its end to its resolution: what opened
+it, what the gate did with it, how long and loud it was, and what its transcription came to.
+
 Who spoke in each hold is diarized beside it (`hands.voice.diarization`): NVIDIA's Nemotron 3
-Diarization, a Streaming Sortformer, on the CPU, in one stream for the run. While the key is
-down, Whisper gives the stream what its buffer gained, so the stream hears exactly the audio
-the hold is transcribed from, as it is spoken; at the hold's end it is followed by silence
-until every 10 ms frame of it is scored. The model's arrival-order speaker cache carries
-who has been heard from hold to hold, so speaker 0 is the first voice of the run in every
-hold. Each hold the key sent or dropped is one `diarization.hold` event: its fate, its
-speakers with the seconds each was heard, longest first, and how far behind the hold's
-speech they settled; a step that failed is the event's failure. Whisper never waits on it,
-and a hold still unsettled when the next ends is logged as diarization running behind. The
-model loads on the stream's own thread, as its first work (`diarization.loaded`), so the
-voice starts without it and holds spoken meanwhile wait their turn behind it; a model that
-fails to load fails that event and every hold's after it, with why.
+Diarization, a Streaming Sortformer, on the CPU, in one stream for the run, a listener on the
+hold owner. It hears exactly the audio the hold is transcribed from, as it is spoken; at the
+hold's end it is followed by silence until every 10 ms frame of it is scored. The model's
+arrival-order speaker cache carries who has been heard from hold to hold, so speaker 0 is the
+first voice of the run in every hold. Each hold the key sent or dropped settles as one of the
+diarizer's `hearing` events: its fate, its speakers with the seconds each was heard, longest
+first, and how far behind the hold's end they settled; a step that failed is the event's
+failure. Nothing waits on it. The model loads on the stream's own thread, as its first work
+(`diarization.loaded`), so the voice starts without it and holds spoken meanwhile wait their
+turn behind it; a model that fails to load fails that event and every hold's after it, with
+why.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed
@@ -2411,8 +2424,7 @@ config, which `hooks.json` is generated from.
 ## Stack
 
 Pipecat ships every piece the pipeline needs: an in-process pocket-tts service, a
-local audio transport over PyAudio, a segmented STT service for upload APIs, the
-SmallWebRTC transport, the Silero VAD, and `TTSSpeakFrame` for the system channel.
+local audio transport over PyAudio, the SmallWebRTC transport, the Silero VAD, and `TTSSpeakFrame` for the system channel.
 Verified against the installed Pipecat 1.10 on 2026-09-12. The model's stage is hands' own,
 the brain's (`brain/stage.py`), not one of Pipecat's LLM services.
 

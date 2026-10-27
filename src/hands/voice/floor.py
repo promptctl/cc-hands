@@ -25,7 +25,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
 from hands.voice.speech import Names, Unprompted, frames, sent
-from hands.voice.turnstop import Hold, TurnOpened, TurnResolved
+from hands.voice.holds import Hold
+from hands.voice.turnstop import TurnOpened, TurnResolved
 
 
 @dataclass

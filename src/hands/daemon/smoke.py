@@ -48,7 +48,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
-from hands.voice import transcription
+from hands.voice import holds, transcription
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
 # Each stage of the pipeline, in the order the turns reach it: hands running; a session started from the `claude` on
@@ -80,7 +80,7 @@ FINISH_SECONDS = 180.0
 POLL_SECONDS = 0.2
 
 # The call's audio, both ways: 16-bit mono at the rate `say` is asked for and Whisper hears at, in the page's 20 ms frames.
-RATE = transcription.RATE
+RATE = holds.RATE
 FRAME_SECS = 0.02
 FRAME_BYTES = round(RATE * FRAME_SECS) * 2
 # A frame of hands' speech is voiced above this RMS; the silence it sends between utterances is all zeros.

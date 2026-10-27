@@ -7,23 +7,22 @@ the next. hands keeps one stream for the run and feeds it only the holds, as the
 speaker in every hold, which one embedding per hold against a fixed threshold did not manage (promptctl-voice-r7y.dy1).
 
 It runs on the CPU, at about nine times real time a step, which leaves the GPU to Whisper: a hold is scored while it is
-spoken, so when it ends only its last step and the look-ahead after it are left to score.
+spoken, so when it ends only its last step and the look-ahead after it are left to score. It is one listener on the hold
+owner (`hands.voice.holdowner`), which gives it every hold of the key's as it is captured.
 """
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
 
-from loguru import logger
 
 from hands.sessions.audit import Record
-from hands.sessions.wide import Begun, annotate, begun, ended, unit
+from hands.sessions.wide import annotate, fail, unit
 from hands.threads import SerialThread
-from hands.voice.transcription import RATE, decoded
+from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Sound, decoded
 
 # The model, fetched from the Hugging Face hub into its cache on the first load, at the revision measured for it.
 MODEL = "nvidia/Nemotron-3-Diarization"
@@ -45,10 +44,6 @@ type Probabilities = npt.NDArray[np.float32]
 # One step of the model: a chunk of samples, whether it is the first of the run, and the speaker cache the step before
 # handed back; the step's frames scored, and the cache to hand the next.
 type Step = Callable[[Samples, bool, Any], tuple[Probabilities, Any]]
-
-# What the key did with a hold: sent it to be transcribed, or threw it away.
-Fate = Literal["sent", "dropped"]
-
 
 @dataclass(frozen=True)
 class Chunking:
@@ -193,12 +188,15 @@ class Unloaded:
 
 
 class Diarizer:
-    """The run's stream on a thread of its own, and the one place each hold's diarization becomes an event.
+    """The run's stream on a thread of its own: a listener on the hold owner, given a hold's audio as the hold is spoken
+    and told when it ends, which nothing the owner does waits on.
 
-    Whisper gives it a hold's audio as the hold is spoken and says when it ends; nothing Whisper does waits on it. Each
-    hold the key sent or dropped is one `diarization.hold` event, whatever came of it, beside Whisper's `HoldHeard` for
-    the same hold: the two are joined by its number.
+    Each hold the key sent or dropped settles as one hearing, which the owner tells as its `hearing` event, beside its
+    `hold` event for the same hold: the two are joined by the hold's number, and this puts the hold's fate, its speakers
+    and the steps that scored it on the hearing's event.
     """
+
+    name = "diarization"
 
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Unloaded
@@ -210,9 +208,6 @@ class Diarizer:
         # loads wait behind it, and nothing else does.
         self._thread = SerialThread("Diarization")
         self._thread.give(lambda: self._load(model))
-        # The holds whose end is queued and whose speakers have not settled yet, oldest first, each as its unit began
-        # and with what the key did with it.
-        self._unsettled: dict[int, tuple[Begun, Fate]] = {}
 
     def _load(self, model: Callable[[], Model]) -> None:
         """The run's stream, on the model; or, where it fails to load, one that ends each hold undiarized with why.
@@ -224,45 +219,36 @@ class Diarizer:
         except Exception as error:
             self._stream = Unloaded(f"the model did not load: {type(error).__name__}: {error}")
 
-    def heard(self, audio: bytes) -> None:
-        """Mono 16-bit audio of the hold open, scored behind everything given before it; this returns at once."""
-        samples = decoded(audio)
-        self._thread.give(lambda: self._stream.heard(samples))
+    def opened(self, hold: Hold, before: Sound) -> Hearings:
+        """The hold opens: what it kept from before it opened is the first of its audio."""
+        return self.heard(before)
 
-    def ended(self, hold: int, fate: Fate) -> None:
-        """The hold open ends, sent or dropped: its event is emitted once its speakers settle, its duration how far
-        behind the hold's speech that was."""
-        if self._unsettled:
-            # [LAW:nothing-unseen] a hold settles a fraction of a second after it ends, so one still unsettled as the next
-            # ends is a stream at least a hold behind, or a step that never returned: said at every hold until it settles.
-            logger.warning(f"the speakers of hold(s) {list(self._unsettled)} are not known yet as hold {hold} ends: diarization is behind")
-        self._unsettled[hold] = (began := begun(), fate)
+    def heard(self, sound: Sound) -> Hearings:
+        """Audio of the hold open, scored behind everything given before it; this returns at once, with nothing for the
+        owner to run: the steps it completes are scored on the thread."""
+        samples = decoded(sound.heard)
+        self._thread.give(lambda: self._stream.heard(samples))
+        return ()
+
+    def ended(self, hold: Hold, fate: Fate) -> Hearings:
+        """The hold open ends, sent or dropped: its end is queued on the thread now, behind its audio and ahead of the next
+        hold's, and its speakers settle in the hearing returned, which the owner runs and times."""
         # Read on the thread, where the load has set it.
         settled = self._thread.settles(lambda: self._stream.ended())
 
-        def emitted(done: asyncio.Future[Diarized | Undiarized]) -> None:
-            if self._unsettled.pop(hold, None) is None:
-                # Told already, as cancelled when the pipeline stopped: a unit ends once.
-                return
-            # [LAW:single-enforcer] every way a hold's diarization ends is told here, the stream breaking included.
-            match done.exception():
-                case None:
-                    match done.result():
-                        case Diarized(speakers=found, steps=steps):
-                            ended("diarization.hold", self._record, began, None, hold=hold, fate=fate, speakers=found, steps=steps)
-                        case Undiarized(error=error, steps=steps):
-                            ended("diarization.hold", self._record, began, None, error, hold=hold, fate=fate, steps=steps)
-                case raised:
-                    ended("diarization.hold", self._record, began, raised, hold=hold, fate=fate)
+        async def settle() -> Heard:
+            annotate(fate=fate)
+            match await settled:
+                case Diarized(speakers=found, steps=steps):
+                    annotate(speakers=found, steps=steps)
+                case Undiarized(error=error, steps=steps):
+                    annotate(steps=steps)
+                    # [LAW:no-silent-failure] a hold whose speakers are not known is a failed hearing, with why.
+                    fail(error)
+            # The speakers of a hold are no words: nothing here cuts hands off.
+            return Heard(None)
 
-        settled.add_done_callback(emitted)
-
-    def stopped(self) -> None:
-        """The pipeline stops: a hold whose speakers have not settled ends cancelled, so its unit is told however it
-        ends; its speakers, if they settle after, are no one's."""
-        for hold, (began, fate) in self._unsettled.items():
-            ended("diarization.hold", self._record, began, asyncio.CancelledError(), hold=hold, fate=fate)
-        self._unsettled.clear()
+        return (settle,)
 
 
 def load() -> Model:

@@ -259,8 +259,8 @@ Need 2.
   branch, then every running session's project and name, newest last, at most
   40 of them and the oldest dropped until the rest fit the 223 prompt tokens Whisper
   keeps. Each hold's words and their token count are a `Primed` line in the audit log,
-  and what Whisper made of it, with each segment dropped as not said and how loud the
-  hold was before and after the echo canceller, a `HoldHeard` line: primed, Whisper turns
+  and what Whisper made of it, with each segment dropped as not said, a `HoldHeard` line;
+  how loud the hold was before and after the echo canceller is on its `hold` event. Primed, Whisper turns
   noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
   (compression ratio 17), which are dropped. Measured
   2026-10-03 through that code, ten sentences said by `say` in a repository with
@@ -314,8 +314,8 @@ So that in conversation hands can tell the owner from another person, and from i
 
 - **Who spoke in each hold.** NVIDIA's Nemotron 3 Diarization hears every hold as it is
   spoken, in one stream for the run, so a speaker keeps the same number from hold to hold;
-  each hold the key sent or dropped is a `diarization.hold` event with its speakers and the
-  seconds each spoke (`hands.voice.diarization`). Measured 2026-10-25 through that code by
+  each hold the key sent or dropped is one of the diarizer's `hearing` events, with its
+  speakers and the seconds each spoke (`hands.voice.diarization`). Measured 2026-10-25 through that code by
   `scripts/measure-diarization.py`, in holds: 73.7 min of one LibriVox reader in 1492 holds,
   all of it one speaker and none of it anyone else; AMI test meetings ES2004a, 4 speakers found
   of 4, 26 of 28 holds given their own speaker and the other 2 heard as nobody, and IS1009a,

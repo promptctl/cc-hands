@@ -11,18 +11,12 @@ from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
-import numpy.typing as npt
 
 from hands.sessions.audit import Unsaid
-
-# What every hold is said in.
-LANGUAGE = "en"
+from hands.voice.holds import LANGUAGE, RATE, decoded
 
 # The model every hold is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
 MODEL = "mlx-community/whisper-large-v3-turbo"
-
-# The sample rate Whisper hears at; the audio it is given is mono 16-bit at this rate.
-RATE = 16_000
 
 # A second of silence: what the model is loaded by.
 _SILENCE = np.zeros(RATE, dtype=np.float32)
@@ -38,12 +32,6 @@ def load() -> None:
     run [LAW:no-ambient-temporal-coupling].
     """
     _transcribe(_SILENCE, None)
-
-
-def decoded(audio: bytes) -> npt.NDArray[np.float32]:
-    """Mono 16-bit `audio` as the samples in [-1, 1) a model hears; the one decoding of a hold, for Whisper and the
-    diarizer alike."""
-    return np.frombuffer(audio, dtype=np.int16).astype(np.float32) / np.float32(32768)
 
 
 def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
