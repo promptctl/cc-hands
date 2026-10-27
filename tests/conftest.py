@@ -448,6 +448,8 @@ if "--mcp-config" in sys.argv:
 if end < len(sys.argv):
     [opening] = sys.argv[end + 1:]
     submit(opening)
+# DROP_ESCAPES: how many Escapes are read and not acted on, as a loaded Claude Code may read one and let it go.
+drops = int(os.environ.get("DROP_ESCAPES", "0"))
 while True:
     if running is not None and not select.select([0], [], [], max(0.0, running[2] - time.monotonic()))[0]:
         post("Stop", prompt_id=running[0], last_assistant_message="Late.")
@@ -477,6 +479,14 @@ while True:
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
             typed(["escape", box])
+            if drops:
+                drops -= 1
+                continue
+            if running is not None or turn is not None:
+                # As Claude Code records an Escape that interrupts a turn in its transcript: its own word that the Escape took.
+                os.makedirs(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p"), exist_ok=True)
+                with open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p", session + ".jsonl"), "a") as record:
+                    record.write(json.dumps({{"type": "user", "message": {{"role": "user", "content": "[Request interrupted by user for tool use]"}}}}) + "\\n")
             if running is not None and [queued.strip() for queued in behind] == ["racy"]:
                 # The late prompt ended, and the one queued behind it was taken, just before the Escape, which stops it.
                 post("Stop", prompt_id=running[0], last_assistant_message="Late.")

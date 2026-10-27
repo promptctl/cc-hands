@@ -25,7 +25,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unconnected, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unconnected, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -574,6 +574,36 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
         await brain.stop()
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["prompts"]) == ("ok", True, ("p1",))
+
+
+async def test_a_stop_claude_code_does_not_record_is_pressed_again_and_is_a_stop_only_once_recorded(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The first Escape is read and let go, as a loaded Claude Code may: the stop is pressed again, and reported as a stop only
+    # once Claude Code has recorded its interrupt.
+    monkeypatch.setenv("DROP_ESCAPES", "1")
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
+        assert brain.interrupt() is True
+        assert await asyncio.wait_for(asking, 20) == BrainStopped()
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape"])
+    finally:
+        await brain.stop()
+
+
+async def test_a_stop_claude_code_never_records_fails_the_turn_saying_what_it_showed(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every Escape is let go: no stop is recorded, so the turn fails rather than reporting a stop that did not happen.
+    monkeypatch.setenv("DROP_ESCAPES", "99")
+    monkeypatch.setattr("hands.brain.process.STOP_SECONDS", 0.5)
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
+        assert brain.interrupt() is True
+        with pytest.raises(StopUnrecorded, match="did not record the Escape that stopped its turn, after 3 presses"):
+            await asyncio.wait_for(asking, 30)
+    finally:
+        await brain.stop()
 
 
 async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
