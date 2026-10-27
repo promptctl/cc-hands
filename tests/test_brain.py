@@ -597,6 +597,39 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["prompts"]) == ("ok", True, ("p1",))
 
 
+async def test_a_stop_claude_code_does_not_record_is_pressed_again_and_is_a_stop_only_once_recorded(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The first Escape is read and let go, as a loaded Claude Code may: the stop is pressed again, and reported as a stop only
+    # once Claude Code has recorded its interrupt.
+    monkeypatch.setenv("DROP_ESCAPES", "1")
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
+        assert brain.interrupt() is True
+        assert await asyncio.wait_for(asking, 20) == BrainStopped()
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape"])
+    finally:
+        await brain.stop()
+
+
+async def test_a_stop_claude_code_never_records_fails_the_turn_saying_what_it_showed(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every Escape is let go: no stop is recorded, so the turn fails rather than reporting a stop that did not happen.
+    # StopUnrecorded is imported here, not at the top, so this file still loads on a master that does not have it yet.
+    from hands.brain.process import StopUnrecorded
+
+    monkeypatch.setenv("DROP_ESCAPES", "99")
+    monkeypatch.setattr("hands.brain.process.STOP_SECONDS", 0.5, raising=False)
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
+        assert brain.interrupt() is True
+        with pytest.raises(StopUnrecorded, match="did not record the Escape that stopped its turn, after 3 presses"):
+            await asyncio.wait_for(asking, 30)
+    finally:
+        await brain.stop()
+
+
 class _Timed:
     """A typist that notes when each Ctrl-C it pressed had gone in, on the monotonic clock."""
 
