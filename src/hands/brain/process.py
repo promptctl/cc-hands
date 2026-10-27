@@ -22,7 +22,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -565,6 +565,7 @@ class Brain:
         config_dir: Path,
         record: Record,
         launched: Span,
+        pause: Callable[[float], Awaitable[None]],
     ) -> None:
         self._claude = claude
         self._config_dir = config_dir
@@ -575,6 +576,9 @@ class Brain:
         self._record = record
         # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
         self._launched = launched
+        # [LAW:no-ambient-temporal-coupling] how a take's time passes is the brain's to be handed, and is that alone: each
+        # typing waits on one pause, and no other wait of the brain's is one.
+        self._pause = pause
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
         # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
         self._input = asyncio.Lock()
@@ -686,8 +690,8 @@ class Brain:
                     fail(f"the brain failed the turn: {failed}")
 
     async def _taking(self, turn: _Turn) -> bool:
-        """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it
-        was. [LAW:single-enforcer] a prompt Claude Code took that is no turn's runs ahead of what is typed behind it, for
+        """Types `turn`, with the input held, and waits out a pause of `turn.take` for it to be taken, or to end: says
+        whether it was. [LAW:single-enforcer] a prompt Claude Code took that is no turn's runs ahead of what is typed behind it, for
         an ask that already failed or one nobody made: it is stopped before the turn is typed, and when one ran through the
         turn's wait, it is stopped and the turn typed once more, with its whole time and nothing left ahead of it. The
         turn may have been taken as that Escape went, which then stopped it instead: its typing again is still taken."""
@@ -698,7 +702,16 @@ class Brain:
                     return True
             turn.typings += 1
             await self._type(lambda typist: typist.type(turn.typed))
-            await asyncio.wait({turn.taken, turn.answered}, timeout=turn.take, return_when=asyncio.FIRST_COMPLETED)
+            pausing = asyncio.ensure_future(self._pause(turn.take))
+            try:
+                await asyncio.wait({turn.taken, turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                pausing.cancel()
+                await asyncio.wait({pausing})
+            # [LAW:no-silent-failure] a pause that failed, however its take ended it, says so, and is not taken for the take's
+            # time running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on.
+            if not pausing.cancelled():
+                pausing.result()
             if turn.taken.done() or turn.answered.done():
                 return True
             if turn.typings == TYPINGS or not self._unowned:
@@ -992,8 +1005,9 @@ class Brain:
                 turn.answered.exception()
 
 
-async def start(launch: Launch, record: Record) -> Brain:
-    """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with."""
+async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitable[None]] = asyncio.sleep) -> Brain:
+    """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with; `pause` is how
+    the time a typed turn has to be taken passes."""
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record):
@@ -1039,7 +1053,7 @@ async def start(launch: Launch, record: Record) -> Brain:
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    return Brain(running, launch.session, typist, hooks, listener, sockets, station.config_dir, record, launched)
+    return Brain(running, launch.session, typist, hooks, listener, sockets, station.config_dir, record, launched, pause)
 
 
 async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:

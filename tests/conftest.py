@@ -314,7 +314,8 @@ def pinned_to(script: Path) -> str:
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
-    reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
+    reads is written, one line each, to the file TYPED names, a side question with the session it was asked under, and
+    each prompt a Return sent is a line in the file ANSWERED names once it is done with all it does with it at once; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
     is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
@@ -556,6 +557,9 @@ while True:
                 continue
             text, box = box, ""
             submit(text)
+            # Done with what this Return sent: each hook it posted was answered, so hands has heard them all.
+            with open(os.environ["ANSWERED"], "a") as answered:
+                answered.write("\\n")
         else:
             box += pending[:1].decode()
             pending = pending[1:]
@@ -564,6 +568,7 @@ while True:
     pin(monkeypatch, script)
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
+    monkeypatch.setenv("ANSWERED", str(tmp_path / "answered"))
     monkeypatch.setenv("LATER_SECONDS", "1")
     return script
 
