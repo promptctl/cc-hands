@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from hands.core.events import SessionEvent
+from hands.core.events import SessionEvent, Unqueuing
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
@@ -54,6 +54,16 @@ class Holding:
 
 
 @dataclass(frozen=True)
+class HoldingBehind:
+    """A Stop that told its turn, held until the transcript is read through its firing, since words waited behind the
+    turn: Claude Code waits on its hook meanwhile."""
+
+    session: SessionId
+    prompt: PromptId
+    waiting: int
+
+
+@dataclass(frozen=True)
 class Unsettled:
     """A Stop still held when its session ended or started again: nothing read from here on says whose it was."""
 
@@ -70,7 +80,44 @@ class Overtaken:
     agents: frozenset[AgentId]
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | Unsettled | Overtaken
+@dataclass(frozen=True)
+class Unfiled:
+    """A queue record that took out none of the words filed under the session's turn: a notification's, taken into a turn
+    its own prompt opened or delivered to an agent, or a message queued before this turn. It moves nothing."""
+
+    session: SessionId
+    taken: Unqueuing
+
+
+@dataclass(frozen=True)
+class Resumed:
+    """Claude Code set the session going again after the idle that made a turn wait to be told, with no Stop of it heard:
+    the turn waits for its own end, not for the transcript to be read past that idle."""
+
+    session: SessionId
+    prompt: PromptId
+
+
+@dataclass(frozen=True)
+class QueuedBehind:
+    """A Stop ended its turn with words still waiting in Claude Code's queue, which it runs next with no prompt hook: the
+    turn they run as is marked while the Stop's hook holds Claude Code."""
+
+    session: SessionId
+    prompt: PromptId
+    waiting: int
+
+
+@dataclass(frozen=True)
+class Unmarked:
+    """Words waited behind the last turn and no mark is taken for them: a prompt of its own opened a turn first, as a
+    notification left queued past a Stop does, or the session ended or started again before its Stop was decided."""
+
+    session: SessionId
+    waiting: int
+
+
+AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | HoldingBehind | Unsettled | Overtaken | Unfiled | Resumed | QueuedBehind | Unmarked
 
 
 @dataclass(frozen=True)

@@ -209,9 +209,10 @@ class Opened:
 
     turn: PromptId
     others: frozenset[PromptId] = frozenset()
-    # A message the user sent while it ran, waiting behind it: Claude Code runs it once the turn's Stop hook returns,
-    # under an id no hook names.
-    queued: bool = False
+    # The words of each prompt filed under the turn by its hook that no queue record has taken out of Claude Code's
+    # queue yet, oldest first: the user's, delivered into the turn or run after it, or a notification's, filed as it is
+    # delivered. [LAW:one-source-of-truth] by their text, which the hook and the queue records both carry.
+    waiting: tuple[str, ...] = ()
     # [LAW:types-are-the-program] progress lives only on a turn that runs: whatever a turn gathered and did not tell
     # is let go of with it as it ends, since its result is told instead.
     gathering: Gathering | None = None
@@ -228,8 +229,12 @@ class Untold:
     turn: PromptId
     others: frozenset[PromptId]
     # On Claude Code's clock, from the idle it set: [LAW:no-ambient-temporal-coupling] how late hands reads the transcript
-    # moves when the telling goes out, never what it holds.
-    by: Stamp
+    # moves when the telling goes out, never what it holds. None once Claude Code set the session going again with no Stop
+    # of the turn heard: it is told by its own end (its Stop, its interrupt record, a turn after it), or from the next
+    # idle Claude Code sets.
+    by: Stamp | None
+    # As on Opened.
+    waiting: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -239,6 +244,8 @@ class Told:
 
     turn: PromptId | None = None
     others: frozenset[PromptId] = frozenset()
+    # As on Opened, past the turn's end: what Claude Code runs after it, each as a turn no hook opens, oldest first.
+    waiting: tuple[str, ...] = ()
 
 
 Turn = Opened | Untold | Told
@@ -254,14 +261,29 @@ class Unnamed:
     """A Stop under an id no record hands has read names yet. Claude Code writes a turn's records before it fires the
     turn's Stop, and they reach the transcript within ~40 ms of it, so the transcript says whose it
     is: the turn a record carried onto its id, or opened under it. Held until one is read, or until the transcript is
-    read through `by` without one."""
+    read through a while past `fired` without one (see UNTOLD)."""
 
     prompt: PromptId
     closing: str | None
     again: bool
-    by: Stamp
+    # When its hook was heard, on Claude Code's clock.
+    fired: Stamp
     # The hook Claude Code waits on meanwhile, let go once the Stop is decided; None once it stopped waiting.
     hook: RequestId | None
+
+
+@dataclass(frozen=True)
+class Behind:
+    """A Stop whose turn is told, with words waiting behind that turn, which Claude Code runs as a turn of their own once
+    the Stop's hook returns: held until the transcript is read through `fired`, so whether they still wait is read with
+    the queue records Claude Code wrote before the Stop."""
+
+    prompt: PromptId
+    fired: Stamp
+    hook: RequestId | None
+
+
+HeldStop = Unnamed | Behind
 
 
 @dataclass(frozen=True)
@@ -277,8 +299,8 @@ class Session:
     # nothing, in whatever phase the turn now is. [LAW:types-are-the-program] kept here, and not on the turn, so every
     # phase answers "was this turn told" the same way, across a restart too.
     earlier: frozenset[PromptId] = frozenset()
-    # [LAW:no-ambient-temporal-coupling] Stops heard before the records that say whose they are, in the order heard.
-    unnamed: tuple[Unnamed, ...] = ()
+    # [LAW:no-ambient-temporal-coupling] Stops heard before the records that say what they decide, in the order heard.
+    stops: tuple[HeldStop, ...] = ()
     # What each subagent did that nobody has been told of yet. Kept here, and not on the turn: a subagent run in the
     # background works on after the turn that started it ends, and its progress is news whatever phase its parent is in.
     subagents: Mapping[AgentTask, Gathering] = field(default_factory=dict[AgentTask, Gathering])

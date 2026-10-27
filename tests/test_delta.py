@@ -14,7 +14,7 @@ from loguru import logger
 
 from hands.core.delta import Branched, Delta, PullRequested, Pushed
 from hands.core.effects import SessionGone, Summarise
-from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken
+from hands.core.events import Closed, Ended, Joined, Prompted, StatusReported, Stopped, Taken, Read, Unqueued, Dequeued
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
@@ -598,7 +598,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
 
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     subprocess.run(("sed", "-i", "", "s/x = 1/x = 99/", str(root / "a.py")), check=True)
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
@@ -736,7 +736,7 @@ async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path
     """
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     # The mark is gone, the prompt is not: it went through, and the hook that said so was answered.
     assert [listing.session.turn for listing in sessions.live()] == [Opened(PromptId("p1"))]
 
@@ -1102,11 +1102,11 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     deltas = patient(Deltas, lambda _entry: None)
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(Taken(SID, PromptId("p1"), None, 5.0))
     (root / "first.py").write_text("turn one\n")
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=4.0))
-    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2")))
+    await sessions.apply(Prompted(SID, at=5.0, mode=None, prompt=PromptId("p2"), text=""))
     (root / "second.py").write_text("turn two\n")
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
@@ -1123,11 +1123,14 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=deltas)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=root, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(StatusReported(SID, Report(status.Idle(), Stamp(1)), at=0.5))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(Taken(SID, PromptId("p1"), Stamp(2), 1.5))
-    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1"), text="Also this."))
     (root / "first.py").write_text("turn one\n")
     await sessions.apply(Stopped(SID, "One.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
+    # The transcript read through the Stop's firing: the words still wait, so the turn they run as is marked.
+    await sessions.apply(Read(SID, STOP_HEARD))
+    await sessions.apply(Unqueued(SID, Dequeued()))
     await sessions.apply(Taken(SID, PromptId("p2"), Stamp(4), 4.0))
     (root / "queued.py").write_text("the queued turn\n")
     await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
@@ -1158,18 +1161,22 @@ class Marking:
         return Delta()
 
 
-async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_turn_queued_behind_it_is_marked(tmp_path: Path) -> None:
-    """The reply on the wire tells the turn and starts marking the one queued behind it before the Stop fires. The Stop
-    then ends nothing, and its hook is let go only once that mark is taken: Claude Code runs the queued turn after it."""
+async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words_waiting_behind_it_are_marked(tmp_path: Path) -> None:
+    """The reply on the wire tells the turn. Its Stop marks the turn the words waiting behind it run as, once the
+    transcript is read through its firing, and its hook is let go only once that mark is taken: Claude Code runs the
+    queued turn after it."""
     repository = Marking()
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
-    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text="Do it."))
+    await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1"), text="Also this."))
     sessions.hear(Closed(SID, PromptId("p1"), "Done."))
-    await asyncio.wait_for(repository.started.wait(), 2.0)
 
     stopping = asyncio.create_task(sessions.stop(Stopped(SID, "Done.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)))
+    done, _ = await asyncio.wait({stopping}, timeout=0.2)
+    assert not done, "the Stop's hook was let go before the transcript was read through its firing"
+    sessions.hear(Read(SID, STOP_HEARD))
+    await asyncio.wait_for(repository.started.wait(), 2.0)
     done, _ = await asyncio.wait({stopping}, timeout=0.2)
     assert not done, "the Stop's hook was let go while the queued turn was still being marked"
     repository.release.set()
@@ -1197,7 +1204,7 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
     repository = Reading()
     sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
-    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.hear(Closed(SID, PromptId("p1"), "Done."))
     await asyncio.wait_for(repository.started.wait(), 2.0)
     sessions.hear(Ended(SID, "other"))

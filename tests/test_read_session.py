@@ -347,7 +347,7 @@ async def test_a_session_at_its_prompt_while_a_subagent_works_in_the_background_
     turn = PromptId("p1")
     for event in (
         StatusReported(SID, Report(Idle(), Stamp(1)), at=0.0),
-        Prompted(SID, at=1.0, mode=None, prompt=turn),
+        Prompted(SID, at=1.0, mode=None, prompt=turn, text=""),
         StatusReported(SID, Report(Busy(), Stamp(2)), at=1.0),
         Launched(SID, AgentId("a1"), Stamp(3)),
         Stopped(SID, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(4), request=RequestId("stop")),

@@ -53,7 +53,7 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
     for event in (
         Joined(working, "startup"),
         StatusReported(working.id, Report(Busy(), Stamp(1)), at=1.0),
-        Prompted(working.id, at=1.0, mode="acceptEdits", prompt=PromptId("p1")),
+        Prompted(working.id, at=1.0, mode="acceptEdits", prompt=PromptId("p1"), text=""),
         Taken(working.id, PromptId("p1"), None, 5.0),
         Joined(untitled, "startup"),
         StatusReported(untitled.id, Report(Idle(), Stamp(1)), at=1.0),
@@ -110,7 +110,7 @@ async def test_a_session_at_its_prompt_with_a_subagent_working_in_the_background
     for event in (
         Joined(waiting, "startup"),
         StatusReported(waiting.id, Report(Idle(), Stamp(900)), at=1.0),
-        Prompted(waiting.id, at=2.0, mode=None, prompt=turn),
+        Prompted(waiting.id, at=2.0, mode=None, prompt=turn, text=""),
         StatusReported(waiting.id, Report(Busy(), Stamp(1000)), at=2.1),
         Launched(waiting.id, AgentId("a1"), Stamp(1200)),
         Launched(waiting.id, AgentId("a2"), Stamp(1300)),
