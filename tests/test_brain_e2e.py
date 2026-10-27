@@ -135,15 +135,16 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     (brain / "pinned-claude").symlink_to(claude_code)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
     assert starting_settings(brain)
-    # Settings that name a mode get Claude Code's offer to make auto mode the default, once the brain is idle; answered
-    # here as a person answers it, or the first turn typed lands in it (promptctl-brain-lq3.mcw).
+    # On CI, with these settings, Claude Code offered to make auto mode the default, and the first turn typed answered it
+    # (promptctl-brain-lq3.mcw, which says what is not yet known of when it shows); answered here as a person answers it.
     state = brain / ".claude.json"
     state.write_text(json.dumps({**json.loads(state.read_text()), "hasSeenAutoDefaultNudge": True}))
-    # The act the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person: how
-    # hands puts one to the user is test_permissions'.
+    # The commands the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person:
+    # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": ["Bash(touch:*)"]}}))
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)"]
+    settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
 @dataclass(frozen=True)
@@ -160,10 +161,13 @@ class Hands:
     watches: list[asyncio.Task[None]]
     # What the pipeline raised, which the system channel would say.
     errors: list[ErrorFrame]
+    # The directory the brain works in, where what it makes is made.
+    workdir: Path
 
     async def until(self, what: Callable[[], bool]) -> None:
+        patience = asyncio.timeout(PATIENCE_SECONDS)
         try:
-            async with asyncio.timeout(PATIENCE_SECONDS):
+            async with patience:
                 while not what():
                     # [LAW:no-silent-failure] a watch that ends stops hands' run, and an error the pipeline raises is said to
                     # the user, so here each fails the test with its reason, not a minute later as a timeout.
@@ -173,6 +177,9 @@ class Hands:
                             raise AssertionError(f"{watch.get_name()} ended") from (None if watch.cancelled() else watch.exception())
                     await asyncio.sleep(0.05)
         except TimeoutError:
+            # Only the wait's own running out is reported as one; any other TimeoutError is its own failure.
+            if not patience.expired():
+                raise
             # [LAW:no-silent-failure] a wait that runs out says where hands was: what it said, and what the brain was doing.
             raise AssertionError(f"waited {PATIENCE_SECONDS:g}s: hands said {self.out.said()!r}, the brain's work {self.stage.work()!r}, after {len(self.sent)} requests through hands' proxy") from None
 
@@ -205,7 +212,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches, run.errors)
+                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches, run.errors, workdir(brain))
                 finally:
                     for watch in watches:
                         watch.cancel()
@@ -219,11 +226,11 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
         (tmp_path / "sent.json").write_text(json.dumps([request.body for request in sent], indent=1))
 
 
-async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_and_hands_says_it(tmp_path: Path, mock_api: MockApi, hands: Hands) -> None:
+async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_and_hands_says_it(mock_api: MockApi, hands: Hands) -> None:
     """The brain runs a shell command for the user, then calls stay_silent: hands refuses the silence once, telling it what
     it owes, and the sentence it answers with is said (promptctl-silence-bsog.sfi)."""
-    # In the directory the brain works in: a command on a path outside it is asked about whatever its settings allow.
-    made = workdir(tmp_path / "brain") / "made"
+    # Where the brain works: on CI a command on a path outside it was asked about whatever the brain's settings allowed.
+    made = hands.workdir / "made"
     # Tried in name order: the refusal's answer ahead of the silence, which would match the request carrying it too.
     mock_api.script("1-owed", {"bodyContains": [TURN, OWED[:60]]},{"type": "text", "text": "I made the file."})
     mock_api.script("2-silent", {"bodyContains": [TURN, RESULT]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
