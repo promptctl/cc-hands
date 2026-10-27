@@ -175,9 +175,10 @@ def stand_in(at: Path) -> Path:
     # The compiler's own word on a failed build, a missing Command Line Tools or an unaccepted Xcode license, is left on
     # stderr for pytest to show.
     subprocess.run(["cc", "-x", "c", "-o", str(at), "-"], input=STAND_IN, text=True, check=True)
-    # Run through once, as `--moves` alone returns at once: on a loaded Mac the kernel SIGKILLed the first run of a
-    # program built moments before when its file was deleted as it started, one run in five; never once it had run
-    # (promptctl-testing-c3u.axy).
+    # Run through once, as `--moves` alone returns at once: Gatekeeper (syspolicyd) scans a program's first run by its
+    # path and kills the run when the file is gone, as a test that prunes a stand-in as it starts leaves it
+    # ("Terminating process due to Gatekeeper rejection" in `log show`); a program that has run once is not scanned
+    # again (promptctl-testing-c3u.axy).
     ran = subprocess.run([at, "--moves"])
     assert ran.returncode == 1, f"the stand-in at {at} ran through as {ran.returncode}, not as 1"
     return at
