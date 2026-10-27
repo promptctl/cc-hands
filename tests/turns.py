@@ -18,6 +18,9 @@ from typing import Any, cast
 Json = Mapping[str, Any]
 
 RECORDED = Path(__file__).resolve().parent / "fixtures" / "recorded_turns"
+# What a recording holds in place of the session id it was made under: shaped as one, so no text Claude Code wrote can
+# hold it by chance. The player puts its own session's id in its place.
+RECORDED_SESSION = "00000000-0000-4000-8000-000000000000"
 
 
 @dataclass(frozen=True)
@@ -71,7 +74,8 @@ RECORDINGS: Mapping[str, Recording] = {path.stem: load(path) for path in sorted(
 
 def played(recording: Recording, *, subscribed: Collection[str], session: str, first: int = 1, prompt: str | None = None) -> Recording:
     """`recording` as a session `session` plays it: only the hooks its settings subscribe to, as Claude Code posts only
-    those; its prompt pK as p{first + K - 1}, so it follows the prompts the session has run; and, if `prompt` is given,
+    those; its prompt pK as p{first + K - 1}, so it follows the prompts the session has run; its session as `session`; and, if
+    `prompt` is given,
     the opening prompt as `prompt` on both channels that carry it, its UserPromptSubmit and its user record."""
     lines = [line for line in recording if not isinstance(line, Posted) or line.body["hook_event_name"] in subscribed]
     renumbered = tuple(_mapped(line, lambda key, value: _renamed(key, value, session, first)) for line in lines)
@@ -104,7 +108,7 @@ def _renamed(key: str, value: Any, session: str, first: int) -> Any:
     if key in PROMPT_IDS:
         return f"p{first + int(str(value).removeprefix('p')) - 1}"
     if isinstance(value, str):
-        return value.replace("SESSION", session)
+        return value.replace(RECORDED_SESSION, session)
     return value
 
 

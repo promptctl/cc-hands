@@ -10,7 +10,9 @@ a notification joined to a turn in flight are a part of it, not a turn of their 
 id Claude Code gave the words sent into it is one turn, told by the id its Stop names.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,8 +22,9 @@ from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
 from hands.sessions.home import Home
-from hands.sessions.hookconfig import SUBSCRIBED
-from hands.sessions.hooks import parse_hook
+from hands.brain import pinned
+from hands.sessions.hookconfig import plugin_hooks
+from hands.sessions.hooks import parse_display, parse_hook
 from hands.sessions.membership import write_membership
 from hands.sessions.statusfile import parse_report
 from hands.sessions.tail import Tails
@@ -31,6 +34,8 @@ SESSION, PID = SessionId("s1"), 4242
 # Where on the clock a recording is played from.
 BASE = 1_800_000_000.0
 SCHEDULES = ("records as written", "records at the next hook or status")
+# [LAW:one-source-of-truth] the hooks a wrapped session posts: hands' plugin's own.
+POSTED = tuple(cast(Mapping[str, object], plugin_hooks()["hooks"]))
 # The recorded turns the model does not read right yet (promptctl-brain-vu2t.bv3), both from one gap: it does not read
 # Claude Code's queue records. Words or a notification absorbed into a turn (queue-operation remove, absorbed_mid_turn)
 # are taken for a message queued behind it, so a turn after it is marked and none comes. And in sent_now_mid_batch,
@@ -105,10 +110,14 @@ async def _told(name: str, schedule: str, tmp: Path) -> tuple[tuple[str, ...], f
                     pass
             apply(event)
 
-    for i, line in enumerate(played(RECORDINGS[name], subscribed=SUBSCRIBED, session=SESSION)):
+    for i, line in enumerate(played(RECORDINGS[name], subscribed=POSTED, session=SESSION)):
         line = shifted(line, BASE)
         clock[0] = line.at
         match line:
+            case Posted(body=body) if body["hook_event_name"] == "MessageDisplay":
+                # Posted to the daemon's display route, which takes MessageDisplay alone.
+                apply(parse_display(transcribed({"session_id": SESSION, **body}).encode(), at=line.at))
+                await read()
             case Posted(body=body):
                 raw = transcribed({"session_id": SESSION, "transcript_path": str(transcript), "cwd": str(member.cwd), **body}).encode()
                 hook = parse_hook(raw, home=home, at=line.at, heard=Stamp(round(line.at * 1000)), request=RequestId(f"r{i}"))
@@ -136,6 +145,12 @@ async def _told(name: str, schedule: str, tmp: Path) -> tuple[tuple[str, ...], f
 
 def test_every_recorded_turn_ends_at_a_stop() -> None:
     assert RECORDINGS and all(stops(recording) for recording in RECORDINGS.values())
+
+
+def test_every_recorded_turn_is_of_the_brains_pin() -> None:
+    # The records name the release they were written by: once the pin moves, the turns are recorded again on it.
+    versions = {line.record["version"] for recording in RECORDINGS.values() for line in recording if isinstance(line, Written) and "version" in line.record}
+    assert versions == {pinned.VERSION}
 
 
 @pytest.mark.parametrize(("name", "schedule"), [_case(name, schedule, set()) for name in RECORDINGS for schedule in SCHEDULES])

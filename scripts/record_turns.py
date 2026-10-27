@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,18 +35,24 @@ from collections.abc import Callable
 from pathlib import Path
 
 from hands.brain import pinned, process
-from hands.sessions.hookconfig import SUBSCRIBED
+from hands.sessions.hookconfig import plugin_hooks
 from hands.sessions.home import default_home
 
-OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "recorded_turns"
+TESTS = Path(__file__).resolve().parent.parent / "tests"
+sys.path.insert(0, str(TESTS))
+from turns import RECORDED, RECORDED_SESSION  # noqa: E402  [LAW:one-source-of-truth] the fixtures' format is tests/turns.py's
+
+OUT = RECORDED
 CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-# The hooks a recording holds: every one a wrapped session or the brain subscribes to, and PreToolUse, which neither
-# does, so a recording shows when a call started.
-HOOKS = tuple(dict.fromkeys((*SUBSCRIBED, *process.HOOKS, "PreToolUse")))
+# The hooks a recording holds: every one a wrapped session posts (hands' plugin's own: the shim's, and MessageDisplay),
+# every one the brain does, and PreToolUse, which neither subscribes to, so a recording shows when a call started.
+HOOKS = tuple(dict.fromkeys((*plugin_hooks()["hooks"], *process.HOOKS, "PreToolUse")))
 TMUX = "record-turns"
 # How often the transcript and the session file are read.
 POLL = 0.001
-# How long a session stays idle before its recording ends: longer than any gap between one turn and the next it runs.
+# How long a session stays idle, after the Stops a turn's script waits on, before its recording ends: longer than the
+# moment Claude Code sets idle between a turn and the next it runs. A turn opened later than that, as an MCP task's
+# notification can be well after its turn's Stop, is recorded only if the script waits on its Stop.
 SETTLED = 5.0
 
 # The records a turn is made of. The rest (a prompt's snapshot of the system prompt, hook context, skill and agent
@@ -53,7 +60,7 @@ SETTLED = 5.0
 KEPT = {"user", "assistant", "system", "queue-operation"}
 KEPT_ATTACHMENTS = {"queued_command"}
 # The recording machine's, in every hook body and record: never read as the turn. The player puts back the session's own.
-DROPPED = {"cwd", "entrypoint", "gitBranch", "userType", "version", "sessionId", "session_id", "transcript_path", "hookInfos", "hookAdditionalContext", "hookErrors"}
+DROPPED = {"cwd", "entrypoint", "gitBranch", "userType", "sessionId", "session_id", "transcript_path", "hookInfos", "hookAdditionalContext", "hookErrors"}
 
 
 def slow_mcp() -> None:
@@ -98,7 +105,7 @@ class Rig:
         self._lock = threading.Lock()
         self._hooks: list[tuple[float, dict]] = []
         self._records: list[tuple[float, dict]] = []
-        self.statuses: list[tuple[float, dict]] = []
+        self._seen: list[tuple[float, dict]] = []
         self._stop = threading.Event()
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -119,8 +126,13 @@ class Rig:
         self.pid = int(run(["tmux", "display-message", "-p", "-t", TMUX, "#{pane_pid}"]).strip())
         # Claude Code keeps the transcript under its cwd with every character but a letter or digit made a dash.
         self.project = CONFIG / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.cwd))
-        threading.Thread(target=self._watch, daemon=True).start()
-        until(lambda: any(status["status"] == "idle" for _, status in self.statuses), 120, "the session never went idle")
+        self._watcher = threading.Thread(target=self._watch, daemon=True)
+        self._watcher.start()
+        try:
+            until(lambda: any(status["status"] == "idle" for _, status in self._statuses()), 120, "the session never went idle")
+        except BaseException:
+            self.end()
+            raise
 
     def _handler(self) -> type[http.server.BaseHTTPRequestHandler]:
         rig = self
@@ -158,7 +170,8 @@ class Rig:
                 seen = (status, body["statusUpdatedAt"])
                 if seen != last:
                     last = seen
-                    self.statuses.append((time.time(), status))
+                    with self._lock:
+                        self._seen.append((time.time(), status))
             transcript = transcript or next(iter(self.project.glob("*.jsonl")), None)
             if transcript is not None:
                 with transcript.open("rb") as read:
@@ -175,6 +188,10 @@ class Rig:
     def hooks(self) -> list[tuple[float, dict]]:
         with self._lock:
             return list(self._hooks)
+
+    def _statuses(self) -> list[tuple[float, dict]]:
+        with self._lock:
+            return list(self._seen)
 
     def count(self, event: str) -> int:
         return sum(1 for _, body in self.hooks() if body["hook_event_name"] == event)
@@ -218,29 +235,40 @@ class Rig:
         until(lambda: self.count("Stop") >= stops, 240, "the turn never stopped")
 
     def settled(self) -> None:
-        """Wait for the session to stay idle for SETTLED seconds, so the recording holds every turn its work opens (a
-        task moved to the background opens one when it ends) and the status it ends on. Claude Code sets idle for a
-        moment between a turn and the next it runs, so an idle that has not held is not the end."""
+        """Wait for the session to stay idle for SETTLED seconds, so the recording holds the status it ends on and any
+        turn that opens within them. Claude Code sets idle for a moment between a turn and the next it runs, so an idle
+        that has not held is not the end."""
         def held() -> bool:
-            at, status = self.statuses[-1]
+            at, status = self._statuses()[-1]
             return status["status"] == "idle" and time.time() - at >= SETTLED
         until(held, 240, "the session never settled idle")
 
-    def close(self) -> list[tuple[float, str, dict]]:
+    def said(self) -> list[tuple[float, str, dict]]:
         """End the session, and what it said on each channel up to then, in the order it was seen. Nothing said as it
         is ended is the turn's (its SessionEnd, the status file's removal)."""
         end = time.time()
-        self._stop.set()
-        run(["tmux", "kill-session", "-t", TMUX], check=False)
+        self.end()
         hooks = self.hooks()
         [session] = {body["session_id"] for _, body in hooks}
         [transcript] = self.project.glob(f"{session}.jsonl")
         self.transcript, self.session = transcript, session
-        lines = [(at, "posted", body) for at, body in hooks]
-        lines += [(at, "written", record) for at, record in self._records]
-        lines += [(at, "status", status) for at, status in self.statuses]
+        with self._lock:
+            lines = [(at, "posted", body) for at, body in hooks]
+            lines += [(at, "written", record) for at, record in self._records]
+            lines += [(at, "status", status) for at, status in self._seen]
         # Stable: what one reading of a file found keeps the order it was written in.
         return sorted((line for line in lines if line[0] <= end), key=lambda line: line[0])
+
+    def end(self) -> None:
+        """Stop watching, once the watch in flight is done, and end the session."""
+        self._stop.set()
+        self._watcher.join()
+        run(["tmux", "kill-session", "-t", TMUX], check=False)
+
+    def remove(self) -> None:
+        """Leave nothing of the run behind: its directory, and the transcripts Claude Code kept of it."""
+        shutil.rmtree(self.dir, ignore_errors=True)
+        shutil.rmtree(self.project, ignore_errors=True)
 
 
 BASH = 'Run this exact bash command in the foreground, not in the background: python3 -c "import time; time.sleep({seconds}); print(42)" -- then tell me the number it printed. Do not call TaskStop, Monitor, Read or sleep; if it is moved to the background, just answer anything else asked and end your turn saying so.'
@@ -322,13 +350,19 @@ TURNS: dict[str, Callable[[Rig], None]] = {
 def record(name: str) -> Path:
     rig = Rig()
     try:
-        TURNS[name](rig)
-        rig.settled()
+        try:
+            TURNS[name](rig)
+            rig.settled()
+        except BaseException:
+            # The turn's own failure is the one said: nothing of a run that went wrong is written.
+            rig.end()
+            raise
+        text = normalized(rig.said(), rig)
     finally:
-        lines = rig.close()
+        rig.remove()
     out = OUT / f"{name}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(normalized(lines, rig))
+    out.write_text(text)
     return out
 
 
@@ -340,7 +374,7 @@ def normalized(lines: list[tuple[float, str, dict]], rig: Rig) -> str:
     machine = Machine(rig)
     for real, generic in machine.paths:
         text = text.replace(real, generic)
-    text = text.replace(rig.session, "SESSION")
+    text = text.replace(rig.session, RECORDED_SESSION)
     # Prompt ids in the order they first appear, p1 the turn typed; the API's message and tool-use ids likewise, which
     # name the recording account's requests.
     for pattern, prefix in ((r'"(?:prompt_id|promptId)":"([0-9a-f-]{36})"', "p"), (r"(msg_[0-9A-Za-z]{12,})", "msg_"), (r"(toolu_[0-9A-Za-z]{12,})", "toolu_")):
@@ -361,13 +395,25 @@ class Machine:
 
     def __init__(self, rig: Rig) -> None:
         uid = os.getuid()
-        project = rig.transcript.parent.name
-        temp = os.path.realpath(os.environ.get("TMPDIR", tempfile.gettempdir())).rstrip("/")
-        self.paths = [(str(rig.cwd), "/brain/cwd"), (str(rig.cwd).removeprefix("/private"), "/brain/cwd"), (project, "-brain-cwd"), (f"claude-{uid}", "claude-UID"), (temp, "/tmp/me"), (str(Path.home()), "/home/me")]
+        named = os.environ.get("TMPDIR", tempfile.gettempdir()).rstrip("/")
+        # Each path in every form a record can name it by: as resolved (/private/...), as named (/tmp/..., /var/...),
+        # and as Claude Code names a directory after one (each character but a letter or digit a dash).
+        temps = sorted({os.path.realpath(named), named, named.removeprefix("/private")}, key=len, reverse=True)
+        rigs = sorted({str(rig.cwd), str(rig.cwd).removeprefix("/private")}, key=len, reverse=True)
+        dirs = {str(rig.dir), str(rig.dir).removeprefix("/private")}
+        dashed = lambda path: re.sub(r"[^A-Za-z0-9]", "-", path)
+        self.paths = [
+            *[(path, "/brain/cwd") for path in rigs],
+            *[(dashed(path), "-brain-cwd") for path in rigs],
+            (f"claude-{uid}", "claude-UID"),
+            *[(path, "/tmp/me") for path in temps],
+            (str(Path.home()), "/home/me"),
+        ]
         git = [run(["git", "config", key], check=False).strip() for key in ("user.email", "user.name")]
         names = [part for value in git for part in re.split(r"[\s@.]+", value) if len(part) >= 4]
         host = socket.gethostname()
-        self.private = [value for value in (str(Path.home()), getpass.getuser(), host, host.split(".")[0], temp, str(rig.dir), rig.session, f"claude-{uid}", *git, *names) if len(value) >= 3]
+        machine = (str(Path.home()), dashed(str(Path.home())), getpass.getuser(), host, host.split(".")[0], *temps, *[dashed(path) for path in temps], *dirs, *[dashed(path) for path in dirs], rig.session, f"claude-{uid}", *git, *names)
+        self.private = [value for value in machine if len(value) >= 3]
 
 
 def _kept(record: dict) -> bool:

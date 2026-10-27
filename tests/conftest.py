@@ -326,9 +326,6 @@ if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
-# The recorded turns, read as it starts, as Claude Code is ready before its input is: a turn played is played at once.
-sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
-import turns
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
 def post(event, **fields):
     [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
@@ -358,6 +355,8 @@ def taken(text):
 # opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
 def play(name, text):
     global prompts, last, tail
+    sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+    import turns
     project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
     os.makedirs(project, exist_ok=True)
     transcript = os.path.join(project, session + ".jsonl")
