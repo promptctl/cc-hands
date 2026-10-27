@@ -51,6 +51,25 @@ jobs:
         with:
           path: ~/.cache/huggingface/hub
           key: nemotron-diarization-${{ steps.nemotron.outputs.revision }}
+      # The brain's end-to-end tests run the pinned Claude Code, fetched into pytest's cache against its checksum, and the
+      # mock of Anthropic's API at the release they name; kept the same way, keyed on the pin and on the release.
+      - name: The brain's pinned Claude Code and the mock's release
+        id: e2e
+        run: |
+          claude=$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' src/hands/brain/pinned.py)
+          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/test_brain_e2e.py)
+          test -n "$claude" || { echo "src/hands/brain/pinned.py pins no VERSION this step can read" >&2; exit 1; }
+          test -n "$mock" || { echo "tests/test_brain_e2e.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
+          echo "claude=$claude" >> "$GITHUB_OUTPUT"
+          echo "mock=$mock" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/claude-code
+          key: claude-code-${{ steps.e2e.outputs.claude }}
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/mock-anthropic
+          key: mock-anthropic-${{ steps.e2e.outputs.mock }}
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
