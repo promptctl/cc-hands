@@ -40,7 +40,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a hold the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
 | a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound; but hands' detector is fed silence while hands speaks, so it cuts only a turn working in silence, never a reading |
-| a hold engaged conversation opened cuts once Whisper pushes words | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
+| a hold engaged conversation opened cuts once the streaming recognizer hears words in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
 | the note | context carry-over: what the next turn is told about the one cut off |
@@ -82,7 +82,7 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 |---|---|
 | the user's hand: the held key, the phone's button | as it opens |
 | the wake word | as it opens; the detector is fed silence while hands speaks (`voice/wake.py:6`, `136–140`), so it opens no hold on a reading, only on a turn working in silence |
-| engaged conversation | once Whisper pushes words for it |
+| engaged conversation | once the streaming recognizer hears words in it, while it is open |
 | a hold that holds no words | nothing, so nothing has to be undone |
 
 **2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
@@ -97,7 +97,7 @@ a barge-in. The guards on lines 733–737 say no in four cases:
 
 A cut over a line of hands' own, the acknowledgement or an answer, is not a barge-in: it is no word
 of the brain's, so it carries no Mark and stops nothing of the turn. A turn opened by voice cuts only
-once Whisper pushes words for it, so a question that finishes playing between the user starting to
+once the streaming recognizer hears words in it, so a question that finishes playing between the user starting to
 speak and that moment is still answered by their words, as on master. And a cut in the moment
 between the output passing on a point's Mark and `Marks` taking it still reads as a barge-in, though
 everything had played. And hands' answer to words that arrive while a question the user heard is
