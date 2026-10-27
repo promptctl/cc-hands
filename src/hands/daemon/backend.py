@@ -24,12 +24,14 @@ def backend(llm: Claude, home: Home, environment: Mapping[str, str]) -> ClaudeCo
     if stray := sorted(name for name in environment if name.startswith("HANDS_") and name != "HANDS_HOME"):
         raise Rejected(f"{', '.join(stray)} set, and hands reads no setting from the environment; settings go in {home.config}")
     # Imported here, so that only a check loads the brain's process, its MCP server, and Pipecat's tools.
-    from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in
+    from hands.brain.process import NotLoggedIn, Unstartable, account_kept_out, answered, logged_in, settings_mode
 
     try:
         account = logged_in(home.brain, UPSTREAM, environment)
         answered(home.brain)
         account_kept_out(home.brain)
+        # A mode Claude Code does not take is refused here too, before the voice loads, not as the brain starts.
+        settings_mode(home.brain)
         # The brain runs under the fritter hands' package carries: a hands built without it is refused here, not at its start.
         packaged()
     except (NotLoggedIn, Unstartable, Unpackaged) as error:

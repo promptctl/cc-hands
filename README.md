@@ -231,6 +231,9 @@ key. Either way it says which account the brain holds after, and how it is logge
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.
+The mode `settings.json` names is said again on the brain's command line, the same mode, so Claude Code never offers to
+change it at a keyboard nobody sits at; a mode Claude Code does not take stops hands from starting, naming the ones it
+does, and the `brain.launch` event says which mode the brain started in.
 Nobody sits at its keyboard to answer a dialog. A permission its settings ask about is put to the user by voice, in
 the turn of theirs that led to it: hands says what the tool would do, and only a plain yes, said once the question has
 played to its end, runs it. Anything else they say refuses it and is handed to the brain, and a permission nobody can
