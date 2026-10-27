@@ -174,7 +174,7 @@ class Hands:
                     await asyncio.sleep(0.05)
         except TimeoutError:
             # [LAW:no-silent-failure] a wait that runs out says where hands was: what it said, and what the brain was doing.
-            raise AssertionError(f"waited {PATIENCE_SECONDS:g}s: hands said {self.out.said()!r}, the brain's work {self.stage.work()!r}") from None
+            raise AssertionError(f"waited {PATIENCE_SECONDS:g}s: hands said {self.out.said()!r}, the brain's work {self.stage.work()!r}, after {len(self.sent)} requests through hands' proxy") from None
 
 
 async def connected(hands: Hands) -> None:
@@ -222,7 +222,8 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
 async def test_a_turn_that_acted_and_closed_silent_is_told_to_say_what_it_did_and_hands_says_it(tmp_path: Path, mock_api: MockApi, hands: Hands) -> None:
     """The brain runs a shell command for the user, then calls stay_silent: hands refuses the silence once, telling it what
     it owes, and the sentence it answers with is said (promptctl-silence-bsog.sfi)."""
-    made = tmp_path / "made"
+    # In the directory the brain works in: a command on a path outside it is asked about whatever its settings allow.
+    made = workdir(tmp_path / "brain") / "made"
     # Tried in name order: the refusal's answer ahead of the silence, which would match the request carrying it too.
     mock_api.script("1-owed", {"bodyContains": [TURN, OWED[:60]]},{"type": "text", "text": "I made the file."})
     mock_api.script("2-silent", {"bodyContains": [TURN, RESULT]}, {"type": "tool_use", "name": "mcp__hands__stay_silent", "input": {}}, stop="tool_use")
