@@ -19,12 +19,12 @@ from pathlib import Path
 import aiohttp
 
 # [LAW:one-source-of-truth] the pin: the version, and the SHA-256 Anthropic's manifest for it gives each macOS build
-# (downloads.claude.ai/claude-code-releases/2.1.299/manifest.json). Moving the pin is one commit that changes both, after
+# (downloads.claude.ai/claude-code-releases/2.1.308/manifest.json). Moving the pin is one commit that changes both, after
 # measuring again what the comments that name the old version say.
-VERSION = "2.1.299"
+VERSION = "2.1.308"
 CHECKSUMS = {
-    "darwin-arm64": "ba5ab7b8c195fa03ab8d5bf3915c76153b576a2c40e79a5c46e265e7ed9744b3",
-    "darwin-x64": "099dcc53dabbbefabed8926dab25b0318775c175a7c87bb6ba6c54fde9f8ece2",
+    "darwin-arm64": "ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",
+    "darwin-x64": "9a0bc140f5fb06e6366624d770371ef290e6731d1e84c4def5daf4df946d1b59",
 }
 RELEASES = "https://downloads.claude.ai/claude-code-releases"
 INSTALL = "hands install-brain"
