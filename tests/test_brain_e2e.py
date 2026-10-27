@@ -168,6 +168,8 @@ class Hands:
     recorded: list[Entry]
     # Every request the brain sent, as it left hands' proxy for the mock.
     sent: list[Sent]
+    # The mock's own log: what it served, closed, or could not match, per request.
+    mock_log: Path
 
     async def until(self, what: Callable[[], bool]) -> None:
         try:
@@ -178,7 +180,8 @@ class Hands:
             # [LAW:nothing-unseen] a wait that gives up says what the audit held meanwhile, the MCP events above all.
             seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower() or "brain." in str(entry)]
             requests = [str(request.kind) for request in self.sent]
-            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; the requests it sent: {requests}; its screen: {self.stage.screen()!r}") from error
+            served = self.mock_log.read_text().splitlines()
+            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; the requests it sent: {requests}; the mock's log: {served}; its screen: {self.stage.screen()!r}") from error
 
 
 async def unread() -> InFront:
@@ -209,7 +212,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run()) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent)
+                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, tmp_path / "mock.log")
                 finally:
                     for watch in watches:
                         watch.cancel()
