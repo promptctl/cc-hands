@@ -75,7 +75,11 @@ class MockApi:
         tried in the order of their names, so a narrower match is named ahead of a wider one. Claude Code's own calls
         beside a turn (a title, the auto mode classifier, which allows) are the mock's built-in answers."""
         script = {"match": match, "reply": {"kind": "message", "content": list(content), "stop_reason": stop}}
-        (self.scenarios / f"{name}.json").write_text(json.dumps(script))
+        # [LAW:no-silent-failure] the mock reads a script the moment a request needs it, so a script is written under a
+        # dot-name the mock ignores and renamed into place: a request never reads it half-written.
+        staging = self.scenarios / f".{name}.tmp"
+        staging.write_text(json.dumps(script))
+        os.replace(staging, self.scenarios / f"{name}.json")
 
 
 def mock(binary: Path, *argv: str) -> tuple[str, ...]:
@@ -187,7 +191,8 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     home = tmp_path / "home"
     home.mkdir()
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it: the variables that say so
-    # are the mock's to name. NO_PROXY is hands' own: its proxy listens on loopback, and the brain reaches it directly.
+    # are the mock's to name. HOME is a fresh empty directory, so no real Claude Code profile is read. NO_PROXY is hands' own:
+    # its proxy listens on loopback, and the brain reaches it directly.
     environment = {"PATH": os.environ["PATH"], "HOME": str(home), **mock_environment(mock_binary, mock_api.port, mock_api.ca, brain), "NO_PROXY": "127.0.0.1,localhost"}
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
