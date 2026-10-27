@@ -125,7 +125,7 @@ Known = Session | Gone        # what the registry holds per session
 
 # Only a status read moves a session between these: whether it runs is Claude Code's
 # word, never inferred from a hook or a record. Its busy also covers a subagent working
-# in the background (2.1.289), so busy with no turn open and a subagent out is read as
+# in the background, so busy with no turn open and a subagent out is read as
 # delegating(session): at its prompt. Its idle says no subagent is out.
 SessionState = Unreported | Idle | Running
 @dataclass(frozen=True)
@@ -298,17 +298,16 @@ alone denies a request of its own 5 seconds before its hook's day ends, which re
 Claude Code before the kill.
 
 Claude Code queues messages submitted while a turn is running and shows them with
-"Press up to edit queued messages". Measured on 2.1.270: text pasted into a working
+"Press up to edit queued messages". Text pasted into a working
 session and submitted lands in that queue and runs when the turn ends, so a send to a
 working target is an ordinary send and the daemon holds nothing. A permission dialog
 is the exception: it swallows pasted text and takes the Enter as "Yes". So when the
 drafts are sent, a send to a session whose status says `waiting` is refused, the draft
 stays staged, and the user hears why.
 
-The workspace-trust dialog swallows a paste the same way, measured on 2.1.278, and needs
+The workspace-trust dialog swallows a paste the same way, and needs
 no rule of its own: Claude Code runs no hook until a startup dialog is answered, so a
-session at one has no membership and nothing can be sent to it (`hands-harness-5nb.xw8`,
-measured on 2.1.283).
+session at one has no membership and nothing can be sent to it (`hands-harness-5nb.xw8`).
 
 ### Typing into a session
 
@@ -461,19 +460,19 @@ turn runs, so the daemon tails it rather than hooking every tool call. Every hoo
 input carries `session_id`, `transcript_path`, `cwd`, and `hook_event_name`. Of the
 events hands subscribes to, `UserPromptSubmit`, `Stop`, `PermissionRequest`,
 `PostToolUse`, and `PostToolUseFailure` carry `permission_mode` as well, and `SessionStart`, `Notification`, and
-`SessionEnd` do not (verified live on 2.1.281). That mode is the session's mode: each
+`SessionEnd` do not. That mode is the session's mode: each
 hook that carries one sets it, `list_sessions` says it, and the tail of the brain's
 next request says it. A hook fired inside a subagent carries the subagent's mode
 and an `agent_id`, and sets nothing. Shift-tab fires no hook, and the transcript writes its
 `permission-mode` record only as a prompt is sent, so a mode changed at an idle
 prompt is heard at the session's next prompt, and one changed mid-turn at its next
 tool call. The
-event-specific fields below were read out of the 2.1.263 bundle. Payloads captured from
-2.1.270 on 2026-09-14 carry no session title, so a session's name is the newest
+event-specific fields below were read out of the Claude Code bundle. Payloads captured on
+2026-09-14 carry no session title, so a session's name is the newest
 `custom-title` record in its transcript. Hands sets that name itself: a `UserPromptSubmit`
-hook's reply may carry `hookSpecificOutput.sessionTitle` (2.1.286), which Claude Code writes
-as a `custom-title` record and shows on the terminal's tab, exactly as `/rename` does
-(verified live on 2.1.286). The latest name wins, whoever set it.
+hook's reply may carry `hookSpecificOutput.sessionTitle`, which Claude Code writes
+as a `custom-title` record and shows on the terminal's tab, exactly as `/rename` does.
+The latest name wins, whoever set it.
 
 After each turn a session finishes, hands asks the summariser's model whether the
 session's name still fits, showing it the name and the turn's closing reply
@@ -494,7 +493,7 @@ name, as one identifier: "cc-hands, naming fix".
 | `PostToolUse`, `PostToolUseFailure` | `tool_name`, `tool_input`, `tool_use_id`, and the response or the error |
 | `Notification` | `message`, `title`, `notification_type` in `permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog` |
 | `SubagentStart` | `agent_id`, `agent_type` |
-| `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` (absent for a report handed back through a tool, 2.1.289) |
+| `SubagentStop` | `agent_id`, `agent_transcript_path`, `agent_type`, `last_assistant_message` (absent for a report handed back through a tool) |
 | `PermissionDenied` | `tool_name`, `tool_input`, `tool_use_id`, `reason` |
 | `TaskCompleted` | `task_id`, `task_subject`, and optionally `task_description`, `teammate_name` |
 | `ConfigChange` | `source`, and optionally `file_path` |
@@ -502,13 +501,13 @@ name, as one identifier: "cc-hands, naming fix".
 | `MessageDisplay` | `turn_id`, `message_id`, `index`, `final`, `delta` |
 | `SessionEnd` | the common fields |
 
-No hook fires when the user interrupts a turn with Escape or Ctrl-C (2.1.281): no
+No hook fires when the user interrupts a turn with Escape or Ctrl-C: no
 `Stop`, no `PostToolUse` for the tool it cut off, and no `idle_prompt` afterwards.
 Claude Code writes a user record instead, `[Request interrupted by user]`, or
 `[Request interrupted by user for tool use]` when a tool was running, carrying the
 `promptId` of the turn it stopped, which is the `prompt_id` that turn's
 `UserPromptSubmit` carried. The tail reads that record as the `Interrupted` event.
-Claude Code sets the session `idle` before it writes the record (37 ms before, 2.1.283),
+Claude Code sets the session `idle` before it writes the record (37 ms before),
 and that status is what moves the session to its prompt (see Sessions, below); the record
 says the turn Claude was answering is over, and is what its telling waits for. An
 interrupt that flushes a queued message names that message's id instead, and the turn
@@ -520,10 +519,10 @@ records say which turn it is and what it did: a turn is `Opened`, `Untold` once 
 Code's idle ends it, and `Told`. A turn opens from a prompt heard with no turn open, which
 marks it, whether or not the busy that prompt set has been read yet. What is submitted
 while a turn runs, a queued message or a task's notification, fires `UserPromptSubmit`
-with the running turn's `prompt_id` and leaves the status as it was (2.1.283), so it is in
+with the running turn's `prompt_id` and leaves the status as it was, so it is in
 the turn it names. Claude Code gives a prompt an id of its own only at its prompt, so a
 prompt under another id means the open turn is over, even when the `idle` between them
-was set and set again inside one status read (93 ms apart, 2.1.283): that turn is told,
+was set and set again inside one status read (93 ms apart): that turn is told,
 compared while the new prompt's hook holds Claude Code, and the new turn is marked. Any
 other id a record carries while a turn is open is a flush's, taken seconds before Claude
 answers under it, and joins the ids the turn goes by. A `Stop` carries
@@ -539,14 +538,14 @@ The reply a `PermissionRequest` hook may give is printed on its stdout as
 `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": ...}}`,
 where the decision is `{"behavior": "allow", "updatedInput"?: object}` or
 `{"behavior": "deny", "message": string}`; empty output decides nothing (read out of
-the 2.1.270 bundle, and verified live: an allow runs the tool, and the agent reads a
+the Claude Code bundle, and verified live: an allow runs the tool, and the agent reads a
 deny's message as the tool's error). Permission
 prompts, plan approval, and `AskUserQuestion` all arrive through this one hook, which
 is why `Held.on` is a union of three and the answer path is one adapter. A question
 is answered by allowing it with its own input and an `answers` object added, each
 question's text keying the label chosen or the user's own words, several labels
 joined with ", " — the shape Claude Code's own dialog answers with (read out of the
-2.1.280 bundle, and verified live: the agent went on with the answers given by voice).
+Claude Code bundle, and verified live: the agent went on with the answers given by voice).
 A plan is approved as its own dialog approves it: allow with an empty `updatedInput`,
 so the plan is read from its file as the user left it, and `updatedPermissions`
 holding the mode to leave plan mode for — nothing, which returns the session to the
@@ -554,7 +553,7 @@ mode it had before it planned, bypass or auto included, or one `setMode` to
 `acceptEdits` or `default` when the user names one. Claude Code ignores an allow
 without `updatedInput` for a tool that asks the user something, and shows its dialog
 instead. Keep planning is a deny, and the agent reads its message as the feedback
-(read out of the 2.1.281 bundle, and verified live). A plan that
+(read out of the Claude Code bundle, and verified live). A plan that
 runs comes back through `PostToolUse` without its text, as `PlanApproved`.
 An answer that does not fit what was asked — the wrong number of answers, a plain
 allow to a question, which would run it unanswered, a plain allow to a plan, or a
@@ -586,8 +585,8 @@ live source of Claude's text: the transcript writes a text block once, after it
 finishes (checked on 2026-09-14), while `MessageDisplay` fires with each batch of
 finished lines as the text streams. It is dispatched synchronously for every batch,
 even to a hook that declares itself async, so it is installed as an HTTP hook, which
-Claude Code 2.1.270 supports: the event is POSTed to the daemon with no process
-spawned, under a short timeout. Measured on 2.1.280 on 2026-09-24, with a 40-line
+Claude Code supports: the event is POSTed to the daemon with no process
+spawned, under a short timeout. Measured on 2026-09-24, with a 40-line
 reply:
 
 - An interactive session fired 35 to 40 batches, one per finished line or two,
@@ -625,8 +624,8 @@ disabling or uninstalling it removes them, and no settings file is edited by han
 `hooks.json` is generated from `hookconfig` (`python -m hands.sessions.hookconfig >
 src/hands/sessions/plugin/hooks/hooks.json`), and a test fails when the checked-in file
 differs from what `hookconfig` declares. `MessageDisplay` is an HTTP
-hook to `hookconfig.DISPLAY_URL`, a fixed loopback port, since Claude Code puts no variable in a hook's URL
-(2.1.288); the daemon serves that route alone there, and does not start when the port is taken. Every other hook is exec
+hook to `hookconfig.DISPLAY_URL`, a fixed loopback port, since Claude Code puts no variable in a hook's URL;
+the daemon serves that route alone there, and does not start when the port is taken. Every other hook is exec
 form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`, spawned by Claude
 Code with no shell between, and the launcher execs, so the shim runs as the process
 Claude Code spawned and its parent is the claude process. A launcher that ran Python as
@@ -655,7 +654,7 @@ A session running before the plugin was installed, or reloaded with `/reload-plu
 never fires `SessionStart`. So every other hook writes the file when no membership file
 names the shim's parent process, and the daemon takes the session its file names
 (`Located`) before it applies the hook: such a session joins on whatever it fires first.
-The file's `transcript_path` follows the transcript: Claude Code (2.1.299) renames it,
+The file's `transcript_path` follows the transcript: Claude Code renames it,
 subagents and all, into the worktree's project as the session enters one
 (`EnterWorktree`), and every hook after names it there. A hook of the session the process
 holds rewrites the path when the file's no longer exists and its own does; PostToolUse
@@ -678,7 +677,7 @@ sole exception is `PermissionRequest`, where blocking is the feature. Its timeou
 declared in the hook config, and the shim's wait is that same number, so there is one
 place the budget is set `[LAW:single-enforcer]`.
 
-**The dialog and the hook race.** Measured on 2.1.270: Claude Code shows its
+**The dialog and the hook race.** Claude Code shows its
 permission dialog at once and runs the `PermissionRequest` hook beside it, and
 whichever answers first decides. An answer typed at the dialog does not end the hook;
 it runs on to its own end and its output is ignored. So the daemon never learns of a
@@ -690,7 +689,7 @@ waiting reply, which prints nothing. A hook whose connection closes first ends t
 no reply at all, so a later voice answer hears that the request is gone rather than
 that it went through. That is how a keyboard refusal arrives: answering No or Esc at
 the dialog fires no post-tool hook and no `Stop`, but Claude Code kills the waiting
-hook, and the closed connection releases the session (measured on 2.1.270). A permission
+hook, and the closed connection releases the session. A permission
 request from a session the daemon has not heard of joins the session first, so it is
 asked aloud like any other.
 
@@ -1473,11 +1472,11 @@ from all three rather than storing any of them twice `[LAW:one-source-of-truth]`
 - **State** comes from the reducer applied to hook events since the daemon attached.
 - **What Claude Code says the session is doing** is the file Claude Code itself keeps
   for every interactive session, `sessions/<pid>.json` in the config directory that
-  holds the session's transcript (2.1.280 to 2.1.289): `status` is `idle`, `busy`,
+  holds the session's transcript: `status` is `idle`, `busy`,
   `waiting` (with `waitingFor`, `permission prompt` or `input needed`), or `shell`, and
   `statusUpdatedAt` is when it was set, in epoch milliseconds. A `!` command reports
   `busy`. `shell` is written in place of `idle` while a background bash task the session
-  started still runs (2.1.289): the session is at its prompt, no turn runs, and hands
+  started still runs: the session is at its prompt, no turn runs, and hands
   holds it as `Idle` with that status, so everything said below of `idle` holds of it. `hands.sessions.statusfile` reads every listed session's file ten times a
   second and applies a `StatusReported` each time its stamp differs from the one the registry holds, so a status set
   again to what it was, or an idle, busy, idle between two reads, is still heard. A
@@ -1492,7 +1491,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   taken and stopped before the tail read its record: either way its turn ends here, and is
   told as itself only if a record says it ran. The session is `Idle` at once. Claude Code sets `idle`
   before the transcript says how the turn ended: an Escape's interrupt record is
-  written 37 ms after (2.1.283), and an Escape'd turn's Stop can fire after it. So the turn is
+  written 37 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
   opening (told before that turn's mark), the session ending, or a reading of the
@@ -1504,7 +1503,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   id no record read yet names is held until one is (`Holding`), for at most `STOP_HOLD_SECONDS`; past that its hook is let go
   and the Stop still tells its turn once a record names it, or is a line once the transcript is read through it without one. It sets `busy` before a prompt's hooks run, so no `idle`
   read after a prompt is applied predates it. A single Escape that flushes a queued
-  message sets `busy` again, not `idle`. All three were seen live on 2.1.282. The
+  message sets `busy` again, not `idle`. The
   ordering holds only if a file is read at the moment its report is applied, so the
   reader reads each session's file lazily, looked up by id, once the report before it
   has been applied.
@@ -1531,7 +1530,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   listed, such as one that died while the daemon was down or before a reboot, has its
   file removed without a word: the user was not told of it here.
 - **Ends** arrive through `SessionEnd`, whose `reason` says who ended the session.
-  Measured on 2.1.270: `/exit` and a double Ctrl-C report `prompt_input_exit`, `/clear`
+  `/exit` and a double Ctrl-C report `prompt_input_exit`, `/clear`
   reports `clear`, and a closed terminal reports `other`. An end the user
   chose at the keyboard is not spoken; `other`, and any reason hands does not know, is
   spoken as gone, the same sentence a dead process gets.
@@ -1689,7 +1688,7 @@ staged and sent as any prompt is. Each start is a `session.start` event.
 
 **Closing a session.** The brain's `close_session` tool ends the sessions it is given, all together, as its
 `hands:close` skill says (`hands.sessions.closesession`). It sends each session's `claude` SIGTERM, which Claude Code
-ends on as on a closed terminal, firing SessionEnd (2.1.289), unless the liveness sweep's judgement says that process
+ends on as on a closed terminal, firing SessionEnd, unless the liveness sweep's judgement says that process
 no longer holds the session (it ended, its pid was reused, or a /clear moved it to another session); then it waits until
 the registry no longer lists the session, 10 seconds at most. Whatever ran that `claude` goes as it
 would at a terminal: a window hands opened ran nothing else, so tmux closes it, and a shell the user ran it from gives

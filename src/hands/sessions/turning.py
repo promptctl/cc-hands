@@ -35,7 +35,7 @@ class Turning:
     # interrupt, or what a slash command Claude Code carries out itself printed, the last it writes of that command's
     # turn. A record read after it says it is not: a Stop hook sending Claude on, an Escape flushing a queued message
     # into the turn, or the prompt a command such as /goal hands Claude, which Claude Code writes in the same append as
-    # what the command printed (2.1.289).
+    # what the command printed.
     ended: Ended | Interruption | Printed | None = None
 
     def consume(self, record: Payload) -> Opening | Printed | Interruption | None:

@@ -180,31 +180,6 @@ in, not the shape a session runs in, and a contract that holds only under test i
 The caller must not close stdin before its process ends, which for fritter is the next
 statement in `main`. A guarantee that sometimes deadlocks is worse than one not made.
 
-## Measured against Claude Code
-
-On 2.1.283:
-
-- A bracketed paste and the Return behind it, read together, are sent: a short text and a
-  3 KB one alike. A Return read a moment after the paste, apart from it, sent nothing, which
-  is why the two go as one write.
-- Read together that way, text ending on an `@` or `#` token is sent as it is: no
-  completion list opens to take the Return. Text ending on a backslash is not sent. The
-  Return becomes a newline, and the next text typed is submitted joined onto it.
-- Text behind a leading space starting with `/`, `@` or `!` is sent as plain text, and the
-  transcript records it with the space.
-- The binary asks for bracketed paste.
-- Killing the tmux session a wrapped session runs in, or sending fritter SIGHUP or
-  SIGTERM, ends fritter, claude and the processes claude started within a second, and
-  removes the socket directory.
-
-On 2.1.278:
-
-- Text wrapped in bracketed paste arrives as one multi-line message.
-- A two-line prompt sent with the display asleep arrived as one message and was answered.
-- A process the child spawns sees `FRITTER_SOCKET`.
-- A permission dialog and the workspace-trust dialog each swallow a paste, and take the
-  Return as their answer. A session sitting at a dialog is not one to type text into.
-
 ## Building and testing
 
 ```

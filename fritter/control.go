@@ -139,9 +139,9 @@ func (w *Wrapped) inject(asked request) response {
 	return response{OK: true}
 }
 
-// How long keys that end in ESC keep the child's input to themselves. Claude Code 2.1.285
+// How long keys that end in ESC keep the child's input to themselves. Claude Code
 // read an ESC followed within 40ms by another byte as one chord, and alone from 45ms on
-// (hands-wire-6ic.ulk, measured 2026-09-30); this is vim's default for the same wait.
+// (measured 2026-09-30, hands-wire-6ic.ulk); this is vim's default for the same wait.
 const loneEscape = 100 * time.Millisecond
 
 // typeIn writes a request's keys into the child's input.

@@ -200,7 +200,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     # here, and a refusal is held final or not on what it says. Held final, it reaches the client as the
                     # proxy's own, which Claude Code ends on, since it asks again after an overload whatever the header
                     # says, and waits out a spent limit to continue the task at its reset (autoContinueAtUsageLimit,
-                    # 2.1.286); whoever speaks the turn's failure reads it off the wire.
+                    # autoContinueAtUsageLimit); whoever speaks the turn's failure reads it off the wire.
                     parts: list[bytes] = []
 
                     async def keep(chunk: bytes) -> None:
@@ -283,7 +283,7 @@ def _held(body: object, said: str) -> tuple[str, bytes]:
 
 
 def _asked_again(status: int, headers: Mapping[str, str], reply: Body) -> bool:
-    """Whether Claude Code asks again after this answer (`lMo`, 2.1.286)."""
+    """Whether Claude Code asks again after this answer (`lMo`)."""
     told = headers.get("x-should-retry")
     match status, told, reply:
         case (int() as answered, _, _) if answered < 400:

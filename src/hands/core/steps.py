@@ -134,7 +134,7 @@ def _forked(call: Call) -> Step | None:
 
 def in_background(structured: Mapping[str, object]) -> bool:
     """Whether a call's result says it started a subagent in the background, which reports back as a notification: an
-    async agent's launch, or a skill forked to run in the background (2.1.289)."""
+    async agent's launch, or a skill forked to run in the background."""
     return structured.get("isAsync") is True or structured.get("background") is True
 
 

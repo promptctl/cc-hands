@@ -1,4 +1,4 @@
-"""Hook bodies parse once into core events, or are rejected with a reason. Payload fields as captured from Claude Code 2.1.270."""
+"""Hook bodies parse once into core events, or are rejected with a reason. Payload fields as captured from Claude Code."""
 
 import json
 from pathlib import Path
@@ -99,13 +99,13 @@ def test_a_prompt_or_stop_that_names_no_turn_is_refused(home: Home, fields: dict
 
 
 def test_a_stop_says_whether_its_turn_went_on_after_another_stop_hook_blocked_its_last_one(home: Home) -> None:
-    """stop_hook_active, true on the Stop of a turn Claude went on in after a Stop hook blocked it (2.1.282)."""
+    """stop_hook_active, true on the Stop of a turn Claude went on in after a Stop hook blocked it."""
     assert parse(home, body(hook_event_name="Stop", stop_hook_active=True, last_assistant_message="ok", prompt_id="p")) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=True, heard=STOP_HEARD, request=REQUEST)
 
 
 @pytest.mark.parametrize("active", [{}, {"stop_hook_active": None}, {"stop_hook_active": "true"}])
 def test_a_stop_that_does_not_say_whether_its_turn_went_on_is_refused(home: Home, active: dict[str, object]) -> None:
-    """Every Stop carries it (2.1.282); without it a Stop of the last turn could be told twice or not at all."""
+    """Every Stop carries it; without it a Stop of the last turn could be told twice or not at all."""
     with pytest.raises(Rejected, match="stop_hook_active"):
         parse(home, body(hook_event_name="Stop", last_assistant_message="ok", prompt_id="p", **active))
 
@@ -156,7 +156,7 @@ def test_a_hook_whose_mode_is_missing_or_not_a_string_still_moves_the_session(ho
     assert parse(home, body(hook_event_name="Stop", stop_hook_active=False, last_assistant_message="ok", prompt_id="p", **fields)) == Stopped(SID, "ok", mode=None, prompt=PromptId("p"), again=False, heard=STOP_HEARD, request=REQUEST)
 
 
-# As Claude Code 2.1.280 posted it, captured live.
+# As Claude Code posted it, captured live.
 QUESTIONS: dict[str, object] = {
     "questions": [
         {"question": "Which color do you prefer?", "header": "Color", "options": [{"label": "red", "description": "The color red"}, {"label": "green", "description": "The color green"}], "multiSelect": False},
@@ -194,7 +194,7 @@ def test_a_question_with_no_options_and_no_descriptions_is_still_a_question(home
     assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=on, mode=None)
 
 
-# As Claude Code 2.1.281 sends it: the plan file already read into the input.
+# As Claude Code sends it: the plan file already read into the input.
 PLAN_INPUT = {"plan": "# Plan\n\n1. Create hello.txt.\n2. Write hi into it.\n", "planFilePath": "/Users/me/.claude/plans/noble-goose.md"}
 
 

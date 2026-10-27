@@ -522,7 +522,7 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
 
 
 async def test_a_turn_whose_transcript_moved_into_a_worktree_is_told_from_where_it_is_as_if_it_never_moved(tmp_path: Path) -> None:
-    """Claude Code 2.1.299 renames the transcript into the worktree's project as the session enters one, mid-turn, and
+    """Claude Code renames the transcript into the worktree's project as the session enters one, mid-turn, and
     the Stop names it there. The turn is told from the moved file before any catch-up has read past the move, and told
     as it would have been had it stayed: the turn told before it is not told again."""
 
@@ -604,7 +604,7 @@ async def test_the_catch_up_and_a_stop_never_read_the_same_bytes_twice(tmp_path:
     assert telling.turn == Turn(Asked(None, "first"), (Said(None, "Done."), RAN, Said(None, "Done.")))
 
 
-# An interrupt fires no hook (2.1.281). Claude Code writes these records instead, as captured from a live session.
+# An interrupt fires no hook. Claude Code writes these records instead, as captured from a live session.
 ASKED = '{"type":"user","promptId":"p1","message":{"role":"user","content":"Write an essay about rivers."}}'
 WRITING = '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"# Rivers"}]}}'
 CUT_OFF = '{"type":"user","promptId":"p1","uuid":"u9","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}'
@@ -702,7 +702,7 @@ async def test_the_older_record_of_an_interrupt_written_as_a_plain_string_is_one
     assert (await followed_on(transcript, ASKED, WRITING, plain))[1] == [Taken(SID, PromptId("p1"), None, 7.0), Interrupted(SID, PromptId("p1"), at=7.0)]
 
 
-# A message queued while the loop ran, flushed by Escape, as captured live on 2.1.281: the cancelled call's result and the
+# A message queued while the loop ran, flushed by Escape, as captured live: the cancelled call's result and the
 # interrupt already carry the queued message's own new id, and so does everything Claude answers after it.
 FLUSHED = REJECTED.replace('"p1"', '"p2"')
 FLUSHING = CUT_OFF_MID_TOOL.replace('"p1"', '"p2"')
@@ -737,7 +737,7 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
         more.write(lines(FLUSHED, FLUSHING, QUEUED, LOOPING, REJECTED.replace('"p1"', '"p2"')))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    # Claude Code sets idle ~100 ms before it writes the record of the interrupt (2.1.282).
+    # Claude Code sets idle ~100 ms before it writes the record of the interrupt.
     await sessions.apply(said_idle(at=2.0))
     with transcript.open("a") as more:
         more.write(lines(CUT_OFF_MID_TOOL.replace('"p1"', '"p2"')))
@@ -765,7 +765,7 @@ async def test_a_record_that_names_no_prompt_does_not_lose_the_turn_claude_is_an
 
 
 async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_one_resent_opens_its_own_turn(tmp_path: Path) -> None:
-    """Escape during UserPromptSubmit writes nothing (2.1.281): the prompt's hook opens its turn, and Claude Code's idle
+    """Escape during UserPromptSubmit writes nothing: the prompt's hook opens its turn, and Claude Code's idle
     ends it, so the prompt sent again is a turn of its own."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text("")
@@ -776,7 +776,7 @@ async def test_a_prompt_cancelled_while_its_hooks_ran_ends_at_the_idle_and_the_o
     for _ in range(3):
         for transcribed in await tails.catch_up():
             await sessions.apply(transcribed)
-    # The Escape puts the prompt back in the box and sets the session idle (2.1.282).
+    # The Escape puts the prompt back in the box and sets the session idle.
     await sessions.apply(said_idle(at=2.0))
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle) and isinstance(live.turn, Untold)
@@ -873,7 +873,7 @@ async def test_only_the_last_turns_that_ended_are_kept(tmp_path: Path) -> None:
 
 
 async def test_a_turn_is_named_by_the_id_it_went_on_under_after_a_flush(tmp_path: Path) -> None:
-    """In the order a flush was written live on 2.1.281: the queued message straight after the call it cut off."""
+    """In the order a flush was written live: the queued message straight after the call it cut off."""
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, LOOPING, QUEUED, FLUSHED, FLUSHING, BANANA))
     tails = await following(transcript)
@@ -1087,7 +1087,7 @@ async def test_a_first_record_still_being_written_explains_no_reading(tmp_path: 
     assert said == []
 
 
-# Claude Code's own records for what the user ran rather than wrote, in the shapes 2.1.285 writes them: the caveat
+# Claude Code's own records for what the user ran rather than wrote: the caveat
 # ahead of a command it carries out itself, the command, and what it printed, which names the command as its parent and
 # is as often a system record as a user one; a skill command, whose skill body is a meta record; and a `!` command
 # with its output.
@@ -1190,7 +1190,7 @@ async def test_what_a_command_printed_that_joins_no_turn_is_said(tmp_path: Path)
     assert any("names record c1, which opened no turn" in line for line in said)
 
 
-# A subagent started in the background and its report, as 2.1.289 writes them: the launch is the call's result, the
+# A subagent started in the background and its report, as Claude Code writes them: the launch is the call's result, the
 # report a notification, at the prompt as a user record and mid-turn as an attachment.
 DELEGATE = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t7","name":"Agent","input":{"description":"Draft tickets","prompt":"Draft them.","run_in_background":true}}]}}'
 LAUNCHED = (
@@ -1221,7 +1221,7 @@ async def test_a_background_tasks_notification_is_heard_as_its_report_back_at_th
     assert [event for event in heard(await tails.catch_up()) if not isinstance(event, Taken)] == [ReportedBack(SID, AGENT)]
 
 
-# What Claude Code writes as a turn ends, as 2.1.289 writes it: what its Stop hooks did, then how long the turn took.
+# What Claude Code writes as a turn ends: what its Stop hooks did, then how long the turn took.
 STOP_SUMMARY = '{"type":"system","subtype":"stop_hook_summary","hookCount":1,"hookInfos":[],"hookErrors":[],"preventedContinuation":false,"stopReason":"","hasOutput":false,"level":"suggestion","timestamp":"1970-01-01T00:00:01.300Z","uuid":"e1"}'
 TURN_DURATION = '{"type":"system","subtype":"turn_duration","durationMs":1300,"messageCount":4,"timestamp":"1970-01-01T00:00:01.301Z","uuid":"e2","isMeta":false}'
 
@@ -1248,7 +1248,7 @@ async def test_a_turn_a_stop_hook_sent_on_after_its_end_record_may_still_be_runn
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0)]
 
 
-# What a Stop hook that sends Claude on writes before Claude answers, as 2.1.289 writes it.
+# What a Stop hook that sends Claude on writes before Claude answers.
 SENT_ON = '{"type":"user","isMeta":true,"promptId":"p1","message":{"role":"user","content":"Stop hook feedback: keep going"}}'
 
 
@@ -1317,7 +1317,7 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     assert live is not None and live.turn == Told(PromptId("p3"))
 
 
-# What 2.1.289 writes for a command it carries out itself, its output a user record under the command's prompt id; and
+# What Claude Code writes for a command it carries out itself, its output a user record under the command's prompt id; and
 # for /goal, which hands Claude a prompt of its own in the same append as what it printed.
 MODEL_PRINTED = '{"uuid":"c1o","parentUuid":"c1","type":"user","promptId":"p2","message":{"role":"user","content":"<local-command-stdout>Set model to `Sonnet 5.5` for this session only</local-command-stdout>"}}'
 GOAL = '{"uuid":"c8","type":"user","promptId":"p2","message":{"role":"user","content":"<command-name>/goal</command-name>\\n            <command-message>goal</command-message>\\n            <command-args>ship it</command-args>"}}'

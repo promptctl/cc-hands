@@ -18,7 +18,7 @@ from hands.sessions.wide import WideEvent
 SID = SessionId("9a07bdf1-5512-402c-a1ea-4b3d10f6a73d")
 
 LINE = "3. The OS first checks local sources such as the hosts file and its own DNS cache.\n"
-# As Claude Code 2.1.288 posted it, with the paths shortened.
+# As Claude Code posted it, with the paths shortened.
 DISPLAYED: dict[str, object] = {
     "session_id": SID,
     "transcript_path": "/x/9a07bdf1.jsonl",

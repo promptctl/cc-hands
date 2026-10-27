@@ -19,7 +19,7 @@ from pathlib import Path
 import aiohttp
 
 # [LAW:one-source-of-truth] the pin: the version, and the SHA-256 Anthropic's manifest for it gives each macOS build
-# (downloads.claude.ai/claude-code-releases/2.1.308/manifest.json). Moving the pin is one commit that changes both, after
+# (the manifest of the release VERSION names). Moving the pin is one commit that changes both, after
 # measuring again what the comments that name the old version say.
 VERSION = "2.1.308"
 CHECKSUMS = {
