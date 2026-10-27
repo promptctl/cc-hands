@@ -295,11 +295,13 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under; a side
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not."""
+    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
+    that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
+    ["played", name] once it has said all of it."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
+import itertools, json, os, re, select, signal, sys, termios, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -348,6 +350,32 @@ def taken(text):
     if text.count("\\n") < 3:
         return text.rstrip()
     return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
+# A turn as Claude Code was recorded running it: each hook posted, each record appended to the session's transcript and
+# each status set in its file, in the order Claude Code said them and each stamped as it is said, the words typed the
+# opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
+def play(name, text):
+    global prompts, last, tail
+    sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+    import turns
+    project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    os.makedirs(project, exist_ok=True)
+    transcript = os.path.join(project, session + ".jsonl")
+    status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
+    os.makedirs(os.path.dirname(status), exist_ok=True)
+    for line in turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text)):
+        line = turns.shifted(line, time.time() - line.at)
+        if isinstance(line, turns.Posted):
+            post(line.body["hook_event_name"], transcript_path=transcript, cwd=os.getcwd(), **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
+        elif isinstance(line, turns.Written):
+            with open(transcript, "a") as written:
+                written.write(turns.transcribed(line.record))
+        else:
+            with open(status + ".tmp", "w") as file:
+                file.write(turns.status_file(line, pid=os.getpid(), session=session))
+            os.replace(status + ".tmp", status)
+    prompts += turns.prompts(turns.RECORDINGS[name]) - 1
+    last, tail = f"p{{prompts}}", time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
+    typed(["played", name])
 def submit(text):
     global turn, turn_text, prompts, late, running, last, tail
     if text.startswith("/btw "):
@@ -388,6 +416,9 @@ def submit(text):
         post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
         post("Stop", prompt_id=late[0], last_assistant_message="Late.")
         late = None
+    if said.startswith("play "):
+        play(said[len("play "):], text)
+        return
     if said == "deaf":
         return
     if said in ("late", "later"):

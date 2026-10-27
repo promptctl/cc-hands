@@ -32,7 +32,8 @@ from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import events, located, onboard, pin, pinned_to
+from conftest import events, located, onboard, patiently, pin, pinned_to
+from turns import RECORDINGS, prompts
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
@@ -990,6 +991,39 @@ class _Jammed:
         raise OSError("jammed")
 
     press = type
+
+
+# The prompt each recorded turn's typed prompt ends under: its Stop's. A turn that went on under the prompt Claude Code
+# gave the words sent into it ends under that one.
+ENDS_UNDER = {
+    "backgrounded_then_notified": "p1",
+    "joined_as_next_prompt": "p1",
+    "joined_at_boundary": "p1",
+    "notified_mid_turn": "p1",
+    "sent_now": "p1",
+    "sent_now_mcp": "p1",
+    "sent_now_mid_batch": "p2",
+}
+# The recorded turns the brain does not meet yet, which promptctl-brain-vu2t.abp moves onto the one model of a turn: a
+# prompt posted under the running turn's id puts that id among the brain's unowned prompts, so the next turn is Escaped
+# for nothing; and a turn that goes on under an id the brain never typed is never answered.
+UNMET = {"joined_as_next_prompt", "joined_at_boundary", "notified_mid_turn", "sent_now", "sent_now_mcp", "sent_now_mid_batch"}
+
+
+@pytest.mark.parametrize("name", [pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="promptctl-brain-vu2t.abp")) if name in UNMET else name for name in RECORDINGS])
+async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, name: str) -> None:
+    assert set(RECORDINGS) == set(ENDS_UNDER)
+    brain = await start(launch(tmp_path), lambda _: None)
+    asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
+    try:
+        # Played to its end, every hook of it answered: whatever the brain makes of the turn, it has made by then.
+        await patiently(lambda: ["played", name] in typed(tmp_path), lambda: len(typed(tmp_path)))
+        assert asking.done() and asking.result() == BrainAnswered(ENDS_UNDER[name], None)
+        assert await brain.ask("and then?", unasked) == BrainAnswered(f"p{prompts(RECORDINGS[name]) + 1}", None)
+    finally:
+        asking.cancel()
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", f" play {name}"], ["played", name], ["prompt", " and then?"]]
 
 
 def failures() -> tuple[list[str], int]:
