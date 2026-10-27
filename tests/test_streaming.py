@@ -199,7 +199,7 @@ async def test_holds_spoken_while_the_model_loads_are_heard_once_it_has() -> Non
     await hearing
     assert rig.told() == [("ok", "words", "hello")]
     [load] = loaded(recorded)
-    assert (load.outcome, load.facts["model"], load.facts["revision"], load.facts["lookahead_ms"]) == ("ok", streaming.MODEL, streaming.REVISION, 160)
+    assert (load.outcome, load.facts["model"], load.facts["revision"], load.facts["transcription_delay_ms"]) == ("ok", streaming.MODEL, streaming.REVISION, 160)
 
 
 async def test_a_model_that_fails_to_load_fails_each_hold_once_saying_why() -> None:

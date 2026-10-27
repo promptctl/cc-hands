@@ -29,7 +29,7 @@ REVISION = "ebe59e5a817142986528bbbee5dba8db7b38ed50"
 # How the model cuts the run into chunks, which `load` reads off the model and refuses to differ: a mel frame every
 # MEL_HOP samples, each needing N_FFT // 2 samples past its centre; an encoder frame every SUBSAMPLING mel frames; and
 # each chunk decoded once LOOKAHEAD encoder frames past it are heard. One frame of look-ahead is the model's 160 ms
-# mode, the one the speech rework measured: 67 ms of compute per 0.5 s of audio on this Mac, and a hold's first word out
+# mode (mlx-audio's `transcription_delay_ms`, a chunk of CHUNK mel frames), the one the speech rework measured: 67 ms of compute per 0.5 s of audio on this Mac, and a hold's first word out
 # 0.6 s into it.
 MEL_HOP = 160
 N_FFT = 512
@@ -177,7 +177,7 @@ class StreamingRecognizer:
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's and the diarizer's are."""
         try:
             with unit("streaming.loaded", self._record):
-                annotate(model=MODEL, revision=REVISION, lookahead_ms=CHUNK * MEL_HOP * 1000 // RATE)
+                annotate(model=MODEL, revision=REVISION, transcription_delay_ms=CHUNK * MEL_HOP * 1000 // RATE)
                 self._stream = Stream(model())
         except Exception as error:
             self._stream = Broken(f"the model did not load: {type(error).__name__}: {error}")

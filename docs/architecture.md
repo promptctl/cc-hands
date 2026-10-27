@@ -2442,7 +2442,7 @@ key's release. LowTalker (~/code/low-talker) serves the same weights from the Ne
 Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
 alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The words of a hold
 still open come from NVIDIA's Nemotron Speech Streaming on MLX (`hands.voice.streaming`), at
-its 160 ms look-ahead: on this Mac a hold's first word is out about 0.6 s into it, and each
+its 160 ms streaming mode (one frame of look-ahead): on this Mac a hold's first word is out about 0.6 s into it, and each
 160 ms is heard in about 20 ms. It loads on a thread of its own (the `streaming.loaded`
 event), so nothing waits on it. The
 model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
