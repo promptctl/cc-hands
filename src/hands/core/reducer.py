@@ -18,6 +18,7 @@ from hands.core.effects import (
     Asking,
     Holding,
     HoldingBehind,
+    NoneBehind,
     Overtaken,
     QueuedBehind,
     Resumed,
@@ -305,28 +306,42 @@ def _settled(session: Session, event: Moving) -> tuple[Session, list[Effect]]:
 
 
 def _told_behind(session: Session, stop: Behind, event: Moving) -> tuple[Session, list[Effect]]:
-    """A Stop that has just told its turn: decided now, or held for what waits behind it, which is a line."""
-    after, effects = _behind(session, stop, event)
-    held = [Audit(HoldingBehind(session.membership.id, stop.prompt, len(session.turn.waiting)))] if stop in after.stops else []
-    return after, [*effects, *held]
+    """A Stop that has just told its turn: let go at once with nothing waiting behind that turn; else decided as one held
+    behind it is, and held, which is a line, until it can be."""
+    match session.turn:
+        case Told(waiting=()):
+            return session, _let_go(session.membership.id, stop)
+        case _:
+            after, effects = _behind(session, stop, event)
+            held = [Audit(HoldingBehind(session.membership.id, stop.prompt, len(session.turn.waiting)))] if stop in after.stops else []
+            return after, [*effects, *held]
 
 
 def _behind(session: Session, stop: Behind, event: Moving) -> tuple[Session, list[Effect]]:
-    """A Stop whose turn is told, with what it calls for of the words still waiting behind that turn, which Claude Code
+    """A Stop whose turn is told and words waited behind, with what it calls for of those still waiting, which Claude Code
     runs once the Stop's hook returns as a turn no prompt hook opens: marked while the hook holds Claude Code, so before
-    that turn can have changed anything [LAW:no-ambient-temporal-coupling]. Held while the transcript has not been read
-    through the Stop's firing, which holds the queue records Claude Code wrote before it that deliver them into the turn.
+    that turn can have changed anything [LAW:no-ambient-temporal-coupling]. Held until the transcript is read through the
+    Stop's firing, which holds the queue records Claude Code wrote before it that deliver them into the turn.
 
     [LAW:single-enforcer] the one place a turn is marked for words that run with no hook of their own."""
     id = session.membership.id
-    match (session.turn, event):
-        case (Told(waiting=waiting) as told, Read(through=through)) if waiting and _names(told, stop.prompt) and through >= stop.fired:
+    match session.turn:
+        case Told(waiting=()) as told if _names(told, stop.prompt):
+            # [LAW:nothing-unseen] queue records took them all out before it fired: delivered into the turn, or pulled back.
+            return session, [Audit(NoneBehind(id, stop.prompt)), *_let_go(id, stop)]
+        case Told(waiting=waiting) as told if _names(told, stop.prompt) and _read_through(session, event, stop.fired):
             return session, [Audit(QueuedBehind(id, stop.prompt, len(waiting))), Snapshot(id, session.membership.cwd), *_let_go(id, stop)]
-        case (Told(waiting=waiting) as told, _) if waiting and _names(told, stop.prompt):
+        case Told() as told if _names(told, stop.prompt):
             return replace(session, stops=(*session.stops, stop)), []
         case _:
-            # Nothing waits, or the turn it ended is not the last any more: nothing runs behind it unmarked.
+            # The turn it ended is not the last any more: a prompt opened one, which said the words run unmarked (Unmarked).
             return session, _let_go(id, stop)
+
+
+def _read_through(session: Session, event: Moving, fired: Stamp) -> bool:
+    """Whether everything Claude Code wrote by `fired` has been read, or none of it will be: no session's transcript is read
+    before its status is (see Tails.catch_up), and holding for a read that never comes would hold Claude Code."""
+    return (isinstance(event, Read) and event.through >= fired) or status_stamp(session.state) is None
 
 
 def _stated(event: Moving, was: Session) -> SessionState:
@@ -415,27 +430,28 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # cancelled by an Escape during its hooks ends here too, and is told as itself if it ran. It is told once the
             # transcript says how it ended: see Untold.
             return Untold(opened.turn, opened.others, Stamp(stamp + UNTOLD), opened.waiting), []
-        case (StatusReported(report=Report(status=going)), Untold(turn=prompt, by=by)) if isinstance(going, Going) and by is not None:
+        case (StatusReported(report=Report(status=going)), Untold(turn=prompt, others=others, waiting=waiting)) if isinstance(going, Going):
             # Claude Code set it going again after the idle that made the turn wait, with no Stop of it heard, as when send
-            # now moves a running call to the background and it sets shell for a few ms: whether this turn goes on or one
-            # after it runs, only what ends it says, its Stop, its interrupt record, or a record written after that idle
-            # (see _opens), never how long hands has read the transcript for [LAW:no-ambient-temporal-coupling].
-            return replace(turn, by=None), [Audit(Resumed(id, prompt))]
-        case (StatusReported(report=Report(status=at, stamp=stamp)), Untold(by=None)) if isinstance(at, AtPrompt):
-            # At the prompt again: told from here as from any idle.
-            return replace(turn, by=Stamp(stamp + UNTOLD)), []
-        case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
-            # Submitted after the wire told the turn, or after its Stop: filed under the turn's id and run as its own turn
-            # once that Stop's hook returns. Marked here, while its own prompt hook holds Claude Code, whether or not the
-            # Stop is still to come, so it waits on no Stop for its mark; its turn opens when it is taken (see Taken).
-            return turn, [Snapshot(id, was.membership.cwd)]
-        case (Prompted(prompt=prompt, text=text), Opened() | Untold()) if _names(turn, prompt):
+            # now moves a running call to the background and it sets shell for a few ms: open again, so what it does is
+            # gathered and its deadline gone. Whether this turn goes on or one after it runs, only what ends it says, its
+            # Stop, its interrupt record, or a record written after that idle (see Taken), never how long hands has read
+            # the transcript for [LAW:no-ambient-temporal-coupling].
+            return Opened(prompt, others, waiting, resumed=True), [Audit(Resumed(id, prompt))]
+        case (Prompted(prompt=prompt, text=text), Opened() | Untold() | Told(waiting=(_, *_))) if _names(turn, prompt):
             # Claude Code files what is submitted while a turn runs, the user's words or a task's notification as it is
             # delivered, under the running turn's id, and leaves its status as it was: filed, until a queue record says
             # Claude Code took it out of its queue. It marks nothing, or the mark would move into the middle of the work
-            # it is there to measure: words still waiting when the turn's Stop fires are marked for there (_behind). A
-            # turn's own prompt hook, heard after the shim gave up on a slow daemon, is read the same way.
+            # it is there to measure: words still waiting when the Stop before them fires are marked for there (_behind).
+            # Behind words already waiting, after the turn is told too: they run first, and the Stop of their turn marks
+            # for these (see Taken). A turn's own prompt hook, heard after the shim gave up on a slow daemon, is read the
+            # same way.
             return replace(turn, waiting=(*turn.waiting, text)), []
+        case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
+            # Submitted after the wire told the turn, or after its Stop, with nothing waiting before it: filed under the
+            # turn's id and run as its own turn once that Stop's hook returns. Marked here, while its own prompt hook holds
+            # Claude Code, whether or not the Stop is still to come, so it waits on no Stop for its mark; its turn opens
+            # when it is taken (see Taken).
+            return turn, [Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Opened() as opened):
             # A prompt under an id of its own is one Claude Code took at its prompt, the only place it gives one: the
             # open turn is over, though its idle may never have been read. An Escape and the next prompt set idle and
@@ -447,6 +463,14 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # touched yet: after the one before is told, so that one is compared against its own mark.
             return Opened(prompt), [*_told(id, turn, None)[1], *_unmarked(id, turn), Snapshot(id, was.membership.cwd)]
         case (Taken(prompt=prompt), Opened() as opened) if _names(opened, prompt):
+            return turn, []
+        case (Taken(prompt=prompt, written=written), Opened(resumed=True) as opened) if _opens(was, prompt, written):
+            # Gone on past an idle, so read as a turn waiting to be told is: a record written since that idle is of a turn
+            # after it, which opens, and this one is over.
+            return Opened(prompt, waiting=opened.waiting), _over(id, opened)[1]
+        case (Taken(), Opened(resumed=True)):
+            # Written before that idle: of this turn going on under the words' id or of the turn after it, which only
+            # their ends tell apart (see Continued). Nothing moves.
             return turn, []
         case (Taken(prompt=prompt), Opened() as opened):
             # A flush's id: an Escape sends a message queued behind the turn on in the same turn, under the message's own
@@ -499,7 +523,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (CarriedOut(prompt=prompt), Untold(turn=waiting)) if prompt == waiting:
             # Its idle was read first: what it printed is the record of how it ended.
             return _told(id, turn, None)
-        case (Read(through=through), Untold(by=by)) if by is not None and through >= by:
+        case (Read(through=through), Untold(by=by)) if through >= by:
             # Read through the point where the record of how it ended would be, and it was not there: told with what was read.
             return _told(id, turn, None)
         case _:

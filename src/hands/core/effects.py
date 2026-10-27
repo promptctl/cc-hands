@@ -92,7 +92,7 @@ class Unfiled:
 @dataclass(frozen=True)
 class Resumed:
     """Claude Code set the session going again after the idle that made a turn wait to be told, with no Stop of it heard:
-    the turn waits for its own end, not for the transcript to be read past that idle."""
+    the turn is open again until its own end, or a record written since that idle opens a turn after it."""
 
     session: SessionId
     prompt: PromptId
@@ -109,6 +109,15 @@ class QueuedBehind:
 
 
 @dataclass(frozen=True)
+class NoneBehind:
+    """A Stop held for the words waiting behind its turn is let go unmarked: queue records Claude Code wrote before it fired
+    took them all out of its queue, into the turn or back into the input."""
+
+    session: SessionId
+    prompt: PromptId
+
+
+@dataclass(frozen=True)
 class Unmarked:
     """Words waited behind the last turn and no mark is taken for them: a prompt of its own opened a turn first, as a
     notification left queued past a Stop does, or the session ended or started again before its Stop was decided."""
@@ -117,7 +126,7 @@ class Unmarked:
     waiting: int
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | HoldingBehind | Unsettled | Overtaken | Unfiled | Resumed | QueuedBehind | Unmarked
+AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | HoldingBehind | Unsettled | Overtaken | Unfiled | Resumed | QueuedBehind | NoneBehind | Unmarked
 
 
 @dataclass(frozen=True)

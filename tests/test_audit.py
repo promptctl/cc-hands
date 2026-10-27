@@ -15,7 +15,7 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, QueuedBehind, Reply, Snapshot, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
+from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
 from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed
 from hands.core.permissions import Answer, NotWaiting, Permission
@@ -759,6 +759,19 @@ async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_ma
     assert (Audit(QueuedBehind(stop.session, stop.prompt, 1)), "ok") in performed(applied(recorded)[-1])
     await sessions.apply(Unqueued(member().id, Removed("a notification")))
     assert (Audit(Unfiled(stop.session, Removed("a notification"))), "ok") in performed(applied(recorded)[-1])
+
+
+async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a_line_as_it_is_let_go_unmarked() -> None:
+    recorded: list[Entry] = []
+    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    await sessions.apply(Joined(member(), "startup"))
+    await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
+    await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text="Open the turn."))
+    await sessions.apply(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p1"), text="Also: what is 3+3?"))
+    stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
+    await sessions.apply(stop)
+    await sessions.apply(Unqueued(member().id, Removed("Also: what is 3+3?")))
+    assert (Audit(NoneBehind(stop.session, stop.prompt)), "ok") in performed(applied(recorded)[-1])
 
 
 async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:

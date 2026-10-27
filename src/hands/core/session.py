@@ -213,6 +213,10 @@ class Opened:
     # queue yet, oldest first: the user's, delivered into the turn or run after it, or a notification's, filed as it is
     # delivered. [LAW:one-source-of-truth] by their text, which the hook and the queue records both carry.
     waiting: tuple[str, ...] = ()
+    # Whether Claude Code set the session idle after the turn opened and going again with no end of it heard, as send now
+    # does for a few ms: whether this turn goes on or one after it runs, only what ends it says, so a record under another
+    # id joins it as no flush (see _turned's Taken).
+    resumed: bool = False
     # [LAW:types-are-the-program] progress lives only on a turn that runs: whatever a turn gathered and did not tell
     # is let go of with it as it ends, since its result is told instead.
     gathering: Gathering | None = None
@@ -229,10 +233,8 @@ class Untold:
     turn: PromptId
     others: frozenset[PromptId]
     # On Claude Code's clock, from the idle it set: [LAW:no-ambient-temporal-coupling] how late hands reads the transcript
-    # moves when the telling goes out, never what it holds. None once Claude Code set the session going again with no Stop
-    # of the turn heard: it is told by its own end (its Stop, its interrupt record, a turn after it), or from the next
-    # idle Claude Code sets.
-    by: Stamp | None
+    # moves when the telling goes out, never what it holds.
+    by: Stamp
     # As on Opened.
     waiting: tuple[str, ...] = ()
 

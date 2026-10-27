@@ -9,6 +9,7 @@ from hands.core.effects import (
     AfterEnd,
     Holding,
     HoldingBehind,
+    NoneBehind,
     Resumed,
     Unfiled,
     Unmarked,
@@ -1026,9 +1027,9 @@ def test_a_stop_with_words_waiting_tells_its_turn_and_holds_the_mark_until_the_t
     assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Audit(HoldingBehind(ONE.id, TURN, 1))]
     # Read through a moment before it fired: what Claude Code wrote just before the Stop may not be in it yet.
     assert reduce(held, Read(ONE.id, Stamp(STOP_HEARD - 1)))[1] == []
-    # Taken out of the queue: nothing waits, so the Stop is decided with no more to read.
+    # Taken out of the queue: nothing waits, so the Stop is decided with no more to read, and says why it marks nothing.
     delivered, effects = reduce(held, ABSORBED)
-    assert (effects, live(delivered).stops) == ([LET_STOP], ())
+    assert (effects, live(delivered).stops) == ([Audit(NoneBehind(ONE.id, TURN)), LET_STOP], ())
     assert reduce(delivered, READ_STOP)[1] == []
 
 
@@ -1046,14 +1047,28 @@ def test_a_turn_claude_code_sets_going_again_after_a_shell_with_no_stop_is_told_
     assert isinstance(live(state).turn, Told) and ids(live(state).turn) == {TURN, NEXT}
 
 
-def test_a_turn_set_going_again_waits_for_its_own_end_and_says_so() -> None:
+def test_a_turn_set_going_again_is_open_again_gathers_what_it_does_and_says_so() -> None:
+    """sent_now_mid_batch: what the turn does on under the words is gathered and narrated as it runs, never held for its
+    Stop."""
     waiting, _ = told([said(Shell(), 2045)], in_turn(RUNNING))
     going, effects = reduce(waiting, said(Busy(), 2048))
-    assert effects == [Audit(Resumed(ONE.id, TURN))]
+    assert (live(going).turn, effects) == (Opened(TURN, resumed=True), [Audit(Resumed(ONE.id, TURN))])
     assert told([Read(ONE.id, Stamp(9000))], going)[1] == []
+    tests = progress.Doing(progress.RUNNING, "run the test suite")
+    gathered, _ = reduce(going, Progressed(ONE.id, (TURN,), (tests,), at=30.0))
+    assert live(gathered).turn == Opened(TURN, resumed=True, gathering=progress.Gathering((tests,), "", 30.0, 30.0), latest=tests)
     # At the prompt again, it is told as from any idle.
     idle, _ = reduce(going, said(status.Idle(), 6000))
     assert told([Read(ONE.id, Stamp(6000 + UNTOLD))], idle)[1] == TOLD
+
+
+@pytest.mark.parametrize(("written", "turn", "tellings"), [(Stamp(2030), Opened(TURN, resumed=True), []), (Stamp(2050), Opened(NEXT), TOLD)], ids=["written before its idle", "written since its idle"])
+def test_a_turn_set_going_again_is_over_only_at_a_record_of_another_id_written_since_its_idle(written: Stamp, turn: Turn, tellings: list[Effect]) -> None:
+    """Before that idle, the records of the turn going on under the words' id and of the turn after it look alike: only
+    their ends tell them apart. Since it, a record of another id is of a turn after it."""
+    going, _ = told([said(Shell(), 2045), said(Busy(), 2048)], in_turn(RUNNING))
+    state, effects = reduce(going, taken(NEXT, written))
+    assert (live(state).turn, effects) == (turn, tellings)
 
 
 def test_a_stop_heard_after_the_turn_queued_behind_it_began_still_leaves_that_turn_told_by_its_own_stop() -> None:
@@ -1082,6 +1097,28 @@ def test_words_left_waiting_at_a_stop_run_one_turn_at_a_time_and_each_turn_s_sto
     second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
     _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
     assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8"), Snapshot(ONE.id, ONE.cwd)]
+
+
+def test_words_submitted_after_the_turn_is_told_behind_words_waiting_are_marked_by_the_stop_before_them() -> None:
+    """Told on the wire with words waiting, more submitted under its id run after those: their mark is taken at the Stop
+    of the turn the first words run as, never at their own hook, which the mark for the first words would overwrite."""
+    later = Prompted(ONE.id, at=6.0, mode=None, prompt=TURN, text="And 4+4?")
+    state, tellings = told([QUEUED, Closed(ONE.id, TURN, "done"), later], in_turn(RUNNING))
+    assert (live(state).turn.waiting, Snapshot(ONE.id, ONE.cwd) in tellings) == ((WORDS, "And 4+4?"), False)
+    held, _ = reduce(state, STOP)
+    state, effects = reduce(held, READ_STOP)
+    assert effects == [Audit(QueuedBehind(ONE.id, TURN, 2)), Snapshot(ONE.id, ONE.cwd), LET_STOP]
+    state, tellings = told([DEQUEUED, taken(NEXT, Stamp(1600))], state)
+    assert (live(state).turn, tellings) == (Opened(NEXT, waiting=("And 4+4?",)), [])
+    second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
+    _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8"), Snapshot(ONE.id, ONE.cwd)]
+
+
+def test_a_stop_with_words_waiting_in_a_session_whose_transcript_is_not_read_yet_marks_at_once() -> None:
+    """No transcript is read before its session's status is, so no read would ever let the Stop go."""
+    state, effects = reduce(told([QUEUED], holding(Unreported(), Opened(TURN)))[0], STOP)
+    assert (effects, live(state).stops) == ([Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Audit(QueuedBehind(ONE.id, TURN, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP], ())
 
 
 def test_a_prompt_of_its_own_opening_a_turn_while_words_wait_says_they_run_after_it_unmarked() -> None:

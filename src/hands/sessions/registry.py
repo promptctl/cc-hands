@@ -12,7 +12,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Summarise, Tell, Type, Typed, Holding, HoldingBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -504,8 +504,10 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
         case Unfiled(session=session, taken=taken):
             return "DEBUG", f"Claude Code took a message out of its queue in session {session} that none filed under its turn is: {_taken(taken)}"
         case Resumed(session=session, prompt=prompt):
-            return "INFO", f"turn {prompt} in session {session} waits for its own end: Claude Code set the session going again after its idle, with no Stop of it heard"
+            return "INFO", f"turn {prompt} in session {session} is open again: Claude Code set the session going after its idle with no Stop of it heard, so its own end, or a record written since that idle, says which turn runs"
         case QueuedBehind(session=session, prompt=prompt, waiting=waiting):
             return "INFO", f"Stop of turn {prompt} in session {session} left {waiting} message(s) waiting in Claude Code's queue: the turn they run as is marked"
+        case NoneBehind(session=session, prompt=prompt):
+            return "INFO", f"Stop of turn {prompt} in session {session}, held for the words waiting behind it, is let go unmarked: Claude Code's queue records took them all out before it fired"
         case Unmarked(session=session, waiting=waiting):
             return "INFO", f"{waiting} message(s) waited behind the last turn of session {session} and no mark is taken for them: a prompt opened a turn first, or the session ended or started again before its Stop was decided"
