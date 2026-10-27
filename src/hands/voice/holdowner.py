@@ -25,7 +25,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from hands.core.place import Place
 from hands.sessions.audit import Record
-from hands.sessions.wide import Begun, Fact, annotate, begun, ended, unit
+from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
 from hands.voice.holds import LANGUAGE, RATE, SECOND, Fate, Hearing, Hearings, Hold, Listener, Sound, Transcriber
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
@@ -286,8 +286,11 @@ class HoldOwner(FrameProcessor):
     def _tell(self, hold: Hold, told: Callable[[Listener], Hearings]) -> None:
         """Tell every listener of `hold`, in turn: each hearing it returns goes on its lane, beginning now."""
         for listener, hearings in zip(self._listeners, self._hearings, strict=True):
-            for hearing in told(listener):
-                hearings.put_nowait((hold, hearing, begun()))
+            returned = told(listener)
+            # A hearing is a trace of its own, part of no unit the audio path is in, so its lane can always run it.
+            with continuing(None):
+                for hearing in returned:
+                    hearings.put_nowait((hold, hearing, begun()))
 
     async def _end(self, fate: Fate) -> None:
         """The hold open ends: every listener is told, and it goes in line to be resolved, transcribed where it was sent."""
@@ -381,7 +384,7 @@ class HoldOwner(FrameProcessor):
         """One hearing, bounded, and what came of it: words for the hold still open cut hands off as `InterimWords`."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
-        with unit("hearing", self._record, began=began):
+        with continuing(None), unit("hearing", self._record, began=began):
             annotate(listener=listener.name, hold=hold.number)
             async with asyncio.timeout(HEARING_SECONDS - (time.monotonic() - began.began)):
                 heard = await hearing()

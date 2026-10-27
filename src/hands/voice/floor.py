@@ -1,6 +1,6 @@
 """The floor: while the user's turn is open, what hands tells of the sessions waits, and follows the turn soonest first.
 
-The floor is taken as a hold opens, when Whisper says the user started speaking (`TurnOpened`), whether or not the turn
+The floor is taken as a hold opens, when the hold owner says the user started speaking (`TurnOpened`), whether or not the turn
 has cut hands off yet (`hands.voice.turnstart`). It is given back once the user aggregator says the turn stopped, every
 hold it took in transcribed and sent, unless a hold has opened since: that stop comes back up as a system frame, and a
 press just after it can pass the floor on its way down first, opening the next turn. What waited is
@@ -37,7 +37,7 @@ class _Given(DataFrame):
 
 @dataclass
 class _Taken:
-    """The user has the floor: the holds it saw open that Whisper is not done with, whether the turn is still open, and
+    """The user has the floor: the holds it saw open that the hold owner is not done with, whether the turn is still open, and
     what hands had to say meanwhile, in order, each with when it came."""
 
     holds: set[Hold]
