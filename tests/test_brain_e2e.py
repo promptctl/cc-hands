@@ -6,6 +6,7 @@ accepts. What each test proves is what hands does with the replies it scripts, t
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -42,7 +43,16 @@ MOCK_MODULE = "github.com/promptctl/mock-anthropic"
 MOCK_RELEASE = "v0.1.0"
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang.
 PATIENCE_SECONDS = 60.0
-ACCOUNT = Account("claude.ai", "user@example.com")
+# The account the brain's login holds. `login` and `serve` both read it from a file, so it is the one source of what the
+# login says, and ACCOUNT names the same address the audit records.
+MOCK_ACCOUNT = {
+    "accountUuid": "00000000-0000-4000-8000-0000000000a1",
+    "emailAddress": "user@example.com",
+    "organizationUuid": "00000000-0000-4000-8000-0000000000a2",
+    "organizationName": "Hands Test Organization",
+    "subscriptionType": "max",
+}
+ACCOUNT = Account("claude.ai", MOCK_ACCOUNT["emailAddress"])
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
 TURN = "mcp__hands__stay_silent"
@@ -56,6 +66,7 @@ class MockApi:
     """The mock, listening: its url, the CA its TLS is signed by, and the directory each test scripts its replies in."""
 
     url: str
+    port: int
     ca: Path
     scenarios: Path
 
@@ -86,11 +97,19 @@ def mock_binary(pytestconfig: pytest.Config) -> Path:
 
 
 @pytest.fixture
-async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]:
+def account_file(tmp_path: Path) -> Path:
+    """The account file `login` and `serve` both read, holding MOCK_ACCOUNT."""
+    path = tmp_path / "account.json"
+    path.write_text(json.dumps(MOCK_ACCOUNT))
+    return path
+
+
+@pytest.fixture
+async def mock_api(tmp_path: Path, mock_binary: Path, account_file: Path) -> AsyncGenerator[MockApi]:
     scenarios = tmp_path / "scenarios"
     scenarios.mkdir()
     served = await asyncio.create_subprocess_exec(
-        *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
+        *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), "--account", str(account_file), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
     )
     assert served.stdout is not None
     try:
@@ -99,7 +118,7 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
         if not line:
             raise AssertionError(f"the mock exited before it listened: {(tmp_path / 'mock.log').read_text()}")
         ready = json.loads(line)
-        yield MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
+        yield MockApi(f"http://127.0.0.1:{ready['port']}", ready["port"], Path(ready["ca"]), scenarios)
     finally:
         served.terminate()
         await served.wait()
@@ -117,11 +136,20 @@ async def claude_code(pytestconfig: pytest.Config) -> Path:
     return cache / "pinned-claude"
 
 
-def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
-    """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
-    its pinned Claude Code the cached one."""
+def mock_environment(binary: Path, port: int, ca: Path, config_dir: Path) -> dict[str, str]:
+    """The variables that point Claude Code at the mock, as `mock env` names them, read back the way a shell reads them.
+    The plain-http proxy variables are left out: hands' MCP server is plain http on loopback, and a plain-http proxy sends
+    that call to the mock, which has no answer for it, so the brain would run without hands' tools."""
+    printed = subprocess.run(mock(binary, "env", "--port", str(port), "--ca", str(ca), "--config-dir", str(config_dir)), check=True, capture_output=True, text=True).stdout
+    variables = dict(shlex.split(line)[0].split("=", 1) for line in printed.splitlines())
+    return {name: value for name, value in variables.items() if name not in ("HTTP_PROXY", "http_proxy")}
+
+
+def logged_in(brain: Path, claude_code: Path, mock_binary: Path, account_file: Path) -> None:
+    """A brain directory logged in as the account in `account_file` by the mock's own login, the directory it works in
+    trusted, and its pinned Claude Code the cached one."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
-    subprocess.run(mock(mock_binary, "login", str(brain), "--trust", str(workdir(brain).resolve())), check=True)
+    subprocess.run(mock(mock_binary, "login", str(brain), "--trust", str(workdir(brain).resolve()), "--account", str(account_file)), check=True)
     (brain / "pinned-claude").symlink_to(claude_code)
     (brain / "settings.json").write_text(json.dumps({"syncClaudeAiSkills": False, "syncClaudeAiPlugins": False}))
 
@@ -148,9 +176,9 @@ async def unread() -> InFront:
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path) -> AsyncGenerator[Hands]:
+async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, account_file: Path) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
-    logged_in(brain, claude_code, mock_binary)
+    logged_in(brain, claude_code, mock_binary, account_file)
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
@@ -158,8 +186,9 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=time.time)
     home = tmp_path / "home"
     home.mkdir()
-    # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
-    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost"}
+    # Every other host Claude Code calls is reached through the mock, and nothing reaches past it: the variables that say so
+    # are the mock's to name. NO_PROXY is hands' own: its proxy listens on loopback, and the brain reaches it directly.
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), **mock_environment(mock_binary, mock_api.port, mock_api.ca, brain), "NO_PROXY": "127.0.0.1,localhost"}
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
