@@ -59,6 +59,8 @@ def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) 
 STARTUP_SECS = 5.0
 # How long a test's wait may see nothing move before it fails on a stall.
 PATIENCE_SECS = 2.0
+# How long a wait sleeps between two looks at what it waits on, while the loop has nothing else to run.
+LOOK_SECS = 0.01
 
 
 class ManualClock:
@@ -86,21 +88,20 @@ class ManualClock:
 
 
 async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:
-    """Until `done` holds, failing once PATIENCE_SECS pass with `moved` standing still.
+    """Until `done` holds, failing once `moved` has stood still through PATIENCE_SECS of the wait's looking.
 
     [LAW:no-ambient-temporal-coupling] the patience bounds a stall, not the work queued ahead of what is awaited, so a
-    loaded machine that is slow but moving is waited on. A run that moves for ever is ended by the suite's timeout."""
-    loop = asyncio.get_running_loop()
-    seen = moved()
-    try:
-        async with asyncio.timeout(PATIENCE_SECS) as patience:
-            while not done():
-                await asyncio.sleep(0.01)
-                if (now := moved()) != seen:
-                    seen = now
-                    patience.reschedule(loop.time() + PATIENCE_SECS)
-    except TimeoutError:
-        raise TimeoutError(f"nothing moved for {PATIENCE_SECS}s, at {seen!r}, while waiting on {done!r}") from None
+    loaded machine that is slow but moving is waited on. It is the time the wait spent looking, LOOK_SECS a look: the
+    time between two looks that the loop spent on other work is that work's, however long one step of it holds the loop,
+    since a stage that takes a burst of frames in one step moves nothing anyone can see until the step ends.
+    [LAW:single-enforcer] a run that never ends, moving or holding the loop, is ended by the suite's timeout."""
+    seen, stood = moved(), 0.0
+    while not done():
+        await asyncio.sleep(LOOK_SECS)
+        now = moved()
+        stood, seen = (0.0 if now != seen else stood + LOOK_SECS), now
+        if stood >= PATIENCE_SECS:
+            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, at {seen!r}, while waiting on {done!r}")
 
 
 @pytest.fixture(autouse=True)
