@@ -201,7 +201,10 @@ def unasked(asked: Asked) -> None:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
+    # No MCP server stands behind this config, so its listing is the stand-in's to say: already listed.
+    listed = asyncio.Event()
+    listed.set()
+    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', listed, Fresh(SessionId("b1"), None))
 
 
 def typed(tmp: Path) -> list[list[str]]:
@@ -1464,7 +1467,7 @@ def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fa
 
 
 def test_the_brain_config_is_one_line_of_json_naming_only_hands() -> None:
-    server = McpServer(url="http://127.0.0.1:9/mcp", token="t", runner=None)  # pyright: ignore[reportArgumentType]
+    server = McpServer(url="http://127.0.0.1:9/mcp", token="t", runner=None, listed=asyncio.Event())  # pyright: ignore[reportArgumentType]
     assert json.loads(server.config()) == {"mcpServers": {"hands": {"type": "http", "url": "http://127.0.0.1:9/mcp", "headers": {"Authorization": "Bearer t"}}}}
 
 

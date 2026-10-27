@@ -150,6 +150,8 @@ class Launch:
     account: Account
     instruction: str
     mcp_config: str
+    # Set once the MCP server at mcp_config has been listed by the brain's Claude Code; see Brain._connected.
+    mcp_listed: asyncio.Event
     conversation: "Conversation"
 
     @property
@@ -299,6 +301,10 @@ class BrainGone(Exception):
 
 class Untaken(Exception):
     """The brain was typed a turn and never took it: it is on a screen that is not its input."""
+
+
+class Unconnected(Exception):
+    """The brain's MCP server was never listed in time, so a turn typed now would reach the model without hands' tools."""
 
 
 class NotLoggedIn(Exception):
@@ -566,6 +572,7 @@ class Brain:
         config_dir: Path,
         record: Record,
         launched: Span,
+        mcp_listed: asyncio.Event,
     ) -> None:
         self._claude = claude
         self._config_dir = config_dir
@@ -574,6 +581,7 @@ class Brain:
         self._listener = listener
         self._sockets = sockets
         self._record = record
+        self._mcp_listed = mcp_listed
         # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
         self._launched = launched
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
@@ -666,13 +674,14 @@ class Brain:
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
                 # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
                 try:
+                    await self._connected()
                     async with self._input:
                         taken = await self._taking(turn)
                 finally:
                     turn.tried.set_result(None)
                 if not taken:
                     raise Untaken(f"the brain did not take the turn typed into it {turn.typings} time(s), {turn.take:g}s each; if it is on one of Claude Code's first screens, `hands login` answers them")
-            except (BrainGone, Untaken) as error:
+            except (BrainGone, Untaken, Unconnected) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
             annotate(prompts=turn.prompts, typings=turn.typings, offered=turn.offered, others=turn.others, queued=turn.queued)
@@ -685,6 +694,18 @@ class Brain:
                     annotate(stopped=True)
                 case failed:
                     fail(f"the brain failed the turn: {failed}")
+
+    async def _connected(self) -> None:
+        """Returns once hands' tools are listed, the first thing a turn needs to reach the model with them.
+
+        [LAW:no-ambient-temporal-coupling] Claude Code turns its input on before it connects its MCP servers, so input being
+        up says nothing about them: a turn typed on input alone went to the model without hands' tools (CI, the brain end to
+        end test). The wait is the cold start's own budget, TAKE_SECONDS, and past it the turn fails with the reason."""
+        try:
+            async with asyncio.timeout(TAKE_SECONDS):
+                await self._mcp_listed.wait()
+        except TimeoutError as error:
+            raise Unconnected(f"the brain's Claude Code did not list hands' MCP server within {TAKE_SECONDS:g}s, so the turn was not typed") from error
 
     async def _taking(self, turn: _Turn) -> bool:
         """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it
@@ -1040,7 +1061,7 @@ async def start(launch: Launch, record: Record) -> Brain:
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    return Brain(running, launch.session, typist, hooks, listener, sockets, station.config_dir, record, launched)
+    return Brain(running, launch.session, typist, hooks, listener, sockets, station.config_dir, record, launched, launch.mcp_listed)
 
 
 async def _listen(hooks: "asyncio.Queue[_Posted]") -> tuple[web.AppRunner, str]:

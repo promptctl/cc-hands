@@ -11,6 +11,7 @@ Its tools type into sessions and answer permissions, and a port on 127.0.0.1 is 
 every web page, so each request carries a token only the brain's --mcp-config holds.
 """
 
+import asyncio
 import hmac
 import json
 import secrets
@@ -65,6 +66,8 @@ class McpServer:
     url: str
     token: str
     runner: web.AppRunner
+    # Set once a Claude Code has listed the tools: from then on its turns carry hands' tools to the model.
+    listed: asyncio.Event
 
     async def close(self) -> None:
         await self.runner.cleanup()
@@ -78,6 +81,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
     """Listen on a free local port until the returned server is closed."""
     by_name = {tool.name: tool for tool in tools}
     token = secrets.token_urlsafe(32)
+    listed = asyncio.Event()
 
     @web.middleware
     async def admitted(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
@@ -118,6 +122,9 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
             case "ping":
                 return _result(id, {})
             case "tools/list":
+                # [LAW:no-ambient-temporal-coupling] Claude Code connects its MCP servers after its input is up, so a turn typed
+                # on input alone can reach the model before this answer, and without hands' tools. The brain waits for this.
+                listed.set()
                 return _result(id, {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema} for tool in tools]})
             case "tools/call":
                 # A call naming no tool of this server's, or none at all, or with arguments that are no object.
@@ -163,7 +170,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     host, port = runner.addresses[0][:2]
-    return McpServer(url=f"http://{host}:{port}{PATH}", token=token, runner=runner)
+    return McpServer(url=f"http://{host}:{port}{PATH}", token=token, runner=runner, listed=listed)
 
 
 def _params(message: Mapping[str, object]) -> Mapping[str, object]:

@@ -191,7 +191,7 @@ async def mind(
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
+            brain = await start_brain(Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), server.listed, talk), record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
