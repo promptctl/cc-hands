@@ -9,13 +9,14 @@ from typing import cast
 import numpy as np
 import pytest
 import soundfile
-from loguru import logger
 
 from conftest import CHUNKING
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, begun
 from hands.voice import diarization
 from hands.voice.diarization import Diarized, Diarizer, Model, Speech, Stream, Undiarized
+from hands.voice.holdowner import HoldOwner
+from hands.voice.holds import Fate, Hold, Sound
 # The real load, bound before conftest stands a model that hears nobody in for it.
 from hands.voice.diarization import load as nemotron
 
@@ -73,7 +74,7 @@ class Scripted:
 
 
 def spoken(stream: Stream, hold: int, frames: int, framed: int = 2) -> Diarized | Undiarized:
-    """A hold spoken into the stream as Whisper gives it, `framed` 10 ms frames at a time, and ended."""
+    """A hold spoken into the stream as the hold owner gives it, `framed` 10 ms frames at a time, and ended."""
     samples = said(hold, frames)
     for start in range(0, len(samples), framed * diarization.FRAME):
         stream.heard(samples[start : start + framed * diarization.FRAME])
@@ -112,86 +113,74 @@ def test_a_hold_with_no_audio_has_no_speakers() -> None:
     assert Stream(Model(Scripted(), CHUNKING)).ended() == Diarized((), 0)
 
 
-class Held:
-    """A model step that waits, on the stream's thread, until the test lets it go."""
-
-    def __init__(self) -> None:
-        self.go = threading.Event()
-
-    def __call__(self, chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
-        self.go.wait()
-        return np.zeros((CHUNKING.frames, 8), np.float32), cache
-
-
 def holds_told(recorded: list[Entry]) -> list[WideEvent]:
-    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "diarization.hold"]
+    """Each hold's diarization, as the hold owner tells the diarizer's hearings."""
+    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hearing" and entry.facts["listener"] == "diarization"]
 
 
-async def settled(recorded: list[Entry], told: int) -> list[WideEvent]:
-    async with asyncio.timeout(10):
-        while len(holds_told(recorded)) < told:
-            await asyncio.sleep(0.01)
-    return holds_told(recorded)
+class Unused:
+    """A transcriber no test here gives a hold to."""
+
+    async def transcribed(self, hold: Hold, audio: bytes) -> str | None:
+        raise AssertionError("nothing here transcribes")
+
+
+def owner(diarizer: Diarizer, recorded: list[Entry]) -> HoldOwner:
+    """The hold owner, with the diarizer its one listener, whose hearings it runs as a pipeline's would."""
+    return HoldOwner(Unused(), (diarizer,), recorded.append)
+
+
+async def ended(diarizer: Diarizer, owned: HoldOwner, number: int, fate: Fate) -> None:
+    """Hold `number` ends, and the hearings the diarizer returns for it are run as the owner runs them."""
+    hold = Hold(number, "held key")
+    for hearing in diarizer.ended(hold, fate):
+        await owned._heard(diarizer, hold, hearing, begun())  # pyright: ignore[reportPrivateUsage]  (what the owner's hearing lane runs)
+
+
+def heard(diarizer: Diarizer, samples: diarization.Samples) -> None:
+    assert diarizer.heard(Sound(pcm(samples), pcm(samples))) == ()
 
 
 def pcm(samples: diarization.Samples) -> bytes:
     return (samples * 32768).astype(np.int16).tobytes()
 
 
-async def test_each_hold_is_one_event_with_its_fate_speakers_and_steps() -> None:
+async def test_each_hold_is_one_hearing_with_its_fate_speakers_and_steps() -> None:
     recorded: list[Entry] = []
     diarizer = Diarizer(lambda: Model(Scripted(), CHUNKING), recorded.append)
-    diarizer.heard(pcm(said(0, 100)))
-    diarizer.ended(1, "sent")
-    diarizer.heard(pcm(said(1, 40)))
-    diarizer.ended(2, "dropped")
-    sent, dropped = await settled(recorded, 2)
+    owned = owner(diarizer, recorded)
+    heard(diarizer, said(0, 100))
+    await ended(diarizer, owned, 1, "sent")
+    heard(diarizer, said(1, 40))
+    await ended(diarizer, owned, 2, "dropped")
+    sent, dropped = holds_told(recorded)
     assert (sent.outcome, sent.facts["hold"], sent.facts["fate"], sent.facts["speakers"]) == ("ok", 1, "sent", (Speech(0, 1.0),))
     assert (dropped.outcome, dropped.facts["hold"], dropped.facts["fate"], dropped.facts["speakers"]) == ("ok", 2, "dropped", (Speech(1, 0.4),))
     assert all(isinstance(event.facts["steps"], int) and event.facts["steps"] > 0 for event in (sent, dropped))
+    # A hold's speakers are no words: nothing they settle cuts hands off.
+    assert [(event.facts["heard"], event.facts["cut"]) for event in (sent, dropped)] == [("nothing", False)] * 2
 
 
-async def test_a_hold_whose_step_failed_is_a_failed_event_with_the_error() -> None:
+async def test_the_audio_a_hold_kept_from_before_it_opened_is_diarized_as_its_own() -> None:
+    recorded: list[Entry] = []
+    diarizer = Diarizer(lambda: Model(Scripted(), CHUNKING), recorded.append)
+    samples = said(0, 100)
+    assert diarizer.opened(Hold(1, "engaged conversation"), Sound(pcm(samples[:3200]), pcm(samples[:3200]))) == ()
+    heard(diarizer, samples[3200:])
+    await ended(diarizer, owner(diarizer, recorded), 1, "sent")
+    [told] = holds_told(recorded)
+    assert told.facts["speakers"] == (Speech(0, 1.0),)
+
+
+async def test_a_hold_whose_step_failed_is_a_failed_hearing_with_the_error() -> None:
     recorded: list[Entry] = []
     diarizer = Diarizer(lambda: Model(Scripted(failing=frozenset({0})), CHUNKING), recorded.append)
-    diarizer.heard(pcm(said(0, 100)))
-    diarizer.ended(1, "sent")
-    [told] = await settled(recorded, 1)
+    heard(diarizer, said(0, 100))
+    await ended(diarizer, owner(diarizer, recorded), 1, "sent")
+    [told] = holds_told(recorded)
     assert told.outcome == "failed"
     assert told.error is not None and "step 0 failed" in told.error
     assert "speakers" not in told.facts
-
-
-async def test_a_hold_still_unsettled_as_the_next_ends_is_warned_of() -> None:
-    recorded: list[Entry] = []
-    warned: list[str] = []
-    sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
-    try:
-        step = Held()
-        diarizer = Diarizer(lambda: Model(step, CHUNKING), recorded.append)
-        diarizer.heard(pcm(said(0, 100)))
-        diarizer.ended(1, "sent")
-        diarizer.ended(2, "sent")
-        assert warned == ["the speakers of hold(s) [1] are not known yet as hold 2 ends: diarization is behind"]
-        step.go.set()
-        assert [event.facts["hold"] for event in await settled(recorded, 2)] == [1, 2]
-    finally:
-        logger.remove(sink)
-
-
-async def test_a_hold_unsettled_as_the_pipeline_stops_ends_cancelled_once() -> None:
-    recorded: list[Entry] = []
-    step = Held()
-    diarizer = Diarizer(lambda: Model(step, CHUNKING), recorded.append)
-    diarizer.heard(pcm(said(0, 100)))
-    diarizer.ended(1, "sent")
-    diarizer.stopped()
-    [told] = holds_told(recorded)
-    assert (told.outcome, told.facts["hold"], told.facts["fate"]) == ("cancelled", 1, "sent")
-    # Its speakers settling after the stop tell it no second time.
-    step.go.set()
-    await asyncio.sleep(0.2)
-    assert len(holds_told(recorded)) == 1
 
 
 def loaded(recorded: list[Entry]) -> list[WideEvent]:
@@ -207,28 +196,30 @@ async def test_holds_spoken_while_the_model_loads_are_diarized_once_it_has() -> 
         return Model(Scripted(), CHUNKING)
 
     diarizer = Diarizer(slow, recorded.append)
-    diarizer.heard(pcm(said(0, 100)))
-    diarizer.ended(1, "sent")
+    heard(diarizer, said(0, 100))
+    settling = asyncio.create_task(ended(diarizer, owner(diarizer, recorded), 1, "sent"))
     await asyncio.sleep(0.1)
     assert (loaded(recorded), holds_told(recorded)) == ([], [])
     go.set()
-    [told] = await settled(recorded, 1)
+    await settling
+    [told] = holds_told(recorded)
     assert (told.outcome, told.facts["speakers"]) == ("ok", (Speech(0, 1.0),))
     [load] = loaded(recorded)
     assert (load.outcome, load.facts["model"], load.facts["revision"]) == ("ok", diarization.MODEL, diarization.REVISION)
 
 
-async def test_a_model_that_fails_to_load_leaves_every_hold_a_failed_event_saying_why() -> None:
+async def test_a_model_that_fails_to_load_leaves_every_hold_a_failed_hearing_saying_why() -> None:
     recorded: list[Entry] = []
 
     def unreachable() -> Model:
         raise OSError("the hub is unreachable")
 
     diarizer = Diarizer(unreachable, recorded.append)
-    for hold in (1, 2):
-        diarizer.heard(pcm(said(0, 100)))
-        diarizer.ended(hold, "sent")
-    told = await settled(recorded, 2)
+    owned = owner(diarizer, recorded)
+    for number in (1, 2):
+        heard(diarizer, said(0, 100))
+        await ended(diarizer, owned, number, "sent")
+    told = holds_told(recorded)
     assert [(event.outcome, event.error, event.facts["steps"]) for event in told] == [("failed", "the model did not load: OSError: the hub is unreachable", 0)] * 2
     [load] = loaded(recorded)
     assert (load.outcome, load.error) == ("failed", "OSError: the hub is unreachable")

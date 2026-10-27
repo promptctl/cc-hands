@@ -24,7 +24,8 @@ from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
-from hands.voice.turnstop import Hold, TurnOpened
+from hands.voice.holds import Hold
+from hands.voice.turnstop import TurnOpened
 
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))

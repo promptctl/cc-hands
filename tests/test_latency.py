@@ -17,7 +17,8 @@ from pipecat.observers.base_observer import FramePushed
 
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
-from hands.voice.turnstop import Hold, HoldDiscarded, TurnOpened, TurnResolved, Words
+from hands.voice.holds import Hold
+from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved, Words
 
 
 async def observed(*frames: Frame) -> tuple[list[str], list[Mark]]:

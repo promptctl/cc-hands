@@ -98,14 +98,12 @@ class Levels:
 
 @dataclass(frozen=True)
 class HoldHeard:
-    """What Whisper made of one hold: what it took as said, None where nothing was, each segment it dropped, and how
-    loud the hold was before and after the echo canceller, which tells a transcript made of the reply's echo left over
-    (loud captured, quiet heard) from one of the room with nobody speaking (quiet both)."""
+    """What Whisper made of one hold: what it took as said, None where nothing was, and each segment it dropped. How loud
+    the hold was is on its `hold` event, beside it."""
 
     hold: int
     said: str | None
     dropped: tuple[Unsaid, ...]
-    levels: Levels
 
 
 @dataclass(frozen=True)

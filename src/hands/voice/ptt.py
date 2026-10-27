@@ -1,9 +1,9 @@
 """Push-to-talk: the key is the voice activity detector and the microphone mute.
 
-Pipecat's turn machinery, and the segmented Whisper service that decides when
-to transcribe, both run off VAD frames. So the key *is* the VAD: every
-microphone frame carries the key it was captured under, and Whisper
-(`hands.voice.whisper`) says the user started or stopped speaking where those
+Pipecat's turn machinery, and the hold owner that cuts the holds every model
+hears, both run off the key. So the key *is* the VAD: every microphone frame
+carries the key it was captured under, and the hold owner
+(`hands.voice.holdowner`) says the user started or stopped speaking where those
 keys change. The key is also the mute: the microphone bytes are silence unless
 the key is pressed (applied where they are captured, in
 `hands.voice.microphone`), and a hold's audio begins at its press, so what was
@@ -66,7 +66,7 @@ class Gate:
     # [LAW:one-source-of-truth] engaged conversation is the desk's: at the phone, its button alone opens the microphone.
     listens: bool = False
     # [LAW:no-ambient-temporal-coupling] how each turn ended is counted, not left in a key position: a frame is captured
-    # every 20 ms and a turn can end and the next arm between two of them, so Whisper ends each turn as these move.
+    # every 20 ms and a turn can end and the next arm between two of them, so the hold owner ends each turn as these move.
     sent: int = 0
     dropped: int = 0
     # [LAW:no-ambient-temporal-coupling] the edge that opened the last turn travels with the audio, as the key does, so
@@ -131,7 +131,7 @@ class Gate:
         return "listening" if listens and place == "desk" else "up"
 
     def hears(self, place: Place) -> bool:
-        """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches Whisper."""
+        """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches the hold owner."""
         return place == self.place
 
     @property
@@ -143,7 +143,7 @@ class Gate:
         """The microphone bytes as the pipeline hears them: intact while the key is pressed or the desk listens, silence
         otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
-        # goes out, so Whisper sees an unbroken stream; the key
+        # goes out, so the hold owner sees an unbroken stream; the key
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
