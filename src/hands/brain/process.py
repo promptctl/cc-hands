@@ -110,7 +110,7 @@ PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\
 AUTH_STATUS_SECONDS = 20.0
 # How long fritter has to start the brain and open its socket, and the brain to turn its input on.
 START_SECONDS = 10.0
-# How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
+# How long a typed turn has to be taken, from its typing.
 TAKE_SECONDS = 30.0
 # How long a cold Claude Code has to list hands' MCP server: its own budget, apart from TAKE_SECONDS.
 LIST_SECONDS = 30.0
@@ -725,7 +725,8 @@ class Brain:
                     await asyncio.wait({listed, turn.stopping, turn.answered}, return_when=asyncio.FIRST_COMPLETED)
             except TimeoutError as error:
                 # [LAW:no-silent-failure] a turn that fails here is said here, as well as in its own event: nothing else shows why it never ran.
-                message = f"the brain's Claude Code did not list hands' MCP server within {LIST_SECONDS:g}s, so the turn was not typed"
+                # [LAW:nothing-unseen] what Claude Code showed when it never listed is the first thing to read, as an untaken turn's is.
+                message = f"the brain's Claude Code did not list hands' MCP server within {LIST_SECONDS:g}s, so the turn was not typed; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{self._claude.shown()}"
                 logger.error(message)
                 raise Unconnected(message) from error
             finally:

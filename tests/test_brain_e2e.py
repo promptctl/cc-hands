@@ -112,9 +112,9 @@ def account_file(tmp_path: Path) -> Path:
 async def mock_api(tmp_path: Path, mock_binary: Path, account_file: Path) -> AsyncGenerator[MockApi]:
     scenarios = tmp_path / "scenarios"
     scenarios.mkdir()
-    served = await asyncio.create_subprocess_exec(
-        *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), "--account", str(account_file), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
-    )
+    # The mock inherits the log's descriptor, so the test's own is closed once the mock has it.
+    with (tmp_path / "mock.log").open("w") as log:
+        served = await asyncio.create_subprocess_exec(*mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), "--account", str(account_file), stdout=asyncio.subprocess.PIPE, stderr=log)
     assert served.stdout is not None
     drain: asyncio.Future[bytes] | None = None
     try:
@@ -188,7 +188,7 @@ class Hands:
             seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower() or "brain." in str(entry)]
             requests = [str(request.kind) for request in self.sent]
             served = self.mock_log.read_text().splitlines()
-            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; the requests it sent: {requests}; the mock's log: {served}; its screen: {self.stage.screen()!r}") from error
+            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; the requests it sent: {requests}; the mock's log: {served}; its screen: {self.stage._brain.shown()!r}") from error  # pyright: ignore[reportPrivateUsage]
 
 
 async def unread() -> InFront:

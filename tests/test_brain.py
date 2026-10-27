@@ -981,6 +981,8 @@ async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_ow
     try:
         with pytest.raises(Untaken):
             await asyncio.wait_for(brain.ask("garbled", unasked), 10)
+        # The fake reads its input behind the take limit, so its log is complete only once it has read all four keys.
+        await until(lambda: len(typed(tmp_path)) == 4)
     finally:
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " garbled"]]
