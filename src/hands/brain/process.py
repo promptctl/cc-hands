@@ -112,6 +112,8 @@ AUTH_STATUS_SECONDS = 20.0
 START_SECONDS = 10.0
 # How long a typed turn has to be taken: a cold start loads the MCP server before the input is read.
 TAKE_SECONDS = 30.0
+# How long a cold Claude Code has to list hands' MCP server: its own budget, apart from TAKE_SECONDS.
+LIST_SECONDS = 30.0
 # How many times a turn is typed at most: once, and once more when a prompt that is no turn's ran through its wait and
 # was stopped, which leaves nothing ahead of it.
 TYPINGS = 2
@@ -680,7 +682,7 @@ class Brain:
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
                 # it (2.1.286, measured 2026-09-30, 2 of 4; none of 8 typed once the turn was taken).
                 try:
-                    stopped = not await self._connected(turn)
+                    stopped = await self._stopped_before_listed(turn)
                     taken = False
                     if not stopped:
                         async with self._input:
@@ -710,23 +712,25 @@ class Brain:
                 case failed:
                     fail(f"the brain failed the turn: {failed}")
 
-    async def _connected(self, turn: _Turn) -> bool:
-        """Says whether hands' tools are listed before `turn` is stopped: False if its stop came first, and it is then never
-        typed. [LAW:no-ambient-temporal-coupling] Claude Code turns its input on before it connects its MCP servers, so input
-        being up says nothing about them: a turn typed on input alone went to the model without hands' tools (CI, the brain
-        end to end test). The wait is the cold start's own budget, TAKE_SECONDS; past it the turn fails with the reason."""
-        listed = asyncio.ensure_future(self._mcp_listed.wait())
-        try:
-            async with asyncio.timeout(TAKE_SECONDS):
-                await asyncio.wait({listed, turn.stopping}, return_when=asyncio.FIRST_COMPLETED)
-        except TimeoutError as error:
-            # [LAW:no-silent-failure] a turn that fails here is said here, as well as in its own event: nothing else shows why it never ran.
-            message = f"the brain's Claude Code did not list hands' MCP server within {TAKE_SECONDS:g}s, so the turn was not typed"
-            logger.error(message)
-            raise Unconnected(message) from error
-        finally:
-            listed.cancel()
-        return not turn.stopping.done()
+    async def _stopped_before_listed(self, turn: _Turn) -> bool:
+        """Says whether `turn` ends before hands' tools are listed, so it is never typed: True if its stop came first, or the
+        brain's exit answered it first. [LAW:no-ambient-temporal-coupling] Claude Code turns its input on before it connects
+        its MCP servers, so input being up says nothing about them: a turn typed on input alone went to the model without
+        hands' tools (CI, the brain end to end test). The wait is the cold start's own budget, LIST_SECONDS; past it the turn
+        fails with the reason."""
+        if not self._mcp_listed.is_set():
+            listed = asyncio.ensure_future(self._mcp_listed.wait())
+            try:
+                async with asyncio.timeout(LIST_SECONDS):
+                    await asyncio.wait({listed, turn.stopping, turn.answered}, return_when=asyncio.FIRST_COMPLETED)
+            except TimeoutError as error:
+                # [LAW:no-silent-failure] a turn that fails here is said here, as well as in its own event: nothing else shows why it never ran.
+                message = f"the brain's Claude Code did not list hands' MCP server within {LIST_SECONDS:g}s, so the turn was not typed"
+                logger.error(message)
+                raise Unconnected(message) from error
+            finally:
+                listed.cancel()
+        return turn.stopping.done() or turn.answered.done()
 
     async def _taking(self, turn: _Turn) -> bool:
         """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it

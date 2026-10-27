@@ -116,14 +116,20 @@ async def mock_api(tmp_path: Path, mock_binary: Path, account_file: Path) -> Asy
         *mock(mock_binary, "serve"), "--port", "0", "--scenarios", str(scenarios), "--account", str(account_file), stdout=asyncio.subprocess.PIPE, stderr=(tmp_path / "mock.log").open("w")
     )
     assert served.stdout is not None
+    drain: asyncio.Future[bytes] | None = None
     try:
         # [LAW:no-silent-failure] a mock that never says where it listens fails the test with what it logged.
         line = await asyncio.wait_for(served.stdout.readline(), PATIENCE_SECONDS)
         if not line:
             raise AssertionError(f"the mock exited before it listened: {(tmp_path / 'mock.log').read_text()}")
         ready = json.loads(line)
+        # Nothing the mock prints after its readiness line is read by a test, so the pipe is drained: a full pipe would block
+        # the mock's own writes, and every request after that would go unanswered.
+        drain = asyncio.ensure_future(served.stdout.read())
         yield MockApi(f"http://127.0.0.1:{ready['port']}", ready["port"], Path(ready["ca"]), scenarios)
     finally:
+        if drain is not None:
+            drain.cancel()
         served.terminate()
         await served.wait()
     # [LAW:no-silent-failure] a request the mock had no answer for is a gap in the test or in the mock, never noise: Claude
@@ -145,7 +151,8 @@ def mock_environment(binary: Path, port: int, ca: Path, config_dir: Path) -> dic
     The plain-http proxy variables are left out: hands' MCP server is plain http on loopback, and a plain-http proxy sends
     that call to the mock, which has no answer for it, so the brain would run without hands' tools."""
     printed = subprocess.run(mock(binary, "env", "--port", str(port), "--ca", str(ca), "--config-dir", str(config_dir)), check=True, capture_output=True, text=True).stdout
-    variables = dict(shlex.split(line)[0].split("=", 1) for line in printed.splitlines())
+    # [LAW:no-silent-failure] every word of a line is an assignment: a word that is not one fails the split, never dropped.
+    variables = dict(word.split("=", 1) for line in printed.splitlines() for word in shlex.split(line))
     return {name: value for name, value in variables.items() if name not in ("HTTP_PROXY", "http_proxy")}
 
 
@@ -195,8 +202,6 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
-    # [LAW:effects-at-boundaries] the one change from the run's own wiring: the upstream hands' proxy forwards to.
-    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=time.time)
     home = tmp_path / "home"
     home.mkdir()
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it: the variables that say so
@@ -207,6 +212,9 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    # [LAW:effects-at-boundaries] the one change from the run's own wiring: the upstream hands' proxy forwards to. It is
+    # listening from here on, so the cleanup below always closes it, whatever failed before it.
+    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=time.time)
     try:
         async with mind(config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off) as minded:
             async with running([minded.llm, out]) as run:

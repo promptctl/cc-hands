@@ -25,7 +25,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unconnected, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -524,6 +524,34 @@ async def test_a_stop_before_the_brain_lists_its_tools_ends_the_turn_untyped(tmp
         await until(lambda: brain._turn is not None)  # pyright: ignore[reportPrivateUsage]
         assert brain.interrupt() is True
         assert await asyncio.wait_for(asking, 10) == BrainStopped()
+        assert typed(tmp_path) == []
+    finally:
+        await brain.stop()
+
+
+async def test_a_turn_is_typed_once_the_brain_lists_its_tools_and_not_before(tmp_path: Path, fake_claude: Path) -> None:
+    # The listing is what releases a turn asked before it: typed after it is listed, and never while it is not.
+    listed = asyncio.Event()
+    brain = await start(replace(launch(tmp_path), mcp_listed=listed), list[Entry]().append)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait for the tools", unasked))
+        await until(lambda: brain._turn is not None)  # pyright: ignore[reportPrivateUsage]
+        await asyncio.sleep(0.2)
+        assert typed(tmp_path) == []
+        listed.set()
+        assert await asyncio.wait_for(asking, 10) == BrainAnswered("p1", None)
+        assert typed(tmp_path) == [["prompt", " wait for the tools"]]
+    finally:
+        await brain.stop()
+
+
+async def test_a_brain_that_never_lists_its_tools_fails_the_turn_untyped_and_says_why(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    brain = await start(replace(launch(tmp_path), mcp_listed=asyncio.Event()), list[Entry]().append)
+    try:
+        # Only this turn is held to a short limit: the listing's budget is its own, apart from the take's.
+        monkeypatch.setattr("hands.brain.process.LIST_SECONDS", 0.3)
+        with pytest.raises(Unconnected, match="did not list hands' MCP server within 0.3s"):
+            await brain.ask("never listed", unasked)
         assert typed(tmp_path) == []
     finally:
         await brain.stop()
