@@ -680,7 +680,10 @@ class Brain:
                     taken = False
                     if not stopped:
                         async with self._input:
-                            taken = await self._taking(turn)
+                            # A stop that came while the input was held for another prompt ends the turn here, untyped.
+                            stopped = turn.stopping.done()
+                            if not stopped:
+                                taken = await self._taking(turn)
                 finally:
                     turn.tried.set_result(None)
                 if stopped:
@@ -786,9 +789,6 @@ class Brain:
         if self._turn is not turn:
             return
         if not turn.taken.done():
-            if turn.answered.done():
-                # Stopped before it was typed, which is what this stop was for.
-                return
             logger.warning(f"the brain was not stopped: its turn was not taken, typed {turn.typings} time(s)")
             return
         try:
