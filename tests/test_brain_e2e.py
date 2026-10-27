@@ -139,6 +139,11 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     # here as a person answers it, or the first turn typed lands in it (promptctl-brain-lq3.mcw).
     state = brain / ".claude.json"
     state.write_text(json.dumps({**json.loads(state.read_text()), "hasSeenAutoDefaultNudge": True}))
+    # The act the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person: how
+    # hands puts one to the user is test_permissions'.
+    settings = brain / "settings.json"
+    said = json.loads(settings.read_text())
+    settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": ["Bash(touch:*)"]}}))
 
 
 @dataclass(frozen=True)
@@ -157,15 +162,19 @@ class Hands:
     errors: list[ErrorFrame]
 
     async def until(self, what: Callable[[], bool]) -> None:
-        async with asyncio.timeout(PATIENCE_SECONDS):
-            while not what():
-                # [LAW:no-silent-failure] a watch that ends stops hands' run, and an error the pipeline raises is said to the
-                # user, so here each fails the test with its reason, not a minute later as a timeout.
-                assert not self.errors, self.errors
-                for watch in self.watches:
-                    if watch.done():
-                        raise AssertionError(f"{watch.get_name()} ended") from (None if watch.cancelled() else watch.exception())
-                await asyncio.sleep(0.05)
+        try:
+            async with asyncio.timeout(PATIENCE_SECONDS):
+                while not what():
+                    # [LAW:no-silent-failure] a watch that ends stops hands' run, and an error the pipeline raises is said to
+                    # the user, so here each fails the test with its reason, not a minute later as a timeout.
+                    assert not self.errors, self.errors
+                    for watch in self.watches:
+                        if watch.done():
+                            raise AssertionError(f"{watch.get_name()} ended") from (None if watch.cancelled() else watch.exception())
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            # [LAW:no-silent-failure] a wait that runs out says where hands was: what it said, and what the brain was doing.
+            raise AssertionError(f"waited {PATIENCE_SECONDS:g}s: hands said {self.out.said()!r}, the brain's work {self.stage.work()!r}") from None
 
 
 async def connected(hands: Hands) -> None:
