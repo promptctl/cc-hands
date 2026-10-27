@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,7 +35,7 @@ from conftest import PATIENCE_SECS, events, located, onboard, patiently, pin, pi
 from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
-from hands.core.session import PromptText, SessionId, pasted
+from hands.core.session import Keystroke, PromptText, SessionId, pasted
 from hands.core.wire import Auxiliary, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Send, Sent, Unknown, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -44,6 +44,7 @@ from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
 from hands.sessions.sentences import Sentences
+from hands.sessions.typing import Typist
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
@@ -208,6 +209,21 @@ def typed(tmp: Path) -> list[list[str]]:
     """What the fake claude read from its terminal, in order."""
     path = tmp / "typed.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def typings_answered(tmp: Path) -> Callable[[float], Awaitable[None]]:
+    """A take's time for a brain the stand-in is: the n-th is up once the stand-in is done with n typings, however long
+    that takes and never on a clock, so a turn not taken is one it did not take. pytest's timeout keeps it from hanging."""
+    begun = 0
+
+    async def pause(_take: float) -> None:
+        nonlocal begun
+        begun += 1
+        waited, path = begun, tmp / "answered"
+        while (len(path.read_text()) if path.exists() else 0) < waited:
+            await asyncio.sleep(0.01)
+
+    return pause
 
 
 async def until(check: Callable[[], bool]) -> None:
@@ -531,26 +547,36 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["prompts"]) == ("ok", True, ("p1",))
 
 
-async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+class _Timed:
+    """A typist that notes when each Ctrl-C it pressed had gone in, on the monotonic clock."""
+
+    def __init__(self, typist: Typist) -> None:
+        self._typist = typist
+        self.cleared: list[float] = []
+
+    def type(self, text: PromptText) -> None:
+        self._typist.type(text)
+
+    def press(self, key: Keystroke) -> None:
+        self._typist.press(key)
+        if key == "ctrl_c":
+            self.cleared.append(time.monotonic())
+
+
+async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path) -> None:
     # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. A turn taken as other
     # words is stopped before it is typed again, and the turn after it stops the second taking before it is typed: two
-    # stops a take's wait apart, closer than that window.
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
-    brain = await start(launch(tmp_path), lambda _entry: None)
-    pressed: list[float] = []
+    # stops a take's wait apart, which the stand-in ends as soon as it is done with each typing.
+    brain = await start(launch(tmp_path), lambda _entry: None, typings_answered(tmp_path))
+    timed = brain._typist = _Timed(brain._typist)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
-        asking = asyncio.ensure_future(brain.ask("garbled", unasked))
-        await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == 1)
-        pressed.append(asyncio.get_running_loop().time())
         with pytest.raises(Untaken):
-            await asyncio.wait_for(asking, 10)
-        asking = asyncio.ensure_future(brain.ask("and now?", unasked))
-        await until(lambda: sum(line[0] == "ctrl_c" for line in typed(tmp_path)) == 2)
-        pressed.append(asyncio.get_running_loop().time())
-        await asyncio.wait_for(asking, 10)
+            await brain.ask("garbled", unasked)
+        await brain.ask("and now?", unasked)
     finally:
         await brain.stop()
-    assert pressed[1] - pressed[0] > 0.8
+    first, second = timed.cleared
+    assert second - first > 0.8
 
 
 # An asker's deadline no question here comes near, but the one that is to pass it.
@@ -843,13 +869,11 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
 
 
 async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
-    brain = await start(launch(tmp_path), lambda _entry: None)
+    brain = await start(launch(tmp_path), lambda _entry: None, typings_answered(tmp_path))
     try:
-        # Only the deaf turn is held to a short limit: the next is a real turn, given the brain's own.
-        with monkeypatch.context() as short, pytest.raises(Untaken, match="`hands login` answers them"):
-            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+        with pytest.raises(Untaken, match="`hands login` answers them"):
             await brain.ask("deaf", unasked)
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
@@ -857,13 +881,12 @@ async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_
 
 
 async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_turns(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append, typings_answered(tmp_path))
     try:
-        with monkeypatch.context() as short, pytest.raises(Untaken):
-            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+        with pytest.raises(Untaken):
             await brain.ask("late", unasked)
         # Its prompt and its Stop come while the next turn is in flight, ahead of that turn's own: words the next turn's
         # are a part of are still not the next turn's.
@@ -875,12 +898,11 @@ async def test_a_turn_claude_code_takes_after_it_ended_untaken_is_not_the_next_t
 
 
 async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_turns_taken(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
-    # Every turn has half a second to be taken, and each late one would run a second ahead of what was typed behind it.
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
+    # Each late one would run a second ahead of what was typed behind it.
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append, typings_answered(tmp_path))
     try:
         with pytest.raises(Untaken):
             await brain.ask("later", unasked)
@@ -910,11 +932,10 @@ async def test_a_turn_taken_late_that_runs_past_the_take_limit_leaves_the_next_t
 
 
 async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_is_answered_by_its_typing_again(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.5)
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append, typings_answered(tmp_path))
     try:
         with pytest.raises(Untaken):
             await brain.ask("later", unasked)
@@ -928,14 +949,13 @@ async def test_a_turn_taken_as_the_escape_that_stops_what_ran_ahead_of_it_goes_i
 
 
 async def test_a_turn_is_typed_at_most_twice_when_what_ran_ahead_of_it_is_its_own_kept_as_other_words(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append, typings_answered(tmp_path))
     try:
         with pytest.raises(Untaken):
-            await asyncio.wait_for(brain.ask("garbled", unasked), 10)
+            await brain.ask("garbled", unasked)
     finally:
         await brain.stop()
     assert typed(tmp_path) == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " garbled"]]
@@ -949,11 +969,10 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
     # The next turn is typed the moment the last one's Stop is heard, while Claude Code's other Stop hooks still run: it is
     # queued, its UserPromptSubmit comes under the last prompt's id with the queued words, and it runs as a prompt of its own.
     monkeypatch.setenv("STOP_TAIL", "0.3")
-    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 1.5)
     warned: list[str] = []
     sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
     recorded: list[Entry] = []
-    brain = await start(launch(tmp_path), recorded.append)
+    brain = await start(launch(tmp_path), recorded.append, typings_answered(tmp_path))
     try:
         assert await asyncio.wait_for(brain.ask("first", unasked), 10) == BrainAnswered("p1", None)
         answered = await asyncio.wait_for(brain.ask("second", unasked), 10)
@@ -1034,7 +1053,7 @@ def failures() -> tuple[list[str], int]:
 
 
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
@@ -1042,10 +1061,7 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     try:
         typist = brain._typist  # pyright: ignore[reportPrivateUsage]
         brain._typist = _Jammed()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        # Nothing was typed, so Claude Code never takes the turn, and its stop ends it once it was not taken in time:
-        # a short time, which the next turn, a real one, is not held to.
-        with monkeypatch.context() as short, pytest.raises(OSError, match="jammed"):
-            short.setattr("hands.brain.process.TAKE_SECONDS", 0.3)
+        with pytest.raises(OSError, match="jammed"):
             await asyncio.wait_for(brain.ask("what is running?", unasked), 10)
         brain._typist = typist  # pyright: ignore[reportPrivateUsage]
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
@@ -1055,6 +1071,24 @@ async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_on
     assert said == ["the brain's own work failed: OSError('jammed')"]
     failed, _ = events(recorded, "brain.turn")
     assert (failed.outcome, failed.error) == ("failed", "OSError: jammed")
+
+
+async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(tmp_path: Path, fake_claude: Path) -> None:
+    async def broken(_take: float) -> None:
+        raise RuntimeError("no clock")
+
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append, broken)
+    said, sink = failures()
+    try:
+        with pytest.raises(RuntimeError, match="no clock"):
+            await brain.ask("deaf", unasked)
+    finally:
+        logger.remove(sink)
+        await brain.stop()
+    assert said == ["the brain's own work failed: RuntimeError('no clock')"]
+    [failed] = events(recorded, "brain.turn")
+    assert (failed.outcome, failed.error) == ("failed", "RuntimeError: no clock")
 
 
 async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path) -> None:
