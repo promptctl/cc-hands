@@ -177,7 +177,8 @@ class Hands:
         except TimeoutError as error:
             # [LAW:nothing-unseen] a wait that gives up says what the audit held meanwhile, the MCP events above all.
             seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower() or "brain." in str(entry)]
-            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; its screen: {self.stage.screen()!r}") from error
+            requests = [str(request.kind) for request in self.sent]
+            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}; the requests it sent: {requests}; its screen: {self.stage.screen()!r}") from error
 
 
 async def unread() -> InFront:
