@@ -1,5 +1,7 @@
-# [LAW:one-source-of-truth] the environment test.yml gates on and release.yml builds in: Go for fritter, uv on the
-# Python floor requires-python names, and Homebrew's PortAudio, which PyAudio builds against on a Mac.
+# [LAW:one-source-of-truth] the environment test.yml gates on and release.yml builds in: Go for fritter and for the mock
+# of Anthropic's API the brain's end-to-end tests build, uv on the Python floor requires-python names, and Homebrew's
+# PortAudio, which PyAudio builds against on a Mac. The mock's go.mod asks a newer Go than fritter's; go's default
+# GOTOOLCHAIN=auto fetches that one for its build.
 name: setup
 description: Go, uv on Python 3.12, and PortAudio, for a checkout that has its history and tags
 runs:
