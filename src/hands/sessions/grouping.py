@@ -159,13 +159,20 @@ def _file(source: str, where: str) -> str:
     return f"src/{inside}" if module[0] == _OWN else inside
 
 
+def _logged_file(line: Payload, origin: str) -> str:
+    """The file a Logged line, or a Failure line before it, was logged in. Its `where` tells only whether that is a
+    package's __init__.py, and a Failure line written before it said where tells nothing."""
+    where = line.fields.get("where")
+    return _file(origin, where if isinstance(where, str) else "")
+
+
 # What a ticket names the origin of each kind of line by, where that is not the origin itself: a logged line's origin is
 # the module and function that logged it, finer than a file. Every other kind's origin is already what the log names it
-# by: a unit of work, a request, a collector, a kind of line.
+# by: a unit of work, a request, a collector, a kind of line. Naming reads nothing that can refuse the line, so it never
+# moves a sighting to another group.
 NAMED: Mapping[str, Callable[[Payload, str], str]] = {
-    Logged.__name__: lambda line, origin: _file(origin, line.text("where")),
-    # A Failure line said no file, so it is named by its module.
-    "Failure": lambda line, origin: origin.partition(":")[0],
+    Logged.__name__: _logged_file,
+    "Failure": _logged_file,
 }
 
 
@@ -186,9 +193,8 @@ CAUSES: Mapping[str, Cause] = {
 }
 
 
-def _cause(kind: str, line: Payload) -> tuple[str, str, str, bool]:
-    """Where a warning or error line came from, what a ticket names that by, what it said, normalised, and whether it
-    read as its kind is written.
+def _cause(kind: str, line: Payload) -> tuple[str, str, bool]:
+    """Where a warning or error line came from and what it said, normalised, and whether it read as its kind is written.
 
     [LAW:parse-dont-validate] a line this hands cannot read, of a kind it no longer writes or written otherwise by the
     build before, is still a sighting, grouped by its kind and why it could not be read: never one that stops the
@@ -196,12 +202,11 @@ def _cause(kind: str, line: Payload) -> tuple[str, str, str, bool]:
     """
     try:
         origin, said = CAUSES[kind](line)
-        named = NAMED.get(kind, lambda _, origin: origin)(line, origin)
     except KeyError:
-        return kind, kind, f"a {kind} line, a kind this hands does not write", False
+        return kind, f"a {kind} line, a kind this hands does not write", False
     except Rejected as rejected:
-        return kind, kind, f"a {kind} line this hands cannot read: {normalised(str(rejected))}", False
-    return origin, named, normalised(said), True
+        return kind, f"a {kind} line this hands cannot read: {normalised(str(rejected))}", False
+    return origin, normalised(said), True
 
 
 def _retold(kind: str, line: Payload, failed_inside: dict[tuple[str, str], set[str]]) -> bool:
@@ -252,7 +257,9 @@ def read(lines: Iterable[str]) -> Read:
         if _retold(kind, line, failed_inside):
             retold += 1
             continue
-        origin, named, cause, parsed = _cause(kind, line)
+        origin, cause, parsed = _cause(kind, line)
+        # A line this hands cannot read is grouped by its kind, which names it as it is.
+        named = NAMED.get(kind, lambda _, origin: origin)(line, origin) if parsed else origin
         unparsed += 0 if parsed else 1
         sightings.setdefault((origin, cause), []).append(Sighting(origin, cause, at, named))
     groups = tuple(Group(origin, cause, tuple(seen)) for (origin, cause), seen in sightings.items())

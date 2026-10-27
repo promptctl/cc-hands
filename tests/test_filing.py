@@ -371,3 +371,23 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path,
     monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
         asyncio.run(backlog.file_ticket(tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
+
+
+def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:
+    def logged(kind: str, **where: object) -> str:
+        return json.dumps({"at": "2026-10-24T12:00:00.000+00:00", "level": "warning", "type": kind, "source": "hands.sessions.delta:_git", "message": "slow", **where, "trace": []})
+
+    lines = [
+        # A Failure line before it said where, one after, a Logged line, and Logged lines whose where says nothing.
+        logged("Failure"),
+        logged("Failure", where="/x/hands/sessions/delta.py:515"),
+        logged("Logged", where="/x/hands/sessions/delta.py:515"),
+        logged("Logged", where=7),
+        logged("Logged"),
+    ]
+    read = grouping.read(lines)
+    assert [(group.origin, group.cause, group.named, len(group.sightings)) for group in read.groups] == [
+        ("hands.sessions.delta:_git", "slow", "src/hands/sessions/delta.py", 5),
+    ]
+    assert [sighting.named for sighting in read.groups[0].sightings] == ["src/hands/sessions/delta.py"] * 5
+    assert read.unparsed == 0
