@@ -10,6 +10,7 @@ a notification joined to a turn in flight are a part of it, not a turn of their 
 id Claude Code gave the words sent into it is one turn, told by the id its Stop names.
 """
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ from typing import cast
 import pytest
 
 from hands.core.effects import Snapshot, Summarise
-from hands.core.events import Continued, Displayed, Event, StatusReported, Taken
+from hands.core.events import Continued, Event, StatusReported, Taken
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
@@ -41,9 +42,10 @@ POSTED = tuple(cast(Mapping[str, object], plugin_hooks()["hooks"]))
 # Claude Code's queue records. Words or a notification absorbed into a turn (queue-operation remove, absorbed_mid_turn)
 # are taken for a message queued behind it, so a turn after it is marked and none comes. And in sent_now_mid_batch,
 # Claude Code sets shell for a few ms as send now moves the running call to the background, which ends the turn for the
-# model, so it is told by the id it began under once its Stop hold passes. The records that say it went on under the
-# words' id (a dequeue, then the later results and the words under that id) are read as a turn of their own, never
-# marked, which its Stop tells again: one Claude Code turn told twice.
+# model, so it is told by the id it began under at the first read past its Stop hold: here the MessageDisplay that comes
+# before Stop(p2), and with no read between, p2 would never be told. The records that say it went on under the words'
+# id (a dequeue, then the later results and the words under that id) are read as a turn of their own, never marked,
+# which its Stop tells again: one Claude Code turn told twice.
 MISMARKED = {"joined_at_boundary", "notified_mid_turn", "sent_now", "sent_now_mcp", "sent_now_mid_batch"}
 MISTOLD = {"sent_now_mid_batch"}
 
@@ -66,8 +68,8 @@ class Reading:
     told: tuple[str, ...]
     # The prompt ids it heard from the transcript.
     heard: frozenset[str]
-    # How many of the lines Claude Code displayed it heard.
-    displayed: int
+    # How many of the recording's hooks of each name reached it as an event.
+    reached: Mapping[str, int]
 
 
 async def _told(name: str, schedule: str, tmp: Path) -> Reading:
@@ -101,11 +103,10 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
     tails = Tails(Known())
     told: list[str] = []
     heard: set[str] = set()
-    displayed = 0
+    reached: Counter[str] = Counter()
 
     def apply(event: Event) -> None:
-        nonlocal registry, displayed
-        displayed += isinstance(event, Displayed)
+        nonlocal registry
         registry, effects = reduce(registry, event)
         for effect in effects:
             match effect:
@@ -132,14 +133,16 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
             case Posted(body=body) if body["hook_event_name"] == "MessageDisplay":
                 # Posted to the daemon's display route, which takes MessageDisplay alone.
                 apply(parse_display(transcribed({"session_id": SESSION, **body}).encode(), at=line.at))
+                reached["MessageDisplay"] += 1
                 await read()
             case Posted(body=body):
                 raw = transcribed({"session_id": SESSION, "transcript_path": str(transcript), "cwd": str(member.cwd), **body}).encode()
                 hook = parse_hook(raw, home=home, at=line.at, heard=Stamp(round(line.at * 1000)), request=RequestId(f"r{i}"))
                 # As the server applies a hook: where its session is first, then what it says.
-                for event in (hook.joining, hook.happened):
-                    if event is not None:
-                        apply(event)
+                events = [event for event in (hook.joining, hook.happened) if event is not None]
+                for event in events:
+                    apply(event)
+                reached[body["hook_event_name"]] += bool(events)
                 await read()
             case Written(record=record):
                 with transcript.open("a") as written:
@@ -155,7 +158,7 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
                 await read()
     # What was written after the last hook and status is read too, as the tail's next poll would.
     await read()
-    return Reading(tuple(told), frozenset(heard), displayed)
+    return Reading(tuple(told), frozenset(heard), reached)
 
 
 def test_every_recorded_turn_ends_at_a_stop() -> None:
@@ -179,9 +182,13 @@ async def test_every_prompt_a_recorded_turns_records_carry_reaches_the_model_fro
 
 
 @pytest.mark.parametrize("name", RECORDINGS)
-async def test_every_line_a_recorded_turn_displays_reaches_the_model(name: str, tmp_path: Path) -> None:
-    posted = sum(1 for line in RECORDINGS[name] if isinstance(line, Posted) and line.body["hook_event_name"] == "MessageDisplay")
-    assert posted and (await _told(name, SCHEDULES[0], tmp_path)).displayed == posted
+async def test_every_hook_a_recorded_turn_posts_that_hands_subscribes_to_reaches_the_model(name: str, tmp_path: Path) -> None:
+    # [LAW:verifiable-goals] against what hands' plugin subscribes to, not the hooks the player was handed, so a hook the
+    # player or its parsers leave unread fails here, whichever it is.
+    subscribed = cast(Mapping[str, object], plugin_hooks()["hooks"])
+    posted = Counter(line.body["hook_event_name"] for line in RECORDINGS[name] if isinstance(line, Posted) and line.body["hook_event_name"] in subscribed)
+    assert {"SessionStart", "UserPromptSubmit", "MessageDisplay", "Stop"} <= posted.keys()
+    assert (await _told(name, SCHEDULES[0], tmp_path)).reached == posted
 
 
 @pytest.mark.parametrize(("name", "schedule"), [_case(name, schedule, MISTOLD) for name in RECORDINGS for schedule in SCHEDULES])
