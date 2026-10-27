@@ -170,9 +170,14 @@ class Hands:
     sent: list[Sent]
 
     async def until(self, what: Callable[[], bool]) -> None:
-        async with asyncio.timeout(PATIENCE_SECONDS):
-            while not what():
-                await asyncio.sleep(0.05)
+        try:
+            async with asyncio.timeout(PATIENCE_SECONDS):
+                while not what():
+                    await asyncio.sleep(0.05)
+        except TimeoutError as error:
+            # [LAW:nothing-unseen] a wait that gives up says what the audit held meanwhile, the MCP events above all.
+            seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower()]
+            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP events: {seen}") from error
 
 
 async def unread() -> InFront:

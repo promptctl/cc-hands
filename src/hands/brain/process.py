@@ -715,7 +715,10 @@ class Brain:
             async with asyncio.timeout(TAKE_SECONDS):
                 await asyncio.wait({listed, turn.stopping}, return_when=asyncio.FIRST_COMPLETED)
         except TimeoutError as error:
-            raise Unconnected(f"the brain's Claude Code did not list hands' MCP server within {TAKE_SECONDS:g}s, so the turn was not typed") from error
+            # [LAW:no-silent-failure] a turn that fails here is said here, as well as in its own event: nothing else shows why it never ran.
+            message = f"the brain's Claude Code did not list hands' MCP server within {TAKE_SECONDS:g}s, so the turn was not typed"
+            logger.error(message)
+            raise Unconnected(message) from error
         finally:
             listed.cancel()
         return not turn.stopping.done()
