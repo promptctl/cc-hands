@@ -163,19 +163,18 @@ async def test_a_hold_nothing_was_said_in_ends_with_no_words() -> None:
     assert rig.told() == [("ok", "nothing", None), ("ok", "nothing", None)]
 
 
-async def test_decoding_that_fails_fails_its_hold_once_as_it_ends_and_the_next_hold_is_heard() -> None:
-    rig = rigged(Scripted(["", "", "", "stop"], failing=frozenset({1})))
-    first, second = Hold(1, "engaged conversation"), Hold(2, "engaged conversation")
-    await rig.opened(first, sound(0))
-    await rig.heard(first, sound(seconds(CHUNKED)))
-    await rig.ended(first, "sent")
-    await rig.opened(second, sound(0))
-    await rig.heard(second, sound(seconds(CHUNKED)))
-    told = hearings(rig.recorded)
-    assert [(event.outcome, event.error) for event in told] == [
-        ("ok", None), ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory"), ("ok", None)
-    ]
-    assert told[2].facts["added"] == "stop"
+async def test_decoding_that_fails_breaks_the_runs_stream_and_each_hold_from_it_on_fails_once_as_it_ends() -> None:
+    # The model's caches are left in a state nothing vouches for, and the grid hearings are timed on with them.
+    session = Scripted(["", "", "", "stop"], failing=frozenset({1}))
+    rig = rigged(session)
+    for number in (1, 2):
+        await rig.opened(Hold(number, "engaged conversation"), sound(0))
+        await rig.heard(Hold(number, "engaged conversation"), sound(seconds(CHUNKED)))
+        await rig.ended(Hold(number, "engaged conversation"), "sent")
+    failed = ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory")
+    assert [(event.outcome, event.error) for event in hearings(rig.recorded)] == [("ok", None), failed] * 2
+    # Nothing is fed to the model once it broke.
+    assert len(session.fed) == 2
 
 
 def loaded(recorded: list[Entry]) -> list[WideEvent]:

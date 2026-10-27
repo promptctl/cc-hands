@@ -71,12 +71,11 @@ def words(text: str) -> str | None:
 @dataclass
 class _Held:
     """The hold open, as the stream heard it: the text decoded since it opened, how much of its words hearings have said,
-    how many samples of it were heard, and why its words are not known, once decoding them failed."""
+    and how many samples of it were heard."""
 
     text: str = ""
     said: int = 0
     samples: int = 0
-    failed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,41 +106,29 @@ class Stream:
     def heard(self, samples: Samples) -> None:
         """More of the hold open."""
         self._held.samples += len(samples)
-        self._decode(samples)
+        self._held.text += self._session.decoded(samples)
+
+    def silence(self) -> None:
+        """The silence after the hold open, so its last word is decoded before the next hold opens."""
+        self._held.text += self._session.decoded(np.zeros(TRAILING, np.float32))
 
     def said(self) -> str | None:
-        """The words the hold open added since this was last asked; None where it added none, or where its words are not
-        known, which its end says."""
+        """The words the hold open added since this was last asked; None where it added none."""
         held = self._held
         known = words(held.text) or ""
         added, held.said = known[held.said :], len(known)
-        return None if held.failed is not None else words(added)
+        return words(added)
 
     def ended(self) -> Ended:
-        """The hold open ends: the silence after it is heard, so its last word is decoded before the next hold opens.
-        [LAW:no-silent-failure] a hold whose words are not known raises with why, once, here."""
-        self._decode(np.zeros(TRAILING, np.float32))
-        held = self._held
-        match held.failed:
-            case None:
-                return Ended(words(held.text), round(held.samples / RATE, 3))
-            case failed:
-                raise RuntimeError(failed)
-
-    def _decode(self, samples: Samples) -> None:
-        """The text `samples` decode to, the hold open's. Decoding that raises leaves the hold's words unknown, kept here for
-        its end to say: the work is given to the thread with nobody waiting on it."""
-        held = self._held
-        try:
-            held.text += self._session.decoded(samples)
-        except Exception as error:
-            held.failed = held.failed or f"decoding failed: {type(error).__name__}: {error}"
+        """The hold open, heard to the silence after it."""
+        return Ended(words(self._held.text), round(self._held.samples / RATE, 3))
 
 
 @dataclass(frozen=True)
-class Unloaded:
-    """The run's streaming recognition where the model did not load: nothing hears what it is given, and each hold ends
-    failed with why. [LAW:one-type-per-behavior] it is given holds as a Stream is, so the listener is the same either way."""
+class Broken:
+    """The run's streaming recognition where the model did not load, or decoding failed and left its caches in a state
+    nothing vouches for: nothing hears what it is given from then on, and each hold ends failed with why.
+    [LAW:one-type-per-behavior] it is given holds as a Stream is, so the listener is the same either way."""
 
     error: str
 
@@ -150,6 +137,9 @@ class Unloaded:
 
     def heard(self, samples: Samples) -> None:
         """Samples no model hears."""
+
+    def silence(self) -> None:
+        """Silence no model hears."""
 
     def said(self) -> str | None:
         """No word, which the hold's end says why of."""
@@ -171,7 +161,7 @@ class StreamingRecognizer:
     name = "streaming"
 
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
-    _stream: Stream | Unloaded
+    _stream: Stream | Broken
 
     def __init__(self, model: Callable[[], Session], record: Record) -> None:
         self._record = record
@@ -190,19 +180,33 @@ class StreamingRecognizer:
                 annotate(model=MODEL, revision=REVISION, lookahead_ms=CHUNK * MEL_HOP * 1000 // RATE)
                 self._stream = Stream(model())
         except Exception as error:
-            self._stream = Unloaded(f"the model did not load: {type(error).__name__}: {error}")
+            self._stream = Broken(f"the model did not load: {type(error).__name__}: {error}")
 
     def opened(self, hold: Hold, before: Sound) -> Hearings:
         """`hold` opens: what it kept from before it opened is the start of its words."""
         samples = decoded(before.heard)
-        self._thread.give(lambda: self._stream.opened(samples))
+        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
         """More of the hold open, decoded on the thread behind everything given before it."""
         samples = decoded(sound.heard)
-        self._thread.give(lambda: self._stream.heard(samples))
+        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples)))
         return self._fed_with(len(samples))
+
+    def _moved(self, move: Callable[[Stream | Broken], None]) -> None:
+        """Move the run's stream, on the thread. [LAW:no-silent-failure] decoding that raises leaves the model's caches,
+        and the grid hearings are timed on, in a state nothing vouches for: the stream is broken from there, and the hold
+        it broke in and every one after it end failed with why."""
+        try:
+            move(self._stream)
+        except Exception as error:
+            self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
+
+    def _ended(self) -> Ended:
+        """The hold open, heard through the silence after it, on the thread."""
+        self._moved(lambda stream: stream.silence())
+        return self._stream.ended()
 
     def _fed_with(self, samples: int) -> Hearings:
         """A hearing of the hold open where `samples` more complete a chunk of the run's, and none where they do not: only
@@ -226,12 +230,12 @@ class StreamingRecognizer:
     def ended(self, hold: Hold, fate: Fate) -> Hearings:
         """The hold open ends, sent or dropped: every word its stream decoded, the last of them after it closed, which cut
         nothing; told so what hands heard live can be read beside what the transcriber heard of the same hold."""
-        ended = self._thread.settles(lambda: self._stream.ended())
+        ended = self._thread.settles(self._ended)
         self._fed += TRAILING
 
         async def settle() -> Heard:
             annotate(fate=fate)
-            # [LAW:single-enforcer] a hold whose words are not known raises, and the owner fails this hearing with why.
+            # [LAW:single-enforcer] a hold the broken stream did not hear raises, and the owner fails this hearing with why.
             heard = await ended
             annotate(words=heard.words, seconds=heard.seconds)
             return Heard(heard.words)
@@ -281,6 +285,6 @@ def load() -> Session:
     if cut != (RATE, MEL_HOP, N_FFT, SUBSAMPLING):
         raise ValueError(f"{MODEL} cuts the run as (rate, mel hop, FFT, subsampling) {cut}; hands times its hearings on {(RATE, MEL_HOP, N_FFT, SUBSAMPLING)}")
     encoder = cast(Any, ConformerStreamingState(model.encoder, att_context_size=[model.default_att_context_size[0], LOOKAHEAD], first_chunk_mel=FIRST_CHUNK))
-    if (encoder.first_chunk_mel, encoder.chunk_mel) != (FIRST_CHUNK, CHUNK):
-        raise ValueError(f"{MODEL}'s encoder takes chunks of {encoder.first_chunk_mel}, then {encoder.chunk_mel} mel frames; hands times its hearings on {FIRST_CHUNK}, then {CHUNK}")
+    if encoder.chunk_mel != CHUNK:
+        raise ValueError(f"{MODEL}'s encoder takes chunks of {encoder.chunk_mel} mel frames; hands times its hearings on {CHUNK}")
     return _Decoder(model, StreamingLogMelSpectrogram(model.preprocessor_config), encoder, GreedyDecoderState(model))
