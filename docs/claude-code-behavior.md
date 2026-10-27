@@ -223,6 +223,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **brain:** what is typed while a permission dialog is held goes to the dialog, whose Return says yes (spike hands-brain-d8g.aur) (measured on 2.1.288)
 - **brain:** Escape refuses a permission held at its dialog and leaves its hook unanswered for good (spike hands-brain-d8g.aur) (measured on 2.1.288)
 - **brain:** Escape on a prompt stopped before any reply puts it back in the input, and its cancel pops the queued input into it (measured on 2.1.289)
+- **brain:** once idle, Claude Code offers to make auto mode the default when its user settings name a mode other than auto and no project, local, --settings or policy settings name one, until .claude.json holds hasSeenAutoDefaultNudge; the first turn typed into the offer answers Yes (promptctl-brain-lq3.mcw; the condition read from its shouldShowAutoDefaultNudge, the offer seen on CI) (measured on 2.1.308)
 - **brain:** Ctrl-C on an empty input arms Claude Code's exit, which a second Ctrl-C within 800 ms takes, whatever was typed between (read from its source on 2026-09-30, not measured) (measured on 2.1.285)
 - **brain:** a key typed 10 ms behind a turn joined that turn's prompt or was left in the input with it; none of 8 typed once the turn was taken (measured on 2.1.286, 2026-09-30, 2 of 4 in the first trial)
 - **brain:** Claude Code exits with "No conversation found" on a transcript it cannot read (measured on 2.1.289)

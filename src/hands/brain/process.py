@@ -240,8 +240,9 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
-def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
-    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`."""
+def command(launch: Launch, claude: Path, hooks: str, mode: str | None) -> list[str]:
+    """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`;
+    `mode` is the permission mode the brain's own settings name, if they name one."""
     return [
         *slim(claude, launch.station.model, launch.conversation),
         # The instruction as this hands writes it on every request, a resumed conversation's too: Claude Code otherwise
@@ -264,8 +265,24 @@ def command(launch: Launch, claude: Path, hooks: str) -> list[str]:
             # of their own on a spoken turn. Set here, it outranks the brain's settings.json env and hands' environment,
             # which a process environment does not (hands-brain-8gb).
             "env": {"ENABLE_TOOL_SEARCH": "false"},
+            # The mode the brain's own settings name, said here too, so it is the same mode: Claude Code offers to make auto
+            # mode the default to a session whose mode its user settings alone name, once it is idle, and the first turn
+            # typed into the offer answers Yes (promptctl-brain-lq3.mcw).
+            **({"permissions": {"defaultMode": mode}} if mode is not None else {}),
         }),
     ]
+
+
+def settings_mode(config_dir: Path) -> str | None:
+    """The permission mode the brain's settings.json names, or None when it names none."""
+    settings = config_dir / "settings.json"
+    try:
+        said = Payload.parse(settings.read_bytes())
+        return Payload.of(said.fields.get("permissions", {}), "its permissions").optional_text("defaultMode")
+    except FileNotFoundError:
+        return None
+    except Rejected as error:
+        raise Unstartable(f"the brain's settings could not be read ({error}): {settings}") from None
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
@@ -1012,7 +1029,8 @@ async def start(launch: Launch, record: Record) -> Brain:
         annotate(fritter=fritter)
         # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
         claude = await asyncio.to_thread(brain_claude, station.config_dir)
-        annotate(claude=claude)
+        mode = settings_mode(station.config_dir)
+        annotate(claude=claude, mode=mode)
         hooks: asyncio.Queue[_Posted] = asyncio.Queue()
         listener, url = await _listen(hooks)
         # A unix socket's path is capped near 104 bytes on macOS, so not under the brain's own directory.
@@ -1020,7 +1038,7 @@ async def start(launch: Launch, record: Record) -> Brain:
         running: ClaudeCode | None = None
         try:
             try:
-                running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url)])
+                running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)])
                 annotate(pid=running.pid)
                 typist = await _typist(running, sockets, launch.session)
             except Unstartable:
