@@ -25,7 +25,7 @@ import tempfile
 from collections.abc import Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from aiohttp import web
 from loguru import logger
@@ -240,7 +240,12 @@ def _conversing(conversation: Conversation) -> tuple[str, str]:
             return ("--resume", session)
 
 
-def command(launch: Launch, claude: Path, hooks: str, mode: str | None) -> list[str]:
+# The permission modes Claude Code takes as a setting's defaultMode, and the other name it reads as one of them.
+type Mode = Literal["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]
+MODES: dict[str, Mode] = {**{mode: cast(Mode, mode) for mode in get_args(Mode.__value__)}, "manual": "default"}
+
+
+def command(launch: Launch, claude: Path, hooks: str, mode: Mode | None) -> list[str]:
     """The brain's command line: a slim Claude Code on its own setup, plus hands' server, instruction, skills, and hooks posted to the listener at `hooks`;
     `mode` is the permission mode the brain's own settings name, if they name one."""
     return [
@@ -273,16 +278,23 @@ def command(launch: Launch, claude: Path, hooks: str, mode: str | None) -> list[
     ]
 
 
-def settings_mode(config_dir: Path) -> str | None:
+def settings_mode(config_dir: Path) -> Mode | None:
     """The permission mode the brain's settings.json names, or None when it names none."""
     settings = config_dir / "settings.json"
     try:
         said = Payload.parse(settings.read_bytes())
-        return Payload.of(said.fields.get("permissions", {}), "its permissions").optional_text("defaultMode")
+        named = Payload.of(said.fields.get("permissions", {}), "its permissions").optional_text("defaultMode")
     except FileNotFoundError:
         return None
-    except Rejected as error:
+    except (OSError, Rejected) as error:
         raise Unstartable(f"the brain's settings could not be read ({error}): {settings}") from None
+    if named is None:
+        return None
+    # [LAW:parse-dont-validate] said again in the brain's --settings, beside its hooks: a mode Claude Code does not take
+    # would put the settings holding them in doubt, so the brain does not start on one.
+    if (mode := MODES.get(named)) is None:
+        raise Unstartable(f'the brain\'s settings name a defaultMode Claude Code does not take, "{named}": {settings} names one of {", ".join(MODES)}')
+    return mode
 
 
 def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:

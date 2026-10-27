@@ -21,10 +21,10 @@ import pytest
 from loguru import logger
 
 from hands.core.playback import Bookmark
-from hands.brain import pinned
+from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, Mode, account_kept_out, command, conversation, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -352,7 +352,6 @@ def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_whi
     assert argv[argv.index("--resume") + 1] == "c1" and "--session-id" not in argv
 
 
-
 def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_claude_code_offers_no_other(tmp_path: Path) -> None:
     """Claude Code offers to make auto mode the default to a session whose mode its user settings alone name, and the first
     turn typed into the offer answers Yes (promptctl-brain-lq3.mcw): the same mode said in --settings means no offer."""
@@ -360,17 +359,47 @@ def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_cl
     assert json.loads(argv[argv.index("--settings") + 1])["permissions"] == {"defaultMode": "acceptEdits"}
 
 
-def test_the_mode_the_brains_settings_name_is_read_from_them_and_settings_that_cannot_be_read_refuse_the_start(tmp_path: Path) -> None:
+def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_one_it_does_not_take_refuses_the_start(tmp_path: Path) -> None:
     brain = tmp_path / "brain"
     brain.mkdir()
+    settings = brain / "settings.json"
     assert settings_mode(brain) is None
-    (brain / "settings.json").write_text(json.dumps({"syncClaudeAiSkills": False}))
+    settings.write_text(json.dumps({"syncClaudeAiSkills": False}))
     assert settings_mode(brain) is None
-    (brain / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "default", "allow": ["Bash(ls:*)"]}}))
+    settings.write_text(json.dumps({"permissions": {"defaultMode": "plan", "allow": ["Bash(ls:*)"]}}))
+    assert settings_mode(brain) == "plan"
+    # Claude Code's other name for its default mode.
+    settings.write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
     assert settings_mode(brain) == "default"
-    (brain / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": 3}}))
+    settings.write_text(json.dumps({"permissions": {"defaultMode": "acceptedits"}}))
+    with pytest.raises(Unstartable, match='name a defaultMode Claude Code does not take, "acceptedits"'):
+        settings_mode(brain)
+    settings.write_text(json.dumps({"permissions": {"defaultMode": 3}}))
     with pytest.raises(Unstartable, match="the brain's settings could not be read"):
         settings_mode(brain)
+    settings.unlink()
+    settings.mkdir()
+    with pytest.raises(Unstartable, match="the brain's settings could not be read"):
+        settings_mode(brain)
+
+
+async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_line_and_its_launch_says_which(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workdir(tmp_path / "brain")
+    (tmp_path / "brain" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
+    told: list[Mode | None] = []
+
+    def told_of(launched: Launch, claude: Path, hooks: str, mode: Mode | None) -> list[str]:
+        told.append(mode)
+        return command(launched, claude, hooks, mode)
+
+    monkeypatch.setattr(process, "command", told_of)
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    await brain.stop()
+    assert told == ["default"]
+    [launched] = events(recorded, "brain.launch")
+    assert launched.facts["mode"] == "default"
+
 
 def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
     """The permissions the brain's setup asked about, as the log says each was settled."""
