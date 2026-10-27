@@ -8,7 +8,6 @@ import asyncio
 import json
 import os
 import subprocess
-import tempfile
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -39,10 +38,10 @@ from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Spoken
 
-# The canonical mock of Anthropic's API, at the commit these tests were written against: the mock has no release tag yet,
-# so the commit is the pin. Moving it is one commit, and CI's cache of it is keyed on it.
-MOCK_REPOSITORY = "https://github.com/promptctl/mock-anthropic"
-MOCK_RELEASE = "9484421303230b9281a458c0d925e9e2716a93f0"
+# The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
+# CI's cache of it is keyed on it.
+MOCK_MODULE = "github.com/promptctl/mock-anthropic"
+MOCK_RELEASE = "v0.1.0"
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
@@ -72,20 +71,14 @@ class MockApi:
 
 @pytest.fixture(scope="session")
 def mock_binary(pytestconfig: pytest.Config) -> Path:
-    """The mock built at MOCK_RELEASE, once, into pytest's cache: the commit is fetched by its id and built with go, and
-    only the binary is kept, beside the certificates it makes."""
+    """The mock at MOCK_RELEASE, built once by `go install` into pytest's cache, a directory per release."""
     cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    binary = cache / f"mock-anthropic-{MOCK_RELEASE[:12]}"
+    binary = cache / MOCK_RELEASE / "mock-anthropic"
     if not binary.is_file():
-        # [LAW:no-silent-failure] a fetch or a build that fails stops the session in git's or go's own words. The build is
-        # named the binary only once it is whole, so a build cut off is never taken for one.
-        built = binary.with_name(f"{binary.name}.partial")
-        with tempfile.TemporaryDirectory() as source:
-            subprocess.run(["git", "init", "--quiet"], cwd=source, check=True)
-            subprocess.run(["git", "fetch", "--quiet", "--depth", "1", MOCK_REPOSITORY, MOCK_RELEASE], cwd=source, check=True)
-            subprocess.run(["git", "checkout", "--quiet", "FETCH_HEAD"], cwd=source, check=True)
-            subprocess.run(["go", "build", "-o", str(built), "."], cwd=source, check=True)
-        built.replace(binary)
+        # [LAW:no-silent-failure] an install that fails stops the session in go's own words. The binary is installed into its
+        # release's directory, so the cache of one release is never taken for another.
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env={**os.environ, "GOBIN": str(binary.parent)})
     return binary
 
 
@@ -198,7 +191,9 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     home = tmp_path / "home"
     home.mkdir()
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
-    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost"}
+    # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
+    # e2e fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
