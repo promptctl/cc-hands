@@ -7,10 +7,10 @@ at each stop Smart Turn says whether it is the end of the turn or a pause inside
 it judges a thought still going holds the turn open; if the silence then runs on to Smart Turn's own `stop_secs`, the
 turn ends there.
 
-The edge moves the gate with the held key's own moves, so the gate, Whisper, and the cues take an engaged turn as they
+The edge moves the gate with the held key's own moves, so the gate, the hold owner, and the cues take an engaged turn as they
 take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was only a noise
-disarms it, and the end of the turn sends it. Engaging has the desk listen between turns, so Whisper keeps the second
-before each turn opens and the words said while the detector made sure of them are in it; disengaging stops that.
+disarms it, and the end of the turn sends it. Engaging has the desk listen between turns, so the hold owner keeps the
+second before each turn opens and the words said while the detector made sure of them are in it; disengaging stops that.
 
 The driver is shared with the wake word (`hands.voice.wake`), the other edge that opens turns without a hand: each is a
 `Conversation`, its own step over the same engagement, and the driver hears for both.

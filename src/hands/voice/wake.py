@@ -4,8 +4,8 @@ engaged conversation (`hands.voice.engaged`), whose driver and models this edge 
 The word is config.toml's (`hands.daemon.config`): one of openWakeWord's own, "Hey Jarvis" unless another is named, or
 one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It is
 half-duplex: while hands speaks the detector is given silence in place of the room, because a microphone open in a room
-with speakers hears the pipeline's own voice. The desk listens for as long as the trigger is in use, so Whisper keeps the
-second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
+with speakers hears the pipeline's own voice. The desk listens for as long as the trigger is in use, so the hold owner keeps
+the second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
 """
 
 import asyncio

@@ -60,7 +60,7 @@ class Turn:
     failed while it was taken in, whether it took over from hands (`hands.voice.turnstart`), the window its last release
     opened, and the window its first release found open.
 
-    A turn is Pipecat's and takes in every hold pressed before Whisper was done with the one before (see
+    A turn is Pipecat's and takes in every hold pressed before the hold owner was done with the one before (see
     hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
     with nothing said in it, or one Whisper failed on, released beside one whose words are in, is still answered.
     """

@@ -239,12 +239,9 @@ class HoldOwner(FrameProcessor):
             raise TypeError(f"{type(frame).__name__} carries no key; the keyed microphone makes every frame a hold is cut from")
         if (frame.sample_rate, frame.num_channels) != (RATE, 1):
             raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every hold is mono at {RATE} Hz")
-        if frame.place != self._place:
-            # A turn is heard at one place: what the other's microphone heard before it is no part of it.
-            self._recording.clear()
-            self._place = frame.place
         # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
-        # turn can end and the next arm between two frames, with no frame captured at rest between them.
+        # turn can end and the next arm between two frames, with no frame captured at rest between them. A move between
+        # places drops the hold open in the same frame, which ends it over its own audio before the move clears it.
         match self._key, frame.sent != self._sent, frame.dropped != self._dropped:
             case "down", True, _:
                 await self._end("sent")
@@ -254,6 +251,10 @@ class HoldOwner(FrameProcessor):
             case _:
                 pass
         self._sent, self._dropped = frame.sent, frame.dropped
+        if frame.place != self._place:
+            # A turn is heard at one place: what the other's microphone heard before it is no part of it.
+            self._recording.clear()
+            self._place = frame.place
         match self._key, frame.key:
             case ("up", "arming") | ("arming", "up"):
                 # A hold's audio begins at its press, and a press that was Shift after all heard no part of any turn.
@@ -286,11 +287,21 @@ class HoldOwner(FrameProcessor):
     def _tell(self, hold: Hold, told: Callable[[Listener], Hearings]) -> None:
         """Tell every listener of `hold`, in turn: each hearing it returns goes on its lane, beginning now."""
         for listener, hearings in zip(self._listeners, self._hearings, strict=True):
-            returned = told(listener)
             # A hearing is a trace of its own, part of no unit the audio path is in, so its lane can always run it.
             with continuing(None):
-                for hearing in returned:
+                for hearing in self._told(listener, hold, told):
                     hearings.put_nowait((hold, hearing, begun()))
+
+    def _told(self, listener: Listener, hold: Hold, told: Callable[[Listener], Hearings]) -> Hearings:
+        """The hearings `listener` returned as it was told of `hold`.
+
+        [LAW:no-silent-failure] a listener that raises is a failed `hearing` event of its own, with what raised, and no
+        hearings: it breaks only itself, never the hold, which every other listener and the transcriber still hear."""
+        try:
+            return told(listener)
+        except Exception as error:
+            ended("hearing", self._record, begun(), error, listener=listener.name, hold=hold.number)
+            return ()
 
     async def _end(self, fate: Fate) -> None:
         """The hold open ends: every listener is told, and it goes in line to be resolved, transcribed where it was sent."""

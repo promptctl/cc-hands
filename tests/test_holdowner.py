@@ -303,6 +303,29 @@ async def test_a_frame_no_hold_can_be_cut_from_fails_as_it_arrives_and_no_listen
         assert (listener.given, rig.seen.seen) == ([], [])
 
 
+async def test_a_listener_that_raises_as_it_is_told_fails_its_own_hearing_and_the_hold_still_resolves() -> None:
+    def broken(_hold: Hold, _fate: Fate) -> Hearings:
+        raise RuntimeError("listener broke")
+
+    async with rigged(Scripted(["still sent"]), (Heeding("broken", after=broken),)) as rig:
+        await rig.held([frame_of(3)])
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        assert ("words", "still sent") in rig.seen.seen
+        [hearing] = rig.events("hearing")
+        assert (hearing.outcome, hearing.error, hearing.facts["listener"], hearing.facts["hold"]) == ("failed", "RuntimeError: listener broke", "broken", 1)
+
+
+async def test_a_hold_dropped_by_a_move_to_the_phone_is_measured_over_its_own_audio() -> None:
+    async with rigged(Scripted([])) as rig:
+        down = rig.gate.after("start", "held key")
+        await rig.frame(down, frame_of(16384))
+        await rig.frame(down, frame_of(16384))
+        await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), 16000, 1, "phone"))
+        await rig.until(lambda: len(rig.events("hold")) == 1)
+        [hold] = rig.events("hold")
+        assert (hold.facts["fate"], hold.facts["seconds"], hold.facts["levels"]) == ("dropped", 0.04, Levels(-6.0, -6.0))
+
+
 async def test_each_hold_is_one_event_sent_dropped_typed_and_failed() -> None:
     # The transcriber is given the spoken holds sent alone: the first, the fourth and the fifth.
     async with rigged(Scripted([None, RuntimeError("model failed"), "what time is it"])) as rig:
