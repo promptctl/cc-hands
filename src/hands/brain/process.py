@@ -293,7 +293,7 @@ def settings_mode(config_dir: Path) -> Mode | None:
     # [LAW:parse-dont-validate] said again in the brain's --settings, beside its hooks: a mode Claude Code does not take
     # would put the settings holding them in doubt, so the brain does not start on one.
     if (mode := MODES.get(named)) is None:
-        raise Unstartable(f'the brain\'s settings name a defaultMode Claude Code does not take, "{named}": {settings} names one of {", ".join(MODES)}')
+        raise Unstartable(f'the brain\'s settings name a defaultMode Claude Code does not take, "{named}": name one of {", ".join(MODES)} in {settings}')
     return mode
 
 
