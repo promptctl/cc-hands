@@ -139,10 +139,10 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
                 raw = transcribed({"session_id": SESSION, "transcript_path": str(transcript), "cwd": str(member.cwd), **body}).encode()
                 hook = parse_hook(raw, home=home, at=line.at, heard=Stamp(round(line.at * 1000)), request=RequestId(f"r{i}"))
                 # As the server applies a hook: where its session is first, then what it says.
-                events = [event for event in (hook.joining, hook.happened) if event is not None]
-                for event in events:
-                    apply(event)
-                reached[body["hook_event_name"]] += bool(events)
+                if hook.joining is not None:
+                    apply(hook.joining)
+                apply(hook.happened)
+                reached[body["hook_event_name"]] += 1
                 await read()
             case Written(record=record):
                 with transcript.open("a") as written:
