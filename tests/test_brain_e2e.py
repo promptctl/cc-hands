@@ -135,6 +135,10 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     (brain / "pinned-claude").symlink_to(claude_code)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
     assert starting_settings(brain)
+    # Settings that name a mode get Claude Code's offer to make auto mode the default, once the brain is idle; answered
+    # here as a person answers it, or the first turn typed lands in it (promptctl-brain-lq3.mcw).
+    state = brain / ".claude.json"
+    state.write_text(json.dumps({**json.loads(state.read_text()), "hasSeenAutoDefaultNudge": True}))
 
 
 @dataclass(frozen=True)
