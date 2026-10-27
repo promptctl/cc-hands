@@ -550,15 +550,16 @@ def _ending(was: Session, prompt: PromptId, closing: str | None, again: bool) ->
         case Told() as told if again and _names(told, prompt):
             # The last turn stopping again after another Stop hook blocked its Stop: its telling holds only what was not
             # told before. Any other ending of a turn told ends nothing.
-            return _alone(was, prompt, closing, again, told.waiting)
+            return _alone(was, prompt, closing, again)
         case _:
             return None
 
 
-def _alone(was: Session, prompt: PromptId, closing: str | None, again: bool, waiting: tuple[str, ...]) -> tuple[Turn, list[Effect]]:
-    """The ending told as a turn that goes by its id alone, with the words waiting behind it."""
+def _alone(was: Session, prompt: PromptId, closing: str | None, again: bool) -> tuple[Turn, list[Effect]]:
+    """The ending told as a turn that goes by its id alone. The words waiting behind the session's last turn still wait,
+    behind this one: no queue record has taken them out."""
     id = was.membership.id
-    return Told(prompt, frozenset(), waiting), [Compare(id, again), Summarise(id, prompt, closing)]
+    return Told(prompt, frozenset(), was.turn.waiting), [Compare(id, again), Summarise(id, prompt, closing)]
 
 
 def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
@@ -568,7 +569,7 @@ def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:
         case (None, Told()) if not _heard(was, prompt):
             # A turn hands never had open, such as the one a session was in when it was attached. Told here for the first
             # time whatever its Stop says: where the last reading left off is another turn's end [LAW:one-source-of-truth].
-            return _alone(was, prompt, stop.closing, again=False, waiting=())
+            return _alone(was, prompt, stop.closing, again=False)
         case (None, Opened() | Untold()) if not _heard(was, prompt) and status_stamp(was.state) is not None:
             # Whether it is the open or waiting turn's, gone on under a queued message whose record is unread, or a turn
             # after it whose record is unread, only the transcript says, and a Stop told as the wrong turn is heard as

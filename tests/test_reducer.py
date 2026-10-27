@@ -1121,6 +1121,15 @@ def test_a_stop_with_words_waiting_in_a_session_whose_transcript_is_not_read_yet
     assert (effects, live(state).stops) == ([Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Audit(QueuedBehind(ONE.id, TURN, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP], ())
 
 
+def test_a_stop_of_a_turn_hands_never_had_open_leaves_the_words_waiting_behind_the_last_turn_waiting_behind_it() -> None:
+    """The turn the oldest waiting words ran as, its records unread when its Stop is heard: the rest run behind it, and its
+    Stop marks for them."""
+    state = holding(RUNNING, Told(TURN, waiting=("And 4+4?",)))
+    second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
+    _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8"), Snapshot(ONE.id, ONE.cwd)]
+
+
 def test_a_prompt_of_its_own_opening_a_turn_while_words_wait_says_they_run_after_it_unmarked() -> None:
     """A notification left queued past the Stop, older than the words, runs first with a hook of its own."""
     state = holding(IDLE, Told(TURN, waiting=(WORDS,)))
