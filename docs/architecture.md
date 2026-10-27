@@ -1798,7 +1798,8 @@ sound had died away, and lost that first word in 8 of 8.
 every listener (`hands.voice.holds.Listener`) the same samples of it in capture order: what
 the hold kept from before it opened, each frame while it is open, and its end. A listener's
 slow work, while the hold is open or after it closes, is a hearing the owner runs on that
-listener's own lane, so a slow listener holds up only itself, under a bound of a minute.
+listener's own lane, so a slow listener holds up only itself, under a bound of a minute
+from when the listener returned it.
 Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether its
 words cut hands off, which only words heard while their hold is still open do. The
 transcriber is given each spoken hold the key sent, whole, in the order the holds ended;
@@ -1814,9 +1815,10 @@ first voice of the run in every hold. Each hold the key sent or dropped settles 
 diarizer's `hearing` events: its fate, its speakers with the seconds each was heard, longest
 first, and how far behind the hold's end they settled; a step that failed is the event's
 failure. Nothing waits on it. The model loads on the stream's own thread, as its first work
-(`diarization.loaded`), so the voice starts without it and holds spoken meanwhile wait their
-turn behind it; a model that fails to load fails that event and every hold's after it, with
-why.
+(`diarization.loaded`), so the voice starts without it and holds spoken meanwhile settle
+behind it, each failing its event where its speakers are still not known a minute after it
+ended, as on the first run's download; a model that fails to load fails that event and every
+hold's after it, with why.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed

@@ -15,7 +15,7 @@ from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from typing import Literal, cast
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -175,6 +175,8 @@ class Rig:
     told: list[Mark] = field(default_factory=list[Mark])
     # Both sides of the conversation, as build_voice wires them.
     conversation: tuple[UserTurns, AssistantTurns] = field(kw_only=True)
+    # Each time Whisper read the vocabulary, which is none.
+    primed: list[None] = field(kw_only=True)
 
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
@@ -204,11 +206,6 @@ class Rig:
 
     async def until(self, what: Callable[[], bool]) -> None:
         await until(self.out, what)
-
-    @property
-    def whisper(self) -> Whisper:
-        """The hold owner's transcriber, as build_voice makes it."""
-        return cast(Whisper, self.stt.transcriber)
 
     async def everything_sent(self, holds: int) -> list[str]:
         """What the model was sent once the test's `holds` holds are all resolved, closed by one more spoken hold.
@@ -241,13 +238,18 @@ async def rigged(
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
     recorded: list[Entry] = []
+    primed: list[None] = []
+
+    async def vocabulary() -> None:
+        primed.append(None)
+
     voice = built.build_voice(
         built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
         llm=llm,
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
-        prompt=unprimed,
+        prompt=vocabulary,
         record=recorded.append,
     )
     out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
@@ -267,7 +269,7 @@ async def rigged(
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
-        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns))
+        yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed)
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
@@ -553,12 +555,6 @@ SOUND = b"\x01\x01" * 320
 async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Hands' echo, or a cough, keeping a hold open: each hearing costs the same however long the hold has been open.
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        read: list[None] = []
-
-        async def counted() -> None:
-            read.append(None)
-
-        rig.whisper._prompt = counted  # pyright: ignore[reportPrivateUsage]
         await rig.hold(["listening", "arming", *HOP], sound=SOUND, by="engaged conversation")
         for hearings_so_far in (1, 2, 3):
             await rig.until(lambda: len(rig.heard) == hearings_so_far)
@@ -577,7 +573,7 @@ async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once
         assert [event.facts["seconds"] for event in hearings(rig)] == [0.54, 1.0, 1.0, 1.0]
         assert overheard(rig) == ["nothing"] * 4
         # The vocabulary is read once for the hearings of the hold while it was open, and once for it heard whole.
-        assert len(read) == 2
+        assert len(rig.primed) == 2
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
 

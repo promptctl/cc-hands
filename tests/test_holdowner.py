@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 import pytest
-from pipecat.frames.frames import Frame, InterimTranscriptionFrame
+from pipecat.frames.frames import Frame, InputAudioRawFrame, InterimTranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Running, running
@@ -254,6 +254,53 @@ async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_
         failed, heard = rig.events("hearing")
         assert (failed.outcome, failed.error) == ("failed", "TimeoutError: ")
         assert heard.outcome == "ok"
+
+
+async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_queued_behind_a_hung_one_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(holdowner, "HEARING_SECONDS", 0.1)
+    hung = asyncio.Event()
+    answers: list[Hearing] = []
+
+    async def never() -> Heard:
+        await hung.wait()
+        return Heard(None)
+
+    async def words() -> Heard:
+        # A hearing that has to wait at all: one whose words are already in hand is no hearing still to come back.
+        await asyncio.sleep(0)
+        return Heard("too long in line")
+
+    answers += [never, words]
+    listener = Heeding("hung", hearings=lambda _hold, _sound: (answers.pop(0),))
+    async with rigged(Scripted([None]), (listener,)) as rig:
+        down = rig.gate.after("start", "engaged conversation")
+        await rig.frame(down, frame_of(3))
+        await rig.frame(down, frame_of(3))
+        await rig.until(lambda: len(rig.events("hearing")) == 2)
+        # Its minute ran out while it waited behind the hung one: its event says how long that was.
+        hung_one, queued = rig.events("hearing")
+        assert [event.error for event in (hung_one, queued)] == ["TimeoutError: "] * 2
+        assert queued.duration_ms >= 100
+        assert ("interim", "too long in line") not in rig.seen.seen
+
+
+def at_48k(gate: Gate) -> Frame:
+    return gate.framed(frame_of(3), frame_of(3), 48_000, 1, "desk")
+
+
+def unkeyed(_gate: Gate) -> Frame:
+    return InputAudioRawFrame(audio=frame_of(3), sample_rate=16_000, num_channels=1)
+
+
+@pytest.mark.parametrize(("framed", "why"), [(at_48k, "at 48000 Hz"), (unkeyed, "carries no key")])
+async def test_a_frame_no_hold_can_be_cut_from_fails_as_it_arrives_and_no_listener_hears_it(framed: Callable[[Gate], Frame], why: str) -> None:
+    listener = Heeding("given")
+    async with rigged(Scripted([]), (listener,)) as rig:
+        await rig.run.worker.queue_frame(framed(rig.gate.after("start", "engaged conversation")))
+        await rig.until(lambda: len(rig.run.errors) == 1)
+        [error] = rig.run.errors
+        assert why in error.error
+        assert (listener.given, rig.seen.seen) == ([], [])
 
 
 async def test_each_hold_is_one_event_sent_dropped_typed_and_failed() -> None:

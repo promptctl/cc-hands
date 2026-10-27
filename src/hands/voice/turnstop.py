@@ -61,8 +61,7 @@ class InterimWords(InterimTranscriptionFrame, UninterruptibleFrame):
 class TurnResolved(DataFrame, UninterruptibleFrame):
     """The hold owner is done with this hold: whatever text it had has been pushed ahead of this.
 
-    Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way: a hold dropped at once
-    resolves right behind its own start.
+    Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way.
     """
 
     hold: Hold
@@ -74,7 +73,8 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:one-source-of-truth] the hold owner opens and resolves the holds; this is the set it has opened and not yet
-        # resolved. A set, because a dropped hold is resolved at once, ahead of an earlier one still being transcribed.
+        # resolved. A set, because typed words are a hold that opens and ends at once, so it resolves ahead of a hold of the
+        # key's that opened before it and is still open.
         self._open: set[Hold] = set()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:

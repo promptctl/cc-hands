@@ -101,10 +101,15 @@ class Whisper:
 
     def heard(self, sound: Sound) -> Hearings:
         opened = self._opened
-        opened.heard += sound.heard
-        opened.captured += sound.captured
-        opened.gathered += len(sound.heard)
-        return self._overhear()
+        match opened.overhearing:
+            case "over":
+                # Never heard again while it is open: nothing is gathered for it.
+                return ()
+            case "listening" | "queued":
+                opened.heard += sound.heard
+                opened.captured += sound.captured
+                opened.gathered += len(sound.heard)
+                return self._overhear()
 
     def ended(self, hold: Hold, fate: Fate) -> Hearings:
         # Transcribed whole next, or thrown away: the model is not spent on a hearing of it still waiting.

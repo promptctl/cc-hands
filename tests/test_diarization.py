@@ -12,7 +12,7 @@ import soundfile
 
 from conftest import CHUNKING
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, begun
 from hands.voice import diarization
 from hands.voice.diarization import Diarized, Diarizer, Model, Speech, Stream, Undiarized
 from hands.voice.holdowner import HoldOwner
@@ -134,7 +134,7 @@ async def ended(diarizer: Diarizer, owned: HoldOwner, number: int, fate: Fate) -
     """Hold `number` ends, and the hearings the diarizer returns for it are run as the owner runs them."""
     hold = Hold(number, "held key")
     for hearing in diarizer.ended(hold, fate):
-        await owned._heard(diarizer, hold, hearing)  # pyright: ignore[reportPrivateUsage]  (what the owner's hearing lane runs)
+        await owned._heard(diarizer, hold, hearing, begun())  # pyright: ignore[reportPrivateUsage]  (what the owner's hearing lane runs)
 
 
 def heard(diarizer: Diarizer, samples: diarization.Samples) -> None:
