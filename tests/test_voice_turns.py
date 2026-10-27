@@ -18,7 +18,6 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-import numpy as np
 import pytest
 from pipecat.frames.frames import (
     Frame,
@@ -36,7 +35,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import CHUNKING, patiently, running, unprimed
+from conftest import patiently, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -57,7 +56,7 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.holds import Hold
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import diarization, engaged, hold, holdowner, streaming
+from hands.voice import engaged, hold, holdowner, streaming
 from hands.voice.engaged import Act
 from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.holdowner import HoldOwner
@@ -146,26 +145,29 @@ class NoSpeech(FrameProcessor):
 @dataclass
 class Streamed:
     """The streaming recognizer's session as the rig scripts it: each time it is fed, the next text the test said it
-    decodes, or the failure it raises, oldest first, and none once there is none; it decodes nothing while `flowing` is
-    clear, so a test can hold the words back until the hold they were said in has ended."""
+    decodes, speaker 0's unless it names its speaker, or the failure it raises, oldest first, and none once there is none;
+    it decodes nothing while `flowing` is clear, so a test can hold the words back until the hold they were said in has
+    ended."""
 
-    said: "queue.SimpleQueue[str | Exception]" = field(default_factory=queue.SimpleQueue[str | Exception])
+    said: "queue.SimpleQueue[str | streaming.Said | Exception]" = field(default_factory=queue.SimpleQueue[str | streaming.Said | Exception])
     flowing: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
         self.flowing.set()
 
-    def decoded(self, samples: streaming.Samples) -> str:
+    def decoded(self, samples: streaming.Samples) -> streaming.Spoken:
         assert self.flowing.wait(timeout=60), "the test never let the words through"
         try:
             text = self.said.get_nowait()
         except queue.Empty:
-            return ""
+            return ()
         match text:
             case Exception() as failure:
                 raise failure
             case str():
-                return text
+                return (streaming.Said(0, text),)
+            case streaming.Said():
+                return (text,)
 
 
 @dataclass
@@ -512,7 +514,8 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
         assert user_turns(rig)[0] == ("on words", True)
 
 
-# A second of the user speaking, in 20 ms frames: six of the streaming recognizer's hearings.
+# A second of the user speaking, in 20 ms frames: the diarizer's first step of the run commits 0.33 s in and one every
+# 0.24 s after, so three of the streaming recognizer's hearings.
 SPEAKING: list[Captured] = ["down"] * 50
 
 
@@ -543,7 +546,7 @@ async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while
         assert user_turns(rig)[0] == ("on words", True)
         # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
         [first, *_] = hearings(rig)
-        assert (first.facts["hold"], first.facts["heard"], first.facts["cut"], first.facts["added"]) == (1, "words", True, "wait, not")
+        assert (first.facts["hold"], first.facts["heard"], first.facts["cut"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
 
 
 async def test_a_hold_the_voice_opened_cuts_nothing_off_where_no_words_are_heard_in_it_while_it_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -564,7 +567,7 @@ async def test_a_hold_the_voice_opened_dropped_before_its_words_are_heard_cuts_n
         await rig.until(lambda: rig.out.released == 1)
         rig.streamed.said.put("stop")
         rig.streamed.flowing.set()
-        await rig.until(lambda: len(hearings(rig)) == 7)
+        await rig.until(lambda: len(hearings(rig)) == 4)
         # What it heard in a hold thrown away is no one's, and cuts nothing.
         assert (overheard(rig)[0], {event.facts["cut"] for event in hearings(rig)}) == ("words", {False})
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
@@ -578,9 +581,10 @@ async def test_a_hold_the_voice_opened_is_heard_open_and_only_its_transcription_
         await rig.hold(["listening", "arming", *SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
-        await rig.until(lambda: len(hearings(rig)) == 7)
-        # Six while it is open, for the 1.04 s it gathered, and one as it ends.
-        assert [event.facts.get("fate") for event in hearings(rig)] == [None] * 6 + ["sent"]
+        await rig.until(lambda: len(hearings(rig)) == 4)
+        # Three while it is open, for the 1.04 s it gathered, a step of the diarizer's committing 0.33 s in and every
+        # 0.24 s after; one as it ends.
+        assert [event.facts.get("fate") for event in hearings(rig)] == [None] * 3 + ["sent"]
         assert len(rig.primed) == 1
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
@@ -589,7 +593,7 @@ async def test_a_hold_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         rig.streamed.said.put(RuntimeError("Metal ran out of memory"))
         await rig.hold(["listening", "arming", *SPEAKING], by="engaged conversation")
-        await rig.until(lambda: len(hearings(rig)) == 6)
+        await rig.until(lambda: len(hearings(rig)) == 3)
         # Its words are not known, so nothing heard while it is open cuts.
         assert (set(overheard(rig)), line.done()) == ({"nothing"}, False)
         # Heard whole as it closes, and cut on its words then; its end says why it was not heard open.
@@ -1117,41 +1121,33 @@ async def test_over_many_turns_each_is_sent_as_its_own_words_and_neither_side_ke
     assert user.messages == assistant.messages == []
 
 
-def heard_aloud(chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
-    """A step of a model that hears speaker 0 in every frame that is not digital silence."""
-    offset = 0 if first else CHUNKING.lead
-    frames = chunk[offset : offset + CHUNKING.frames * diarization.FRAME].reshape(-1, diarization.FRAME)
-    scored = np.zeros((CHUNKING.frames, 8), np.float32)
-    scored[: len(frames), 0] = np.where(np.abs(frames).max(axis=1) > 0, 0.9, 0.0)
-    return scored, cache
-
-
-def broken(chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
-    raise RuntimeError("the model broke")
-
-
-def diarized(rig: Rig) -> list[WideEvent]:
-    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "hearing" and entry.facts["listener"] == "diarization"]
-
-
-async def test_each_hold_the_key_sent_or_dropped_is_diarized_beside_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(heard_aloud, CHUNKING))
+async def test_each_hold_the_key_sent_or_dropped_is_told_with_each_speakers_words_beside_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
-        # Three frames of 20 ms held down: the hold's audio, and the hold the key sent.
+        rig.streamed.said.put("what time")
+        rig.streamed.said.put(streaming.Said(1, "is it"))
         await rig.hold(["down", "down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
         await rig.texts.put("what time is it")
+        # Once the first hold's silence has been decoded, so the next words are the second's.
+        await rig.until(lambda: len(ends(rig)) == 1)
+        rig.streamed.said.put(streaming.Said(1, "never mind"))
         await rig.hold(["down", "dropped"], sound=struct.pack("<h", 1000) * 320)
-        await rig.until(lambda: len(diarized(rig)) == 2)
-        sent, dropped = diarized(rig)
-        assert (sent.facts["hold"], sent.facts["fate"], sent.facts["speakers"]) == (1, "sent", (diarization.Speech(0, 0.06),))
-        assert (dropped.facts["hold"], dropped.facts["fate"], dropped.facts["speakers"]) == (2, "dropped", (diarization.Speech(0, 0.02),))
+        await rig.until(lambda: len(ends(rig)) == 2)
+        sent, dropped = ends(rig)
+        assert (sent.facts["hold"], sent.facts["fate"], sent.facts["words"]) == (1, "sent", (streaming.Said(0, "what time"), streaming.Said(1, "is it")))
+        assert (dropped.facts["hold"], dropped.facts["fate"], dropped.facts["words"]) == (2, "dropped", (streaming.Said(1, "never mind"),))
 
 
-async def test_a_hold_whose_diarization_breaks_still_sends_its_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(broken, CHUNKING))
+def ends(rig: Rig) -> list[WideEvent]:
+    """The streaming recognizer's hearing of each hold as it ended."""
+    return [event for event in hearings(rig) if "fate" in event.facts]
+
+
+async def test_a_hold_whose_streaming_breaks_still_sends_its_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with rigged(monkeypatch, tmp_path, FrameProcessor(), []) as rig:
+        rig.streamed.said.put(RuntimeError("the model broke"))
         await rig.hold(["down", "down", "up"], sound=struct.pack("<h", 1000) * 320)
         await rig.texts.put("what time is it")
         assert await rig.everything_sent(holds=1) == ["what time is it"]
-        await rig.until(lambda: len(diarized(rig)) == 2)
-        assert [(event.facts["hold"], event.outcome) for event in diarized(rig)] == [(1, "failed"), (2, "failed")]
+        # The broken stream fails every hold from it on, the one `everything_sent` closes the run with too.
+        await rig.until(lambda: len(ends(rig)) == 2)
+        assert [(event.facts["hold"], event.outcome) for event in ends(rig)] == [(1, "failed"), (2, "failed")]

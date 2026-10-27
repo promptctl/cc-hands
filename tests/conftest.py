@@ -15,7 +15,6 @@ from datetime import timedelta
 from pathlib import Path
 
 import mlx_whisper
-import numpy as np
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.observers.base_observer import BaseObserver
@@ -33,7 +32,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import diarization, streaming
+from hands.voice import streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 
@@ -126,36 +125,18 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 
-# How Nemotron 3 Diarization's processor cuts the run in its low-latency mode, as `diarization.load` reads it from the
-# real one: a first chunk of 16680 samples, 17040 after it, 72 frames scored a step, a later chunk 256 samples before
-# its first frame.
-CHUNKING = diarization.Chunking(16_680, 17_040, 72, 256)
-
-
-def unheard(chunk: diarization.Samples, first: bool, cache: object) -> tuple[diarization.Probabilities, object]:
-    """A step of a model that hears nobody speak."""
-    return np.zeros((CHUNKING.frames, 8), np.float32), cache
-
-
-@pytest.fixture(autouse=True)
-def no_diarization_weights(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building a Whisper diarizes with a model that hears nobody: its load would fetch 400 MB of weights and import
-    torch, which no test is about but the ones that ask for the real model."""
-    monkeypatch.setattr(diarization, "load", lambda: diarization.Model(unheard, CHUNKING))
-
-
 @dataclass
 class Unspoken:
-    """The run's streaming session of a model that hears no word in anything it is fed."""
+    """The run's streaming session of a pair that hears no speaker say a word in anything it is fed."""
 
-    def decoded(self, samples: streaming.Samples) -> str:
-        return ""
+    def decoded(self, samples: streaming.Samples) -> streaming.Spoken:
+        return ()
 
 
 @pytest.fixture(autouse=True)
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building the voice hears holds with a model that hears no word: its load would fetch 2.3 GB of weights, which no
-    test is about but the ones that ask for the real model."""
+    """Building the voice hears holds with a pair that hears no word: its load would fetch 2.5 GB of weights, which no
+    test is about but the ones that ask for the real models."""
     monkeypatch.setattr(streaming, "load", Unspoken)
 
 

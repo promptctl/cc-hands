@@ -1723,7 +1723,8 @@ phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting g
 nothing said is how the user stops hands. So does the wake word's, said on purpose,
 whose detector hears nothing while hands speaks. A hold engaged conversation opens cuts
 only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
-Nemotron Speech Streaming on MLX, one stream for the run, fed only the holds), Pipecat's
+Nemotron Speech Streaming paired with Nemotron 3 Diarization on MLX, one session for the run,
+fed only the holds), Pipecat's
 transcription start, because under
 engaged conversation the desk's detector hears through the echo canceller, and the
 reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
@@ -1809,19 +1810,20 @@ transcriber is given each spoken hold the key sent, whole, in the order the hold
 each hold, spoken or typed, is one `hold` event, from its end to its resolution: what opened
 it, what the gate did with it, how long and loud it was, and what its transcription came to.
 
-Who spoke in each hold is diarized beside it (`hands.voice.diarization`): NVIDIA's Nemotron 3
-Diarization, a Streaming Sortformer, on the CPU, in one stream for the run, a listener on the
-hold owner. It hears exactly the audio the hold is transcribed from, as it is spoken; at the
-hold's end it is followed by silence until every 10 ms frame of it is scored. The model's
-arrival-order speaker cache carries who has been heard from hold to hold, so speaker 0 is the
-first voice of the run in every hold. Each hold the key sent or dropped settles as one of the
-diarizer's `hearing` events: its fate, its speakers with the seconds each was heard, longest
-first, and how far behind the hold's end they settled; a step that failed is the event's
-failure. Nothing waits on it. The model loads on the stream's own thread, as its first work
-(`diarization.loaded`), so the voice starts without it and holds spoken meanwhile settle
-behind it, each failing its event where its speakers are still not known a minute after it
-ended, as on the first run's download; a model that fails to load fails that event and every
-hold's after it, with why.
+Each live word carries the speaker who said it (`hands.voice.streaming`): NVIDIA's Nemotron 3
+Diarization, a Streaming Sortformer, paired with Nemotron Speech Streaming in mlx-audio's speaker
+streaming session, one session for the run, a listener on the hold owner. It hears exactly the
+audio the hold is transcribed from, as it is spoken. The diarizer decides who is speaking in
+each 10 ms frame, and the session masks each speaker's frames into a recognizer stream of that
+speaker's own, so a word comes out of one speaker's stream. The diarizer's arrival-order speaker
+cache carries who has been heard from hold to hold, so speaker 0 is the first voice of the run in
+every hold; a new session would number everyone from 0 again. At the hold's end the session is
+fed silence until every speaker of the hold has been gated off and its last words decoded. Each
+hold the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
+each speaker's words in it. Nothing waits on it. The models load on the stream's own thread, as
+its first work (`streaming.loaded`), so the voice starts without them and holds spoken meanwhile
+are heard behind them; models that fail to load, or decoding that fails, fail the end of that
+hold and every hold's after it, with why.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed
@@ -2442,9 +2444,11 @@ key's release. LowTalker (~/code/low-talker) serves the same weights from the Ne
 Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
 alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The words of a hold
 still open come from NVIDIA's Nemotron Speech Streaming on MLX (`hands.voice.streaming`), at
-its 160 ms streaming mode (one frame of look-ahead): on this Mac a hold's first word is out about 0.6 s into it, and each
-160 ms is heard in about 20 ms. It loads on a thread of its own (the `streaming.loaded`
-event), so nothing waits on it. The
+its 160 ms streaming mode (one frame of look-ahead), paired with Nemotron 3 Diarization at its
+0.32 s preset, which decides each word's speaker before the word is decoded: on this Mac a
+hold's first words are out 0.17 to 0.4 s after they are said, and the pair hears 20 ms of a hold
+in about 8 ms. It loads on a thread of its own (the `streaming.loaded` event), so nothing waits
+on it. The
 model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.

@@ -37,18 +37,17 @@ jobs:
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
-      # The diarization and streaming tests run Nemotron 3 Diarization and Nemotron Speech Streaming on real sound,
-      # fetched into the Hugging Face cache at the revisions diarization.py and streaming.py pin; kept the same way, for
-      # the same reason. The whole hub: a model's directory holds only links into the hub's shared store of blobs, where
-      # its weights are. Keyed on the revisions, the one thing the weights depend on, so an edit to the rest of either
-      # file still finds them.
+      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization on real sound, fetched into
+      # the Hugging Face cache at the revisions streaming.py pins; kept the same way, for the same reason. The whole hub:
+      # a model's directory holds only links into the hub's shared store of blobs, where its weights are. Keyed on the
+      # revisions, the one thing the weights depend on, so an edit to the rest of the file still finds them.
       - name: The speech models' pinned revisions
         id: nemotron
         run: |
           revisions=""
-          for pinned in src/hands/voice/diarization.py src/hands/voice/streaming.py; do
-            revision=$(sed -n 's/^REVISION = "\([0-9a-f]*\)"$/\1/p' "$pinned")
-            test -n "$revision" || { echo "$pinned pins no REVISION this step can read" >&2; exit 1; }
+          for name in REVISION DIARIZATION_REVISION; do
+            revision=$(sed -n "s/^$name = \"\([0-9a-f]*\)\"$/\1/p" src/hands/voice/streaming.py)
+            test -n "$revision" || { echo "streaming.py pins no $name this step can read" >&2; exit 1; }
             revisions="$revisions-$revision"
           done
           echo "revisions=$revisions" >> "$GITHUB_OUTPUT"
