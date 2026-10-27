@@ -690,8 +690,8 @@ class Brain:
                     fail(f"the brain failed the turn: {failed}")
 
     async def _taking(self, turn: _Turn) -> bool:
-        """Types `turn`, with the input held, and waits `turn.take` seconds for it to be taken, or to end: says whether it
-        was. [LAW:single-enforcer] a prompt Claude Code took that is no turn's runs ahead of what is typed behind it, for
+        """Types `turn`, with the input held, and waits out a pause of `turn.take` for it to be taken, or to end: says
+        whether it was. [LAW:single-enforcer] a prompt Claude Code took that is no turn's runs ahead of what is typed behind it, for
         an ask that already failed or one nobody made: it is stopped before the turn is typed, and when one ran through the
         turn's wait, it is stopped and the turn typed once more, with its whole time and nothing left ahead of it. The
         turn may have been taken as that Escape went, which then stopped it instead: its typing again is still taken."""
@@ -708,10 +708,10 @@ class Brain:
             finally:
                 pausing.cancel()
                 await asyncio.wait({pausing})
-            # [LAW:no-silent-failure] a pause that failed, however it ended, says so, and is not taken for the take's time
-            # running out.
-            if not pausing.cancelled():
-                pausing.result()
+                # [LAW:no-silent-failure] a pause that failed, however it was ended and whatever ended the wait, says so,
+                # and is not taken for the take's time running out.
+                if not pausing.cancelled():
+                    pausing.result()
             if turn.taken.done() or turn.answered.done():
                 return True
             if turn.typings == TYPINGS or not self._unowned:
