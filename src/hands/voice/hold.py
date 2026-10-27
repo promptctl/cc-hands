@@ -14,8 +14,8 @@ from typing import Literal
 
 # 0.3 s opened turns while typing: a rest on Right Shift before a capital, which Whisper filled with "you" or "Okay.".
 HOLD_SECONDS = 0.6
-# Ten minutes: dictation runs past two (a 120 s limit threw the user's away, promptctl-voice-je8.d20), and Whisper hears
-# ten minutes in about 17 s.
+# Ten minutes: dictation runs past two (a 120 s limit threw the user's away, promptctl-voice-je8.d20), and Parakeet hears
+# ten minutes in about 5 s.
 TURN_LIMIT_SECONDS = 600.0
 
 Instant = float  # seconds on the monotonic clock

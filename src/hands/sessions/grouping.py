@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import get_args
 
 from hands.core.wire import Exchanged
-from hands.sessions.audit import Exported, Logged, Primed, Refocused, SettingsEdited, Severity, TypingFailed
+from hands.sessions.audit import Exported, Logged, Refocused, SettingsEdited, Severity, TypingFailed
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.wide import WideEvent, exited
 
@@ -148,7 +148,6 @@ CAUSES: Mapping[str, Cause] = {
     Exported.__name__: _exported,
     TypingFailed.__name__: _said("reason"),
     Refocused.__name__: _said("failed"),
-    Primed.__name__: _said("failed"),
     SettingsEdited.__name__: _said("refused"),
 }
 

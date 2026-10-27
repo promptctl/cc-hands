@@ -13,7 +13,6 @@ from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import unprimed
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry, HoldHeard, Levels
@@ -340,15 +339,15 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
 async def test_whisper_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in(monkeypatch: pytest.MonkeyPatch) -> None:
     said: list[str | None | Exception] = []
 
-    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes, _prompt: str | None) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, _audio: bytes) -> HoldHeard:
         match said.pop():
             case Exception() as error:
                 raise error
             case text:
-                return HoldHeard(hold, text, (), levels)
+                return HoldHeard(hold, text, levels)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(record=lambda _: None)
     # What the pipeline's setup and start set: a sent hold is wrapped as a WAV at this rate, a second of it this many bytes.
     whisper._sample_rate = 16_000  # pyright: ignore[reportPrivateUsage]
     whisper._audio_buffer_size_1s = 32_000  # pyright: ignore[reportPrivateUsage]

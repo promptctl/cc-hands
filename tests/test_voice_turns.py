@@ -37,9 +37,9 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import CHUNKING, patiently, running, unprimed
+from conftest import CHUNKING, patiently, running
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -242,18 +242,17 @@ async def rigged(
         key=PushToTalk(recorded.append),
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
-        prompt=unprimed,
         record=recorded.append,
     )
     out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, hold: int, levels: Levels, audio: bytes, _prompt: str | None) -> HoldHeard:
+    async def transcribe(_self: Whisper, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
         # The hold as uploaded, a WAV: its samples are what the microphone heard.
         with wave.open(BytesIO(audio)) as uploaded:
             heard.append(uploaded.readframes(uploaded.getnframes()))
-        return HoldHeard(hold, await texts.get() or None, (), levels)
+        return HoldHeard(hold, await texts.get() or None, levels)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between Whisper and the user aggregator.
@@ -283,7 +282,7 @@ async def test_a_holds_record_says_how_loud_it_was_before_and_after_the_echo_can
     await rig.hold(["up", "arming", "down", "down", "up"], sound=residual, captured=loud)
     await rig.texts.put("run")
     await rig.until(lambda: len(holds_heard(rig)) == 1)
-    assert holds_heard(rig) == [HoldHeard(1, "run", (), Levels(captured_dbfs=-6.0, heard_dbfs=-26.0))]
+    assert holds_heard(rig) == [HoldHeard(1, "run", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0))]
     # The record is of the audio Whisper was given: the three frames from the press on, then Pipecat's silence.
     assert rig.heard[0].rstrip(b"\x00") == residual * 3
 
@@ -538,15 +537,9 @@ HOP: list[Captured] = ["down"] * 25
 SOUND = b"\x01\x01" * 320
 
 
-async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Hands' echo, or a cough, keeping a hold open: each hearing costs the same however long the hold has been open.
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        read: list[None] = []
-
-        async def counted() -> None:
-            read.append(None)
-
-        rig.stt._prompt = counted  # pyright: ignore[reportPrivateUsage]
         await rig.hold(["listening", "arming", *HOP], sound=SOUND, by="engaged conversation")
         for hearings_so_far in (1, 2, 3):
             await rig.until(lambda: len(rig.heard) == hearings_so_far)
@@ -564,8 +557,6 @@ async def test_a_hold_the_voice_opened_is_heard_open_a_hop_at_a_time_primed_once
         assert [len(audio.rstrip(b"\x00")) // len(SOUND) for audio in rig.heard] == [27, 50, 50, 50, 102]
         assert [event.facts["seconds"] for event in hearings(rig)] == [0.54, 1.0, 1.0, 1.0]
         assert overheard(rig) == ["nothing"] * 4
-        # The vocabulary is read once for the hearings of the hold while it was open, and once for it heard whole.
-        assert len(read) == 2
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
 
 
@@ -928,14 +919,14 @@ async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, mon
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     returns, begun = threading.Event(), list[None]()
 
-    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+    def stuck(model: transcription.Model, samples: transcription.Samples) -> str:
         begun.append(None)
         returns.wait()
-        return []
+        return ""
 
     # Whisper as it is, down to the model: the rig's stand-in is put aside.
     monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
-    monkeypatch.setattr(transcription, "segments", stuck)
+    monkeypatch.setattr(transcription, "transcribed", stuck)
     monkeypatch.setattr(whisper, "TRANSCRIBING_SECONDS", 0.2)
     try:
         await held(rig, 1)
@@ -1093,7 +1084,7 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 async def test_whisper_hears_only_the_keyed_microphone() -> None:
-    whisper = Whisper(prompt=unprimed, record=lambda _: None)
+    whisper = Whisper(record=lambda _: None)
     with pytest.raises(TypeError, match="carries no key"):
         await whisper.process_audio_frame(InputAudioRawFrame(b"\x00\x00", 16000, 1), FrameDirection.DOWNSTREAM)
 

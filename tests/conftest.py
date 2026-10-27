@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
-import mlx_whisper
 import numpy as np
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -32,7 +31,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import diarization
+from hands.voice import diarization, transcription
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 
@@ -111,13 +110,10 @@ def watchdog_past_the_timeout(monkeypatch: pytest.MonkeyPatch, pytestconfig: pyt
 
 
 @pytest.fixture(autouse=True)
-def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building a Whisper transcribes nothing: its load would fetch 1.6 GB of weights, which no test is about."""
-
-    def transcribe(_audio: object, **_options: object) -> dict[str, object]:
-        return {"segments": []}
-
-    monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
+def no_transcription_weights(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading the transcriber loads a model that hears nothing: the real one is 2.5 GB of weights, which no test is
+    about but the ones that ask for it."""
+    monkeypatch.setattr(transcription, "load", lambda: transcription.Model(lambda _samples: []))
 
 
 # How Nemotron 3 Diarization's processor cuts the run in its low-latency mode, as `diarization.load` reads it from the
@@ -136,10 +132,6 @@ def no_diarization_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building a Whisper diarizes with a model that hears nobody: its load would fetch 400 MB of weights and import
     torch, which no test is about but the ones that ask for the real model."""
     monkeypatch.setattr(diarization, "load", lambda: diarization.Model(unheard, CHUNKING))
-
-
-async def unprimed() -> None:
-    """Whisper's prompt where no test is about its vocabulary: none, so it transcribes unprimed."""
 
 
 # Stays until it is killed, or for two minutes, as the `sleep 120` it stands in for did: a test killed before it kills

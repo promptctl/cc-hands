@@ -24,7 +24,7 @@ from hands.sessions.startsession import joined
 from hands.sessions.terminals import process_table
 from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
-from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, Unsaid, encoded, segment
+from hands.sessions.audit import HoldHeard, Levels, Typing, TypingFailed, encoded, segment
 from hands.sessions.home import Home
 from hands.voice import transcription
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -61,16 +61,16 @@ def stop(session: SessionId) -> Line:
     return hook("Stop", session)
 
 
-def test_a_hold_is_heard_once_whisper_took_words_from_it() -> None:
+def test_a_hold_is_heard_once_words_were_heard_in_it() -> None:
     assert proof("heard", [], SESSION) is None
-    assert proof("heard", [as_logged(HoldHeard(2, "tell the smoke session", (), LEVELS))], SESSION) == "heard 'tell the smoke session'"
+    assert proof("heard", [as_logged(HoldHeard(2, "tell the smoke session", LEVELS))], SESSION) == "heard 'tell the smoke session'"
 
 
-def test_a_hold_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
-    nothing = as_logged(HoldHeard(1, None, (Unsaid("Thank you.", 2.9, -1.2),), LEVELS))
+def test_a_hold_no_words_were_heard_in_is_never_heard_and_says_so() -> None:
+    nothing = as_logged(HoldHeard(1, None, LEVELS))
     with pytest.raises(NotReached) as raised:
         proof("heard", [nothing], SESSION)
-    assert (raised.value.stage, raised.value.why) == ("heard", "Whisper took no words from the hold; it dropped 1 segment(s)")
+    assert (raised.value.stage, raised.value.why) == ("heard", "hands heard no words in the hold")
 
 
 def utterance(session: SessionId, fate: str, outcome: Outcome = "ok", error: str | None = None) -> Line:

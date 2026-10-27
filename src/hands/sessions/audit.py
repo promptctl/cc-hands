@@ -78,15 +78,6 @@ class Transcribed:
 
 
 @dataclass(frozen=True)
-class Unsaid:
-    """A segment Whisper transcribed and hands dropped as not said, with the scores it was dropped for."""
-
-    text: str
-    compression_ratio: float
-    avg_logprob: float
-
-
-@dataclass(frozen=True)
 class Levels:
     """How loud one hold's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
     captured it, and as Whisper heard it, with the echo canceller between the two. What the canceller took out is the
@@ -98,27 +89,13 @@ class Levels:
 
 @dataclass(frozen=True)
 class HoldHeard:
-    """What Whisper made of one hold: what it took as said, None where nothing was, each segment it dropped, and how
-    loud the hold was before and after the echo canceller, which tells a transcript made of the reply's echo left over
-    (loud captured, quiet heard) from one of the room with nobody speaking (quiet both)."""
+    """What was heard in one hold: what was said in it, None where no word was, and how loud the hold was before and after
+    the echo canceller, which tells a transcript made of the reply's echo left over (loud captured, quiet heard) from one
+    of the room with nobody speaking (quiet both)."""
 
     hold: int
     said: str | None
-    dropped: tuple[Unsaid, ...]
     levels: Levels
-
-
-@dataclass(frozen=True)
-class Primed:
-    """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
-    them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
-    says why the focus or its repository gave no words where either could not be read."""
-
-    focus: SessionId | None
-    words: tuple[str, ...]
-    tokens: int
-    failed: str | None
-    seconds: float
 
 
 @dataclass(frozen=True)
@@ -260,7 +237,6 @@ Entry = (
     | Exchanged
     | Transcribed
     | HoldHeard
-    | Primed
     | Replied
     | CutOff
     | UserTurn
@@ -296,7 +272,7 @@ def level(entry: Entry) -> Level:
             return "error" if outcome == "failed" else "info"
         case Refocused(outcome=outcome):
             return "error" if outcome == "failed" else "info"
-        case Primed(failed=failed) | SettingsEdited(refused=failed):
+        case SettingsEdited(refused=failed):
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()

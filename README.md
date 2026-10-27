@@ -77,7 +77,7 @@ is not, what does it; it exits 0 only when every step is done.
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
 8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
-   start fetches Whisper's model, about 1.6 GB, and NVIDIA's Nemotron 3 Diarization, about
+   start fetches NVIDIA's Parakeet v3, about 2.5 GB, and NVIDIA's Nemotron 3 Diarization, about
    380 MB, from the Hugging Face hub:
 
    ```
@@ -158,7 +158,7 @@ One Python process, `hands`, run in a terminal, with a Pipecat voice pipeline on
 side and the Claude Code plumbing on the other, meeting through a pure core.
 
 ```
-mic ──► gate ──► Whisper (MLX) ──► LLM ──► pocket-tts ──► speakers
+mic ──► gate ──► Parakeet (MLX) ──► LLM ──► pocket-tts ──► speakers
                                     │   ▲
                          tool calls │   │ hook events, as frames
                                     ▼   │
@@ -269,9 +269,10 @@ The run's audit log says which backend, model, and account it reached. The gate 
 so the turn boundary is the key and the pipeline can never transcribe itself. Measured
 on 2026-09-12, voice to voice with a local Qwen3-30B-A3B since retired: 1.4 s from key release to first
 audio on a plain turn, 4.3 s on a turn with a tool call. Measured on 2026-10-04 with the brain, the same six
-spoken turns: Whisper on MLX in hands has the transcript 298 to 329 ms after the release, and first audio
+spoken turns: Whisper on MLX in hands had the transcript 298 to 329 ms after the release, and first audio
 1.3 to 1.75 s on a plain turn; LowTalker's Whisper, the same large-v3-turbo on the Neural Engine, took 613 to
-724 ms, first audio 1.5 to 2.0 s, by upload and by its Realtime socket alike, so hands keeps its own.
+724 ms, first audio 1.5 to 2.0 s, by upload and by its Realtime socket alike, so hands kept its own. It now
+transcribes with Parakeet v3 on MLX, which decodes a 20 s hold in 0.15 s.
 
 ## Installing the hooks
 

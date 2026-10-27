@@ -127,8 +127,8 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
         match stage, line:
             case "heard", {"type": "HoldHeard", "said": str(said)}:
                 return f"heard {said!r}"
-            case "heard", {"type": "HoldHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
-                raise NotReached("heard", f"Whisper took no words from the hold; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
+            case "heard", {"type": "HoldHeard", "said": None}:
+                raise NotReached("heard", "hands heard no words in the hold")
             case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
                 sending = (span, prompt)
             case "typed", {"type": "TypingFailed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:
@@ -320,7 +320,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL)
-    await asyncio.to_thread(transcription.load)
+    transcriber = await asyncio.to_thread(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
@@ -342,7 +342,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         try:
             await _called(home, caller)
             smoked.reached("called", f"hands answered a call at https://127.0.0.1:{PHONE_PORT}")
-            await _turns(smoked, caller, member.id, said)
+            await _turns(smoked, caller, member.id, said, transcriber)
         except NotReached as missed:
             # [LAW:nothing-unseen] what the session showed is part of why a stage it took part in was not reached.
             raise NotReached(missed.stage, f"{missed.why}\nthe smoke session showed:\n{session.shown()}") from missed
@@ -421,7 +421,7 @@ async def _called(home: Home, caller: Caller) -> None:
     caller.tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
 
 
-async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes]) -> None:
+async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes], transcriber: transcription.Model) -> None:
     asking, sending, questioning = said
     loop = asyncio.get_running_loop()
 
@@ -444,7 +444,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
             if last is None or last in transcribed_to:
                 return None
             transcribed_to.append(last)
-            heard[:] = [await _transcribed(caller.ear.since(released))]
+            heard[:] = [await asyncio.to_thread(transcription.transcribed, transcriber, transcription.decoded(caller.ear.since(released)))]
             return f"hands said {heard[0]!r}" if holds in heard[0].casefold() else None
 
         return await until(stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
@@ -475,12 +475,6 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     # The question: what the session said, told back aloud.
     released = await caller.say("told", questioning)
     smoked.reached("told", await told_back("told", released, smoked.word))
-
-
-async def _transcribed(audio: bytes) -> str:
-    """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
-    heard = await asyncio.to_thread(transcription.segments, audio, None)
-    return " ".join(segment.text for segment in heard).strip()
 
 
 async def _synthesized(text: str) -> bytes:

@@ -15,7 +15,7 @@ import math
 import threading
 import wave
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -35,7 +35,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.tracing.service_decorators import traced_stt  # pyright: ignore[reportUnknownVariableType]  (untyped in Pipecat)
 
-from hands.sessions.audit import HoldHeard, Levels, Record, Unsaid
+from hands.sessions.audit import HoldHeard, Levels, Record
 from hands.sessions.wide import annotate, fail, unit
 from hands.core.place import Place
 from hands.threads import SerialThread
@@ -45,33 +45,23 @@ from hands.voice.trigger import turn_start
 from hands.voice.turnstop import Hold, HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
 
 # What every hold is said in, as Pipecat names it.
-LANGUAGE = Language(transcription.LANGUAGE)
+LANGUAGE = Language.EN
 
-# Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
-# with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
-# hands-dictation-2bs.1xq).
-_REPEATING = 2.4
-
-# The average log probability below which a segment is Whisper guessing. Primed noise came back as "and slow-talking."
-# at -2.8, which the compression ratio (0.68) does not catch; "okay" said quietly at -25 dBFS read
-# -0.89 to -1.11 (hands-dictation-d7i).
-_GUESSED = -1.5
-
-# The least a hold's transcription is given before it fails. The model hears a hold of a few seconds in about a third of
-# a second, so a minute is a transcription that is not coming back; see `_transcribing_seconds` for a long one.
+# The least a hold's transcription is given before it fails. The model hears a hold of 20 seconds in 0.15 s, so a
+# minute is a transcription that is not coming back; see `_transcribing_seconds` for a long one.
 TRANSCRIBING_SECONDS = 60.0
 
 
 def _transcribing_seconds(held: float) -> float:
     """The longest a hold `held` seconds long may take to transcribe before it fails: a minute, or the hold's own length.
 
-    Ten minutes of speech (TURN_LIMIT_SECONDS) took 17 s on this Mac, so a model still running after as long as the hold
+    Ten minutes of speech (TURN_LIMIT_SECONDS) took 5.1 s on this Mac, so a model still running after as long as the hold
     took to say is not coming back; a bound that did not grow with the hold would fail a long one whole on a busier Mac,
     which is a turn lost to its length (promptctl-voice-je8.d20)."""
     return max(TRANSCRIBING_SECONDS, held)
 
 # How much more audio a hold still open gathers before Whisper hears it again, where its cut waits on words: a word or two
-# said, and about a third of a second for the model to hear it, so hands is cut off within a second of the user speaking
+# said, and a fraction of a second for the model to hear it, so hands is cut off within a second of the user speaking
 # over it. The audit log had engaged turns cut 0.5 to 12.5 s after they opened, each just after the hold closed, all
 # that time talked over (hands-voice-o6o).
 OVERHEARING_SECONDS = 0.5
@@ -110,22 +100,16 @@ class _Discarded:
 Overhearing = Literal["listening", "queued", "over"]
 
 
-@dataclass(frozen=True)
-class _Unread:
-    """The vocabulary, not yet read for the hearings of a hold still open."""
-
-
 @dataclass
 class _Open:
     """The hold the key last opened, as Whisper hears it while it is open: the bytes of its audio in the hop before its
-    last hearing was queued and gathered since, where hearing it stands, the vocabulary every hearing of it is primed
-    with, read for the first, and the bytes of its audio given to the diarizer so far."""
+    last hearing was queued and gathered since, where hearing it stands, and the bytes of its audio given to the diarizer
+    so far."""
 
     hold: Hold
     hop: int
     gathered: int
     overhearing: Overhearing
-    prompt: str | None | _Unread = _Unread()
     diarized: int = 0
 
 
@@ -155,17 +139,15 @@ class Whisper(SegmentedSTTService):
     never disagree about where a hold is.
     """
 
-    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
+    def __init__(self, *, record: Record) -> None:
         # Pipecat checks at start that the settings say every field; these are what each hold is transcribed with.
         super().__init__(settings=STTSettings(model=transcription.MODEL, language=LANGUAGE))  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with unit("whisper.loaded", record):
-            transcription.load()
+            self._transcriber = transcription.load()
             annotate(model=transcription.MODEL)
         # Who spoke in each hold, told beside it: nothing Whisper does waits on it, its model's load included.
         self._diarizer = diarization.Diarizer(diarization.load, record)
-        # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
-        self._prompt = prompt
         self._record = record
         # The one thread the model transcribes on: a transcription given up on is still running, and the next must not
         # run beside it.
@@ -366,7 +348,7 @@ class Whisper(SegmentedSTTService):
             opened = partial.opened
             try:
                 async with asyncio.timeout(TRANSCRIBING_SECONDS):
-                    heard = await self._heard(opened.hold.number, partial.levels, audio, await self._primed(opened))
+                    heard = await self._heard(opened.hold.number, partial.levels, audio)
             except Exception as error:
                 # [LAW:no-silent-failure] failed on its event; the hold's own hearing as it closes says it aloud if it
                 # fails too.
@@ -389,16 +371,6 @@ class Whisper(SegmentedSTTService):
                     opened.overhearing = "over"
                     return (InterimWords(said, self._user_id, time_now_iso8601(), LANGUAGE),)
 
-    async def _primed(self, opened: _Open) -> str | None:
-        """The vocabulary the hearings of the hold open are primed with: read for its first hearing, kept for the rest."""
-        match opened.prompt:
-            case _Unread():
-                prompt = await self._prompt()
-                opened.prompt = prompt
-                return prompt
-            case prompt:
-                return prompt
-
     async def _transcribed(self, recorded: _Recorded, audio: bytes) -> AsyncGenerator[Frame, None]:
         """The words said in a hold of the key's, none, or why it could not be transcribed."""
         # [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but
@@ -408,7 +380,7 @@ class Whisper(SegmentedSTTService):
         bound = asyncio.timeout(seconds)
         try:
             async with bound:
-                heard = await self._heard(hold.number, recorded.levels, audio, await self._prompt())
+                heard = await self._heard(hold.number, recorded.levels, audio)
             # Recorded, so "I spoke and nothing happened" can be looked into.
             self._record(heard)
             match heard.said:
@@ -423,31 +395,19 @@ class Whisper(SegmentedSTTService):
             why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             yield ErrorFrame(error=f"Whisper could not transcribe hold {hold.number}: {why}", exception=error)
 
-    async def _heard(self, hold: int, levels: Levels, audio: bytes, prompt: str | None) -> HoldHeard:
-        """What was said in a hold's WAV, primed with `prompt`, the vocabulary.
-
-        A segment with no word in it is dropped, as are one the decoder repeated itself in and one Whisper only guessed
-        at: that is what a primed Whisper makes of noise. A hold with nothing said in it comes back with no segment.
-        """
-        samples = _samples(audio)
+    async def _heard(self, hold: int, levels: Levels, audio: bytes) -> HoldHeard:
+        """What was said in a hold's WAV: what the model heard, where it heard a word, which a lone "." is not."""
+        samples = transcription.decoded(_samples(audio))
         # Set once nobody waits for this hold's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         await self.start_processing_metrics()
         try:
-            # Off the loop: the model runs for a third of a second a hold, and the speaker and the key go on meanwhile.
-            scored = await self._model.run(lambda: [] if given_up.is_set() else transcription.segments(samples, prompt))
+            # Off the loop: the model runs for a tenth of a second a hold, and the speaker and the key go on meanwhile.
+            heard = await self._model.run(lambda: "" if given_up.is_set() else transcription.transcribed(self._transcriber, samples))
         finally:
             given_up.set()
             await self.stop_processing_metrics()
-        said: list[str] = []
-        dropped: list[Unsaid] = []
-        for segment in scored:
-            worded = any(character.isalnum() for character in segment.text)
-            if worded and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
-                said.append(segment.text)
-            else:
-                dropped.append(segment)
-        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped), levels)
+        return HoldHeard(hold, heard if any(character.isalnum() for character in heard) else None, levels)
 
 
 def _samples(wav: bytes) -> bytes:

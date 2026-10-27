@@ -253,20 +253,6 @@ hands can type into is one the session-input epic (`hands-harness-5nb`) can reac
 
 Need 2.
 
-- **Vocabulary bias.** Each hold is transcribed with Whisper's `initial_prompt`,
-  read as it is transcribed (`hands.voice.vocabulary`): the names of the files
-  changed in the focused session's last 30 commits and its uncommitted work, its
-  branch, then every running session's project and name, newest last, at most
-  40 of them and the oldest dropped until the rest fit the 223 prompt tokens Whisper
-  keeps. Each hold's words and their token count are a `Primed` line in the audit log,
-  and what Whisper made of it, with each segment dropped as not said and how loud the
-  hold was before and after the echo canceller, a `HoldHeard` line: primed, Whisper turns
-  noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
-  (compression ratio 17), which are dropped. Measured
-  2026-10-03 through that code, ten sentences said by `say` in a repository with
-  `authMiddleware.ts` among thirty files: `authMiddleware` 8/10 primed, 0/10
-  unprimed; both misses were a voice saying "middle way". Built:
-  tests/test_vocabulary.py; not verified live.
 - **Path grounding.** `find_path(session, query)` returns matching paths from
   `git ls-files` in the target's `cwd`, names only; the draft records the
   resolution and the readback speaks it. Done when a spoken file reference lands

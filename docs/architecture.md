@@ -19,7 +19,7 @@ once it is built - types into sessions, through the fritter that wrapped them.
                                   hands daemon
  ┌───────────────────────────────────────────────────────────────────────────────┐
  │  voice                                                                        │
- │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
+ │  mic ─► gate ─► Parakeet (MLX)      ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
  │   gate edges              notes, │  │ tool   │ system speech                  │
  │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
@@ -2419,12 +2419,10 @@ the brain's (`brain/stage.py`), not one of Pipecat's LLM services.
 
 pocket-tts is MIT, 100M parameters, CPU-only by design, reports no word timings, and
 streams: measured on this
-Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper is
-large-v3-turbo on MLX, in hands' own process (`hands.voice.transcription`), loaded as the
-pipeline is built (the `whisper.loaded` event): the transcript lands about 0.3 s after the
-key's release. LowTalker (~/code/low-talker) serves the same weights from the Neural
-Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
-alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The
+Mac, first audio 87 ms after the text arrives and about 5.6x real time. The transcriber
+is NVIDIA's Parakeet v3 (parakeet-tdt-0.6b-v3) on MLX, in hands' own process
+(`hands.voice.transcription`), loaded as the pipeline is built (the `whisper.loaded`
+event): it decodes a 20 s hold in 0.15 s, a long one in 120 s windows. The
 model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.
