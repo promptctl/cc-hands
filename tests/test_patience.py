@@ -27,5 +27,5 @@ async def test_a_wait_whose_end_comes_on_the_look_that_spends_its_patience_ends_
 
 async def test_a_wait_on_a_free_loop_where_nothing_moves_fails_once_its_patience_is_spent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(conftest, "PATIENCE_SECS", 0.1)
-    with pytest.raises(TimeoutError, match="nothing moved through 0.1s of looking, at 0"):
+    with pytest.raises(TimeoutError, match=r"nothing moved through 0\.1s of looking, \d+\.\ds on the clock, at 0"):
         await patiently(lambda: False, lambda: 0)

@@ -95,13 +95,17 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
     time between two looks that the loop spent on other work is that work's, however long one step of it holds the loop,
     since a stage that takes a burst of frames in one step moves nothing anyone can see until the step ends.
     [LAW:single-enforcer] a run that never ends, moving or holding the loop, is ended by the suite's timeout."""
-    patience, seen, still = round(PATIENCE_SECS / LOOK_SECS), moved(), 0
+    loop = asyncio.get_running_loop()
+    patience, seen, still, since = round(PATIENCE_SECS / LOOK_SECS), moved(), 0, loop.time()
     while not done():
         if still == patience:
-            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, at {seen!r}, while waiting on {done!r}")
+            # The clock beside the looking tells a loop held by other work from one that sat free.
+            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, {loop.time() - since:.1f}s on the clock, at {seen!r}, while waiting on {done!r}")
         await asyncio.sleep(LOOK_SECS)
-        now = moved()
-        still, seen = (0 if now != seen else still + 1), now
+        if (now := moved()) != seen:
+            seen, still, since = now, 0, loop.time()
+        else:
+            still += 1
 
 
 @pytest.fixture(autouse=True)
