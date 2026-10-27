@@ -40,13 +40,16 @@ from hands.sessions.home import default_home
 
 TESTS = Path(__file__).resolve().parent.parent / "tests"
 sys.path.insert(0, str(TESTS))
-from turns import RECORDED, RECORDED_SESSION  # noqa: E402  [LAW:one-source-of-truth] the fixtures' format is tests/turns.py's
+from turns import RECORDED, RECORDED_SESSION, project_name  # noqa: E402  [LAW:one-source-of-truth] the fixtures' format is tests/turns.py's
 
 OUT = RECORDED
 CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 # The hooks a recording holds: every one a wrapped session posts (hands' plugin's own: the shim's, and MessageDisplay),
 # every one the brain does, and PreToolUse, which neither subscribes to, so a recording shows when a call started.
 HOOKS = tuple(dict.fromkeys((*plugin_hooks()["hooks"], *process.HOOKS, "PreToolUse")))
+# The hooks Claude Code runs no HTTP hook for ("HTTP hooks are not supported for SessionStart"): a command posts each of
+# these to the rig instead, as hands' shim posts a wrapped session's, so its arrival is on the same clock, a spawn later.
+UNPOSTED = {"SessionStart", "Setup"}
 TMUX = "record-turns"
 # How often the transcript and the session file are read.
 POLL = 0.001
@@ -107,11 +110,13 @@ class Rig:
         self._records: list[tuple[float, dict]] = []
         self._seen: list[tuple[float, dict]] = []
         self._stop = threading.Event()
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        url = f"http://127.0.0.1:{server.server_address[1]}/"
+        self._failed: BaseException | None = None
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{self._server.server_address[1]}/"
+        forward = {"type": "command", "command": f"curl -sS -o /dev/null -H 'Content-Type: application/json' --data-binary @- {url}"}
         settings = {
-            "hooks": {event: [{"hooks": [{"type": "http", "url": url}]}] for event in HOOKS},
+            "hooks": {event: [{"hooks": [forward if event in UNPOSTED else {"type": "http", "url": url}]}] for event in HOOKS},
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }
         mcp = {"mcpServers": {"slow": {"type": "stdio", "command": sys.executable, "args": ["-I", str(Path(__file__).resolve()), "--slow-mcp"]}}}
@@ -124,8 +129,7 @@ class Rig:
         run(["tmux", "kill-session", "-t", TMUX], check=False)
         run(["tmux", "new-session", "-d", "-s", TMUX, "-x", "200", "-y", "50", "-c", str(self.cwd), environment + shlex.join(command)])
         self.pid = int(run(["tmux", "display-message", "-p", "-t", TMUX, "#{pane_pid}"]).strip())
-        # Claude Code keeps the transcript under its cwd with every character but a letter or digit made a dash.
-        self.project = CONFIG / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.cwd))
+        self.project = CONFIG / "projects" / project_name(str(self.cwd))
         self._watcher = threading.Thread(target=self._watch, daemon=True)
         self._watcher.start()
         try:
@@ -154,6 +158,18 @@ class Rig:
         return Hook
 
     def _watch(self) -> None:
+        try:
+            self._watching()
+        except BaseException as error:
+            # [LAW:no-silent-failure] a watch that died leaves the channels unread from then on: whatever reads what it
+            # saw raises this, so no recording is written short.
+            self._failed = error
+
+    def _watched(self) -> None:
+        if self._failed is not None:
+            raise RuntimeError("the transcript and session file stopped being read") from self._failed
+
+    def _watching(self) -> None:
         """Read the session file and the transcript every POLL seconds, stamping each status and each whole record as
         it is first seen."""
         file = CONFIG / "sessions" / f"{self.pid}.json"
@@ -190,6 +206,7 @@ class Rig:
             return list(self._hooks)
 
     def _statuses(self) -> list[tuple[float, dict]]:
+        self._watched()
         with self._lock:
             return list(self._seen)
 
@@ -248,6 +265,7 @@ class Rig:
         is ended is the turn's (its SessionEnd, the status file's removal)."""
         end = time.time()
         self.end()
+        self._watched()
         hooks = self.hooks()
         [session] = {body["session_id"] for _, body in hooks}
         [transcript] = self.project.glob(f"{session}.jsonl")
@@ -260,10 +278,12 @@ class Rig:
         return sorted((line for line in lines if line[0] <= end), key=lambda line: line[0])
 
     def end(self) -> None:
-        """Stop watching, once the watch in flight is done, and end the session."""
+        """Stop watching, once the watch in flight is done, end the session, and stop hearing its hooks."""
         self._stop.set()
         self._watcher.join()
         run(["tmux", "kill-session", "-t", TMUX], check=False)
+        self._server.shutdown()
+        self._server.server_close()
 
     def remove(self) -> None:
         """Leave nothing of the run behind: its directory, and the transcripts Claude Code kept of it."""
@@ -310,7 +330,6 @@ def _sent_now(rig: Rig) -> None:
     rig.interject(INTERJECTION)
     time.sleep(1)
     rig.send_now()
-    rig.stops(1)
     # The moved call ends after the Stop, and opens a turn of its own for its notification.
     rig.stops(2)
 
@@ -398,13 +417,13 @@ class Machine:
         named = os.environ.get("TMPDIR", tempfile.gettempdir()).rstrip("/")
         # Each path in every form a record can name it by: as resolved (/private/...), as named (/tmp/..., /var/...),
         # and as Claude Code names a directory after one (each character but a letter or digit a dash).
-        temps = sorted({os.path.realpath(named), named, named.removeprefix("/private")}, key=len, reverse=True)
+        # The shared /tmp names nobody's machine; a TMPDIR of one's own does.
+        temps = sorted({os.path.realpath(named), named, named.removeprefix("/private")} - {"/tmp", "/private/tmp"}, key=len, reverse=True)
         rigs = sorted({str(rig.cwd), str(rig.cwd).removeprefix("/private")}, key=len, reverse=True)
         dirs = {str(rig.dir), str(rig.dir).removeprefix("/private")}
-        dashed = lambda path: re.sub(r"[^A-Za-z0-9]", "-", path)
         self.paths = [
             *[(path, "/brain/cwd") for path in rigs],
-            *[(dashed(path), "-brain-cwd") for path in rigs],
+            *[(project_name(path), "-brain-cwd") for path in rigs],
             (f"claude-{uid}", "claude-UID"),
             *[(path, "/tmp/me") for path in temps],
             (str(Path.home()), "/home/me"),
@@ -412,7 +431,7 @@ class Machine:
         git = [run(["git", "config", key], check=False).strip() for key in ("user.email", "user.name")]
         names = [part for value in git for part in re.split(r"[\s@.]+", value) if len(part) >= 4]
         host = socket.gethostname()
-        machine = (str(Path.home()), dashed(str(Path.home())), getpass.getuser(), host, host.split(".")[0], *temps, *[dashed(path) for path in temps], *dirs, *[dashed(path) for path in dirs], rig.session, f"claude-{uid}", *git, *names)
+        machine = (str(Path.home()), project_name(str(Path.home())), getpass.getuser(), host, host.split(".")[0], *temps, *[project_name(path) for path in temps], *dirs, *[project_name(path) for path in dirs], rig.session, f"claude-{uid}", *git, *names)
         self.private = [value for value in machine if len(value) >= 3]
 
 

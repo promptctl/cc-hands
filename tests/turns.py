@@ -9,6 +9,7 @@ record's timestamp in its own format (1970-01-01T00:00:14.045Z is 14.045 s in).
 
 import datetime
 import json
+import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +121,12 @@ def _body(line: Line) -> Json:
             return record
         case StatusSet(status=status):
             return status
+
+
+def project_name(cwd: str) -> str:
+    """The directory Claude Code keeps a session's transcripts in, under its config's projects/, for the session's cwd:
+    the cwd with every character but a letter or digit made a dash."""
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd)
 
 
 def transcribed(record: Json) -> str:

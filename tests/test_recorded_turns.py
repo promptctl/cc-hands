@@ -11,13 +11,14 @@ id Claude Code gave the words sent into it is one turn, told by the id its Stop 
 """
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from hands.core.effects import Snapshot, Summarise
-from hands.core.events import Continued, Event, StatusReported, Taken
+from hands.core.events import Continued, Displayed, Event, StatusReported, Taken
 from hands.core.reducer import reduce
 from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId, status_stamp
 from hands.core.status import Stamp
@@ -40,8 +41,9 @@ POSTED = tuple(cast(Mapping[str, object], plugin_hooks()["hooks"]))
 # Claude Code's queue records. Words or a notification absorbed into a turn (queue-operation remove, absorbed_mid_turn)
 # are taken for a message queued behind it, so a turn after it is marked and none comes. And in sent_now_mid_batch,
 # Claude Code sets shell for a few ms as send now moves the running call to the background, which ends the turn for the
-# model; the records that say it went on under the words' id (a dequeue, then the calls' results under that id) are
-# read as a turn of their own that never opens, so the turn is told by the id it began under, without its reply.
+# model, so it is told by the id it began under once its Stop hold passes. The records that say it went on under the
+# words' id (a dequeue, then the later results and the words under that id) are read as a turn of their own, never
+# marked, which its Stop tells again: one Claude Code turn told twice.
 MISMARKED = {"joined_at_boundary", "notified_mid_turn", "sent_now", "sent_now_mcp", "sent_now_mid_batch"}
 MISTOLD = {"sent_now_mid_batch"}
 
@@ -56,9 +58,20 @@ def _case(name: str, schedule: str, unmet: set[str]) -> object:
     return pytest.param(name, schedule, marks=marks, id=f"{name}-{schedule.replace(' ', '_')}")
 
 
-async def _told(name: str, schedule: str, tmp: Path) -> tuple[tuple[str, ...], frozenset[str]]:
-    """The marks and tellings the model makes of the recording, read in the schedule given, and the prompt ids it heard
-    from the transcript."""
+@dataclass(frozen=True)
+class Reading:
+    """What the model made of a recording."""
+
+    # Its marks (S) and tellings (Tn), in order.
+    told: tuple[str, ...]
+    # The prompt ids it heard from the transcript.
+    heard: frozenset[str]
+    # How many of the lines Claude Code displayed it heard.
+    displayed: int
+
+
+async def _told(name: str, schedule: str, tmp: Path) -> Reading:
+    """What the model makes of the recording, read in the schedule given."""
     transcript = tmp / "transcript.jsonl"
     transcript.write_text("")
     home = Home(tmp / "home")
@@ -88,9 +101,11 @@ async def _told(name: str, schedule: str, tmp: Path) -> tuple[tuple[str, ...], f
     tails = Tails(Known())
     told: list[str] = []
     heard: set[str] = set()
+    displayed = 0
 
     def apply(event: Event) -> None:
-        nonlocal registry
+        nonlocal registry, displayed
+        displayed += isinstance(event, Displayed)
         registry, effects = reduce(registry, event)
         for effect in effects:
             match effect:
@@ -140,11 +155,15 @@ async def _told(name: str, schedule: str, tmp: Path) -> tuple[tuple[str, ...], f
                 await read()
     # What was written after the last hook and status is read too, as the tail's next poll would.
     await read()
-    return tuple(told), frozenset(heard)
+    return Reading(tuple(told), frozenset(heard), displayed)
 
 
 def test_every_recorded_turn_ends_at_a_stop() -> None:
     assert RECORDINGS and all(stops(recording) for recording in RECORDINGS.values())
+
+
+def test_every_recorded_turn_begins_at_its_sessions_start() -> None:
+    assert all(next(line for line in recording if isinstance(line, Posted)).body["hook_event_name"] == "SessionStart" for recording in RECORDINGS.values())
 
 
 def test_every_recorded_turn_is_of_the_brains_pin() -> None:
@@ -155,18 +174,22 @@ def test_every_recorded_turn_is_of_the_brains_pin() -> None:
 
 @pytest.mark.parametrize(("name", "schedule"), [_case(name, schedule, set()) for name in RECORDINGS for schedule in SCHEDULES])
 async def test_every_prompt_a_recorded_turns_records_carry_reaches_the_model_from_the_transcript(name: str, schedule: str, tmp_path: Path) -> None:
-    _, heard = await _told(name, schedule, tmp_path)
     carried = {id for line in RECORDINGS[name] if isinstance(line, Written) and line.record.get("type") in ("user", "assistant") for id in [line.record.get("promptId")] if isinstance(id, str)}
-    assert carried and carried <= heard
+    assert carried and carried <= (await _told(name, schedule, tmp_path)).heard
+
+
+@pytest.mark.parametrize("name", RECORDINGS)
+async def test_every_line_a_recorded_turn_displays_reaches_the_model(name: str, tmp_path: Path) -> None:
+    posted = sum(1 for line in RECORDINGS[name] if isinstance(line, Posted) and line.body["hook_event_name"] == "MessageDisplay")
+    assert posted and (await _told(name, SCHEDULES[0], tmp_path)).displayed == posted
 
 
 @pytest.mark.parametrize(("name", "schedule"), [_case(name, schedule, MISTOLD) for name in RECORDINGS for schedule in SCHEDULES])
 async def test_each_claude_code_turn_recorded_is_told_once_under_the_id_its_stop_names(name: str, schedule: str, tmp_path: Path) -> None:
-    told, _ = await _told(name, schedule, tmp_path)
+    told = (await _told(name, schedule, tmp_path)).told
     assert tuple(step for step in told if step.startswith("T")) == tuple(step for step in _contract(name) if step.startswith("T"))
 
 
 @pytest.mark.parametrize(("name", "schedule"), [_case(name, schedule, MISMARKED) for name in RECORDINGS for schedule in SCHEDULES])
 async def test_each_claude_code_turn_recorded_is_marked_once_as_it_begins_and_nothing_else_is(name: str, schedule: str, tmp_path: Path) -> None:
-    told, _ = await _told(name, schedule, tmp_path)
-    assert told == _contract(name)
+    assert (await _told(name, schedule, tmp_path)).told == _contract(name)

@@ -301,7 +301,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import itertools, json, os, re, select, signal, sys, termios, time, tty, urllib.request
+import itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -357,12 +357,13 @@ def play(name, text):
     global prompts, last, tail
     sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
     import turns
-    project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()))
+    project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()))
     os.makedirs(project, exist_ok=True)
     transcript = os.path.join(project, session + ".jsonl")
     status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
     os.makedirs(os.path.dirname(status), exist_ok=True)
-    for line in turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text)):
+    lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
+    for line in lines:
         line = turns.shifted(line, time.time() - line.at)
         if isinstance(line, turns.Posted):
             post(line.body["hook_event_name"], transcript_path=transcript, cwd=os.getcwd(), **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
@@ -374,7 +375,7 @@ def play(name, text):
                 file.write(turns.status_file(line, pid=os.getpid(), session=session))
             os.replace(status + ".tmp", status)
     prompts += turns.prompts(turns.RECORDINGS[name]) - 1
-    last, tail = f"p{{prompts}}", time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
+    last, tail = turns.stops(lines)[-1], time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
     typed(["played", name])
 def submit(text):
     global turn, turn_text, prompts, late, running, last, tail

@@ -32,7 +32,7 @@ from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
-from conftest import events, located, onboard, patiently, pin, pinned_to
+from conftest import PATIENCE_SECS, events, located, onboard, patiently, pin, pinned_to
 from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
@@ -1012,7 +1012,9 @@ async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_
     try:
         # Played to its end, every hook of it answered: whatever the brain makes of the turn, it has made by then.
         await patiently(lambda: ["played", name] in typed(tmp_path), lambda: (len(typed(tmp_path)), _played(tmp_path)))
-        # The typed turn ends at the first Stop Claude Code posted.
+        # Its Stop was answered before its last line was played, so the answer has only to reach the asker, within the
+        # patience: one never given is the expected failure, not a stall. The typed turn ends at the first Stop posted.
+        await asyncio.wait({asking}, timeout=PATIENCE_SECS)
         assert asking.done() and asking.result() == BrainAnswered(stops(RECORDINGS[name])[0], None)
         following = asyncio.create_task(brain.ask("and then?", unasked))
         # [LAW:no-silent-failure] a stall is a TimeoutError, never the expected failure.
