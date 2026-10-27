@@ -347,7 +347,7 @@ async def test_stop_presses_nothing_in_a_session_at_its_prompt_while_a_subagent_
     turn = PromptId("p1")
     for event in (
         StatusReported(id, Report(Idle(), Stamp(1)), 0.0),
-        Prompted(id, at=1.0, mode=None, prompt=turn),
+        Prompted(id, at=1.0, mode=None, prompt=turn, text=""),
         StatusReported(id, Report(Busy(), Stamp(2)), 1.0),
         Launched(id, AgentId("a1"), Stamp(3)),
         Stopped(id, "Started it.", mode=None, prompt=turn, again=False, heard=Stamp(4), request=RequestId("stop")),

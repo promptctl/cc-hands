@@ -133,7 +133,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     narrating = asyncio.create_task(narrate(sessions, Utterances(recorded.append), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN, text=""))
         await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         queued = await asyncio.wait_for(frames.get(), 5.0)
         told = handed(unprompted(queued))
@@ -245,7 +245,7 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN, text=""))
         await sessions.apply(Stopped(SID, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         # `claude -p` exits the moment its turn stops.
         await sessions.apply(Ended(SID, "other"))
@@ -311,7 +311,7 @@ async def test_a_setting_that_cannot_be_read_is_logged(tmp_path: Path) -> None:
     narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), asyncio.Queue[Frame]().put, lambda: attention(home), Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
         await sessions.apply(Stopped(SID, "Fixed it. Want me to push it?", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         failure = await asyncio.wait_for(failed.get(), 5.0)
     finally:
@@ -330,7 +330,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
-        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
         await sessions.apply(Stopped(SID, "Looked.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
         first = handed(unprompted(await asyncio.wait_for(frames.get(), 5.0)))
         with transcript.open("a") as more:

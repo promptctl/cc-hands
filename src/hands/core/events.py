@@ -64,6 +64,9 @@ class Prompted:
     # turn: every hook of a background subagent carries the prompt_id of the turn that started it, even after that
     # turn stopped and another opened, so a turn read off any later hook could be one already over.
     prompt: PromptId
+    # The words submitted, as Claude Code's queue records carry them: how words filed under a running turn are matched
+    # to the record that takes them out of its queue.
+    text: str
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,32 @@ class Continued:
     # The id it was answering under, so a record read after the next prompt opened moves nothing.
     was: PromptId
     now: PromptId
+
+
+@dataclass(frozen=True)
+class Dequeued:
+    """Claude Code took the oldest message out of its queue, to run: into the turn running, or as a turn of its own."""
+
+
+@dataclass(frozen=True)
+class Removed:
+    """Claude Code took one message out of its queue by itself (remove): delivered into the running turn, to an agent,
+    or for no reason it gives; or pulled it back out of the queue (popAll, one record for each message)."""
+
+    content: str
+
+
+# [LAW:types-are-the-program] what a queue-operation record says left Claude Code's queue; an enqueue says nothing the
+# prompt's hook did not say first, and is no value here.
+Unqueuing = Dequeued | Removed
+
+
+@dataclass(frozen=True)
+class Unqueued:
+    """Claude Code took a message out of its queue, as its transcript's queue-operation record says."""
+
+    session: SessionId
+    taken: Unqueuing
 
 
 @dataclass(frozen=True)
@@ -268,11 +297,11 @@ class Tick:
 
 # Events about a session the registry must already know; a join is how it comes to.
 # What moves a live session on its axes; its end is the one session event that moves none of them.
-Moving = Prompted | Stopped | Closed | Interrupted | CarriedOut | Taken | Continued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
+Moving = Prompted | Stopped | Closed | Interrupted | CarriedOut | Taken | Continued | Unqueued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
 # What a session's transcript says that none of its hooks do: of its turn, of its subagents in the background, and how
 # far it has been read.
-Transcribed = Taken | Interrupted | CarriedOut | Continued | Launched | ReportedBack | Progressed | Read
+Transcribed = Taken | Interrupted | CarriedOut | Continued | Unqueued | Launched | ReportedBack | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
 Event = Joined | Located | Observed | SessionEvent | Abandoned | Tick

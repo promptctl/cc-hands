@@ -116,7 +116,7 @@ def test_only_the_sessions_that_are_done_are_closed_of_those_asked_about_as_done
             # At a dialog whose request is heard before the status that says it waits.
             "held": joined(home, sessions, tmp_path, held, "held", status(Idle()), lambda session: PermissionRequested(session, at=2.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")),
             # A prompt its hook opened a turn for, before the status that says it is busy is read.
-            "prompted": joined(home, sessions, tmp_path, prompted, "prompted", status(Idle()), lambda session: Prompted(session, at=2.0, mode=None, prompt=PromptId("p1"))),
+            "prompted": joined(home, sessions, tmp_path, prompted, "prompted", status(Idle()), lambda session: Prompted(session, at=2.0, mode=None, prompt=PromptId("p1"), text="")),
         }
         joined(home, sessions, tmp_path, unasked, "unasked", status(Idle()))
 

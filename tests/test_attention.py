@@ -145,7 +145,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), queued.put, Attention, Overlays(home), recounts))
     try:
         for each in (other, watched):
-            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
+            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1"), text=""))
             await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
         frame = await asyncio.wait_for(queued.get(), 5.0)
         told = handed(frame)
@@ -173,7 +173,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     keeping = asyncio.create_task(utterances.keep())
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), asyncio.Queue[Frame]().put, Attention, Overlays(home), Recounts()))
     try:
-        await sessions.apply(Prompted(member.id, at=2.0, mode=None, prompt=PromptId("p1")))
+        await sessions.apply(Prompted(member.id, at=2.0, mode=None, prompt=PromptId("p1"), text=""))
         await sessions.apply(Stopped(member.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId("stop")))
         async with asyncio.timeout(5):
             while not noted(entries):
@@ -365,7 +365,7 @@ async def test_a_muted_session_s_turn_is_held_with_finished_turns_told_and_told_
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), queued.put, lambda: Attention(finished="full"), Overlays(home), recounts))
     try:
         for each in (muted, other):
-            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1")))
+            await sessions.apply(Prompted(each.id, at=2.0, mode=None, prompt=PromptId("p1"), text=""))
             await sessions.apply(Stopped(each.id, REPLY, mode=None, prompt=PromptId("p1"), again=False, heard=Stamp(1500), request=RequestId(f"stop-{each.id}")))
         frame = await asyncio.wait_for(queued.get(), 5.0)
         told = handed(frame)
