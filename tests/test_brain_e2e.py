@@ -176,8 +176,8 @@ class Hands:
                     await asyncio.sleep(0.05)
         except TimeoutError as error:
             # [LAW:nothing-unseen] a wait that gives up says what the audit held meanwhile, the MCP events above all.
-            seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower()]
-            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP events: {seen}") from error
+            seen = [str(entry) for entry in self.recorded if "mcp" in str(entry).lower() or "brain." in str(entry)]
+            raise AssertionError(f"the brain did not get there within {PATIENCE_SECONDS:g}s; its MCP and turn events: {seen}") from error
 
 
 async def unread() -> InFront:

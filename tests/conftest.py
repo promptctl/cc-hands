@@ -342,6 +342,8 @@ os.write(1, b"\\x1b[?2004h> ")
 pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
 # The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
 last, tail = None, 0.0
+# The Returns the fake loses as a turn's text lands, which leave the text in the input untaken, as Claude Code does (DROP_RETURNS).
+drops = int(os.environ.get("DROP_RETURNS", "0"))
 # A prompt as Claude Code's UserPromptSubmit says it took it (2.1.289): a paste of four lines or more in its tags, with a
 # line end added where it had none, and any other with its trailing whitespace trimmed.
 def taken(text):
@@ -503,7 +505,13 @@ while True:
                 # A Return with more behind it in the same burst is read as pasted, and sends nothing (2.1.286).
                 continue
             text, box = box, ""
-            submit(text)
+            if text and drops:
+                drops -= 1
+                box = text
+                continue
+            # As Claude Code does, a Return on an empty input sends nothing: only text is a prompt.
+            if text:
+                submit(text)
         else:
             box += pending[:1].decode()
             pending = pending[1:]

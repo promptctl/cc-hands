@@ -529,6 +529,19 @@ async def test_a_stop_before_the_brain_lists_its_tools_ends_the_turn_untyped(tmp
         await brain.stop()
 
 
+async def test_a_turn_whose_return_is_lost_as_its_text_lands_is_pressed_again_and_taken(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Claude Code drops the Return that follows a turn's text now and then: the text waits in its input, untaken. The brain
+    # presses that Return again, within the turn's own budget, and the turn is taken with nothing typed twice.
+    monkeypatch.setenv("DROP_RETURNS", "1")
+    monkeypatch.setattr("hands.brain.process.TAKE_SECONDS", 3.0)
+    brain = await start(launch(tmp_path), list[Entry]().append)
+    try:
+        assert await asyncio.wait_for(brain.ask("hello", unasked), 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " hello"]]
+
+
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
