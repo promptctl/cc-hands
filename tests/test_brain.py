@@ -25,7 +25,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
-from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, Unstartable, Untaken, _listen, _Posted, _Turn, account_kept_out, command, conversation, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -33,7 +33,7 @@ from hands.core.stopfailure import StopFailed
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, level, segment
 from conftest import events, located, onboard, patiently, pin, pinned_to
-from turns import RECORDINGS, prompts
+from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
 from hands.core.session import PromptText, SessionId, pasted
@@ -993,35 +993,35 @@ class _Jammed:
     press = type
 
 
-# The prompt each recorded turn's typed prompt ends under: its Stop's. A turn that went on under the prompt Claude Code
-# gave the words sent into it ends under that one.
-ENDS_UNDER = {
-    "backgrounded_then_notified": "p1",
-    "joined_as_next_prompt": "p1",
-    "joined_at_boundary": "p1",
-    "notified_mid_turn": "p1",
-    "sent_now": "p1",
-    "sent_now_mcp": "p1",
-    "sent_now_mid_batch": "p2",
-}
-# The recorded turns the brain does not meet yet, which promptctl-brain-vu2t.abp moves onto the one model of a turn: a
+# The recorded turns the brain does not meet yet, which promptctl-brain-vu2t.abp moves onto the one model of a turn. A
 # prompt posted under the running turn's id puts that id among the brain's unowned prompts, so the next turn is Escaped
-# for nothing; and a turn that goes on under an id the brain never typed is never answered.
+# and Ctrl-C'd for nothing; and a turn that goes on under an id the brain never typed is never answered.
 UNMET = {"joined_as_next_prompt", "joined_at_boundary", "notified_mid_turn", "sent_now", "sent_now_mcp", "sent_now_mid_batch"}
+
+
+def _played(tmp: Path) -> int:
+    """How much of a recorded turn the stand-in has written to the brain's transcripts so far."""
+    return sum(path.stat().st_size for path in (tmp / "brain" / "projects").glob("*/*.jsonl"))
 
 
 @pytest.mark.parametrize("name", [pytest.param(name, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason="promptctl-brain-vu2t.abp")) if name in UNMET else name for name in RECORDINGS])
 async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, name: str) -> None:
-    assert set(RECORDINGS) == set(ENDS_UNDER)
     brain = await start(launch(tmp_path), lambda _: None)
     asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
+    following: asyncio.Task[BrainEnded] | None = None
     try:
         # Played to its end, every hook of it answered: whatever the brain makes of the turn, it has made by then.
-        await patiently(lambda: ["played", name] in typed(tmp_path), lambda: len(typed(tmp_path)))
-        assert asking.done() and asking.result() == BrainAnswered(ENDS_UNDER[name], None)
-        assert await brain.ask("and then?", unasked) == BrainAnswered(f"p{prompts(RECORDINGS[name]) + 1}", None)
+        await patiently(lambda: ["played", name] in typed(tmp_path), lambda: (len(typed(tmp_path)), _played(tmp_path)))
+        # The typed turn ends at the first Stop Claude Code posted.
+        assert asking.done() and asking.result() == BrainAnswered(stops(RECORDINGS[name])[0], None)
+        following = asyncio.create_task(brain.ask("and then?", unasked))
+        # [LAW:no-silent-failure] a stall is a TimeoutError, never the expected failure.
+        await patiently(following.done, lambda: len(typed(tmp_path)))
+        assert following.result() == BrainAnswered(f"p{prompts(RECORDINGS[name]) + 1}", None)
     finally:
         asking.cancel()
+        if following is not None:
+            following.cancel()
         await brain.stop()
     assert typed(tmp_path) == [["prompt", f" play {name}"], ["played", name], ["prompt", " and then?"]]
 

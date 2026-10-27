@@ -10,14 +10,16 @@ Run by hand on a machine logged into Claude Code, never by a test: it spends a f
     uv run python scripts/record_turns.py sent_now ...     # the turns named
 
 Each line is one of `{"at": s, "posted": <hook body>}`, `{"at": s, "written": <transcript record>}` or
-`{"at": s, "status": <session file's status>}`, `at` seconds from the first. A status's `at` is when Claude Code set
-it (its statusUpdatedAt), and it holds no other time. A record's timestamp is moved the same way, so it reads as
+`{"at": s, "status": <session file's status>}`, in the order they were seen, `at` seconds from the first on one clock:
+when the hook arrived, when the record's line was appended, when the status was set in the file (see Rig). A status
+holds no other time. A record's own timestamp, when Claude Code made it, is moved by the same start, so it reads as
 seconds from the first in its own format (1970-01-01T00:00:14.045Z is 14.045 s in), and a player moves every time
 onto its own clock by one shift.
 """
 
 import datetime
 import getpass
+import http.server
 import json
 import os
 import re
@@ -31,15 +33,18 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from hands.brain import pinned
+from hands.brain import pinned, process
+from hands.sessions.hookconfig import SUBSCRIBED
 from hands.sessions.home import default_home
 
 OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "recorded_turns"
 CONFIG = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-# The hooks a recording logs: every one the brain or a wrapped session subscribes to, and PreToolUse, which neither
+# The hooks a recording holds: every one a wrapped session or the brain subscribes to, and PreToolUse, which neither
 # does, so a recording shows when a call started.
-HOOKS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "PermissionRequest", "Notification", "SubagentStop")
+HOOKS = tuple(dict.fromkeys((*SUBSCRIBED, *process.HOOKS, "PreToolUse")))
 TMUX = "record-turns"
+# How often the transcript and the session file are read.
+POLL = 0.001
 # How long a session stays idle before its recording ends: longer than any gap between one turn and the next it runs.
 SETTLED = 5.0
 
@@ -80,57 +85,96 @@ def slow_mcp() -> None:
 
 
 class Rig:
-    """The pinned Claude Code in a tmux session of its own, in a directory of its own, its hooks logged to the
-    millisecond and its session file's status read every few milliseconds."""
+    """The pinned Claude Code in a tmux session of its own, in a directory of its own, and what it says on each channel
+    stamped on this process's clock as it becomes visible, the way hands sees it: a hook as it arrives (posted over
+    HTTP, as the brain's are), a record as its line is appended to the transcript, and a status as the session file
+    changes. The transcript and the status file are read every POLL seconds, so a status set again within that is
+    not seen, as it would not be by hands' own reader."""
 
     def __init__(self) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="record-turns-", dir="/tmp")).resolve()
         self.cwd = self.dir / "work"
         self.cwd.mkdir()
-        self.log = self.dir / "hooks.log"
-        self.log.touch()
-        hook = self.dir / "hook.sh"
-        hook.write_text(f"#!/bin/sh\n{{ printf '%s %s ' \"$(perl -MTime::HiRes=time -e 'printf \"%.3f\", time')\" \"$1\"; tr -d '\\n'; echo; }} >> {shlex.quote(str(self.log))}\n")
-        hook.chmod(0o755)
+        self._lock = threading.Lock()
+        self._hooks: list[tuple[float, dict]] = []
+        self._records: list[tuple[float, dict]] = []
+        self.statuses: list[tuple[float, dict]] = []
+        self._stop = threading.Event()
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{server.server_address[1]}/"
         settings = {
-            "hooks": {event: [{"hooks": [{"type": "command", "command": f"{hook} {event}"}]}] for event in HOOKS},
+            "hooks": {event: [{"hooks": [{"type": "http", "url": url}]}] for event in HOOKS},
             "permissions": {"allow": ["Bash(*)", "mcp__slow__wait"]},
         }
         mcp = {"mcpServers": {"slow": {"type": "stdio", "command": sys.executable, "args": ["-I", str(Path(__file__).resolve()), "--slow-mcp"]}}}
         command = [str(pinned.verified(default_home(os.environ).brain)), "--model", "haiku", "--setting-sources", "project", "--settings", json.dumps(settings), "--mcp-config", json.dumps(mcp), "--strict-mcp-config"]
+        # The pane gets the tmux server's environment, not this process's: what the session must run under is named.
         # Background tasks on, as the brain will run: the turns recorded here are the ones they open.
+        # Claude Code keeps a login for each config directory it is named, so the default is reached by naming none.
+        config = f"CLAUDE_CONFIG_DIR={shlex.quote(os.environ['CLAUDE_CONFIG_DIR'])}" if "CLAUDE_CONFIG_DIR" in os.environ else "-u CLAUDE_CONFIG_DIR"
+        environment = f"exec env -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS {config} DISABLE_AUTOUPDATER=1 "
         run(["tmux", "kill-session", "-t", TMUX], check=False)
-        run(["tmux", "new-session", "-d", "-s", TMUX, "-x", "200", "-y", "50", "-c", str(self.cwd), "exec env -u CLAUDE_CODE_DISABLE_BACKGROUND_TASKS DISABLE_AUTOUPDATER=1 " + shlex.join(command)])
+        run(["tmux", "new-session", "-d", "-s", TMUX, "-x", "200", "-y", "50", "-c", str(self.cwd), environment + shlex.join(command)])
         self.pid = int(run(["tmux", "display-message", "-p", "-t", TMUX, "#{pane_pid}"]).strip())
-        self.statuses: list[tuple[float, dict]] = []
-        self._stop = threading.Event()
+        # Claude Code keeps the transcript under its cwd with every character but a letter or digit made a dash.
+        self.project = CONFIG / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(self.cwd))
         threading.Thread(target=self._watch, daemon=True).start()
         until(lambda: any(status["status"] == "idle" for _, status in self.statuses), 120, "the session never went idle")
 
+    def _handler(self) -> type[http.server.BaseHTTPRequestHandler]:
+        rig = self
+
+        class Hook(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                at = time.time()
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                with rig._lock:
+                    rig._hooks.append((at, body))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        return Hook
+
     def _watch(self) -> None:
+        """Read the session file and the transcript every POLL seconds, stamping each status and each whole record as
+        it is first seen."""
         file = CONFIG / "sessions" / f"{self.pid}.json"
-        last = None
+        last, offset, transcript = None, 0, None
         while not self._stop.is_set():
             try:
                 body = json.loads(file.read_bytes())
             except (FileNotFoundError, ValueError):
+                # Not written yet, or caught half rewritten: read again next time.
                 body = {}
-            if "status" in body:
+            # A file with no status set yet sets nothing to hear, as hands' reader passes over it.
+            if "status" in body and "statusUpdatedAt" in body:
                 status = {key: body[key] for key in ("status", "waitingFor") if key in body}
                 seen = (status, body["statusUpdatedAt"])
                 if seen != last:
                     last = seen
-                    self.statuses.append((body["statusUpdatedAt"] / 1000, status))
-            time.sleep(0.005)
+                    self.statuses.append((time.time(), status))
+            transcript = transcript or next(iter(self.project.glob("*.jsonl")), None)
+            if transcript is not None:
+                with transcript.open("rb") as read:
+                    read.seek(offset)
+                    appended = read.read()
+                # Only whole lines: the last may be part way through being written.
+                whole = appended[: appended.rfind(b"\n") + 1]
+                offset += len(whole)
+                at = time.time()
+                with self._lock:
+                    self._records += [(at, json.loads(line)) for line in whole.splitlines() if line.strip()]
+            time.sleep(POLL)
 
     def hooks(self) -> list[tuple[float, dict]]:
-        out = []
-        # The last line is the one a hook may be writing still: read only those it has ended.
-        for line in self.log.read_text().split("\n")[:-1]:
-            if line.strip():
-                at, event, body = line.split(" ", 2)
-                out.append((float(at), {"hook_event_name": event, **json.loads(body)}))
-        return out
+        with self._lock:
+            return list(self._hooks)
 
     def count(self, event: str) -> int:
         return sum(1 for _, body in self.hooks() if body["hook_event_name"] == event)
@@ -183,20 +227,20 @@ class Rig:
         until(held, 240, "the session never settled idle")
 
     def close(self) -> list[tuple[float, str, dict]]:
-        """End the session, and what it said on each channel, in time order."""
-        time.sleep(1)
+        """End the session, and what it said on each channel up to then, in the order it was seen. Nothing said as it
+        is ended is the turn's (its SessionEnd, the status file's removal)."""
+        end = time.time()
         self._stop.set()
         run(["tmux", "kill-session", "-t", TMUX], check=False)
         hooks = self.hooks()
         [session] = {body["session_id"] for _, body in hooks}
-        [transcript] = (CONFIG / "projects").glob(f"*/{session}.jsonl")
-        records = [json.loads(line) for line in transcript.read_text().splitlines() if line.strip()]
+        [transcript] = self.project.glob(f"{session}.jsonl")
+        self.transcript, self.session = transcript, session
         lines = [(at, "posted", body) for at, body in hooks]
-        lines += [(_seconds(record["timestamp"]), "written", record) for record in records if "timestamp" in record]
+        lines += [(at, "written", record) for at, record in self._records]
         lines += [(at, "status", status) for at, status in self.statuses]
-        self.transcript = transcript
-        self.session = session
-        return sorted(lines, key=lambda line: line[0])
+        # Stable: what one reading of a file found keeps the order it was written in.
+        return sorted((line for line in lines if line[0] <= end), key=lambda line: line[0])
 
 
 BASH = 'Run this exact bash command in the foreground, not in the background: python3 -c "import time; time.sleep({seconds}); print(42)" -- then tell me the number it printed. Do not call TaskStop, Monitor, Read or sleep; if it is moved to the background, just answer anything else asked and end your turn saying so.'

@@ -9,7 +9,6 @@ record's timestamp in its own format (1970-01-01T00:00:14.045Z is 14.045 s in).
 
 import datetime
 import json
-import re
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,13 +74,38 @@ def played(recording: Recording, *, subscribed: Collection[str], session: str, f
     those; its prompt pK as p{first + K - 1}, so it follows the prompts the session has run; and, if `prompt` is given,
     the opening prompt as `prompt` on both channels that carry it, its UserPromptSubmit and its user record."""
     lines = [line for line in recording if not isinstance(line, Posted) or line.body["hook_event_name"] in subscribed]
-    renumbered = tuple(_mapped(line, lambda text: _renumbered(text.replace("SESSION", session), first)) for line in lines)
+    renumbered = tuple(_mapped(line, lambda key, value: _renamed(key, value, session, first)) for line in lines)
     return renumbered if prompt is None else _prompted(renumbered, prompt)
 
 
 def prompts(recording: Recording) -> int:
     """How many prompts `recording` runs: the K of its last pK."""
-    return max(int(found) for line in recording for found in re.findall(r'"(?:prompt_id|promptId)": "p(\d+)"', json.dumps(_body(line))))
+    return max(int(id.removeprefix("p")) for line in recording for id in _prompt_ids(_body(line)))
+
+
+def stops(recording: Recording) -> tuple[str, ...]:
+    """The prompt id of each Stop `recording` posts, in order: each ends one Claude Code turn."""
+    return tuple(line.body["prompt_id"] for line in recording if isinstance(line, Posted) and line.body["hook_event_name"] == "Stop")
+
+
+PROMPT_IDS = ("prompt_id", "promptId")
+
+
+def _prompt_ids(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        body = cast(Json, value)
+        return [id for key, inner in body.items() for id in ([inner] if key in PROMPT_IDS else _prompt_ids(inner))]
+    if isinstance(value, list):
+        return [id for inner in cast(list[Any], value) for id in _prompt_ids(inner)]
+    return []
+
+
+def _renamed(key: str, value: Any, session: str, first: int) -> Any:
+    if key in PROMPT_IDS:
+        return f"p{first + int(str(value).removeprefix('p')) - 1}"
+    if isinstance(value, str):
+        return value.replace("SESSION", session)
+    return value
 
 
 def _body(line: Line) -> Json:
@@ -117,18 +141,27 @@ def shifted(line: Line, by: float) -> Line:
             return StatusSet(at + by, status)
 
 
-def _mapped(line: Line, edit: Callable[[str], str]) -> Line:
+def _mapped(line: Line, edit: Callable[[str, Any], Any]) -> Line:
+    """`line` with `edit` made to every value its body holds, by the key it is under."""
     match line:
         case Posted(at, body):
-            return Posted(at, json.loads(edit(json.dumps(body))))
+            return Posted(at, _each(body, edit))
         case Written(at, record):
-            return Written(at, json.loads(edit(json.dumps(record))))
+            return Written(at, _each(record, edit))
         case StatusSet():
             return line
 
 
-def _renumbered(text: str, first: int) -> str:
-    return re.sub(r'("(?:prompt_id|promptId)": ")p(\d+)"', lambda found: f'{found[1]}p{first + int(found[2]) - 1}"', text)
+def _each(body: Json, edit: Callable[[str, Any], Any]) -> Json:
+    return {key: _edited(key, inner, edit) for key, inner in body.items()}
+
+
+def _edited(key: str, value: Any, edit: Callable[[str, Any], Any]) -> Any:
+    if isinstance(value, dict):
+        return _each(cast(Json, value), edit)
+    if isinstance(value, list):
+        return [_edited(key, inner, edit) for inner in cast(list[Any], value)]
+    return edit(key, value)
 
 
 def _prompted(lines: Recording, prompt: str) -> Recording:
