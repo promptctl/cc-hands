@@ -57,7 +57,7 @@ jobs:
           path: ~/.cache/huggingface/hub
           key: nemotron${{ steps.nemotron.outputs.revisions }}
       # The brain's end-to-end tests run the pinned Claude Code, fetched into pytest's cache against its checksum, and the
-      # mock of Anthropic's API at the commit they name, built with go; kept the same way, keyed on the pin and on the commit.
+      # mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the pin and on the release.
       - name: The brain's pinned Claude Code and the mock's release
         id: e2e
         run: |
