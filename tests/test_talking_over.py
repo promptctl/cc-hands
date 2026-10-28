@@ -18,6 +18,7 @@ import numpy as np
 import pipecat.audio.turn.smart_turn.base_smart_turn as base_smart_turn
 import pipecat.audio.vad.silero as silero
 import pytest
+import pytest_asyncio
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.frames.frames import Frame, InputAudioRawFrame, InterimTranscriptionFrame
 from pipecat.metrics.metrics import TurnMetricsData
@@ -201,18 +202,29 @@ def sound_at(sample: int) -> int:
     return max(n for n, first in enumerate(FIRST) if first <= sample)
 
 
-async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_the_keys_cut_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
+    """The recognizer, with the real pair loaded on its own thread as a run loads it, and what it recorded on the way: the
+    module's work, set up under a bound of its own (tests/timeouts.py). The load is done before the pipeline starts,
+    whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
+    does."""
+    record = Recorded(asyncio.get_running_loop())
+    recognizer = streaming.StreamingRecognizer(lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
+    await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
+    return recognizer, record
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_the_keys_cut_nothing(
+    recognizing: tuple[streaming.StreamingRecognizer, Recorded], monkeypatch: pytest.MonkeyPatch
+) -> None:
     clock = Heard()
     monkeypatch.setattr(silero, "time", clock)
     monkeypatch.setattr(base_smart_turn, "time", clock)
-    record = Recorded(asyncio.get_running_loop())
+    recognizer, record = recognizing
     gate = PushToTalk(record)
     captured = 0
     moves: list[tuple[int, Move]] = []
-    recognizer = streaming.StreamingRecognizer(lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
-    # The pair loads on the recognizer's thread before the pipeline starts, whose start a load holding the loop would
-    # hold past its bound on CI's VMs; the first frame then waits for nothing it does.
-    await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     [load] = events(record.entries, "streaming.loaded")
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
