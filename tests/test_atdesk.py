@@ -105,11 +105,19 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     async def took(move: Move) -> None:
         taken.append(move)
 
+    # The desk's last load is its wake word's: once it is in, the desk hears.
+    ready = asyncio.Event()
+
+    def record(event: WideEvent) -> None:
+        events.append(event)
+        if event.event == "desk.wake_word_loaded":
+            ready.set()
+
     # Rendered before the desk runs, so macOS's `say` never holds the loop the desk, the tap, and its timers run on.
     off, wake, engaged, deaf = (spoken(said, tmp_path / f"{name}.wav") for name, said in [("off", "create a ticket to read session history."), ("wake", "Hey Jarvis. What is the status of the build?"), ("engaged", "create a ticket to read session history."), ("deaf", "create a ticket to read session history.")])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=events.append))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record))
 
     async def until(done: Callable[[], bool]) -> None:
         # A desk that ended is the failure itself, raised, never a wait that runs out on it.
@@ -123,6 +131,14 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         await until(lambda: microphone.audio.empty())
         assert await levels.choose(levels.level) == levels.level
 
+    # The desk loads its models as it starts, which moves nothing `until` can watch, the first MLX load in the process
+    # longest: so the first wait is for them, bounded by the run's timeout alone, and a desk that ended instead is the
+    # failure.
+    loading = asyncio.create_task(ready.wait())
+    await asyncio.wait([serving, loading], return_when=asyncio.FIRST_COMPLETED)
+    loading.cancel()
+    if serving.done():
+        serving.result()
     await until(lambda: keyboard.listening)
 
     # Off: the room opens nothing, and Right Shift held alone talks, opened once it is held long enough.
