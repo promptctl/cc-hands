@@ -84,7 +84,8 @@ class Said:
     text: str
 
 
-# What a feed decoded, speaker by speaker, in the order decoded.
+# Words by speaker: a feed's in the order the session decoded them, a hold's each speaker's together, in the order they
+# were first heard in it.
 type Spoken = tuple[Said, ...]
 
 
