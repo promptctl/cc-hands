@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import pin, stand_in
+from conftest import SYSTEM_PATH, pin, stand_in
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
@@ -68,7 +68,7 @@ def executable(path: Path, text: str) -> Path:
 def claude_listing(root: Path, plugins: object) -> str:
     """A PATH whose `claude plugin list --json` prints plugins."""
     executable(root / "real" / "claude", f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(plugins)}\nEOF\n")
-    return f"{root / 'real'}:/usr/bin:/bin"
+    return f"{root / 'real'}:{SYSTEM_PATH}"
 
 
 def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
@@ -116,24 +116,24 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> Non
 
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(f"{root / 'real'}:/usr/bin:/bin")
+    found = readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}")
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
 def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Unknown)
+    assert isinstance(readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
 
 
 def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     listing = json.dumps([listed(PLUGIN_ID, True)])
     executable(root / "real" / "claude", f"#!/bin/sh\n[ \"$DISABLE_AUTOUPDATER\" = 1 ] || {{ echo \"updater=$DISABLE_AUTOUPDATER\" >&2; exit 3; }}\ncat <<'EOF'\n{listing}\nEOF\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:/usr/bin:/bin"), Ready)
+    assert isinstance(readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
 
 
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(f"{root / 'empty'}:/usr/bin:/bin"), Unknown)
+    assert isinstance(readiness.plugin(f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
 
 
 def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
@@ -263,7 +263,7 @@ def installed(root: Path) -> str:
         stand_in(version)
         (root / "bin").mkdir()
         (root / "bin" / "claude").symlink_to(version)
-    return f"{root / 'bin'}:/usr/bin:/bin"
+    return f"{root / 'bin'}:{SYSTEM_PATH}"
 
 
 @contextlib.contextmanager
@@ -730,15 +730,15 @@ def test_sessions_that_could_not_be_looked_for_are_unknown_by_no_count() -> None
 
 def test_a_claude_code_whose_path_names_no_version_is_named_without_one(root: Path) -> None:
     executable(root / "bin" / "claude", "\x7fELF")
-    found = readiness.claude(f"{root / 'bin'}:/usr/bin:/bin")
+    found = readiness.claude(f"{root / 'bin'}:{SYSTEM_PATH}")
     assert found == Ready("Claude Code", f"Claude Code is installed: {root / 'bin' / 'claude'}")
 
 
 def test_a_version_named_directory_above_claude_code_is_not_its_version(root: Path) -> None:
     executable(root / "tools" / "1.4.0" / "bin" / "claude", "\x7fELF")
-    assert readiness.claude(f"{root / 'tools' / '1.4.0' / 'bin'}:/usr/bin:/bin").step == "Claude Code"
+    assert readiness.claude(f"{root / 'tools' / '1.4.0' / 'bin'}:{SYSTEM_PATH}").step == "Claude Code"
     executable(root / "Caskroom" / "claude-code" / "1.0.0" / "claude", "\x7fELF")
-    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '1.0.0'}:/usr/bin:/bin").step == "Claude Code 1.0.0"
+    assert readiness.claude(f"{root / 'Caskroom' / 'claude-code' / '1.0.0'}:{SYSTEM_PATH}").step == "Claude Code 1.0.0"
 
 
 # Claude Code
@@ -750,13 +750,13 @@ def test_a_native_claude_on_path_is_ready(root: Path) -> None:
 
 
 def test_no_claude_on_path_is_missing_and_names_its_installer(root: Path) -> None:
-    found = readiness.claude(f"{root / 'empty'}:/usr/bin:/bin")
+    found = readiness.claude(f"{root / 'empty'}:{SYSTEM_PATH}")
     assert isinstance(found, Missing) and "no `claude` of its own" in found.said and "https://claude.ai/install.sh" in found.said
 
 
 def test_a_claude_that_is_a_script_is_missing_and_names_the_native_one(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\n")
-    found = readiness.claude(f"{root / 'real'}:/usr/bin:/bin")
+    found = readiness.claude(f"{root / 'real'}:{SYSTEM_PATH}")
     assert isinstance(found, Missing) and "is a script" in found.said and found.fix.startswith("`claude install`")
 
 
@@ -781,7 +781,7 @@ def test_a_pyaudio_that_cannot_load_is_missing_and_names_homebrews_portaudio(mon
 def hands_printing(root: Path, said: str, code: int = 0) -> str:
     """A PATH whose `hands --version` prints said and exits code."""
     executable(root / "tools" / "hands", f"#!/bin/sh\necho '{said}'\nexit {code}\n")
-    return f"{root / 'tools'}:/usr/bin:/bin"
+    return f"{root / 'tools'}:{SYSTEM_PATH}"
 
 
 def test_this_hands_on_path_is_ready(root: Path) -> None:
@@ -790,7 +790,7 @@ def test_this_hands_on_path_is_ready(root: Path) -> None:
 
 
 def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -> None:
-    found = readiness.installed(f"{root / 'empty'}:/usr/bin:/bin")
+    found = readiness.installed(f"{root / 'empty'}:{SYSTEM_PATH}")
     assert isinstance(found, Missing) and "`hands plugin`" in found.said and "`uv tool update-shell`" in found.said
 
 

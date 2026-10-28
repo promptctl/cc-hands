@@ -14,7 +14,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame
 
-from conftest import NO_PYTHON
+from conftest import SYSTEM_PATH
 
 from hands.core.attention import Attention, Delivery, Level, Overlay, Spoken, Switch, Withheld
 from hands.core.delta import Delta
@@ -404,7 +404,7 @@ async def test_a_session_that_is_not_running_cannot_have_its_overlay_set(tmp_pat
 
 def skill(plugin: Path, home: Home, cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     """`/hands:attention` as the skill runs it: the plugin's launcher, in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd)}
+    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd)}
     return subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.attention", *arguments], env=environment, cwd=cwd, capture_output=True, text=True)
 
 
