@@ -272,6 +272,10 @@ async def drive(
                         assert ears is not None
                         ears.afresh()
                         detected = VADState.QUIET
+                    # Speech the desk ignored while the key was down starts for it as the key comes up, so a tap of
+                    # Shift as the user began does not lose what they say.
+                    if isinstance(was.phase, Keyed) and not isinstance(desk.phase, Keyed):
+                        detected = VADState.QUIET
                     for act in acts:
                         match act:
                             case "judge":

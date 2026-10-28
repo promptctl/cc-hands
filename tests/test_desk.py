@@ -5,7 +5,7 @@ from collections.abc import Sequence
 import pytest
 
 from hands.voice.cues import level_cue
-from hands.voice.desk import Act, Chosen, Desk, Event, Level, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, step
+from hands.voice.desk import ASK_SECONDS, Act, Chosen, NothingAsked, Resting, Woke, deadline, Desk, Event, Level, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, step
 from hands.voice.hold import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 
 
@@ -165,3 +165,11 @@ def test_the_wake_words_own_pause_and_its_saying_again_end_nothing(events: list[
 
 def test_each_level_has_its_own_cue() -> None:
     assert len({level_cue(Leveled("off", now, "tap")) for now in ("wake word", "engaged")} | {level_cue(Leveled("engaged", "off", "tap"))}) == 3
+
+
+def test_a_wake_with_nothing_asked_after_it_is_thrown_away_and_a_stale_one_is_nothing() -> None:
+    assert (ASK_SECONDS + 1.0, NothingAsked(1.0)) in deadline(Resting("wake word"), Woke(1.0))
+    desk, made = run([Woken(1.0), NothingAsked(0.5), NothingAsked(1.0)], at("wake word"))
+    assert moves(made) == [Made("arm", "wake word"), Made("start", "wake word"), Made("drop", "wake word")] and desk.level == "wake word"
+    _, asked = run([Woken(1.0), SpeechStarted(1.5), NothingAsked(1.0)], at("wake word"))
+    assert Made("drop", "wake word") not in asked

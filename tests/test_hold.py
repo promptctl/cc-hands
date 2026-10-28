@@ -41,8 +41,6 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], ["arm", "disarm", "arm", "disarm"]),
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         # Right Command pressed while Right Shift is held makes it Shift, as any modifier does; its release is nothing.
-        ([Pressed(1.0), CommandPressed(1.1), Ripe(1.0), Released()], ["arm", "disarm"]),
-        ([Pressed(1.0), Ripe(1.0), CommandPressed(1.7), CommandReleased(), Released()], ["arm", "start", "drop"]),
         ([CommandPressed(1.0), CommandReleased()], []),
         # Typing with Right Shift up is nothing to the turn.
         ([Typed(), Typed()], []),

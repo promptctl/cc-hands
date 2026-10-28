@@ -63,6 +63,7 @@ from hands.voice.holds import Edge
 from hands.voice import wake
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears, Hears, drive, loaded
+from hands.sessions.wide import annotate, unit
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
@@ -437,7 +438,9 @@ async def converse(
         # [LAW:no-silent-failure] the models every level hears with are fetched and loaded once, beside the talk key as
         # the desk starts: one that cannot be is the run's failure, said with what could not be loaded, never a level
         # that fails as it is chosen.
-        await wake.fetched(home.wake_word, wake_word)
+        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files it fetched, none once they are kept.
+        with unit("desk.fetched", record):
+            annotate(fetched=", ".join(await wake.fetched(home.wake_word, wake_word)))
         async with loaded(rate, record) as ears, wake.loaded(rate, home.wake_word, wake_word, record) as word:
             yield ears, wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
 

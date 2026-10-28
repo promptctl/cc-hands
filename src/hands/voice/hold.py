@@ -126,9 +126,9 @@ def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
         # The key may still be down: its release, when it comes, ends nothing.
         case Talking(since=since), Overlong(pressed_at=pressed_at) if pressed_at == since:
             return Typing(), ("timeout",)
-        case Arming(), Typed() | CommandPressed():
+        case Arming(), Typed():
             return Typing(), ("disarm",)
-        case Talking(), Typed() | CommandPressed():
+        case Talking(), Typed():
             return Typing(), ("drop",)
         case Talking(), Released():
             return Idle(), ("stop",)

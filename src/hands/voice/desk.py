@@ -24,6 +24,9 @@ Listens = Literal["wake word", "engaged"]
 Level = Literal["off", "wake word", "engaged"]
 LEVELS: tuple[Level, ...] = ("off", "wake word", "engaged")
 
+# How long after the wake word what is asked may take to start: past it, the wake is taken for a word misheard.
+ASK_SECONDS = 8.0
+
 # Who chose a level: a triple tap, or the brain's tool, asked by voice.
 Chooser = Literal["tap", "tool"]
 
@@ -68,13 +71,20 @@ class TurnTooLong:
 
 
 @dataclass(frozen=True)
+class NothingAsked:
+    """`ASK_SECONDS` have passed since the wake word opened the turn at `woke_at`."""
+
+    woke_at: Instant
+
+
+@dataclass(frozen=True)
 class Chosen:
     """The brain's tool chose `level`."""
 
     level: Level
 
 
-Heard = SpeechStarting | SpeechStarted | SpeechStopped | Woken | TurnEnded | TurnTooLong
+Heard = SpeechStarting | SpeechStarted | SpeechStopped | Woken | TurnEnded | TurnTooLong | NothingAsked
 Event = KeyEvent | Heard | Chosen
 
 
@@ -178,7 +188,7 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
         case Chosen(level=level):
             phase, acts = _leveled(desk.phase, level, "tool")
             return replace(desk, phase=phase), acts
-        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong():
+        case SpeechStarting() | SpeechStarted() | SpeechStopped() | Woken() | TurnEnded() | TurnTooLong() | NothingAsked():
             phase, acts = _heard(desk.phase, event)
             return replace(desk, phase=phase), acts
         case _:
@@ -286,6 +296,10 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
             return Voiced("wake word", since, key), ()
         case Woke() as turn, TurnTooLong():
             return _in_turn(turn, heard)
+        # [LAW:no-ambient-temporal-coupling] a wake that nothing asked after, a word misheard in a quiet room, is
+        # thrown away, counted only for the wake it was set for.
+        case Woke(since=since, key=key), NothingAsked(woke_at=woke_at) if woke_at == since:
+            return _rest("wake word", key, Made("drop", "wake word"))
         case Voiced() as turn, SpeechStopped() | TurnEnded() | TurnTooLong():
             return _in_turn(turn, heard)
         case _:
@@ -325,13 +339,16 @@ def _voice_of(level: Listens) -> Edge:
             return "engaged conversation"
 
 
-def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong], ...]:
+def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong | NothingAsked], ...]:
     """What the desk moving from `was` to `now` asks to be told later: a turn the voice just opened, once it has been
-    open `TURN_LIMIT_SECONDS`. A turn of the key's has the hold's own limit."""
+    open `TURN_LIMIT_SECONDS`, and one the wake word opened, once `ASK_SECONDS` have passed with nothing asked. A turn of
+    the key's has the hold's own limit."""
     match now, was:
         case Woke(since=since) | Voiced(since=since), Woke(since=opened) | Voiced(since=opened) if since == opened:
             return ()
-        case Woke(since=since) | Voiced(since=since), _:
+        case Woke(since=since), _:
+            return (since + TURN_LIMIT_SECONDS, TurnTooLong(since)), (since + ASK_SECONDS, NothingAsked(since))
+        case Voiced(since=since), _:
             return ((since + TURN_LIMIT_SECONDS, TurnTooLong(since)),)
         case _:
             return ()

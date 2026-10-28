@@ -249,6 +249,21 @@ async def test_each_level_hears_from_where_it_started() -> None:
     assert begun == [True, False, True, False]
 
 
+async def test_speech_begun_under_a_tap_of_shift_opens_a_turn_once_the_key_is_up() -> None:
+    rig = Rig(verdicts=[True])
+    driving = rig.start()
+    await rig.choose("engaged")
+    rig.keys[0](Pressed(1.0))
+    await rig.hear(b"s", b"S")
+    while rig.audio.qsize():
+        await asyncio.sleep(0.001)
+    rig.keys[0](Released())
+    await rig.hear(b"S", b"q")
+    await rig.settle(6)
+    await stopped(driving)
+    assert rig.made == ["listen", "arm", "disarm", "arm", "start", "stop"]
+
+
 async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks() -> None:
     rig = Rig(verdicts=[True, True])
     rig.ears.thinking = asyncio.Event()
