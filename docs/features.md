@@ -320,14 +320,14 @@ So that in conversation hands can tell the owner from another person, and from i
   paired with the streaming recognizer in one session for the run, so each word a hold's
   stream hears comes with its speaker, and a speaker keeps the same number from hold to hold;
   each hold the key sent or dropped ends in one of the streaming listener's `hearing` events,
-  with each speaker's words (`hands.voice.streaming`). Measured 2026-10-27 through that code by
-  `scripts/measure-diarization.py`, a hold's speaker being whoever said most of its words:
-  73.7 min of one LibriVox reader in 1493 holds, all 12851 words one speaker and none anyone
-  else's, 4 holds with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of 28
-  holds given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 24 of 29,
-  4 holds with no words and the miss one woman's only hold given to another's speaker. On the
-  two-speaker AMI fixture, every word's speaker matched what the transformers path on the CPU
-  decided for the same audio, 663 of 663 over five phases of the grid. Built:
+  with each speaker's words (`hands.voice.streaming`). Measured 2026-10-28 through that code by
+  `scripts/measure-diarization.py`, at GATING 1, a hold's speaker being whoever said most of its
+  words: 73.7 min of one LibriVox reader in 1493 holds, all 12814 words one speaker and none
+  anyone else's, 5 holds with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of
+  28 holds given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 27 of 29,
+  1 hold with no words and the miss one person's only hold given to another's speaker. On the
+  two-speaker AMI fixture, at GATING 4, every word's speaker matched what the transformers path
+  on the CPU decided for the same audio, 663 of 663 over five phases of the grid. Built:
   tests/test_streaming.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)

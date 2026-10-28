@@ -1852,8 +1852,12 @@ audio the hold is transcribed from, as it is spoken. The diarizer decides who is
 each 10 ms frame, and the session masks each speaker's frames into a recognizer stream of that
 speaker's own, so a word comes out of one speaker's stream. The diarizer's arrival-order speaker
 cache carries who has been heard from hold to hold, so speaker 0 is the first voice of the run in
-every hold; a new session would number everyone from 0 again. At the hold's end the session is
-fed silence until every speaker of the hold has been gated off and its last words decoded. Each
+every hold; a new session would number everyone from 0 again. A speaker's stream is stepped
+only in the chunks the diarizer hears them in (`GATING`, set by `scripts/measure-gating.py` on
+AMI turns that end in silence): stepped on past them, on frames masked to zero, it ends more turns
+on words nobody said. At the hold's end the session is fed silence until the diarizer has
+committed the hold's last chunk, and every speaker's stream is closed on one chunk of silence as
+the model hears it, so a hold's last words are decoded in it and none in the next. Each
 hold the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
 each speaker's words in it. Nothing waits on it. The models load on the stream's own thread, as
 its first work (`streaming.loaded`), so the voice starts without them and holds spoken meanwhile
