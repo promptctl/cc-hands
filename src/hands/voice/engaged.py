@@ -22,10 +22,11 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol, get_args
+from typing import Any, Literal, Protocol, cast, get_args
 
+import numpy as np
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.turn.smart_turn.base_smart_turn import BaseSmartTurn
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
@@ -234,13 +235,36 @@ class Ears(Protocol):
 STOP_SECS = 0.8
 
 
+# Smart Turn v3.2 ported to MLX, fetched from the Hugging Face hub into its cache on the first load, at the revision
+# measured for it.
+SMART_TURN = "mlx-community/smart-turn-v3"
+SMART_TURN_REVISION = "74af1538ebace37b0fcc667a6a8a3d902d73eee0"
+
+
+class SmartTurn(BaseSmartTurn):
+    """Smart Turn v3.2 on MLX: Pipecat's analyzer keeps the speech, times the silence, and cuts the segment, and the port
+    judges it. The port is converted from the full-precision build, which Pipecat's benchmark puts ahead of the quantized
+    one its own local analyzer runs on the CPU, and judges a segment in a fifth of the time."""
+
+    def __init__(self, sample_rate: int) -> None:
+        super().__init__(sample_rate=sample_rate)
+        # mlx-audio ships no types.
+        from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+
+        self._model = cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION))
+
+    def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
+        verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
+        return {"prediction": verdict.prediction, "probability": verdict.probability}
+
+
 class Models:
-    """Silero's voice activity detector and Smart Turn v3, run locally on the CPU, both shipped inside Pipecat."""
+    """Silero's voice activity detector, on the CPU as Pipecat ships it, and Smart Turn on MLX."""
 
     def __init__(self, sample_rate: int) -> None:
         self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
-        self._turn = LocalSmartTurnAnalyzerV3(sample_rate=sample_rate)
+        self._turn = SmartTurn(sample_rate)
         self._turn.set_sample_rate(sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
@@ -281,7 +305,9 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
     loading = asyncio.create_task(asyncio.to_thread(Models, sample_rate))
     try:
         with unit("trigger.loaded", emit):
-            # [LAW:nothing-unseen] the pause the detector ends speech at, as it was loaded with it.
+            # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
+            # pause the detector ends speech at, as it was loaded with it.
+            annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
             annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
         yield loading.result()
     finally:
