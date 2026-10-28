@@ -169,6 +169,10 @@ class Streamed:
             case streaming.Said():
                 return (text,)
 
+    def closed(self) -> streaming.Closed:
+        """No stream to close: every word is decoded as it is said."""
+        return streaming.Closed(frozenset(), ())
+
 
 @dataclass
 class Clock:

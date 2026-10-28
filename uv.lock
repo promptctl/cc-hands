@@ -466,7 +466,7 @@ requires-dist = [
     { name = "ifaddr", specifier = ">=0.2" },
     { name = "livekit", specifier = ">=1.1.20,<2" },
     { name = "loguru", specifier = ">=0.7" },
-    { name = "mlx-audio", specifier = ">=0.6.2,<0.7" },
+    { name = "mlx-audio", specifier = "==0.6.2" },
     { name = "mlx-whisper", specifier = ">=0.4.3,<0.5" },
     { name = "openwakeword", specifier = ">=0.6,<0.7" },
     { name = "pipecat-ai", extras = ["local", "pocket-tts"], specifier = ">=1.9.0,<2" },
