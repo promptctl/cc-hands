@@ -171,13 +171,13 @@ class Hearing(Protocol):
 class Asking(Hearing, Protocol):
     """What answers hands' side questions, as the wire sees it: a question's own request is its part."""
 
-    def adopted(self, sent: Sent, routed: Route) -> Route: ...
+    def own(self, sent: Sent) -> Send | None: ...
 
 
 class Kept:
-    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own and a
-    side question's own request inside the question, and everything heard too by whatever else reads the wire: the
-    brain, and what answers hands' side questions."""
+    """The brain's listener on the wire: the stage's route, or a side question's for its own request, with the keeper's
+    changes made before the route's own, and everything heard too by whatever else reads the wire: the brain, and what
+    answers hands' side questions."""
 
     def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
         self._stage = stage
@@ -188,8 +188,11 @@ class Kept:
     def route(self, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        match self._asides.adopted(sent, self._stage.route(sent)):
-            # [LAW:one-source-of-truth] the stage's Send as it routed it, every field carried, with the keeper's changes first.
+        # [LAW:single-enforcer] a side question's own request is routed by the question alone: the stage's routes are
+        # for what Claude Code sends, and never made for it.
+        owned = self._asides.own(sent)
+        match self._stage.route(sent) if owned is None else owned:
+            # [LAW:one-source-of-truth] the Send as it was routed, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))
             case Hold() as held:

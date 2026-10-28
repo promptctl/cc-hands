@@ -147,8 +147,8 @@ class Store:
 class NoAsides:
     """No side question asked: every request goes as the stage routed it."""
 
-    def adopted(self, sent: Sent, routed: Route) -> Route:
-        return routed
+    def own(self, sent: Sent) -> Send | None:
+        return None
 
     def hear(self, observed: Observed) -> None:
         pass
@@ -290,3 +290,17 @@ async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() ->
     routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
     assert isinstance(routed, Send) and routed.refusal == "final"
     assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1
+
+
+async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_the_stage_is_never_asked() -> None:
+    class Unasked(Stage):
+        def route(self, sent: Sent) -> Route:
+            raise AssertionError("the stage was asked to route a side question's own request")
+
+    class Owning(NoAsides):
+        def own(self, sent: Sent) -> Send | None:
+            return Send(span=SPAN)
+
+    keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    routed = Kept(Unasked(), keeper, Owning()).route(sent(history(6), kind=Fork()))
+    assert isinstance(routed, Send) and routed.refusal == "retried" and routed.span == SPAN

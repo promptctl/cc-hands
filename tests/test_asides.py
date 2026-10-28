@@ -209,9 +209,12 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
 
         class Listening:
             def route(self, sent: Sent) -> Route:
-                adopted = asides.adopted(sent, Send(span=root()))
-                routed.append(adopted.span)
-                return adopted
+                # As Kept routes: the question's own request by the question, the rest as the stage routes every request
+                # of the brain's that is not a main turn.
+                owned = asides.own(sent)
+                route = Send(refusal="final", span=root()) if owned is None else owned
+                routed.append(route.span)
+                return route
 
             def hear(self, observed: Observed) -> None:
                 asides.hear(observed)
@@ -264,13 +267,32 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     rig.answers.append(stream("", stop="tool_use"))
     with pytest.raises(AsideFailed, match="ended 'tool_use'"):
         await rig.asides.ask(AsideKind.LINE, "silent", Deadline(10))
-    # A refusal fails the question at once, saying what the API answered: nothing asks again.
-    rig.answers.append(web.Response(status=400, text='{"type":"error","error":{"type":"invalid_request_error","message":"no"}}', headers={"request-id": "req_2", "Content-Type": "application/json"}))
-    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_2\)"):
-        await rig.asides.ask(AsideKind.LINE, "refused", Deadline(10))
     assert [(event.facts["question"], event.facts.get("unanswered")) for event in events(recorded)] == [
-        ("early", Unanswered.UNFORKED), ("silent", Unanswered.WORDLESS), ("refused", Unanswered.REFUSED),
+        ("early", Unanswered.UNFORKED), ("silent", Unanswered.WORDLESS),
     ]
+
+
+# A refusal fails the question at once, saying what the API answered: nothing asks again. Those on record: a login at
+# its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload.
+# The limit and the overload are the two the proxy would hold final, and pass on as its own 502, for Claude Code.
+@pytest.mark.parametrize(("status", "error", "headers"), [
+    (400, "invalid_request_error", {}),
+    (403, "permission_error", {}),
+    (529, "overloaded_error", {}),
+    (429, "rate_limit_error", {"retry-after": "240711", "anthropic-ratelimit-unified-status": "rejected"}),
+    (401, "authentication_error", {}),
+])
+async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brain: Callable[[list[Entry]], Awaitable[Brain]], status: int, error: str, headers: dict[str, str]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    said = f'{{"type":"error","error":{{"type":"{error}","message":"no"}}}}'
+    rig.answers.append(web.Response(status=status, text=said, headers={"request-id": "req_9", "Content-Type": "application/json", **headers}))
+    with pytest.raises(AsideFailed, match=rf"answered {status} \(request-id req_9\).*{error}"):
+        await rig.asides.ask(AsideKind.NAME, "refused", Deadline(5))
+    [event] = events(recorded)
+    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, status)
+    assert len(rig.asked) == 2
 
 
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
