@@ -22,6 +22,7 @@ import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
 from conftest import RUN, pin, running, unread
+from hands.brain.fork import REMINDER
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
@@ -53,6 +54,8 @@ TURN = "mcp__hands__stay_silent"
 # What only a request carrying a tool's result holds, as Claude Code's compact JSON writes the block. The same words in
 # a prompt's text are escaped inside a JSON string, so they never match.
 RESULT = '"type":"tool_result"'
+# The words a side question's prompt opens with, past the reminder's tag: nothing in them is escaped in a JSON string.
+SIDE_QUESTION = REMINDER.removeprefix("<system-reminder>").split(".")[0]
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,11 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
         if not line:
             raise AssertionError(f"the mock exited before it listened: {log.read_text()}")
         ready = json.loads(line)
-        yield MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
+        api = MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
+        # Every old tool result is asked as a side question forked from the brain's turn, whose body also holds what the
+        # turn's own scripts match: its answer is named ahead of them all.
+        api.script("0-aside", {"bodyContains": [SIDE_QUESTION]}, {"type": "text", "text": "It ran."})
+        yield api
     finally:
         served.terminate()
         await served.wait()
