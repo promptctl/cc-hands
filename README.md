@@ -76,11 +76,13 @@ is not, what does it; it exits 0 only when every step is done.
    key from other apps: System Settings > Privacy & Security > Input Monitoring, then
    restart that app. `hands run` asks macOS to show the prompt when the grant is missing.
 
-8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
-   start fetches Whisper's model, about 1.6 GB, NVIDIA's Nemotron Speech Streaming, about
-   2.3 GB, and Nemotron 3 Diarization on MLX, about 190 MB, from the Hugging Face hub. The
-   first switch to engaged conversation or the wake word fetches Smart Turn on MLX, about
-   32 MB, from there too:
+8. hands itself, in that terminal; then hold Right Shift in any app to talk. The
+   microphone is off between turns; triple tap Right Command for the wake word, or Right
+   Shift for engaged conversation, and the same again to turn it off. Its first start
+   fetches Whisper's model, about 1.6 GB, NVIDIA's Nemotron Speech Streaming, about
+   2.3 GB, Nemotron 3 Diarization on MLX, about 190 MB, and Smart Turn on MLX, about
+   32 MB, from the Hugging Face hub, and the wake word's models, about 3 MB, from
+   openWakeWord's release:
 
    ```
    hands run
@@ -193,7 +195,7 @@ collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTT
 
 [talk]
 personality = "Dry and wry, with a bit of wit."   # how hands comes across, in your own words
-wake_word = "Hey Mycroft"     # what the wake word trigger listens for
+wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level
 ```
 
 `personality` changes hands' tone and choice of words, and nothing else: replies stay short and

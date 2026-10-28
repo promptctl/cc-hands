@@ -1,4 +1,4 @@
-"""Which wake word the desk listens for under the wake word trigger (`hands.voice.wake`): one of openWakeWord's own, or
+"""Which wake word the desk listens for at its wake word level (`hands.voice.wake`): one of openWakeWord's own, or
 one the user trained with openWakeWord. config.toml names it (`hands.daemon.config`), which reads it without loading the
 models, so nothing here does either.
 """

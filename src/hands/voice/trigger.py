@@ -1,19 +1,15 @@
-"""The trigger: the way a turn of the user's is opened at the desk, one choice the user changes by voice while hands runs.
+"""The trigger: the way a turn of the user's is opened, at the desk or the phone, and the level the desk listens at.
 
-[LAW:one-type-per-behavior] every way of opening a turn is one value of `Trigger` (`hands.voice.holds`, beside the hold
-it opens), never a flag of its own: a trigger built later is one more value there, one more arm wherever a trigger is
-matched, and nothing else.
+The desk's level (`hands.voice.desk`) is the one choice: the talk key opens turns at every level, and the wake word or
+the voice alone at their own.
 """
 
 import asyncio
-from collections.abc import Callable, Coroutine
-from pathlib import Path
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
-from hands.threads import off_loop
-from hands.voice import engaged, wake
-from hands.voice.holds import Edge, Opener, Trigger
+from hands.voice.desk import Chosen, Level, Leveled
+from hands.voice.holds import Edge, Opener
 from hands.voice.wakeword import Word
 
 
@@ -42,60 +38,37 @@ def turn_start(opener: Opener) -> TurnStart:
             return "on the hold"
 
 
-class Triggers:
-    """The one owner of which trigger is in use: the brain's tools switch it, and the desk is driven by its edge."""
+class Levels:
+    """The one owner of the level the desk listens at, as the brain's tools read it and choose it: a choice goes to the
+    desk's driver, which steps it in order with the taps, and the level the driver arrives at is the one said."""
 
-    # [LAW:no-shared-mutable-globals] the brain's tool writes and the desk's driver reads, both on the event loop.
+    # [LAW:no-shared-mutable-globals] the driver writes the level and the tools read it, both on the event loop; the
+    # tools write only the queue the driver reads.
     def __init__(self) -> None:
-        self._in_use: Trigger = "held key"
-        # Set once the trigger in use is replaced by another; the driver of the desk waits on it.
-        self._switched = asyncio.Event()
+        self._level: Level = "off"
+        self.chosen: asyncio.Queue[Chosen] = asyncio.Queue()
 
-    def choose(self, trigger: Trigger) -> Trigger:
-        """Put `trigger` in use, and get back the one it replaced."""
-        was, self._in_use = self._in_use, trigger
-        if trigger != was:
-            self._switched.set()
-        return was
+    def choose(self, level: Level) -> Level:
+        """Ask the desk for `level`, and get back the level it is at as asked."""
+        self.chosen.put_nowait(Chosen(level))
+        return self._level
 
-    async def drive(self, edge: Callable[[Trigger], Coroutine[object, object, None]]) -> None:
-        """Run `edge` for the trigger in use until it is switched, then for the new one in its place, until cancelled.
-
-        [LAW:no-ambient-temporal-coupling] the old edge is stopped before the new one starts, so the next turn opens the
-        new way and no key or word is read by both. An edge that fails ends the drive with its failure.
-        """
-        while True:
-            self._switched = switched = asyncio.Event()
-            async with asyncio.TaskGroup() as group:
-                running = group.create_task(edge(self._in_use))
-                await switched.wait()
-                running.cancel()
+    def leveled(self, leveled: Leveled) -> None:
+        """The driver's report of the level the desk is at now."""
+        self._level = leveled.now
 
     @property
-    def in_use(self) -> Trigger:
-        return self._in_use
+    def level(self) -> Level:
+        return self._level
 
 
-async def readied(trigger: Trigger, models: Path, word: Word) -> tuple[str, ...]:
-    """What `trigger`'s edge loads from disk, fetched and loaded once before it is put in use, so a switch that cannot be
-    made is refused as it is asked for, never by the edge failing the run: the names of the files fetched."""
-    match trigger:
+def described(level: Level, word: Word) -> str:
+    """What hands says of a level: its name, and how to talk under it, `word` being the wake word."""
+    held = "Hold Right Shift to talk, and let go to send."
+    match level:
+        case "off":
+            return f"The microphone is off between turns. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
         case "wake word":
-            fetched = await wake.fetched(models, word)
-            await asyncio.to_thread(wake.WakeWord, models, word)
-            return (*fetched, *await off_loop(engaged.readied, "Smart Turn"))
-        case "engaged conversation":
-            return await off_loop(engaged.readied, "Smart Turn")
-        case "held key":
-            return ()
-
-
-def described(trigger: Trigger, word: Word) -> str:
-    """What hands says of a trigger in use: its name, and how to talk under it, `word` being the wake word."""
-    match trigger:
-        case "held key":
-            return "The held key: hold Right Shift to talk, and let go to send."
-        case "engaged conversation":
-            return "Engaged conversation: hold Right Shift once to engage, then just talk; hands answers when you finish, and listens again. Hold it once more to disengage."
-        case "wake word":
-            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks."
+            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks. {held} Triple tap Right Command to turn the microphone off."
+        case "engaged":
+            return f"Engaged conversation: just talk; hands answers when you finish, and listens again. {held} Triple tap Right Shift to turn the microphone off."

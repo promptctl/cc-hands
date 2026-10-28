@@ -57,13 +57,14 @@ from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
-from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
+from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues, level_cues
 from hands.voice.hold import Move
+from hands.voice.holds import Edge
 from hands.voice import wake
-from hands.voice.engaged import drive, drive_engaged, loaded, untapped
-from hands.voice.wake import WAKE
+from hands.voice.desk import Leveled, Made
+from hands.voice.engaged import drive, loaded
 from hands.voice.wakeword import Trained, Word
-from hands.voice.keys import drive_quit, drive_talk_key, tapped
+from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
@@ -92,7 +93,7 @@ from hands.voice.player import Player
 from hands.voice import voices
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
-from hands.voice.trigger import Edge, Trigger, Triggers
+from hands.voice.trigger import Levels
 from hands.voice.tool import Tool
 from hands.voice.tools import audited, close_session_tool, cued, intermediary_tools, start_session_tool, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
@@ -270,16 +271,16 @@ async def run(
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(record)
-        # [LAW:one-source-of-truth] one owner of which trigger opens the user's turns at the desk: set_trigger switches
-        # it, and the desk is driven by its edge.
-        triggers = Triggers()
+        # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
+        # tap or set_listening_level's choice, and the tools read it.
+        levels = Levels()
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop)
         if config is not None:
-            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, triggers, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
@@ -295,7 +296,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, triggers, config.wake, run_start, environment)
+                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -316,7 +317,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     # from (None where the home has none and every setting is its default), the collector they name, the
     # model the run reaches and the brain's account, the voice it
     # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
-    # and the wake word the wake word trigger listens for, with the model of the user's own it is heard with, None for
+    # and the wake word the desk listens for at its wake word level, with the model of the user's own it is heard with, None for
     # openWakeWord's own.
     read_from = read.settings.path(home)
     run_start.heard(
@@ -343,7 +344,7 @@ async def converse(
     names: Names,
     recounts: Recounts,
     quiet_cues: QuietCues,
-    triggers: Triggers,
+    levels: Levels,
     wake_word: Word,
     run_start: Start,
     environment: Mapping[str, str],
@@ -407,8 +408,8 @@ async def converse(
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
 
-    async def at_desk(move: Move, by: Trigger) -> None:
-        match voice.key.move(move, by):
+    async def at_desk(made: Made) -> None:
+        match voice.key.move(made.move, made.by):
             case None:
                 # A Shift at the desk while the turn is the phone's: nothing of it is cued, said, or beaten.
                 return
@@ -417,27 +418,24 @@ async def converse(
                 for fact in told(taken, voice.audio.devices):
                     await channel.say(fact)
 
+    async def at_level(leveled: Leveled) -> None:
+        levels.leveled(leveled)
+        for cue in level_cues(leveled):
+            logger.info(cue.line)
+            voice.audio.output().cue(cue)
+        beat()
+
     async def drive_desk_once_started() -> None:
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await triggers.drive(drive_desk)
-
-    async def drive_desk(trigger: Trigger) -> None:
-        # [LAW:one-type-per-behavior] the trigger in use picks the edge that drives the desk: each trigger is one arm.
-        match trigger:
-            case "held key":
-                await drive_talk_key(lambda move: at_desk(move, "held key"))
-            case "engaged conversation":
-                # Loaded as the trigger is switched to, from the hub's cache the switch fetched Smart Turn into, and let go of as it
-                # is switched from.
-                async with loaded(voice.audio.input().sample_rate, record) as ears:
-                    await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
-            case "wake word":
-                # As engaged conversation's, with the wake word's model beside them; the talk key is not read.
-                async with loaded(voice.audio.input().sample_rate, record) as ears, wake.loaded(voice.audio.input().sample_rate, home.wake_word, wake_word, record) as word:
-                    woken = wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
-                    await drive(WAKE, untapped, voice.audio.input().overheard, ears, woken, lambda move: at_desk(move, "wake word"), record)
+        rate = voice.audio.input().sample_rate
+        # [LAW:no-silent-failure] the models every level hears with are fetched and loaded once, as the desk starts: one
+        # that cannot be is the run's failure, said with what could not be loaded, never a level that fails as it is chosen.
+        await wake.fetched(home.wake_word, wake_word)
+        async with loaded(rate, record) as ears, wake.loaded(rate, home.wake_word, wake_word, record) as word:
+            woken = wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
+            await drive(tapped, voice.audio.input().overheard, ears, woken, levels.chosen, at_desk, at_level, record)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
@@ -476,7 +474,7 @@ async def converse(
     phone = asyncio.create_task(answer_the_phone_once_started(), name="the phone")
     phone.add_done_callback(stop_if_failed)
     background.append(phone)
-    logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn.")
+    logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn. Triple tap Right Command for the wake word, Right Shift for engaged conversation.")
     if sys.stdin.isatty():
         quit_key = asyncio.create_task(drive_quit(lambda: stop.tell(QuitKey())), name="the terminal quit key")
         quit_key.add_done_callback(stop_if_failed)

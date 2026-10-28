@@ -47,7 +47,7 @@ class VoiceConfig:
     voice: voices.Voice
     # How the model comes across, in the user's words; None is hands' own.
     personality: str | None = None
-    # What the wake word trigger listens for.
+    # What the desk listens for at its wake word level.
     wake: Word = Pretrained()
 
 

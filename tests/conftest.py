@@ -227,8 +227,8 @@ def _dead_pid() -> int:
 
 @pytest.fixture(scope="session")
 def smart_turn() -> None:
-    """Smart Turn's MLX port in the hub's cache, so a switch to an edge it judges for fetches nothing."""
-    engaged.readied()
+    """Smart Turn's MLX port in the hub's cache, so a desk that loads it fetches nothing."""
+    engaged.ported()
 
 
 @pytest.fixture

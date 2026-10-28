@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,7 @@ from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
 from hands.voice import keys, talkkey
-from hands.voice.hold import Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
+from hands.voice.hold import CommandPressed, CommandReleased, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
@@ -40,6 +40,10 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         # A Ripe left over from an earlier press does not open the press after it; its own Ripe does.
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], ["arm", "disarm", "arm", "disarm"]),
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
+        # Right Command pressed while Right Shift is held makes it Shift, as any modifier does; its release is nothing.
+        ([Pressed(1.0), CommandPressed(1.1), Ripe(1.0), Released()], ["arm", "disarm"]),
+        ([Pressed(1.0), Ripe(1.0), CommandPressed(1.7), CommandReleased(), Released()], ["arm", "start", "drop"]),
+        ([CommandPressed(1.0), CommandReleased()], []),
         # Typing with Right Shift up is nothing to the turn.
         ([Typed(), Typed()], []),
         # A press that finds the key already down proves a release went by unseen: an open turn is sent, as that
@@ -62,6 +66,7 @@ def test_the_hold_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> No
 KEY_DOWN = talkkey.WATCHED_KINDS[0]
 SHIFT = 0x20000  # kCGEventFlagMaskShift, set by either Shift
 LEFT_SHIFT_ONLY = SHIFT | 0x2  # NX_DEVICELSHIFTKEYMASK
+COMMAND = 0x100000  # kCGEventFlagMaskCommand, set by either Command
 
 
 @pytest.mark.parametrize(
@@ -78,10 +83,30 @@ LEFT_SHIFT_ONLY = SHIFT | 0x2  # NX_DEVICELSHIFTKEYMASK
         (talkkey.FLAGS_CHANGED, talkkey.RIGHT_SHIFT, SHIFT | talkkey.RIGHT_SHIFT_DOWN | 0x2, Typed()),
         # A shift-click and a shift-scroll are Shift too.
         *((kind, 0, SHIFT | talkkey.RIGHT_SHIFT_DOWN, Typed()) for kind in talkkey.WATCHED_KINDS[2:]),
+        # Right Command alone, down and up: its own bit and the Command mask, then neither.
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_COMMAND, COMMAND | talkkey.RIGHT_COMMAND_DOWN, CommandPressed(5.0)),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_COMMAND, 0, CommandReleased()),
+        # Right Command in a chord, with Left Command or Shift already down, is a shortcut's, not a tap.
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_COMMAND, COMMAND | talkkey.RIGHT_COMMAND_DOWN | talkkey.LEFT_COMMAND_DOWN, Typed()),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_COMMAND, COMMAND | talkkey.RIGHT_COMMAND_DOWN | LEFT_SHIFT_ONLY, Typed()),
+        (talkkey.FLAGS_CHANGED, talkkey.RIGHT_COMMAND, COMMAND | talkkey.RIGHT_COMMAND_DOWN | SHIFT | talkkey.RIGHT_SHIFT_DOWN, Typed()),
+        # A key typed with Right Command held, as Cmd+C, is typing.
+        (KEY_DOWN, 8, COMMAND | talkkey.RIGHT_COMMAND_DOWN, Typed()),
     ],
 )
 def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
     assert talkkey.event_of(kind, keycode, flags, 5.0) == event
+
+
+async def held(on_move: Callable[[Move], Awaitable[None]]) -> None:
+    """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
+    heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
+    hold: Hold = Idle()
+    async with keys.tapped(heard.put_nowait):
+        while True:
+            hold, moves = step(hold, await heard.get())
+            for move in moves:
+                await on_move(move)
 
 
 async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +127,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         if move == "start":
             started.set()
 
-    driving = asyncio.create_task(keys.drive_talk_key(on_move))
+    driving = asyncio.create_task(held(on_move))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # dated as the tap dates it, on the loop's clock
@@ -132,7 +157,7 @@ async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch:
     async def on_move(move: Move) -> None:
         made.append(move)
 
-    driving = asyncio.create_task(keys.drive_talk_key(on_move))
+    driving = asyncio.create_task(held(on_move))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # and never released: a key stuck down

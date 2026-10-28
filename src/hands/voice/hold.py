@@ -52,7 +52,19 @@ class Overlong:
     pressed_at: Instant
 
 
-KeyEvent = Pressed | Released | Typed | Ripe | Overlong
+@dataclass(frozen=True)
+class CommandPressed:
+    """Right Command went down by itself: to the hold, a modifier like any other; counted, a tap (`hands.voice.taps`)."""
+
+    at: Instant
+
+
+@dataclass(frozen=True)
+class CommandReleased:
+    """Right Command went up: nothing to the hold, which its press has already made Shift, and no break in a tap's count."""
+
+
+KeyEvent = Pressed | Released | Typed | Ripe | Overlong | CommandPressed | CommandReleased
 
 
 @dataclass(frozen=True)
@@ -114,9 +126,9 @@ def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
         # The key may still be down: its release, when it comes, ends nothing.
         case Talking(since=since), Overlong(pressed_at=pressed_at) if pressed_at == since:
             return Typing(), ("timeout",)
-        case Arming(), Typed():
+        case Arming(), Typed() | CommandPressed():
             return Typing(), ("disarm",)
-        case Talking(), Typed():
+        case Talking(), Typed() | CommandPressed():
             return Typing(), ("drop",)
         case Talking(), Released():
             return Idle(), ("stop",)

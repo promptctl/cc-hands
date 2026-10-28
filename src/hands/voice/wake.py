@@ -1,17 +1,16 @@
-"""The wake word: saying it opens a turn with no hand on the key, and end-of-turn detection closes it, as in an
-engaged conversation (`hands.voice.engaged`), whose driver and models this edge shares.
+"""The wake word: at the desk's wake word level (`hands.voice.desk`), saying it opens a turn with no hand on the key,
+and end-of-turn detection closes it, with the models engaged conversation hears with (`hands.voice.engaged`).
 
 The word is config.toml's (`hands.daemon.config`): one of openWakeWord's own, "Hey Jarvis" unless another is named, or
 one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It is
 half-duplex: while hands speaks the detector is given silence in place of the room, because a microphone open in a room
-with speakers hears the pipeline's own voice. The desk listens for as long as the trigger is in use, so the hold owner keeps
+with speakers hears the pipeline's own voice. The desk listens for as long as the level is the wake word's, so the hold owner keeps
 the second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
 """
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -21,7 +20,6 @@ from openwakeword.model import Model
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
-from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
 from hands.voice.wakeword import Pretrained, Trained, Word, model_of
 
 # openWakeWord's release, and the files hands runs the wake word from, in ONNX: the two models that turn audio into the
@@ -38,33 +36,6 @@ HEADER_BYTES = 64 * 1024
 THRESHOLD = 0.5
 # The only rate openWakeWord's models hear.
 SAMPLE_RATE = 16_000
-
-
-def step(engagement: Engagement, event: Event) -> tuple[Engagement, tuple[Act, ...]]:
-    """The engagement after `event`, and what the edge does: the desk listens from the start, the wake word opens a turn,
-    and the talk key does nothing."""
-    match engagement.phase, event:
-        case Disengaged(), Begun():
-            return replace(engagement, phase=Listening()), ("listen",)
-        case Listening(), Woken(at=at):
-            return replace(engagement, phase=Woke(at)), ("arm", "start")
-        # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake
-        # word complete, so only once what is asked has started does a stop go to it. The driver hears afresh from
-        # the wake, so what is asked starts as any speech does, asked after a pause or in the same breath.
-        case Woke(since=since), SpeechStarted():
-            return replace(engagement, phase=Talking(since)), ()
-        case Woke() as turn, TurnTooLong():
-            phase, acts = in_turn(turn, event)
-            return replace(engagement, phase=phase), acts
-        case Talking() as turn, SpeechStopped() | TurnEnded() | TurnTooLong():
-            phase, acts = in_turn(turn, event)
-            return replace(engagement, phase=phase), acts
-        case _:
-            return engagement, ()
-
-
-# [LAW:one-source-of-truth] switched away from, the desk stops listening and a turn open is thrown away, as engaged.
-WAKE = Conversation("trigger.awake", step, released, counts=("heard", "muted"))
 
 
 async def fetched(models: Path, word: Word, release: str = RELEASE) -> tuple[str, ...]:

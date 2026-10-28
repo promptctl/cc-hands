@@ -1871,11 +1871,11 @@ turn's `UserAsked` says it:
 
 | Edge | Down | Up |
 |---|---|---|
-| `held key` | Right Shift held alone for 600 ms, in any app (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
-| `engaged conversation` | engaged by one hold of Right Shift; then Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; another hold disengages |
+| `held key` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
+| `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
-| `wake word` | openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
+| `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
 The wake-word edge is the only one that opens the mic without a hand, and it is
 half-duplex: while hands speaks, the wake-word detector hears silence in place of the
@@ -1884,24 +1884,29 @@ pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
 again and Smart Turn holds none, so what is asked starts as any speech does, after a
-pause or in the same breath, and Smart Turn judges it alone. The edge shares engaged
-conversation's driver and models (`hands.voice.engaged.drive`); the desk listens for as
-long as it is in use, so the wake word is in the turn's audio for Whisper. The model's
-files are fetched into the home's `wake-word` directory by `set_trigger` before the switch
-(`hands.voice.trigger.readied`): a fetch that fails refuses the switch out loud and the
-trigger in use stays.
+pause or in the same breath, and Smart Turn judges it alone. The desk listens for as
+long as it is at the wake word's level, so the wake word is in the turn's audio for
+Whisper.
 
-**The trigger is the desk's edge, one choice switched by voice** (`hands.voice.trigger`).
-The phone's button is there for every call; at the desk, the edge that drives the gate is
-the `Trigger` in use, one value `Triggers` holds while hands runs: the brain's
-`trigger_in_use` says it, and `set_trigger` switches it: the old edge stops and the new
-one starts (`Triggers.drive`), so the next turn opens the new way. Built: the `held key`,
-`engaged conversation`, and the `wake word`. A trigger not built is refused by the tool's closed set, and the one
-in use stays.
+**The desk is one mode, at one of three levels** (`hands.voice.desk`). The phone's
+button is there for every call. At the desk, one driver (`hands.voice.engaged.drive`)
+runs for the whole run, and Right Shift held alone opens a turn at every level. The
+level says what else does. `off`, the start's, keeps the microphone closed between
+turns. `wake word` listens for the wake word. `engaged` has speech alone open each turn.
+A triple tap of Right Command toggles `wake word`, and one of Right Shift toggles
+`engaged` (`hands.voice.taps`): three presses of the modifier alone inside a second,
+with no other key between. Either switches straight from the other. The brain's
+`listening_level` says the level, and `set_listening_level` chooses one through the
+same queue the taps step in. Each change of level plays its own cue. A voice turn open
+as the level changes is sent, and a key turn goes on. The desk is one value whose
+variants carry the level, so a key turn and a voice turn are never open together, and
+the voice opens nothing while the key is down. Every model the levels hear with, Silero,
+Smart Turn, and the wake word's, is fetched and loaded as the desk starts, and one
+that cannot be fails the run with what could not be loaded.
 
-**An engaged desk listens between turns.** Engaged conversation moves the gate with the
-held key's own moves, plus two of its own: `listen` as it engages and `deafen` as it
-disengages, each cued with two tones. While the desk listens, the key rests at `listening`
+**A listening desk listens between turns.** The levels move the gate with the
+held key's own moves, plus two of their own: `listen` as the desk leaves `off` and
+`deafen` as it returns. While the desk listens, the key rests at `listening`
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
 starts with the words said while Silero made sure of them (about 0.2 s). Listening is the
