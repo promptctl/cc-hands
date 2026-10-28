@@ -8,6 +8,7 @@ import ctypes
 import os
 from collections.abc import Callable
 
+from hands.darwin import libproc, raise_errno
 from hands.sessions.wide import Fact
 
 # `proc_pid_rusage`'s flavor for `rusage_info_v0`, as <sys/resource.h> numbers it.
@@ -33,17 +34,11 @@ class _RusageInfoV0(ctypes.Structure):
     )
 
 
-_libc = ctypes.CDLL(None, use_errno=True)
-_libc.proc_pid_rusage.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.POINTER(_RusageInfoV0))
-_libc.proc_pid_rusage.restype = ctypes.c_int
-
-
 def footprint() -> int:
     """The process's physical footprint, in bytes. [LAW:no-silent-failure] a call the kernel refuses raises with its errno."""
     info = _RusageInfoV0()
-    if _libc.proc_pid_rusage(os.getpid(), _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, f"proc_pid_rusage: {os.strerror(error)}")
+    if libproc.proc_pid_rusage(os.getpid(), _RUSAGE_INFO_V0, ctypes.byref(info)) != 0:
+        raise_errno("proc_pid_rusage")
     return info.ri_phys_footprint
 
 

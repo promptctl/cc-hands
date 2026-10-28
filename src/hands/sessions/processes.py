@@ -6,10 +6,10 @@ session sweep and the daemon's heartbeat both ask that, and both answer it here.
 """
 
 import ctypes
-import ctypes.util
 import os
 from collections.abc import Collection, Mapping
 
+from hands.darwin import libc
 from hands.sessions.payload import Rejected
 
 # The largest pid macOS hands out.
@@ -48,14 +48,13 @@ def process_starts(pids: Collection[int]) -> dict[int, float]:
 # a `struct timeval`: 8 bytes of seconds, then 4 of microseconds.
 _KERN_PROC_PID = (1, 14, 1)  # CTL_KERN, KERN_PROC, KERN_PROC_PID
 _KINFO_PROC_ROOM = 1024  # more than the 648 bytes the record takes, so a larger one in a later macOS still fits
-_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 
 
 def _process_start(pid: int) -> float | None:
     mib = (ctypes.c_int * 4)(*_KERN_PROC_PID, pid)
     record = ctypes.create_string_buffer(_KINFO_PROC_ROOM)
     size = ctypes.c_size_t(_KINFO_PROC_ROOM)
-    if _libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
+    if libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
         failure = ctypes.get_errno()
         # [LAW:no-silent-failure] the kernel refusing a question it always answers is raised, never taken for "gone".
         raise OSError(failure, f"sysctl could not say when pid {pid} started: {os.strerror(failure)}")
