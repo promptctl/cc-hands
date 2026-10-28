@@ -1313,7 +1313,9 @@ worktree and the terminal beside it share the repository's refs: that branch's o
 was created from something other than the remote branch of its name (a checkout or a rename is
 not a branch made), a remote-tracking ref of it whose log says `update by push` since the mark (a
 fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not the one a
-remote's HEAD follows, a pull request the forge says was opened since the mark. The forge is asked
+remote's HEAD follows, a pull request the forge says was opened between the mark and the turn's end, allowing the
+forge's clock `SKEW` ahead of this machine's. Each is bounded by where the turn's end was captured, never by where
+the repository stands when the reading gets to it, so a push the next turn makes is not this turn's. The forge is asked
 beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs out, so a slow forge costs the
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
 both saw is said once. Each mark is one `delta.mark` wide event and each reading one
@@ -1331,6 +1333,17 @@ reading that could not say where the repository stood leaves the second telling 
 delta. Only a turn hands told before is read this way: one whose first `Stop` it never heard
 is read against its prompt's mark, or not at all where no prompt was heard, since the last
 reading is then another turn's.
+
+A turn's end is captured in the background, after its `Stop` lets Claude Code go, so the next prompt can arrive while
+the capture is still running. The next turn's mark therefore waits beside every capture under way, inside the
+prompt hook's one budget, and the hook lets the next turn begin only once each capture is in or the budget is spent.
+A stage still unread then was read inside the next turn and is never told: a tree read late loses the turn's files
+and keeps its commits, branch, push and pull requests, and a late read of where the repository stood loses all of
+them. `delta.read` says which: `read`, `tree overtaken`, `end overtaken`, or `start overtaken` for a part after a
+blocked `Stop` whose start was a capture the next turn overtook, beside `unmarked` and `dropped`. `delta.mark` counts
+the captures it waited on and those it overtook, and how long it waited. A turn with no reading still takes its
+place in the narrator's order, so each telling is paired with its own turn's delta, and turns in a row with none
+share one place, so a daemon whose voice never loaded holds no more per turn.
 
 **What the turn asked always plays, once, and the daemon decides whether it asked.** A turn
 that ends on a question is waiting on the listener whether or not a hook blocks, so
