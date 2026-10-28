@@ -15,57 +15,23 @@ A hold's speaker is the speaker who said most of its words; a hold with no words
 """
 
 import sys
-import urllib.request
 from collections import Counter
-from math import gcd
 from pathlib import Path
 
 import numpy as np
-import soundfile
 from scipy.optimize import linear_sum_assignment
-from scipy.signal import resample_poly
 
 from hands.voice import streaming
+from measuring import AMI_AUDIO, RATE, Live, Stretch, fetched, mono, turns
 
-RATE = streaming.RATE
 LIBRIVOX = "https://archive.org/download/invisibleman_1209_librivox_cb/invisibleman_{:02d}_wells_64kb.mp3"
-AMI_AUDIO = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/{0}/audio/{0}.Mix-Headset.wav"
 AMI_TURNS = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/{}.rttm"
 MEETINGS = ("ES2004a", "IS1009a")
 
 
-def fetched(directory: Path, url: str) -> Path:
-    path = directory / url.rsplit("/", 1)[1]
-    if not path.exists():
-        partial = path.with_suffix(path.suffix + ".partial")
-        urllib.request.urlretrieve(url, partial)
-        partial.rename(path)
-    return path
-
-
-def mono(path: Path) -> np.ndarray:
-    """Mono audio at RATE."""
-    audio, rate = soundfile.read(path, dtype="float32", always_2d=True)
-    common = gcd(rate, RATE)
-    return resample_poly(audio.mean(axis=1), RATE // common, rate // common).astype(np.float32)
-
-
-class Run:
-    """One stream of the pair for the run, fed holds 20 ms at a time, each followed by the silence `through` says."""
-
-    def __init__(self) -> None:
-        self.stream, self.fed = streaming.Stream(streaming.load()), 0
-
-    def spoken(self, samples: np.ndarray) -> Counter[int]:
-        """A hold: how many words each speaker said in it."""
-        self.stream.opened(np.zeros(0, np.float32))
-        for start in range(0, len(samples), 320):
-            self.stream.heard(samples[start : start + 320].astype(np.float32))
-        self.fed += len(samples)
-        silence = streaming.through(self.fed) - self.fed
-        self.stream.silence(silence)
-        self.fed += silence
-        return Counter({said.speaker: len(said.text.split()) for said in self.stream.ended().words})
+def spoken(run: Live, samples: np.ndarray) -> Counter[int]:
+    """A hold: how many words each speaker said in it."""
+    return Counter({said.speaker: len(said.text.split()) for said in run.spoken(samples)[1].words})
 
 
 def pauses(audio: np.ndarray) -> list[tuple[int, int]]:
@@ -89,9 +55,9 @@ def one_person(directory: Path) -> None:
             holds[-1] = (holds[-1][0], end)
         else:
             holds.append((start, end))
-    run, words, wordless = Run(), Counter[int](), 0
+    run, words, wordless = Live(streaming.load(streaming.GATING)), Counter[int](), 0
     for start, end in holds:
-        said = run.spoken(audio[start:end])
+        said = spoken(run, audio[start:end])
         words.update(said)
         wordless += not said
     first, *others = [speaker for speaker, _ in words.most_common()] or [None]
@@ -103,18 +69,13 @@ def one_person(directory: Path) -> None:
 
 def meeting(directory: Path, name: str) -> None:
     audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-    segments = sorted((float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in fetched(directory, AMI_TURNS.format(name)).read_text().splitlines()))
-    turns: list[tuple[float, float, str]] = []
-    for start, end, who in segments:
-        if turns and turns[-1][2] == who and start - turns[-1][1] < 0.5:
-            turns[-1] = (turns[-1][0], max(end, turns[-1][1]), who)
-        else:
-            turns.append((start, end, who))
-    alone = [turn for turn in turns if turn[1] - turn[0] >= 0.8 and not any(o[2] != turn[2] and o[0] < turn[1] and o[1] > turn[0] for o in segments)]
-    run, heard = Run(), list[tuple[str, int | None, float]]()
-    for start, end, who in alone:
-        said = run.spoken(audio[int(start * RATE) : int(end * RATE)])
-        heard.append((who, said.most_common(1)[0][0] if said else None, end - start))
+    # pyannote's segments are what each person said and every sound its references mark, so they are both.
+    segments = [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in fetched(directory, AMI_TURNS.format(name)).read_text().splitlines())]
+    alone = turns(segments, segments, len(audio) / RATE)
+    run, heard = Live(streaming.load(streaming.GATING)), list[tuple[str, int | None, float]]()
+    for turn in alone:
+        said = spoken(run, audio[int(turn.start * RATE) : int(turn.end * RATE)])
+        heard.append((turn.person, said.most_common(1)[0][0] if said else None, turn.end - turn.start))
     people = sorted({who for who, _, _ in heard})
     speakers = sorted({first for _, first, _ in heard if first is not None})
     together = np.array([[sum(1 for w, first, _ in heard if (w, first) == (who, speaker)) for speaker in speakers] for who in people])

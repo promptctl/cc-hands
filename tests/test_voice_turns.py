@@ -275,7 +275,11 @@ async def rigged(
     recorded: list[Entry] = []
     primed: list[None] = []
     streamed = Streamed()
-    monkeypatch.setattr(streaming, "load", lambda: streamed)
+
+    def load(_gating: int) -> Streamed:
+        return streamed
+
+    monkeypatch.setattr(streaming, "load", load)
 
     async def vocabulary() -> None:
         primed.append(None)

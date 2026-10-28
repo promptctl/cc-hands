@@ -227,7 +227,10 @@ PAIRS = Pairs()
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building the voice hears holds with a pair that hears no word: its load would fetch 2.5 GB of weights, which no
     test is about but the ones that ask for the real models."""
-    monkeypatch.setattr(streaming, "load", Unspoken)
+    def unspoken(_gating: int) -> Unspoken:
+        return Unspoken()
+
+    monkeypatch.setattr(streaming, "load", unspoken)
 
 
 async def unprimed() -> None:

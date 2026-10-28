@@ -53,9 +53,11 @@ AHEAD = 1 * SUBSAMPLING
 # How many chunks a speaker's stream is stepped from the last chunk the diarizer heard them in, that one included: the
 # GATING - 1 after it are their log-mel frames masked to zero, which the model does not hear as silence, so it decides
 # how a hold's last words come out. It does not decide whether they stay in the hold: the hold's end closes every
-# stream (`Session.closed`). 4 invents endings after engaged conversation's stop, 2 a third speaker's word, 1 cuts
-# words short; setting it needs recordings with known words that end in silence (promptctl-voice-i15t.qg8.23w).
-GATING = 4
+# stream (`Session.closed`). 1 steps a stream only where its speaker is heard. Measured by scripts/measure-gating.py on
+# 592 AMI turns with known words that end in silence, held and in engaged conversation, against 2 and 4: 1 invents the
+# fewest words past a turn's last and gives the fewest to another speaker, in both shapes, and ends as many turns on
+# their last word as either, within one.
+GATING = 1
 
 
 def steps(samples: int) -> int:
@@ -69,7 +71,7 @@ def steps(samples: int) -> int:
 def through(samples: int) -> int:
     """How far the run is fed, silence after a hold that ended at `samples`: until the diarizer has committed the chunk
     holding the hold's last sample, which the step committing it waits for, so the session decodes it before the hold
-    closes. Silence fed past it reaches a quiet speaker's stream as zero-masked frames, and ends holds on guessed words."""
+    closes. Silence fed past it steps no stream, the diarizer hearing nobody in it, and only puts the close off."""
     last = (samples - 1 + N_FFT // 2) // MEL_HOP
     committed = (last // CHUNK + 1) * CHUNK
     step = -(-committed // STEP)
@@ -234,7 +236,7 @@ class StreamingRecognizer:
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, model: Callable[[], Session], record: Record) -> None:
+    def __init__(self, model: Callable[[int], Session], record: Record) -> None:
         self._record = record
         # The models load on the thread first, so holds spoken while they load wait behind them, and nothing else does.
         self._thread = SerialThread("Streaming")
@@ -243,8 +245,8 @@ class StreamingRecognizer:
         # complete are where the stream's words change.
         self._fed = 0
 
-    def _load(self, model: Callable[[], Session]) -> None:
-        """The run's stream, on the pair; or, where it fails to load, one that fails each hold with why.
+    def _load(self, model: Callable[[int], Session]) -> None:
+        """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each hold with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
             with loads.loading("streaming.loaded", self._record):
@@ -257,7 +259,8 @@ class StreamingRecognizer:
                     preset=PRESET,
                     gating=GATING,
                 )
-                self._stream = Stream(model())
+                # [LAW:one-source-of-truth] the gating the event says is the one the session is made with.
+                self._stream = Stream(model(GATING))
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
@@ -360,8 +363,8 @@ class _Paired:
         speakers, config = frozenset[int](session._encoders), session.model.preprocessor_config
         # [LAW:one-source-of-truth] silence as the model's frontend hears it, the log of zero power plus its guard (the
         # chunked frontend takes only unnormalized models): one chunk, the one frame of right context a stream needs past
-        # its speaker's last chunk. More invents words: on AMI's fifth hold, two chunks gave its second speaker "Wall.",
-        # four "Walk.", where one gives them none.
+        # its speaker's last chunk. More invents words: on AMI's fifth hold at GATING 4, two chunks gave its second
+        # speaker "Wall.", four "Walk.", where one gives them none.
         floor = mx.full((1, session.chunk_mel, config.features), math.log(config.log_zero_guard_value))
         for number in sorted(speakers):
             encoder, decoder, start, text = session._encoders.pop(number), session._decoders.pop(number), session._mel_offset // session.factor, ""
@@ -392,9 +395,10 @@ def diarizer() -> Any:
     return model
 
 
-def load() -> Session:
-    """The run's session of the pair, the models fetched if they never were: a few seconds on this Mac from the cache, on
-    MLX's default device, which is the CPU where there is no Metal."""
+def load(gating: int) -> Session:
+    """The run's session of the pair, each speaker's stream stepped `gating` chunks from the last the diarizer heard them
+    in, the models fetched if they never were: a few seconds on this Mac from the cache, on MLX's default device, which
+    is the CPU where there is no Metal."""
     from mlx_audio.stt import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
     model = cast(Any, loaded(MODEL, revision=REVISION))
@@ -404,7 +408,7 @@ def load() -> Session:
     if model.preprocessor_config.n_fft != N_FFT:
         raise ValueError(f"{MODEL} frames the run with an FFT of {model.preprocessor_config.n_fft}; hands places a hold's last mel frame on {N_FFT}")
     session = model.create_speaker_streaming_session(
-        diarizer(), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=GATING
+        diarizer(), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=gating
     )
     if session.chunk_mel != CHUNK:
         raise ValueError(f"{MODEL}'s session takes chunks of {session.chunk_mel} mel frames; hands gates speakers in chunks of {CHUNK}")

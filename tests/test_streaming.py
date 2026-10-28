@@ -18,12 +18,13 @@ import soundfile
 from loguru import logger
 
 from conftest import PAIRS, model_facts
+from listening import LEAD, SHAPES, Live, turn
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import engaged, streaming
 from hands.voice.holdowner import HoldOwner
 from hands.voice.holds import Fate, Hold, Sound
-from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Closed, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
+from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Closed, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
 
@@ -112,7 +113,7 @@ class Rig:
 
 def rigged(session: Session) -> Rig:
     recorded: list[Entry] = []
-    listener = StreamingRecognizer(lambda: session, recorded.append)
+    listener = StreamingRecognizer(lambda _: session, recorded.append)
     return Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
 
 
@@ -269,7 +270,7 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
     recorded: list[Entry] = []
     go = threading.Event()
 
-    def slow() -> Session:
+    def slow(_gating: int) -> Session:
         go.wait()
         return Scripted([(), said("hello")])
 
@@ -287,7 +288,7 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
         "ok",
         {
             "model": streaming.MODEL, "revision": streaming.REVISION, "diarization": streaming.DIARIZATION,
-            "diarization_revision": streaming.DIARIZATION_REVISION, "preset": "ultra_low", "gating": 4, "transcription_delay_ms": 160,
+            "diarization_revision": streaming.DIARIZATION_REVISION, "preset": "ultra_low", "gating": streaming.GATING, "transcription_delay_ms": 160,
         },
     )
 
@@ -295,7 +296,7 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
 async def test_models_that_fail_to_load_fail_each_hold_once_saying_why() -> None:
     recorded: list[Entry] = []
 
-    def unreachable() -> Session:
+    def unreachable(_gating: int) -> Session:
         raise OSError("the hub is unreachable")
 
     listener = StreamingRecognizer(unreachable, recorded.append)
@@ -320,7 +321,7 @@ def test_a_recognizer_that_frames_the_run_with_another_fft_is_refused_before_a_s
 
     monkeypatch.setattr(mlx_audio.stt, "load", recognizer)
     with pytest.raises(ValueError, match="FFT of 400; hands places a hold's last mel frame on 512"):
-        nemotron()
+        nemotron(streaming.GATING)
 
 
 def test_a_speaker_is_the_number_the_session_gave_them() -> None:
@@ -339,7 +340,7 @@ GAP = streaming.RATE // 2
 @pytest.fixture(scope="module")
 def pair() -> Any:
     """The real pair, loaded once, as a run loads it, and the only one the suite holds while this module runs."""
-    return PAIRS.loaded(nemotron)
+    return PAIRS.loaded(lambda: nemotron(streaming.GATING))
 
 
 @pytest.fixture
@@ -356,43 +357,6 @@ def fixture_holds(name: str) -> list[Samples]:
     gaps = np.flatnonzero(np.diff(np.concatenate([[False], silent, [False]]).astype(np.int8)))
     edges = [0, *(edge + offset for edge, offset in zip(gaps, [0, GAP - 1] * (len(gaps) // 2))), len(audio)]
     return [audio[start:end] for start, end in zip(edges[0::2], edges[1::2])]
-
-
-@dataclass
-class Gridded:
-    """The pair's session, counting each feed it decoded a word on that `steps` says completed no step of the
-    diarizer's."""
-
-    session: Session
-    fed: int = 0
-    off_grid: int = 0
-
-    def decoded(self, samples: Samples) -> Spoken:
-        spoken = self.session.decoded(samples)
-        self.off_grid += bool(spoken) and steps(self.fed + len(samples)) == steps(self.fed)
-        self.fed += len(samples)
-        return spoken
-
-    def closed(self) -> Closed:
-        return self.session.closed()
-
-
-class Live:
-    """One stream of the real pair, fed holds as the listener feeds it: 20 ms at a time, each followed by the silence
-    `through` says, and closed."""
-
-    def __init__(self, paired: Session) -> None:
-        self.session = Gridded(paired)
-        self.stream = streaming.Stream(self.session)
-
-    def spoken(self, samples: Samples) -> tuple[Spoken, Ended]:
-        """A hold of `samples`: each speaker's words heard while it was open, and the hold as it ended."""
-        self.stream.opened(np.zeros(0, np.float32))
-        for start in range(0, len(samples), 320):
-            self.stream.heard(samples[start : start + 320])
-        live = self.stream.said()
-        self.stream.silence(through(self.session.fed) - self.session.fed)
-        return live, self.stream.ended()
 
 
 def spoken_words(spoken: Spoken) -> list[tuple[int, str]]:
@@ -487,7 +451,7 @@ def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any) -> N
     # other's number in a hold they share (promptctl-voice-i15t.qg8.2d2): after the same two, 12 then 3 gives most of
     # FEE016's words to speaker 0, and comes out right only once FEE016 is heard alone in four holds, more than CI's VMs
     # decode inside the test timeout. Decided on when each word starts, not on its text, which is about 20% wrong on
-    # AMI; the close's words are GATING's to settle (promptctl-voice-i15t.qg8.23w).
+    # AMI.
     timed = Timed(paired.session)
     live = Live(dataclasses.replace(paired, session=timed))
     holds = fixture_holds("two_speakers_ami.flac")
@@ -519,6 +483,36 @@ def test_a_hold_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_ke
     live = Live(paired)
     words = [spoken_words(whole.words) for _, whole in (live.spoken(first), live.spoken(second))]
     assert (words[0][-1], words[1][0]) == ((0, "answer"), (0, "it")), words
+
+
+# Six turns of TS3003's four people, AMI Meeting Corpus (Mix-Headset; CC BY 4.0, University of Edinburgh), each from 0.1 s
+# before its first word to engaged.STOP_SECS past its last, a silence nobody sounds in by AMI's manual word-level
+# transcripts, which give each turn's words. scripts/measure-gating.py measures every such turn of the sixteen test
+# meetings; these six it found ending right at GATING 1 and not at 4. They stay together: with less of each voice heard
+# before them, the diarizer gives one person two numbers (promptctl-voice-i15t.qg8.2d2).
+TURNS = "turns_ending_in_silence.flac"
+# Each turn's first and last word, in seconds of its meeting, its person, and its words.
+KNOWN = [
+    (826.98, 828.96, "Yeah uh yeah"),  # TS3003b, B
+    (920.09, 924.32, "So that brings us to the discussion about our concepts"),  # TS3003c, A
+    (926.95, 927.81, "Mm"),  # TS3003c, A
+    (1189.47, 1191.37, "It's a bit higher percentage but"),  # TS3003c, C
+    (1157.62, 1159.08, "And we put uh"),  # TS3003d, A
+    (1446.94, 1448.52, "I'm glad we could make a bit"),  # TS3003d, A
+]
+
+
+@pytest.mark.parametrize("after", SHAPES.values(), ids=SHAPES.keys())
+def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker_says_them(paired: Session, after: float) -> None:
+    # GATING decides how a hold's last words come out. At 4, four of these end otherwise in this run: "yeah" alone,
+    # "concept", "but uh", "bit better", and in engaged conversation a second speaker says "But it breaks." after the first.
+    live = Live(paired)
+    # Each fixture hold opens LEAD before its turn's first word.
+    holds = [turn(samples, LEAD, LEAD + end - start, after) for samples, (start, end, _) in zip(fixture_holds(TURNS), KNOWN, strict=True)]
+    heard = [spoken_words(live.spoken(hold)[1].words) for hold in holds]
+    # Its last two words, or the one of the turn that has one.
+    ends = [(len({speaker for speaker, _ in words}), [word for _, word in words][-2:]) for words in heard]
+    assert ends == [(1, re.findall(r"[\w']+", known.lower())[-2:]) for _, _, known in KNOWN], heard
 
 
 def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> None:
