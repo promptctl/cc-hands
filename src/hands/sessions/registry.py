@@ -140,6 +140,13 @@ class Sessions:
         self._hearing.add(hearing)
         hearing.add_done_callback(self._performed)
 
+    async def drained(self, session: SessionId) -> None:
+        """Returns once nothing decided for `session` is still being performed, so what the registry holds of it now its
+        sinks have been handed. [LAW:no-ambient-temporal-coupling] a reader of the registry that hears the session's
+        effects too reads it after them, never ahead: what was decided while it waited is waited on as well."""
+        while (performing := self._performing.get(session)) is not None and not performing.done():
+            await asyncio.wait({performing})
+
     def _performed(self, hearing: asyncio.Future[None]) -> None:
         self._hearing.discard(hearing)
         if not hearing.cancelled() and (error := hearing.exception()) is not None:

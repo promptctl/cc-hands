@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
@@ -28,7 +29,7 @@ from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLim
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
 from hands.brain.process import BROKEN, NOBODY, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Posted, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
-from hands.core.effects import Allow, Deny
+from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
@@ -599,6 +600,60 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
         await brain.stop()
     [turn] = events(recorded, "brain.turn")
     # The turn its Escape stopped was told, under the id it ran under, before it was over.
+    assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
+
+
+class _HeldClear:
+    """A typist whose Ctrl-C goes in only once `going` is set, so the model reads what the Escape did before the stop is
+    done pressing keys."""
+
+    def __init__(self, typist: Typist, going: threading.Event) -> None:
+        self._typist = typist
+        self._going = going
+
+    def type(self, text: PromptText) -> None:
+        self._typist.type(text)
+
+    def press(self, key: Keystroke) -> None:
+        if key == "ctrl_c":
+            assert self._going.wait(10)
+        self._typist.press(key)
+
+
+async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the_model_reads_ahead_of_its_telling(tmp_path: Path, fake_claude: Path) -> None:
+    # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
+    # performed, when the stop is done pressing keys: the turn is over only once the telling is heard, under its id.
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    going = threading.Event()
+    brain._typist = _HeldClear(brain._typist, going)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    performing = asyncio.Event()
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
+        perform = brain._sessions._perform  # pyright: ignore[reportPrivateUsage]
+
+        async def told_late(effect: Effect) -> None:
+            # A telling the model decided is performed only once the test lets it, and what is decided after it waits.
+            if isinstance(effect, Summarise):
+                await performing.wait()
+            await perform(effect)
+
+        brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        cleared = brain._cleared  # pyright: ignore[reportPrivateUsage]
+        assert brain.interrupt() is True
+        await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
+        going.set()
+        # The stop's last key is in, and with it the stop has asked whether Claude Code holds anything of the turn.
+        await until(lambda: brain._cleared != cleared)  # pyright: ignore[reportPrivateUsage]
+        assert not asking.done()
+        performing.set()
+        assert await asyncio.wait_for(asking, 10) == BrainStopped()
+    finally:
+        going.set()
+        performing.set()
+        await brain.stop()
+    [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
 
 

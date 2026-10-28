@@ -596,7 +596,7 @@ class _Turn:
     # The id the model told the turn that answers it under, stopped or not: its answer, or what it got as far as.
     told: PromptId | None = None
     # Whether hands pressed the Escape that stops it: then it ends BrainStopped once Claude Code holds nothing of it
-    # (`Brain._left`), whether or not its telling came first.
+    # (`Brain._left`), and its telling, if the model told it, has been heard.
     stopped: bool = False
     # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
     broken: BaseException | None = None
@@ -844,7 +844,7 @@ class Brain:
         # Over once Claude Code holds nothing of it, which `_left` hears as the model is applied: the turn the Escape
         # stopped told, or the words it put back in the input from Claude Code's queue, which Ctrl-C cleared, taken out of
         # it. [LAW:no-silent-failure] a turn still held after INTERRUPT_SECONDS was not stopped, and says what Claude Code showed.
-        self._left()
+        await self._left()
         await self._waited(INTERRUPT_SECONDS, turn.answered)
         if not turn.answered.done():
             self._over(turn, StopUnrecorded(f"the brain's Claude Code did not stop the turn hands pressed Escape for in {INTERRUPT_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}"))
@@ -1018,12 +1018,12 @@ class Brain:
             logger.info(f"the brain's {hook.name} hook came for session {hook.session}, not the brain's")
             return
         await self._reader.hooked(hook)
-        self._left()
+        await self._left()
 
     async def _apply(self, event: Event) -> None:
         """What the brain's hooks, status and transcript say, applied; then whether the turn hands stopped is over."""
         await self._sessions.apply(event)
-        self._left()
+        await self._left()
 
     def _took(self, submitted: Submitted) -> None:
         """Where Claude Code filed what was typed: [LAW:single-enforcer] a turn is taken by the prompt Claude Code took
@@ -1055,9 +1055,14 @@ class Brain:
         if not turn.stopped:
             self._over(turn, BrainAnswered(told.turn, told.failure))
 
-    def _left(self) -> None:
+    async def _left(self) -> None:
         """The turn hands stopped is over once Claude Code holds nothing of it: every turn it ran is told, and nothing of
-        it waits in its queue."""
+        it waits in its queue.
+
+        [LAW:one-source-of-truth] the registry is read once every telling it decided has reached `_told`, so the model
+        and the tellings the brain heard are one clock: a stopped turn the model told ends with the id it was told under.
+        """
+        await self._sessions.drained(self.session)
         turn = self._turn
         if turn is not None and turn.stopped and not turn.answered.done() and self._all_told():
             self._over(turn, BrainStopped())
