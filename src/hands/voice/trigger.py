@@ -11,7 +11,8 @@ from pathlib import Path
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
-from hands.voice import wake
+from hands.threads import off_loop
+from hands.voice import engaged, wake
 from hands.voice.holds import Edge, Opener, Trigger
 from hands.voice.wakeword import Word
 
@@ -82,8 +83,10 @@ async def readied(trigger: Trigger, models: Path, word: Word) -> tuple[str, ...]
         case "wake word":
             fetched = await wake.fetched(models, word)
             await asyncio.to_thread(wake.WakeWord, models, word)
-            return fetched
-        case "held key" | "engaged conversation":
+            return (*fetched, *await off_loop(engaged.readied, "Smart Turn"))
+        case "engaged conversation":
+            return await off_loop(engaged.readied, "Smart Turn")
+        case "held key":
             return ()
 
 

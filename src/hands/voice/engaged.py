@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast, get_args
 
 import numpy as np
+from huggingface_hub import try_to_load_from_cache
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
 from pipecat.audio.turn.smart_turn.base_smart_turn import BaseSmartTurn
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -32,6 +33,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.threads import settles_off_loop
 from hands.voice.hold import TURN_LIMIT_SECONDS, Hold, Idle, Instant, KeyEvent, Move, step as hold_step
 
 
@@ -239,6 +241,26 @@ STOP_SECS = 0.8
 # measured for it.
 SMART_TURN = "mlx-community/smart-turn-v3"
 SMART_TURN_REVISION = "74af1538ebace37b0fcc667a6a8a3d902d73eee0"
+# The port's weights, under the name its repository gives them: in the hub's cache once the port is fetched.
+SMART_TURN_WEIGHTS = "model.safetensors"
+
+
+def ported() -> Any:
+    """Smart Turn's MLX port, fetched into the hub's cache unless it is there already, with every weight loaded."""
+    # mlx-audio ships no types.
+    from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+
+    # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be left
+    # at random and every verdict after it noise.
+    return cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True))
+
+
+def readied() -> tuple[str, ...]:
+    """Smart Turn loaded once, fetched first unless the hub's cache holds it, so a switch to an edge it judges for is
+    refused as it is asked for (`hands.voice.trigger.readied`): its name if it was fetched."""
+    cached = isinstance(try_to_load_from_cache(SMART_TURN, SMART_TURN_WEIGHTS, revision=SMART_TURN_REVISION), str)
+    ported()
+    return () if cached else (SMART_TURN,)
 
 
 class SmartTurn(BaseSmartTurn):
@@ -248,10 +270,7 @@ class SmartTurn(BaseSmartTurn):
 
     def __init__(self, sample_rate: int) -> None:
         super().__init__(sample_rate=sample_rate)
-        # mlx-audio ships no types.
-        from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
-
-        self._model = cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION))
+        self._model = ported()
 
     def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
         verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
@@ -302,7 +321,8 @@ class Models:
 @asynccontextmanager
 async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, for as long as the edge listens with them."""
-    loading = asyncio.create_task(asyncio.to_thread(Models, sample_rate))
+    # On a thread the process does not wait for, so a load that hangs does not hold a stopped daemon open.
+    loading = settles_off_loop(lambda: Models(sample_rate), "Models")
     try:
         with unit("trigger.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
