@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -22,8 +22,9 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
-from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Asked, Capture, Deltas, Mark, Standing, Unread
-from conftest import patient
+from hands.sessions.clock import Clock
+from hands.sessions.delta import HELD, MARKING, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Capture, Deltas, Mark, Standing, Unread
+from conftest import ManualClock, patient, patiently
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 
@@ -371,16 +372,20 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
         git(root, "push", "-q", "-u", "origin", "fix")
 
     record: list[Entry] = []
-    # A narrator far less patient than the daemon's, so a forge budget not taken from its patience would outlast it.
-    deltas = Deltas(record=record.append, inherited=os.environ, patience=1.0)
+    clock = ManualClock()
+    deltas = patient(Deltas, record.append, clock)
     await deltas.snapshot(SID, root)
     commit_and_push()
     await deltas.compare(SID, again=False)
+    # The forge's budget is the narrator's patience less SPARE, spent here while gh is still being waited on.
+    asked = PATIENCE - SPARE
+    await patiently(lambda: asked in clock.waking, lambda: clock.waking)
+    clock.advance(asked)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
     [read] = readings(record)
-    assert read.facts["forge"] == "unanswered" and read.duration_ms < 1000
+    assert (read.facts["forge"], read.facts["forge_seconds"]) == ("unanswered", asked)
 
 
 async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -773,23 +778,6 @@ async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     assert [file.path for file in delta.files] == ["b.py"]
 
 
-class Slow(Deltas):
-    """A repository whose tree takes everything the *mark* was given, which is what a slow one really does.
-
-    The deadline is the only thing separating a repository with no commit from one git could not answer for,
-    so a test of that has to spend the real deadline rather than hand one command a shorter one.
-    """
-
-    marking = True
-
-    async def _tree(self, root: Path, deadline: float) -> str | None:
-        tree = await super()._tree(root, deadline)
-        if self.marking:
-            await asyncio.sleep(max(0.0, deadline - time.monotonic()) + 0.01)
-            self.marking = False
-        return tree
-
-
 async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at_all(tmp_path: Path) -> None:
     """Otherwise the history made before the turn is read as the history the turn made, and spoken that way.
 
@@ -804,8 +792,17 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
         git(root, "commit", "-qm", f"made long before this turn {n}")
 
     record: list[Entry] = []
-    deltas = patient(Slow, record.append)
-    await deltas.snapshot(SID, root)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
+    # A repository whose tree takes everything the mark was given, which is what a slow one really does. The deadline is
+    # the only thing separating a repository with no commit from one git could not answer for, so this spends the mark's
+    # whole deadline rather than hand one command a shorter one.
+    standing = deltas.hold("standing")
+    marking = asyncio.create_task(deltas.snapshot(SID, root))
+    await standing.reached.wait()
+    clock.advance(MARKING)
+    standing.released.set()
+    await marking
     (root / "during.py").write_text("the turn's own work\n")
     await deltas.compare(SID, again=False)
     # No mark, so no delta: the turn is told by its steps alone, which is the one honest answer here.
@@ -1236,10 +1233,14 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
 async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_leaves_the_reading_running(tmp_path: Path) -> None:
     """The narrator waits its patience and no longer, and the reading it stopped waiting on is not its to end."""
     root = repo(tmp_path)
-    deltas = Endless(record=lambda _entry: None, inherited=os.environ, patience=0.05)
+    clock = ManualClock()
+    deltas = patient(Endless, lambda _entry: None, clock)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
-    assert not await deltas.taken(SID)
+    taking = asyncio.create_task(deltas.taken(SID))
+    await patiently(lambda: PATIENCE in clock.waking, lambda: clock.waking)
+    clock.advance(PATIENCE)
+    assert not await taking
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
     assert not reading.done()
     reading.cancel()
@@ -1268,18 +1269,26 @@ Stage = Literal["mark", "standing", "tree", "moved"]
 
 
 class Gate:
-    """One read held where it begins until the test lets it go: `reached` once it is held there, on once `released`."""
+    """One read held where it begins until the test lets it go: `reached` once it is held there, on once `released`, and
+    `over` once it has returned."""
 
     def __init__(self) -> None:
-        self.reached, self.released = asyncio.Event(), asyncio.Event()
+        self.reached, self.released, self.over = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @staticmethod
+    def opened() -> "Gate":
+        """A gate the test never held: the read goes straight through."""
+        gate = Gate()
+        gate.released.set()
+        return gate
 
 
 class Stalled(Deltas):
     """A repository whose next read of a stage waits at a gate the test holds, as a read waits on a loaded machine's
     scheduler. A capture is overtaken because its gate is held, never because a deadline was made short."""
 
-    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float, patience: float) -> None:
-        super().__init__(record, inherited, marking=marking, patience=patience)
+    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float, patience: float, clock: Clock) -> None:
+        super().__init__(record, inherited, marking=marking, patience=patience, clock=clock)
         self._gates: dict[Stage, deque[Gate]] = {"mark": deque(), "standing": deque(), "tree": deque(), "moved": deque()}
 
     def hold(self, stage: Stage) -> Gate:
@@ -1288,37 +1297,56 @@ class Stalled(Deltas):
         self._gates[stage].append(gate)
         return gate
 
-    async def _at(self, stage: Stage) -> None:
-        if self._gates[stage]:
-            gate = self._gates[stage].popleft()
-            gate.reached.set()
-            await gate.released.wait()
+    async def _through[T](self, stage: Stage, read: Awaitable[T]) -> T:
+        """`read`, through the gate the test holds for the next read of `stage`, or through an open one."""
+        gate = self._gates[stage].popleft() if self._gates[stage] else Gate.opened()
+        gate.reached.set()
+        await gate.released.wait()
+        try:
+            return await read
+        finally:
+            gate.over.set()
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
-        await self._at("mark")
-        return await super()._mark(cwd, deadline)
+        return await self._through("mark", super()._mark(cwd, deadline))
 
     async def _standing(self, root: Path, at: datetime, deadline: float) -> Standing | None:
-        await self._at("standing")
-        return await super()._standing(root, at, deadline)
+        return await self._through("standing", super()._standing(root, at, deadline))
 
     async def _tree(self, root: Path, deadline: float) -> str | None:
-        await self._at("tree")
-        return await super()._tree(root, deadline)
+        return await self._through("tree", super()._tree(root, deadline))
 
     async def _moved(self, mark: Mark, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
-        await self._at("moved")
-        return await super()._moved(mark, ended, deadline, forging)
+        return await self._through("moved", super()._moved(mark, ended, deadline, forging))
 
 
-async def marked_releasing(deltas: Stalled, root: Path, *held: Gate) -> None:
+# How long a start waits on the captures it lets go, on its clock: far inside its deadline.
+WAITED = 0.25
+
+
+async def marked_releasing(deltas: Stalled, clock: ManualClock, root: Path, *held: Gate) -> None:
     """The next turn's start, begun with the captures behind `held` under way and letting them go once it is marking: it
-    waits on each, and each is in long before the start's deadline."""
+    waits on each, and each is in WAITED after it began, long before the start's deadline."""
     marking = deltas.hold("mark")
     snapshot = asyncio.create_task(deltas.snapshot(SID, root))
     await marking.reached.wait()
+    clock.advance(WAITED)
     for gate in (*held, marking):
         gate.released.set()
+    await snapshot
+
+
+async def overtaking(deltas: Stalled, clock: ManualClock, root: Path, *finishing: Gate) -> None:
+    """The next turn's start, begun with a capture held under way: its own mark comes in, the reads behind `finishing` are
+    let go and are over, then everything the start was given passes, so the capture still held is overtaken."""
+    marking = deltas.hold("mark")
+    marking.released.set()
+    snapshot = asyncio.create_task(deltas.snapshot(SID, root))
+    await marking.over.wait()
+    for gate in finishing:
+        gate.released.set()
+        await gate.over.wait()
+    clock.advance(MARKING)
     await snapshot
 
 
@@ -1327,20 +1355,21 @@ async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_tu
     hook lets Claude Code go on only once it is in, so nothing the next turn writes is read as the turn before's."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     ending = deltas.hold("standing")
     await deltas.compare(SID, again=False)
     await ending.reached.wait()
-    await marked_releasing(deltas, root, ending)
+    await marked_releasing(deltas, clock, root, ending)
     (root / "second.py").write_text("turn two\n")
     await deltas.compare(SID, again=False)
 
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
     assert waits(record) == [(0, 0), (1, 0)]
-    assert waited(marks(record)[-1]) > 0
+    assert waited(marks(record)[-1]) == WAITED
 
 
 async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and_the_turn_keeps_its_commit(tmp_path: Path) -> None:
@@ -1348,7 +1377,8 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     the files in it may be the next turn's, and none is told. The event says which stage was lost."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     git(root, "add", "-A")
@@ -1356,7 +1386,7 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     tree = deltas.hold("tree")
     await deltas.compare(SID, again=False)
     await tree.reached.wait()
-    await deltas.snapshot(SID, root)
+    await overtaking(deltas, clock, root)
     (root / "second.py").write_text("turn two\n")
     tree.released.set()
 
@@ -1366,7 +1396,7 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     assert read.facts["reading"] == "tree overtaken"
     assert marks(record)[-1].facts["marked"] is True
     assert waits(record) == [(0, 0), (1, 1)]
-    assert waited(marks(record)[-1]) > 0
+    assert waited(marks(record)[-1]) == MARKING
 
 
 async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_part_before_it(tmp_path: Path) -> None:
@@ -1375,7 +1405,8 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     its own git."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     first = deltas.hold("standing")
@@ -1384,7 +1415,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     going_on = deltas.hold("standing")
     await deltas.compare(SID, again=True)
     await going_on.reached.wait()
-    await marked_releasing(deltas, root, first, going_on)
+    await marked_releasing(deltas, clock, root, first, going_on)
 
     assert waits(record) == [(0, 0), (2, 0)]
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
@@ -1397,14 +1428,15 @@ async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_
     marked. It has no mark to read against, so nothing of it is read, and p2's mark waits on p1's capture alone."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
     ending = deltas.hold("standing")
     await deltas.compare(SID, again=False)
     await ending.reached.wait()
     await deltas.compare(SID, again=False)
-    await marked_releasing(deltas, root, ending)
+    await marked_releasing(deltas, clock, root, ending)
 
     assert waits(record) == [(0, 0), (1, 0)]
     assert await deltas.taken(SID) and not await deltas.taken(SID)
@@ -1526,7 +1558,8 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
     git(other, "checkout", "-q", "fix")
     git(other, "commit", "-q", "--allow-empty", "-m", "someone else's")
     git(other, "push", "-q")
-    deltas = patient(Stalled, lambda _entry: None)
+    clock = ManualClock()
+    deltas = patient(Stalled, lambda _entry: None, clock)
     await deltas.snapshot(SID, root)
     git(root, "fetch", "-q")
     moving = deltas.hold("moved")
@@ -1592,13 +1625,14 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
     inside the next turn, so the part going on has no start, and its event says that and nothing of the first part's."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")
     await deltas.compare(SID, again=False)
     await tree.reached.wait()
-    await deltas.snapshot(SID, root)
+    await overtaking(deltas, clock, root)
     tree.released.set()
     (root / "after.py").write_text("the part going on\n")
     await deltas.compare(SID, again=True)
@@ -1616,15 +1650,19 @@ async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_
     The start was read inside the next turn, so the part going on is told nothing of it, never the next turn's files."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")
     await deltas.compare(SID, again=False)
     await tree.reached.wait()
     (root / "after.py").write_text("the part going on\n")
+    going_on = deltas.hold("tree")
     await deltas.compare(SID, again=True)
-    await deltas.snapshot(SID, root)
+    await going_on.reached.wait()
+    # The part going on's own capture is in before the start's deadline; only the first part's, still held, is overtaken.
+    await overtaking(deltas, clock, root, going_on)
     (root / "next.py").write_text("the next turn\n")
     tree.released.set()
 
@@ -1638,12 +1676,13 @@ async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path:
     """Nothing can be ordered before a turn that has already begun, so the start after it does not wait on it either."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     ending = deltas.hold("standing")
     await deltas.compare(SID, again=False)
     await ending.reached.wait()
-    await deltas.snapshot(SID, root)
+    await overtaking(deltas, clock, root)
     await deltas.snapshot(SID, root)
     ending.released.set()
 
@@ -1657,13 +1696,14 @@ async def test_a_part_going_on_after_a_blocked_stop_captures_its_end_while_the_p
     part's capture runs its own git at once, and the next mark waits on it alone and is answered with the first still held."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    deltas = patient(Stalled, record.append)
+    clock = ManualClock()
+    deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
     tree = deltas.hold("tree")
     await deltas.compare(SID, again=False)
     await tree.reached.wait()
-    await deltas.snapshot(SID, root)
+    await overtaking(deltas, clock, root)
     (root / "after.py").write_text("the part going on\n")
     await deltas.compare(SID, again=True)
     await deltas.snapshot(SID, root)

@@ -44,7 +44,7 @@ from hands.brain import pinned
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
-from hands.sessions.delta import MARKING, READING, Deltas
+from hands.sessions.delta import MARKING, PATIENCE, Deltas
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
@@ -104,12 +104,6 @@ def spoken(text: str, at: Path) -> bytes:
         return clip.readframes(clip.getnframes())
 
 
-def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) -> D:
-    """A `kind` of Deltas whose readings are taken with as much patience as each is given to run: a test asserts what a
-    reading found, never whether a loaded machine found it inside the narrator's few seconds of PATIENCE."""
-    return kind(record=record, inherited=os.environ, marking=marking, patience=READING)
-
-
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
 # How long a test's wait may look and see nothing move before it fails on a stall.
@@ -140,6 +134,18 @@ class ManualClock:
             if until <= self.at and not woken.done():
                 woken.set_result(None)
         self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+
+    @property
+    def waking(self) -> tuple[float, ...]:
+        """When each pause still waiting wakes, on this clock."""
+        return tuple(until for until, woken in self._pauses if not woken.done())
+
+
+def patient[D: Deltas](kind: type[D], record: Record, clock: ManualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:
+    """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a mark or a reading found,
+    never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
+    spends it; a git that never ends is ended by the suite's timeout."""
+    return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or ManualClock())
 
 
 async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:
