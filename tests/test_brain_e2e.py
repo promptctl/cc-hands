@@ -3,8 +3,8 @@ model's replies scripted by the mock of Anthropic's API. No login, no subscripti
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
 login is one the mock accepts. The OS holds the brain to it: every Claude Code hands starts, and all it starts in turn,
 runs in a sandbox whose only connections are to loopback. A machine's Claude Code policy reaches every Claude Code, so
-the tests run on a machine with none, as CI's is. The pinned Claude Code and the mock are fetched once, into pytest's
-cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
+the tests run on a machine with none, as CI's is. The pinned Claude Code, from npm's registry, and the mock are fetched
+once, into pytest's cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
 import json
@@ -40,6 +40,7 @@ from hands.voice.refocus import Refocus
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
+from npm_registry import REGISTRY
 from test_stage import Spoken
 
 # The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
@@ -118,9 +119,9 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
 
 @pytest.fixture(scope="session")
 async def claude_code(pytestconfig: pytest.Config) -> Path:
-    """The brain's pinned Claude Code, fetched once, against its checksum, into pytest's cache."""
+    """The brain's pinned Claude Code, fetched once from npm's registry, against its checksum, into pytest's cache."""
     cache = pytestconfig.cache.mkdir("claude-code") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    await pinned.install(cache)
+    await pinned.install(cache, REGISTRY)
     return pinned.verified(cache)
 
 

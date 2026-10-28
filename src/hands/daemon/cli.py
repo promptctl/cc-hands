@@ -940,7 +940,7 @@ def install_brain(home: Home, record: audit.Record) -> exits.Exit:
         wide.annotate(version=pinned.VERSION)
         try:
             wide.annotate(build=pinned.build(platform.machine()))
-            installed = asyncio.run(pinned.install(home.brain))
+            installed = asyncio.run(pinned.install(home.brain, pinned.RELEASE))
         except pinned.Uninstallable as error:
             wide.fail(str(error))
             return refused("hands install-brain", 1, str(error))

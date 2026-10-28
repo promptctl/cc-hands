@@ -139,15 +139,15 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
     config_dir = tmp_path / "brain"
     built = pinned.build(platform.machine())
     target = config_dir / "pinned-claude" / pinned.VERSION / "claude"
-    assert await pinned.install(config_dir) == pinned.Installed(target, unpinned=f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`")
+    assert await pinned.install(config_dir, pinned.RELEASE) == pinned.Installed(target, unpinned=f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`")
     assert releases == [f"/{pinned.VERSION}/{built}/claude"]
     assert brain_claude(config_dir).read_bytes() == RELEASE and os.access(brain_claude(config_dir), os.X_OK)
     # There already, it is not fetched again.
-    assert await pinned.install(config_dir) == pinned.Installed(pinned.claude(config_dir), unpinned=None)
+    assert await pinned.install(config_dir, pinned.RELEASE) == pinned.Installed(pinned.claude(config_dir), unpinned=None)
     assert len(releases) == 1
     # A copy that is not the pin is fetched again, whole, saying what the copy there hashed to.
     pinned.claude(config_dir).write_bytes(OTHER)
-    installed = await pinned.install(config_dir)
+    installed = await pinned.install(config_dir, pinned.RELEASE)
     assert installed.fetched and installed.unpinned is not None and f"hashes to {hashlib.sha256(OTHER).hexdigest()}" in installed.unpinned
     assert pinned.claude(config_dir).read_bytes() == RELEASE and len(releases) == 2
 
@@ -156,7 +156,7 @@ async def test_a_download_that_is_not_the_pinned_release_is_refused_and_leaves_n
     pin_bytes(monkeypatch, OTHER)
     config_dir = tmp_path / "brain"
     with pytest.raises(pinned.Uninstallable, match=f"hashes to {hashlib.sha256(RELEASE).hexdigest()}, not the {hashlib.sha256(OTHER).hexdigest()} Claude Code {pinned.VERSION} is pinned to"):
-        await pinned.install(config_dir)
+        await pinned.install(config_dir, pinned.RELEASE)
     assert list(pinned.claude(config_dir).parent.iterdir()) == []
 
 
@@ -164,7 +164,7 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
     placed(pinned.claude(config_dir), RELEASE).chmod(0o644)
-    installed = await pinned.install(config_dir)
+    installed = await pinned.install(config_dir, pinned.RELEASE)
     assert installed.unpinned is not None and installed.unpinned.endswith("cannot be run: run `hands install-brain` to fetch it again")
     assert brain_claude(config_dir) == pinned.claude(config_dir) and len(releases) == 1
 
@@ -172,11 +172,46 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
 async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
-    first, second = await asyncio.gather(pinned.install(config_dir), pinned.install(config_dir))
+    first, second = await asyncio.gather(pinned.install(config_dir, pinned.RELEASE), pinned.install(config_dir, pinned.RELEASE))
     assert first.fetched and second.fetched and len(releases) == 2
     # Neither removed or renamed the other's download, and what is left is the pin alone.
     assert list(pinned.claude(config_dir).parent.iterdir()) == [pinned.claude(config_dir)]
     assert brain_claude(config_dir) == pinned.claude(config_dir)
+
+
+def serving(*chunks: bytes | Exception) -> pinned.Source:
+    """A source of the pin other than Anthropic's release, writing `chunks` for every build, or raising one that is an
+    exception, and failing as a connection does."""
+
+    async def fetch(url: str, write: pinned.Write) -> None:
+        for chunk in chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            write(chunk)
+
+    return pinned.Source(url=lambda built: f"elsewhere:{built}", fetch=fetch, failures=(ConnectionError,))
+
+
+async def test_install_holds_every_source_to_the_pin_and_leaves_nothing_of_one_that_is_not_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pin_bytes(monkeypatch, RELEASE)
+    config_dir = tmp_path / "brain"
+    built = pinned.build(platform.machine())
+    with pytest.raises(pinned.Uninstallable) as refused:
+        await pinned.install(config_dir, serving(OTHER[:4], OTHER[4:]))
+    assert str(refused.value) == f"elsewhere:{built} hashes to {hashlib.sha256(OTHER).hexdigest()}, not the {hashlib.sha256(RELEASE).hexdigest()} Claude Code {pinned.VERSION} is pinned to"
+    assert list(pinned.claude(config_dir).parent.iterdir()) == []
+    # A failure the source names is its fetch's, an OSError among them, never the disk's.
+    with pytest.raises(pinned.Uninstallable) as refused:
+        await pinned.install(config_dir, serving(RELEASE[:4], ConnectionResetError(54, "Connection reset by peer")))
+    assert str(refused.value) == f"could not fetch elsewhere:{built}: ConnectionResetError(54, 'Connection reset by peer')"
+    assert list(pinned.claude(config_dir).parent.iterdir()) == []
+    # One it does not name is a defect, raised as itself.
+    with pytest.raises(TypeError, match="a defect"):
+        await pinned.install(config_dir, serving(RELEASE[:4], TypeError("a defect")))
+    assert list(pinned.claude(config_dir).parent.iterdir()) == []
+    # Its bytes the pin's, written in pieces, it is the brain's.
+    installed = await pinned.install(config_dir, serving(RELEASE[:4], RELEASE[4:]))
+    assert installed.fetched and brain_claude(config_dir).read_bytes() == RELEASE
 
 
 @pytest.fixture
@@ -210,14 +245,14 @@ async def test_a_stalled_download_fails_the_install_and_leaves_nothing(tmp_path:
     monkeypatch.setattr(pinned, "STALL_SECONDS", 0.5)
     config_dir = tmp_path / "brain"
     with pytest.raises(pinned.Uninstallable, match="could not fetch"):
-        await pinned.install(config_dir)
+        await pinned.install(config_dir, pinned.RELEASE)
     assert stalling.is_set() and list(pinned.claude(config_dir).parent.iterdir()) == []
 
 
 async def test_an_install_cut_short_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stalling: asyncio.Event) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
-    installing = asyncio.create_task(pinned.install(config_dir))
+    installing = asyncio.create_task(pinned.install(config_dir, pinned.RELEASE))
     await stalling.wait()
     # The start of the release has reached the disk by the time it is cut short.
     while not list(pinned.claude(config_dir).parent.glob("claude.*.partial")):
@@ -244,7 +279,7 @@ def test_install_brain_says_what_it_did_and_is_one_event_each_time(tmp_path: Pat
     # One that fetches says so, and its event why the copy there was not the pin.
     unpinned = f"Claude Code {pinned.VERSION}, the brain's, is not installed at {target}: run `hands install-brain`"
 
-    async def fetched(config_dir: Path) -> pinned.Installed:
+    async def fetched(config_dir: Path, source: pinned.Source) -> pinned.Installed:
         return pinned.Installed(placed(pinned.claude(config_dir), RELEASE), unpinned)
 
     monkeypatch.setattr(pinned, "install", fetched)
