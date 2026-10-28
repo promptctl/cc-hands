@@ -851,8 +851,8 @@ class Send:
     """The request goes to the API with these changes made to it, and as it came when there are none."""
 
     changes: tuple[Change, ...] = ()
-    # What the client makes of the API refusing it: asks again on its own schedule, or, told the refusal is final, ends
-    # there, so the refusal is heard the moment it comes.
+    # What the client is given when the API refuses it: the refusal as the API said it, which the client asks again
+    # after or not as it decides, or the proxy's own told final, so a client that would ask again ends there instead.
     refusal: Literal["retried", "final"] = "retried"
     # [LAW:types-are-the-program] the exchange's span, which its record carries, as the router chose it: inside the unit
     # of work the request was made for, or the root of a trace of its own for one made for none.
