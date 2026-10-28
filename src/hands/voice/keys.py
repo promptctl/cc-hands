@@ -15,8 +15,9 @@ QUIT = "q"
 
 
 @asynccontextmanager
-async def tapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
-    """Hand every event of the talk key to `into` on the event loop while open, each press's Ripe and Overlong too."""
+async def tapped(into: Callable[[KeyEvent], None], tap: Callable[[Callable[[KeyEvent], None]], Callable[[], None]] = talkkey.tap) -> AsyncGenerator[None]:
+    """Hand every event of the talk key to `into` on the event loop while open, each press's Ripe and Overlong too: each
+    event as `tap`, macOS's own unless another is given, hears it on a thread of its own."""
     loop = asyncio.get_running_loop()
 
     def arrived(event: KeyEvent) -> None:
@@ -30,7 +31,7 @@ async def tapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
     def heard_on_the_tap(event: KeyEvent) -> None:
         loop.call_soon_threadsafe(arrived, event)
 
-    stop = talkkey.tap(heard_on_the_tap)
+    stop = tap(heard_on_the_tap)
     try:
         yield
     finally:

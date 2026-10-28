@@ -96,11 +96,11 @@ def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int,
     assert talkkey.event_of(kind, keycode, flags, 5.0) == event
 
 
-async def held(on_move: Callable[[Move], Awaitable[None]]) -> None:
+async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
     """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
     hold: Hold = Idle()
-    async with keys.tapped(heard.put_nowait):
+    async with keys.tapped(heard.put_nowait, tap):
         while True:
             hold, moves = step(hold, await heard.get())
             for move in moves:
@@ -115,7 +115,6 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         taps.append(heard)
         return lambda: stopped.append(None)
 
-    monkeypatch.setattr(talkkey, "tap", tap)
     monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
     made: list[Move] = []
     started = asyncio.Event()
@@ -125,7 +124,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         if move == "start":
             started.set()
 
-    driving = asyncio.create_task(held(on_move))
+    driving = asyncio.create_task(held(on_move, tap))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # dated as the tap dates it, on the loop's clock
@@ -147,7 +146,6 @@ async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch:
         taps.append(heard)
         return lambda: None
 
-    monkeypatch.setattr(talkkey, "tap", tap)
     monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
     monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 0.1)
     made: list[Move] = []
@@ -155,7 +153,7 @@ async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch:
     async def on_move(move: Move) -> None:
         made.append(move)
 
-    driving = asyncio.create_task(held(on_move))
+    driving = asyncio.create_task(held(on_move, tap))
     while not taps:
         await asyncio.sleep(0)
     taps[0](Pressed(asyncio.get_running_loop().time()))  # and never released: a key stuck down
