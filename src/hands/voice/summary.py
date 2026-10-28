@@ -1,4 +1,4 @@
-"""The summariser: a side question asked of a Claude Code of hands' own, apart from the brain's conversation."""
+"""The summariser: a side question forked from the brain's conversation, never entering it."""
 
 from collections.abc import Awaitable, Callable
 
@@ -13,8 +13,7 @@ class SummaryFailed(Exception):
 
 
 def aside(ask: Callable[[str, Within], Awaitable[str]], instruction: str, timeout: float) -> Summariser:
-    """The turn asked as a side question, with what to make of it, of a Claude Code that is asked nothing else, within
-    `timeout`, whatever it waited on."""
+    """The turn asked as a side question, with what to make of it, within `timeout`, whatever it waited on."""
 
     async def from_an_aside(turn: str) -> str:
         try:

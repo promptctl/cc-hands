@@ -1,7 +1,7 @@
 """The brain's context kept small by rule: which tool results are old enough to go as one line, and what the line says.
 
-A long result goes as one line once it is more than `every` turns old, and results go in batches of `every` turns, so
-the history the API's cache holds changes once a batch and not every turn. What the line says is asked as a side
+A tool result goes as one line once it is more than `every` turns old, whatever its length, and results go in batches
+of `every` turns, so the history the API's cache holds changes once a batch and not every turn. What the line says is asked as a side
 question that shows the result (`hands.brain.context`), and kept in the summary store by the result's key, so it is
 asked once whatever becomes of the brain.
 """
@@ -14,9 +14,7 @@ from hands.core.sentences import Digest, cut, digest
 from hands.core.wire import tool_answers, tool_calls, turns
 
 # The summariser's version in every result's key: a change to how a result is asked about is a new key for each.
-VERSION = "tool-result-2"
-# A result shorter than this is about as short as its sentence would be: it goes whole, and nothing is asked about it.
-LONG = 400
+VERSION = "tool-result-3"
 # How much of a call's input a question quotes to name the call, and how much of its result it shows: a longer result
 # is shown by its two ends, which say what was read and how it came out.
 QUOTED = 300
@@ -25,7 +23,7 @@ SHOWN = 12000
 
 @dataclass(frozen=True)
 class Result:
-    """A long tool result in a request's history: the call it answers, what was called with what, its text, and its turn."""
+    """A tool result in a request's history: the call it answers, what was called with what, its text, and its turn."""
 
     call: str
     tool: str
@@ -35,10 +33,10 @@ class Result:
 
 
 def results(body: object) -> tuple[Result, ...]:
-    """Every long tool result a request carries, oldest first; raises ValueError for one that answers no call in it,
+    """Every tool result a request carries, oldest first; raises ValueError for one that answers no call in it,
     which the API would refuse."""
     calls = tool_calls(body)
-    answers = [answer for answer in tool_answers(body) if len(answer.text) >= LONG]
+    answers = tool_answers(body)
     if unanswered := [answer.call for answer in answers if answer.call not in calls]:
         raise ValueError(f"tool results answer calls the history does not hold: {unanswered}")
     return tuple(Result(answer.call, calls[answer.call].name, calls[answer.call].input, answer.text, answer.turn) for answer in answers)
@@ -51,7 +49,7 @@ def boundary(held: int, every: int) -> int:
 
 
 def aged(body: object, every: int) -> tuple[Result, ...]:
-    """The long results a request carries from before its boundary: the ones that go as a line."""
+    """The results a request carries from before its boundary: the ones that go as a line."""
     edge = boundary(turns(body), every)
     return tuple(result for result in results(body) if result.turn < edge)
 
@@ -62,7 +60,7 @@ def key(result: Result) -> Digest:
 
 
 def question(result: Result) -> str:
-    """What a Claude Code with no conversation is asked about a result: the call, what came back, and the one sentence wanted of it."""
+    """What a side question forked from the brain asks about a result: the call, what came back, and the one sentence wanted of it."""
     given = json.dumps(result.input, sort_keys=True)
     quoted = given if len(given) <= QUOTED else given[:QUOTED] + "…"
     shown = cut(result.text, SHOWN)

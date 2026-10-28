@@ -4,7 +4,8 @@
 
 It forwards each request upstream as it came, or with the changes its route gives it made to it, and
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
-request of its own and never uses a client's credentials for anything but that client's own request. The one request it
+request of its own; it tells each request as it forwards it, and what hands' side questions fork from the brain's comes
+back through it as the brain's own Claude Code would send it (`hands.brain.fork`). The one request it
 does not forward is one its route holds: that is answered here, with the words the route gives it, so the model is not
 asked at all.
 """
@@ -29,6 +30,7 @@ from hands.core.wire import (
     Change,
     Ending,
     Exchanged,
+    Forwarded,
     Garbled,
     Heard,
     Held,
@@ -154,8 +156,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     return held
                 case Send(changes=asked, refusal=refusal):
                     onward, changes = _edited(exchange, body, parsed, asked)
+            headers = _end_to_end(request.headers)
+            tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
             try:
-                reached = await client.request(request.method, upstream + request.path_qs, headers=_end_to_end(request.headers), data=onward)
+                reached = await client.request(request.method, upstream + request.path_qs, headers=headers, data=onward)
             except (aiohttp.ClientError, OSError) as error:
                 # A client asks again after the proxy's 502 unless told the refusal is final.
                 final = refusal == "final"

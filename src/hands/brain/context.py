@@ -1,8 +1,8 @@
 """The brain's context, kept from the proxy: old tool results sent as a line, and compaction steered to what a voice
 session needs.
 
-Each line is asked as a side question once the turn its result came in has ended, of a Claude Code of its own that is
-shown the result (`hands.brain.asides`): never of the brain, whose input is the user's. A line is used from the first
+Each line is asked as a side question once the turn its result came in has ended, a /btw forked from the brain's newest
+main turn (`hands.brain.asides`): never typed into the brain, whose input is the user's. A line is used from the first
 main turn whose batch takes its result, and on every request after that shares the brain's history: a fork of the
 brain's and its compaction too, so each of them shares the main turn's cached prefix.
 """
@@ -41,7 +41,7 @@ from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
 from hands.sessions.wide import annotate, count, unit
 
-# Turns a long result goes whole before it goes as a line, and how many turns' results go at once.
+# Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
 # How long the sentence an old result goes as is waited on, from its turn, however long it waited for it: one reply,
 # with thinking. Nothing waits on a line but the batch it is for.

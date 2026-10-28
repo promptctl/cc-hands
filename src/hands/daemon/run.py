@@ -40,7 +40,7 @@ from hands.sessions.home import Home
 from hands.core.front import InFront
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
-from hands.core.wire import UPSTREAM, Answering, Exchanged, Heard, Observed, Sent
+from hands.core.wire import UPSTREAM, Answering, Exchanged, Forwarded, Heard, Observed, Sent
 from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
@@ -96,6 +96,7 @@ from hands.voice.tool import Tool
 from hands.voice.tools import audited, close_session_tool, cued, intermediary_tools, start_session_tool, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
+from hands.brain.fork import Newest
 from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
@@ -189,18 +190,19 @@ async def mind(
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
+        # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
+        # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
+        asides = Asides(proxy_url, Newest(brain.session), record)
         try:
-            # [LAW:single-enforcer] everything hands asks in the background is asked here, of a Claude Code of
-            # its own: nothing but the user's turns is ever typed into the brain.
-            asides = Asides(station, record)
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, cut_off)
             keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
-                # A summary is as long as its Claude Code makes it: only its time is the summary's own.
+                # A summary is as long as its reply makes it: only its time is the summary's own.
                 # The brain's stage notes each turn of the user's itself, as it types it.
                 yield Mind(stage, watches, lambda kind, instruction, timeout: aside(partial(asides.ask, kind), instruction, timeout))
         finally:
+            await asides.close()
             await brain.stop()
     finally:
         await server.close()
@@ -511,6 +513,9 @@ def wire_to(record: Record) -> Callable[[Observed], None]:
                 record(observed)
             case Sent() | Heard() | Answering():
                 # Heard as it happens by what speaks from the wire; the exchange's line already holds the request's kind and the whole reply.
+                pass
+            case Forwarded():
+                # Its headers carry the client's credentials: what side questions fork from, never written down.
                 pass
 
     return observe
