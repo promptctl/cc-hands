@@ -573,6 +573,17 @@ class Asked:
                 raise ValueError(f"permission request {self.request} was answered {other}, which answers no permission")
 
 
+def _unanswered(event: str) -> Mapping[str, object]:
+    """What a hook the brain posted is answered when hands broke handling it: a dialog refused, any other hook let go."""
+    match event:
+        case "PermissionRequest":
+            return hook_output(Deny(BROKEN))
+        case "Elicitation":
+            return DECLINED
+        case _:
+            return {}
+
+
 def refused(reply: HookReply) -> Allow | AllowWith | Approve | Deny | DenyAndInterrupt:
     """What a brain dialog's hook is sent for the model's reply. The model lets a brain dialog go only when Claude Code
     went on past it unanswered (at its prompt, a prompt typed, the session's end): never once its tool ran, since the
@@ -727,14 +738,6 @@ class Brain:
     def _kept(self, task: "asyncio.Task[None]", turn: _Turn | None) -> None:
         self._typing.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:
-            self._broke(turn, error)
-
-    @contextlib.contextmanager
-    def _done_for(self, turn: _Turn | None) -> Generator[None]:
-        """The brain's own work done for `turn`, or for no turn: what it raises that nothing in it expected is `_broke`'s."""
-        try:
-            yield
-        except Exception as error:
             self._broke(turn, error)
 
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
@@ -964,13 +967,19 @@ class Brain:
         each handled as it arrives, in a handler of its own, as a working session's is (serve_hooks), so none waits
         behind another. What it does is a part of the brain's launch, where no turn it is found a part of says else."""
         with continuing(self._launched):
-            return await self._posted(event, body)
+            try:
+                return await self._posted(event, body)
+            except Exception as error:
+                # [LAW:single-enforcer] whatever breaks, the hook is answered, as one nobody answered: what breaks here is
+                # no turn's. A dialog left unanswered is left to Claude Code's own, on a screen nobody sees, and the next
+                # turn's Return would answer it yes.
+                self._broke(None, error)
+                return _unanswered(event)
 
     async def _posted(self, event: str, body: bytes) -> Mapping[str, object]:
         if event == "Elicitation":
-            # A dialog is kept shut, whatever it says, and however its record goes: what breaks there is no turn's.
-            with self._done_for(None):
-                self._refused(body)
+            # A dialog is kept shut, whatever it says.
+            self._refused(body)
             return DECLINED
         try:
             hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(uuid4().hex))
@@ -984,11 +993,9 @@ class Brain:
                 return hook_output(await self._permit(hook))
             case Hook():
                 # Answered once it is applied, whatever it says, as a working session's hook is (serve_hooks): Claude Code
-                # goes on only once the model has it, so nothing it writes after is read before it. A hook whose hearing
-                # breaks is no turn's, and is answered all the same.
-                with self._done_for(None):
-                    await self._reader.hooked(hook)
-                    await self._heard()
+                # goes on only once the model has it, so nothing it writes after is read before it.
+                await self._reader.hooked(hook)
+                await self._heard()
                 return {}
 
     def _unread(self, event: str, error: Rejected) -> Mapping[str, object]:
@@ -1017,47 +1024,56 @@ class Brain:
         """Answers a permission request: held in the model as it arrives, and put to the user while a turn of theirs is
         in flight to ask in.
 
-        [LAW:single-enforcer] it holds the request from its hold to its hook's answer, and is its one catch-all: whatever
-        breaks from the hold on is settled through the model before the reply is waited on, so the wait cannot hang on
-        hands' own failure. [LAW:nothing-unseen] each is one event, written once its hook's reply is known: a part of the
-        turn it was held for, or of the brain's launch where no turn of the user's was in flight to ask in."""
+        [LAW:single-enforcer] it holds the request from its hold to its hook's answer: whatever breaks from the hold on is
+        settled through the model before the reply is waited on, so the wait cannot hang on hands' own failure.
+        [LAW:nothing-unseen] each is one event, written once its hook's reply is known: a part of the turn it was held
+        for, or of the brain's launch where no turn of the user's was in flight to ask in."""
         began = begun()
+        turn: _Turn | None = None
+        raised: BaseException | None = None
         try:
             replying = self._reader.asked(hook)
         except Exception as error:
             # The model never held it, so it is answered here, beside the model: the one answer that is.
-            self._broke(None, error)
-            return Deny(BROKEN)
-        turn: _Turn | None = None
-        raised: BaseException | None = None
-        try:
-            # [LAW:no-ambient-temporal-coupling] owned by the turn the model says goes by its id once Claude Code is read
-            # through now, as a turn's hook is decided (Reader.hooked): a turn dequeued under a new id asks before a
-            # period would have read where it opened. A read that breaks is no turn's.
-            await self._reader.read()
-            turn = self._owner(hook.prompt)
-            await self._decide(hook, turn, replying)
-        except Exception as error:
             raised = error
-            # A turn's ends with it, so the model refuses this dialog with the turn's ending; one no turn owns is refused
-            # here. NotWaiting once it is.
-            self._broke(turn, error)
-            self._sessions.answer(hook.asked.request, Deny(BROKEN))
-        reply = refused(await asyncio.shield(replying))
+            self._broke(None, error)
+            reply: Allow | AllowWith | Approve | Deny | DenyAndInterrupt = Deny(BROKEN)
+        else:
+            # [LAW:no-ambient-temporal-coupling] its hook's day runs from its hold, as Claude Code's clock on the hook runs
+            # from its post, however long the read below takes.
+            by = asyncio.get_running_loop().time() + BRAIN_REPLY_BY_SECONDS
+            try:
+                # [LAW:no-ambient-temporal-coupling] owned by the turn the model says goes by its id once Claude Code is
+                # read through now, as a turn's hook is decided (Reader.hooked): a turn dequeued under a new id asks before a
+                # period would have read where it opened. A read that breaks is no turn's.
+                await self._reader.read()
+                turn = self._owner(hook.prompt)
+                await self._decide(hook, turn, replying, by)
+            except Exception as error:
+                raised = error
+                # A turn's ends with it, so the model refuses this dialog with the turn's ending; one no turn owns is
+                # refused here. NotWaiting once it is.
+                self._broke(turn, error)
+                self._sessions.answer(hook.asked.request, Deny(BROKEN))
+            reply = refused(await asyncio.shield(replying))
         # Timed from its hold, and a part of the turn it was held for, which is known only once Claude Code is read through.
         ended("brain.permission", self._record, replace(began, span=within(self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
         return reply
 
-    async def _decide(self, hook: PermissionHook, turn: _Turn | None, replying: "asyncio.Future[HookReply]") -> None:
+    async def _decide(self, hook: PermissionHook, turn: _Turn | None, replying: "asyncio.Future[HookReply]", by: float) -> None:
         """What hands decides of a held dialog, each settled through the model: put to the user in the turn it is a part
-        of, or refused because nobody can be asked, nobody sees a dialog of questions or a plan, or nobody answered in
-        its hook's day. A dialog the model already refused, of a turn hands is ending, is never put to the user."""
+        of, or refused because nobody can be asked, its turn broke, nobody sees a dialog of questions or a plan, or nobody
+        answered by `by`, the end of its hook's day on the loop's clock. A dialog the model already refused, of a turn
+        hands is ending, is never put to the user."""
         request = hook.asked.request
         match hook.asked.on:
+            case Permission() if turn is not None and turn.broken is not None:
+                # A turn hands broke is ending, its stop under way, whether or not a prompt cleared the model's ending first.
+                self._sessions.answer(request, Deny(BROKEN))
             case Permission() as permission if turn is not None and holds(self._modelled(), request):
                 asked = Asked(permission, request, replying, self._sessions, self.session)
                 turn.asks(asked)
-                await asyncio.wait({replying}, timeout=BRAIN_REPLY_BY_SECONDS)
+                await asyncio.wait({replying}, timeout=by - asyncio.get_running_loop().time())
                 asked.settle(Deny(UNANSWERED))
             case Permission() if turn is not None:
                 # Refused as it was held: its turn is ending.

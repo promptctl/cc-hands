@@ -2019,6 +2019,37 @@ async def test_a_permission_the_model_could_not_hold_is_refused_at_its_hook_and_
     finally:
         logger.remove(sink)
     assert said == ["the brain's own work failed: RuntimeError('the model is gone')"]
+    assert permissions(recorded) == [("p1", "Write", Deny(BROKEN))]
+
+
+async def test_a_dialog_of_a_turn_hands_broke_is_refused_and_never_put_to_the_user() -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain, turn = await _in_turn(recorded, asked.append)
+    # Broken once Claude Code took it, and its prompt cleared any ending the model held: its stop is still to come.
+    turn.broken = RuntimeError("no voice")
+    assert await brain.posted("PermissionRequest", _permission_hook("p1")) == hook_output(Deny(BROKEN))
+    assert (asked, permissions(recorded)) == ([], [("p1", "Write", Deny(BROKEN))])
+
+
+async def test_a_permission_whose_event_cannot_be_written_is_refused_at_its_hook_and_said_once() -> None:
+    """Never left unanswered, which would leave it to Claude Code's own dialog on a screen nobody sees."""
+    recorded: list[Entry] = []
+    brain, _ = await _in_turn(recorded, unasked)
+
+    def full(entry: Entry) -> None:
+        if isinstance(entry, WideEvent) and entry.event == "brain.permission":
+            raise ValueError("the log is full")
+        recorded.append(entry)
+
+    brain._record = full  # pyright: ignore[reportPrivateUsage]
+    other = {"hook_event_name": "PermissionRequest", "session_id": "b2", "transcript_path": "/brain/projects/-brain-cwd/b2.jsonl", "cwd": "/brain/cwd", "permission_mode": "default", "prompt_id": "p9", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
+    said, sink = failures()
+    try:
+        assert await brain.posted("PermissionRequest", json.dumps(other).encode()) == hook_output(Deny(BROKEN))
+    finally:
+        logger.remove(sink)
+    assert said == ["the brain's own work failed: ValueError('the log is full')"]
 
 
 def test_the_brain_is_posted_no_hook_that_says_a_tool_ran() -> None:

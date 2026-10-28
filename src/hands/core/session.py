@@ -162,6 +162,9 @@ class Held:
 
     on: Blocker
     request: RequestId
+    # When its hook reached hands: a prompt that reached hands before it says nothing of it, however late that prompt's
+    # hook is applied.
+    asked: Instant
 
 
 # [LAW:one-source-of-truth] whether a session runs, waits at a dialog, or sits at its prompt is Claude Code's status, and

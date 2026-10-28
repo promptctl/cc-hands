@@ -429,17 +429,18 @@ def _dialog(event: Moving, was: Session) -> tuple[Held, ...]:
         case PermissionRequested(request=request) if holds(was, request):
             # A request it already waits on, heard again: it is the same dialog, by request id.
             return dialogs
-        case PermissionRequested(request=request, on=on):
+        case PermissionRequested(request=request, on=on, at=at):
             # Drawn beneath the dialogs already up, as Claude Code queues one asked while another is on its screen.
-            return (*dialogs, Held(on=on, request=request))
+            return (*dialogs, Held(on=on, request=request, asked=at))
         case ToolFinished(call=call):
             # The tool a dialog was waiting to run has run, so that dialog was answered at the keyboard.
             ran = next((held for held in dialogs if _same_call(held.on, call)), None)
             return tuple(held for held in dialogs if held is not ran)
-        case Prompted():
-            # Typed at the session: a dialog it was typed past was answered, and one escaped is waited on no more. A prompt
-            # filed into the turn still running says so too: no prompt is typed while a dialog holds the keyboard.
-            return ()
+        case Prompted(at=at):
+            # Typed at the session: a dialog it was typed past was answered, and one escaped is waited on no more, for no
+            # prompt is typed while a dialog holds the keyboard. A dialog asked after the prompt reached hands was not up
+            # as it was typed: its hook is held as it arrives (Reader.asked), and the prompt's is applied after a read.
+            return tuple(held for held in dialogs if held.asked > at)
         case _:
             return dialogs
 

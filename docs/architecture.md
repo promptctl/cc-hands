@@ -685,7 +685,9 @@ keyboard answer directly. It learns that the session moved on: the asked-about t
 finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input, or for a
 question the same questions, since it comes back with the answers added), the session
 at its prompt, or the next `UserPromptSubmit` or `SessionEnd`, withdraws the waiting
-reply, which prints nothing. A `PermissionRequest` asked while a dialog is up does not:
+reply, which prints nothing. A `UserPromptSubmit` withdraws only the dialogs asked before it reached
+the daemon: a dialog is held as its hook arrives, and a prompt's hook is applied after a transcript read, so a
+prompt typed before a dialog came up can be applied after it. A `PermissionRequest` asked while a dialog is up does not:
 Claude Code queues its dialog beneath the one on screen, so a session holds every dialog
 it has stacked, in the order asked (`Session.dialogs`), and each waits for its own answer. A hook whose connection closes first ends the wait with
 no reply at all, so a later voice answer hears that the request is gone rather than

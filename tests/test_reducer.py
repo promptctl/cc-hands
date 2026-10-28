@@ -85,7 +85,7 @@ NEXT = PromptId("p2")
 IDLE = Idle(status.Idle(), Stamp(900), after=None)
 BUSY = Running(Busy(), Stamp(1000), idled=Stamp(1000))
 AT_DIALOG = Running(Waiting("permission prompt"), Stamp(1100), idled=Stamp(1000))
-HELD = Held(on=BASH, request=RequestId("r0"))
+HELD = Held(on=BASH, request=RequestId("r0"), asked=0.0)
 
 LIVE: list[SessionState] = [Unreported(), IDLE, BUSY, AT_DIALOG]
 SESSION_EVENTS: list[SessionEvent] = [
@@ -202,7 +202,7 @@ def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: Ses
 def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState) -> None:
     """Held whatever the status last read: a session that joins on its request has had none read yet."""
     event = PermissionRequested(ONE.id, at=5.0, request=RequestId("r1"), on=BASH, mode=None)
-    assert reduce(holding(before), event) == (holding(before, dialogs=(replace(HELD, request=RequestId("r1")),)), [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
+    assert reduce(holding(before), event) == (holding(before, dialogs=(replace(HELD, request=RequestId("r1"), asked=5.0),)), [Narrate(Asking(ONE.id, RequestId("r1"), BASH))])
 
 
 @pytest.mark.parametrize(
@@ -217,6 +217,14 @@ def test_a_permission_request_is_handed_to_the_intermediary(before: SessionState
 def test_a_session_that_moves_on_while_waiting_lets_its_hook_go_undecided(event: Event) -> None:
     # Most often the user answered the dialog at the keyboard; a voice reply after that would decide nothing.
     assert [effect for effect in reduce(in_turn(AT_DIALOG, (HELD,)), event)[1] if isinstance(effect, Reply)] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
+
+
+def test_a_prompt_applied_after_a_dialog_asked_after_it_reached_hands_lets_go_only_of_the_dialogs_before_it() -> None:
+    """A dialog's hook is held as it arrives, and a prompt's is applied after a read, so a prompt typed before a dialog
+    came up can be applied after it: it was typed past the dialogs up as it arrived, never one drawn after."""
+    later = replace(SECOND, asked=7.0)
+    _, effects = reduce(in_turn(AT_DIALOG, (HELD, later)), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN, text=""))
+    assert [effect for effect in effects if isinstance(effect, Reply)] == [Reply(ONE.id, HELD.request, Withdraw())]
 
 
 @pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, (HELD,)), in_turn(IDLE)])
@@ -276,14 +284,14 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
 
 
 EDIT = Permission(tool="Edit", input={"file_path": "a.py"})
-SECOND = Held(on=EDIT, request=RequestId("r1"))
+SECOND = Held(on=EDIT, request=RequestId("r1"), asked=0.0)
 
 
 def test_a_second_request_while_waiting_is_stacked_beneath_the_first_and_both_are_asked() -> None:
     """Concurrency-safe tool calls ask at once, and Claude Code queues a dialog asked while another is up beneath it
     (cmt-36bc6251): both hooks are open, so neither is let go."""
     after, effects = reduce(holding(AT_DIALOG, dialogs=(HELD,)), PermissionRequested(ONE.id, at=7.0, request=SECOND.request, on=EDIT, mode=None))
-    assert after == holding(AT_DIALOG, dialogs=(HELD, SECOND))
+    assert after == holding(AT_DIALOG, dialogs=(HELD, replace(SECOND, asked=7.0)))
     assert effects == [Narrate(Asking(ONE.id, SECOND.request, EDIT))]
 
 
@@ -383,7 +391,7 @@ def test_a_held_request_is_never_denied_warned_of_or_let_go_on_the_clock() -> No
         state, effects = reduce(state, Tick(at=second))
         heard += effects
     assert heard == [Narrate(Asking(ONE.id, RequestId("r"), BASH))]
-    assert live(state).dialogs == (Held(on=BASH, request=RequestId("r")),)
+    assert live(state).dialogs == (Held(on=BASH, request=RequestId("r"), asked=0.0),)
 
 
 def test_a_request_heard_again_is_the_same_dialog_and_is_asked_once() -> None:
@@ -495,13 +503,13 @@ def test_a_question_answered_at_the_keyboard_comes_back_with_its_answers_and_sti
     asked = {"questions": [{"question": "Which?", "options": [{"label": "this"}]}]}
     question = Question((AskedQuestion("Which?", (Option("this", None),), several=False),), asked)
     answered = Question(question.asked, {**asked, "answers": {"Which?": "this"}})
-    waiting = Held(on=question, request=RequestId("r0"))
+    waiting = Held(on=question, request=RequestId("r0"), asked=0.0)
     after, effects = reduce(holding(AT_DIALOG, dialogs=(waiting,)), ToolFinished(ONE.id, at=20.0, call=answered, mode=None))
     assert (after, effects) == (holding(AT_DIALOG), [Reply(ONE.id, RequestId("r0"), Withdraw())])
 
 
 def test_a_plan_approved_at_the_keyboard_releases_the_wait() -> None:
-    dialog = Held(on=Plan("the plan"), request=RequestId("r0"))
+    dialog = Held(on=Plan("the plan"), request=RequestId("r0"), asked=0.0)
     after, _ = reduce(holding(AT_DIALOG, dialogs=(dialog,)), ToolFinished(ONE.id, at=20.0, call=PlanApproved(), mode=None))
     assert after == holding(AT_DIALOG)
 

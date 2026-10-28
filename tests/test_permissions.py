@@ -46,7 +46,7 @@ def registry(*sessions: Session) -> Registry:
 
 @pytest.mark.parametrize("decision", [Allow(), Deny("use git clean instead")])
 def test_an_answer_replies_to_the_waiting_hook_and_the_turn_carries_on(decision: Allow | Deny) -> None:
-    before = registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=REQUEST),)), Session(TWO, IDLE, mode=None))
+    before = registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=REQUEST, asked=0.0),)), Session(TWO, IDLE, mode=None))
     assert answer(before, Answer(REQUEST, decision)) == (
         registry(Session(ONE, AT_DIALOG, mode=None), Session(TWO, IDLE, mode=None)),
         Answered(ONE.id, BASH, decision),
@@ -60,7 +60,7 @@ def test_an_answer_replies_to_the_waiting_hook_and_the_turn_carries_on(decision:
         Session(ONE, IDLE, mode=None),
         Session(ONE, running(), mode=None),
         Gone(ONE),
-        Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=RequestId("another")),)),
+        Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=RequestId("another"), asked=0.0),)),
     ],
 )
 def test_an_answer_to_a_request_nobody_waits_on_changes_nothing(session: Session) -> None:
@@ -69,7 +69,7 @@ def test_an_answer_to_a_request_nobody_waits_on_changes_nothing(session: Session
 
 
 def test_a_request_is_answered_once() -> None:
-    once, _, _ = answer(registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=REQUEST),))), Answer(REQUEST, Allow()))
+    once, _, _ = answer(registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=BASH, request=REQUEST, asked=0.0),))), Answer(REQUEST, Allow()))
     assert answer(once, Answer(REQUEST, Deny("no"))) == (once, NotWaiting(REQUEST), None)
 
 
@@ -77,13 +77,13 @@ EDIT = Permission(tool="Edit", input={"file_path": "a.py"})
 
 
 def test_answering_the_second_of_two_stacked_dialogs_leaves_the_first_held() -> None:
-    first, second = Held(on=BASH, request=RequestId("r0")), Held(on=EDIT, request=REQUEST)
+    first, second = Held(on=BASH, request=RequestId("r0"), asked=0.0), Held(on=EDIT, request=REQUEST, asked=0.0)
     after, outcome, reply = answer(registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(first, second))), Answer(REQUEST, Allow()))
     assert (after, outcome, reply) == (registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(first,))), Answered(ONE.id, EDIT, Allow()), Reply(ONE.id, REQUEST, Allow()))
 
 
 def waiting_on(on: Blocker) -> Registry:
-    return registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=on, request=REQUEST),)))
+    return registry(Session(ONE, AT_DIALOG, mode=None, dialogs=(Held(on=on, request=REQUEST, asked=0.0),)))
 
 
 def test_answers_reach_the_question_keyed_by_what_each_asked_with_its_input_kept() -> None:

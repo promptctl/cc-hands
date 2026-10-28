@@ -140,7 +140,7 @@ def decision(stdout: str) -> object:
 
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
-    assert [listing.session.dialogs for listing in sessions.live()] == [(Held(on=moment.on, request=moment.request),)]
+    assert [[(held.on, held.request) for held in listing.session.dialogs] for listing in sessions.live()] == [[(moment.on, moment.request)]]
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
     tool = named(sessions, "answer_permission")
@@ -205,7 +205,7 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     assert readback in str((await call(named(sessions, tool), request=moment.request, **arguments))["readback"])
     await asyncio.sleep(0.2)
     assert shim.process.returncode is None, "the hook was answered with something that does not answer it"
-    assert [listing.session.dialogs for listing in sessions.live()] == [(Held(on=moment.on, request=moment.request),)]
+    assert [[(held.on, held.request) for held in listing.session.dialogs] for listing in sessions.live()] == [[(moment.on, moment.request)]]
     await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"])
     await shim.finished()
 
@@ -522,7 +522,7 @@ async def test_a_permission_request_is_held_in_the_model_before_reader_asked_ret
     reader = Reader(sessions, Tails(sessions), sessions.apply)
     replying = reader.asked(PermissionHook("PermissionRequest", SID, Located(member), "p1", "Bash", asked))
     held = sessions.live_session(SID)
-    assert held is not None and held.dialogs == (Held(on=asked.on, request=asked.request),)
+    assert held is not None and held.dialogs == (Held(on=asked.on, request=asked.request, asked=asked.at),)
     sessions.answer(asked.request, Allow())
     assert replying.done() and replying.result() == Allow()
 
