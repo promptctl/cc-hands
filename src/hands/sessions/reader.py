@@ -5,6 +5,8 @@ had said by then on every channel."""
 import asyncio
 from collections.abc import Callable
 
+from loguru import logger
+
 from hands.core.events import Event, PermissionRequested, Prompted, Stopped
 from hands.sessions.hooks import Hook
 from hands.sessions.registry import Sessions, StopHeld
@@ -31,12 +33,16 @@ class Reader:
         self._apply = apply
         self._statuses = Statuses(sessions.now)
         self._reading = asyncio.Lock()
-        # What reads decided that is still being performed, each in its session's own order: the period waits on all of
-        # it before it reads again, a hook on none of it.
-        self._performing: list[asyncio.Future[None]] = []
 
     async def read(self) -> None:
-        """Every live session's status, then its transcript, read through now, and what each says decided as it is read.
+        """Every live session read through now, with nothing waiting on what it decided being performed: each says how
+        it failed as it ends, as Sessions says what was heard where nothing waits on it."""
+        for performing in await self._read():
+            performing.add_done_callback(_said)
+
+    async def _read(self) -> list["asyncio.Future[None]"]:
+        """Every live session's status, then its transcript, read through now, and what each says decided as it is read:
+        the performing of each, in the order read.
 
         [LAW:no-ambient-temporal-coupling] the status first: a transcript is read only once a status says whether a turn
         runs (Tails.catch_up), so the turn it is in when hands begins following it lands on a status that decides that.
@@ -44,10 +50,9 @@ class Reader:
         compared for one never holds up another's hook.
         """
         async with self._reading:
-            for reported in self._statuses.read(self._sessions.live_ids(), self._sessions.live_session):
-                self._performing.append(self._apply(reported))
-            for transcribed in await self._tails.catch_up():
-                self._performing.append(self._apply(transcribed))
+            performing = [self._apply(reported) for reported in self._statuses.read(self._sessions.live_ids(), self._sessions.live_session)]
+            performing += [self._apply(transcribed) for transcribed in await self._tails.catch_up()]
+        return performing
 
     async def hooked(self, hook: Hook) -> StopHeld | None:
         """A session's hook applied: where its transcript is, then what it says, a turn's prompt or Stop once Claude Code
@@ -80,13 +85,19 @@ class Reader:
         return None
 
     async def keep_reading(self, period: float) -> None:
-        """Read once a period, and wait out what every read since decided, until cancelled. [LAW:no-silent-failure] the
-        first of it that failed is raised."""
+        """Read once a period, and wait out what each read decided before the next, until cancelled.
+        [LAW:no-silent-failure] the first of it that failed is raised."""
         while True:
-            await self.read()
-            performing, self._performing = self._performing, []
+            performing = await self._read()
             if performing:
                 await asyncio.wait(performing)
             for performed in performing:
                 performed.result()
             await asyncio.sleep(period)
+
+
+def _said(performed: "asyncio.Future[None]") -> None:
+    if not performed.cancelled() and (error := performed.exception()) is not None:
+        # [LAW:no-silent-failure] nothing awaits it to raise to, so it is said here; an effect that failed is named on its
+        # applied event as well.
+        logger.error(f"performing what a read through now decided failed: {type(error).__name__}: {error}")

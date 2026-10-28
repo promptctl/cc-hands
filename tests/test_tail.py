@@ -1,6 +1,7 @@
 """A session's transcript, followed as Claude Code writes it, and the turn it is read into."""
 
 import asyncio
+from collections.abc import Callable
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,8 +73,8 @@ class Registry:
     def membership(self, session: SessionId) -> Membership | None:
         return next((member for member in self.known if member.id == session), None)
 
-    def followed(self, session: SessionId, prompt: PromptId) -> bool:
-        return prompt in self.heard
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
+        return lambda prompt: prompt in self.heard
 
 
 async def following(transcript: Path) -> Tails:
@@ -853,6 +854,37 @@ async def test_a_sessions_hook_is_applied_while_what_a_read_decided_for_another_
     finally:
         compared.set()
         reading.cancel()
+
+
+async def test_what_a_read_through_now_decided_says_how_its_performing_failed_with_no_period_reading(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(transcript), "startup"))
+    await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
+
+    def apply(event: Event) -> "asyncio.Future[None]":
+        failed = asyncio.get_running_loop().create_future()
+        failed.set_exception(OSError("the repository went"))
+        return failed
+
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
+    try:
+        # As a hook reads before the voice is up: no period reads, so nothing else waits on what this read decided.
+        await Reader(sessions, Tails(sessions), apply).read()
+        await asyncio.sleep(0)
+    finally:
+        logger.remove(sink)
+    assert "performing what a read through now decided failed: OSError: the repository went" in logged
+
+
+async def test_which_turns_hands_followed_is_said_as_the_registry_held_them_when_asked(tmp_path: Path) -> None:
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(tmp_path / "t.jsonl"), "startup"))
+    before = sessions.followed(SID)
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
+    assert (before(PromptId("p1")), sessions.followed(SID)(PromptId("p1"))) == (False, True)
 
 
 # The next prompt, read before the turn before it is told: the narrator is seconds behind on another session's summary.

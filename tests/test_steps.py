@@ -8,6 +8,7 @@ test runners wrote, passing and failing, captured on 2026-09-21, and go's subtes
 from pathlib import Path
 
 import pytest
+from collections.abc import Callable
 
 from dataclasses import dataclass
 
@@ -46,9 +47,9 @@ class Registry:
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
 
-    def followed(self, session: SessionId, prompt: PromptId) -> bool:
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
         # No hook of the session is heard: the tail decides alone what of the file is history.
-        return False
+        return lambda _prompt: False
 
 
 @pytest.fixture

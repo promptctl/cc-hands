@@ -8,7 +8,6 @@ about where the turn started or what of it was heard.
 import asyncio
 import os
 from collections.abc import Callable, Iterable, Iterator
-from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
@@ -247,7 +246,7 @@ class Known(Protocol):
 
     def membership(self, session: SessionId) -> Membership | None: ...
 
-    def followed(self, session: SessionId, prompt: PromptId) -> bool: ...
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]: ...
 
 
 class Tails:
@@ -283,7 +282,7 @@ class Tails:
             for member in [member for member in members if self._known.status_read(member.id)]:
                 following = self._following.setdefault(member.id, Following())
                 try:
-                    await asyncio.to_thread(self._read, member.id, following, member.transcript, through)
+                    await asyncio.to_thread(self._read, member.id, following, member.transcript, through, self._known.followed(member.id))
                 except FileNotFoundError:
                     # Claude Code creates the transcript with its first record, which a session may not have written yet,
                     # and renames it as the session enters a worktree, which the hook after says, landing in moments.
@@ -310,7 +309,7 @@ class Tails:
             transcript, following = followed
             # The turn stopped a moment ago, so the last records of it may not have been read by the loop yet.
             # A transcript that cannot be read raises here, where the narrator says so rather than saying nothing.
-            await asyncio.to_thread(self._read, session, following, transcript, through)
+            await asyncio.to_thread(self._read, session, following, transcript, through, self._known.followed(session))
             reading = following.find(turn)
             if reading is None:
                 # [LAW:no-silent-failure] the whole transcript was just read, so its turn is not in it: read again from
@@ -377,7 +376,7 @@ class Tails:
         membership = self._known.membership(session)
         return None if membership is None else (membership.transcript, self._following.setdefault(session, Following()))
 
-    def _read(self, session: SessionId, following: Following, transcript: Path, through: Stamp) -> None:
+    def _read(self, session: SessionId, following: Following, transcript: Path, through: Stamp, known: Callable[[PromptId], bool]) -> None:
         """Raises OSError, which the caller decides what to make of: a file not written yet, or one that cannot be read.
 
         [LAW:no-ambient-temporal-coupling] `through` is stamped before the registry was asked where the transcript is, so
@@ -440,8 +439,9 @@ class Tails:
         # its calls so far are history, as backfill reads them, and only the calls it makes from here on are heard.
         # [LAW:no-ambient-temporal-coupling] but a turn the registry heard of before this read, by a hook or a record,
         # hands followed, and every turn after it: none of them is history, however much of it Claude Code wrote before
-        # the file was first read, as all of a fast first turn can be.
-        followed = following.followed(partial(self._known.followed, session))
+        # the file was first read, as all of a fast first turn can be. `known` is the registry as it stood when the read
+        # began, on the loop, never as it changes while this thread reads.
+        followed = following.followed(known)
         made = following.reading.made()
         if made and (not history or followed is not None):
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))

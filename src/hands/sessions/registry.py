@@ -376,10 +376,12 @@ class Sessions:
             case Session() as live:
                 return live
 
-    def followed(self, session: SessionId, prompt: PromptId) -> bool:
-        """Whether hands followed the live session's turn the id names: its turn, or a turn before it, went by it."""
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
+        """Whether hands followed the live session's turn an id names, its turn or a turn before it going by it, as the
+        registry holds it now: [LAW:no-ambient-temporal-coupling] a session held is never changed, so what is applied
+        after this is not in what it says, from whatever thread it is asked."""
         live = self.live_session(session)
-        return live is not None and followed(live, prompt)
+        return lambda prompt: live is not None and followed(live, prompt)
 
     def live(self) -> list[Listing[Session]]:
         return [self._listing(session) for session in self._registry.live()]

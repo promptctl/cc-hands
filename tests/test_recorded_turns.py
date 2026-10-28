@@ -13,7 +13,7 @@ id Claude Code gave the words sent into it is one turn, told by the id its Stop 
 """
 
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -89,9 +89,9 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
         def membership(self, session: SessionId) -> Membership | None:
             return member
 
-        def followed(self, session: SessionId, prompt: PromptId) -> bool:
+        def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
             known = registry.sessions.get(session)
-            return isinstance(known, Session) and followed(known, prompt)
+            return lambda prompt: isinstance(known, Session) and followed(known, prompt)
 
     tails = Tails(Known())
     told: list[str] = []
