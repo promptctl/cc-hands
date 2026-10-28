@@ -124,13 +124,13 @@ class ManualClock:
     def now(self) -> float:
         return self.at
 
-    async def pause(self, seconds: float) -> None:
+    def pause(self, seconds: float) -> asyncio.Future[None]:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
         self._seen()
         # A pause already due wakes at once, as `asyncio.sleep(0)` does.
         self._wake()
-        await woken
+        return woken
 
     def advance(self, seconds: float) -> None:
         self.at += seconds

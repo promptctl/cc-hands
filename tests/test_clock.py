@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from conftest import BrokenClock, ManualClock
-from hands.sessions.clock import wait
+from hands.sessions.clock import SYSTEM, wait
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
@@ -48,3 +48,15 @@ async def test_a_pause_already_due_wakes_without_the_clock_moving() -> None:
     clock = ManualClock()
     await asyncio.wait_for(clock.pause(0.0), timeout=1.0)
     assert clock.waking == ()
+
+
+async def test_a_system_pause_cancelled_as_its_timer_fires_is_over_with_nothing_raised() -> None:
+    loop = asyncio.get_running_loop()
+    raised: list[dict[str, object]] = []
+    loop.set_exception_handler(lambda _loop, context: raised.append(context))
+    pause = SYSTEM.pause(0)
+    # The timer is due this step, and the cancellation reaches its callbacks only in the next.
+    loop.call_soon(pause.cancel)
+    await asyncio.sleep(0.01)
+    assert pause.cancelled() and raised == []
+    loop.set_exception_handler(None)

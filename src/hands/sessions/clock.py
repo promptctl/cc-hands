@@ -18,7 +18,7 @@ def stamp_now() -> Stamp:
 
 
 class Clock(Protocol):
-    """Monotonic seconds, and a pause that ends once that many of them have passed."""
+    """Monotonic seconds, and a pause that ends once that many of them have passed since it was asked for."""
 
     def now(self) -> float: ...
 
@@ -26,13 +26,19 @@ class Clock(Protocol):
 
 
 class SystemClock:
-    """The machine's monotonic clock and asyncio's sleep."""
+    """The machine's monotonic clock, and a pause on the loop's timer."""
 
     def now(self) -> float:
         return time.monotonic()
 
-    async def pause(self, seconds: float) -> None:
-        await asyncio.sleep(seconds)
+    def pause(self, seconds: float) -> asyncio.Future[None]:
+        # Armed as it is asked for, as `asyncio.wait(timeout=)` arms its own: an `asyncio.sleep` is armed only at its first
+        # step, a step after the deadline it was measured from.
+        loop = asyncio.get_running_loop()
+        woken = loop.create_future()
+        armed = loop.call_later(seconds, _wake, woken)
+        woken.add_done_callback(lambda _: armed.cancel())
+        return woken
 
 
 SYSTEM = SystemClock()
@@ -55,3 +61,9 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
     for side in (every, timer):
         if not side.cancelled():
             side.result()
+
+
+def _wake(woken: asyncio.Future[None]) -> None:
+    # A pause cancelled in the step its timer fires in is over already; its timer is not cancelled until the next.
+    if not woken.cancelled():
+        woken.set_result(None)

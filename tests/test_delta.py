@@ -8,8 +8,9 @@ import subprocess
 import sys
 import time
 from collections import deque
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Literal, NoReturn
 
@@ -1307,27 +1308,27 @@ class Stalled(Deltas):
         self._gates[stage].append(gate)
         return gate
 
-    async def _through[T](self, stage: Stage, read: Awaitable[T]) -> T:
-        """`read`, through the gate the test holds for the next read of `stage`, or through an open one."""
+    async def _through[T](self, stage: Stage, read: Callable[[], Awaitable[T]]) -> T:
+        """`read`, begun through the gate the test holds for the next read of `stage`, or through an open one."""
         gate = self._gates[stage].popleft() if self._gates[stage] else Gate.opened()
         gate.reached.set()
         await gate.released.wait()
         try:
-            return await read
+            return await read()
         finally:
             gate.over.set()
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
-        return await self._through("mark", super()._mark(cwd, deadline))
+        return await self._through("mark", partial(super()._mark, cwd, deadline))
 
     async def _standing(self, root: Path, at: datetime, deadline: float) -> Standing | None:
-        return await self._through("standing", super()._standing(root, at, deadline))
+        return await self._through("standing", partial(super()._standing, root, at, deadline))
 
     async def _tree(self, root: Path, deadline: float) -> str | None:
-        return await self._through("tree", super()._tree(root, deadline))
+        return await self._through("tree", partial(super()._tree, root, deadline))
 
     async def _moved(self, mark: Mark, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
-        return await self._through("moved", super()._moved(mark, ended, deadline, forging))
+        return await self._through("moved", partial(super()._moved, mark, ended, deadline, forging))
 
 
 # How long a start waits on the captures it lets go, on its clock: far inside its deadline.
@@ -1351,14 +1352,15 @@ async def overtaking(deltas: Stalled, clock: ManualClock, root: Path, *finishing
     let go and are over, then everything the start was given passes, so the capture still held is overtaken."""
     marking = deltas.hold("mark")
     marking.released.set()
+    deadline = clock.now() + MARKING
     snapshot = asyncio.create_task(deltas.snapshot(SID, root))
     await marking.over.wait()
     for gate in finishing:
         gate.released.set()
         await gate.over.wait()
     # The start's own wait on the capture still held is the one pause left at its deadline once its mark is in.
-    await clock.paused(MARKING)
-    clock.advance(MARKING)
+    await clock.paused(deadline)
+    clock.advance(deadline - clock.now())
     await snapshot
 
 

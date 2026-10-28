@@ -98,8 +98,9 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     try:
         # Waited on, not awaited: what the child's thread raised is the child's outcome, told below as its own.
         await wait(clock, (child.ended,), timeout)
-    except BaseException as stopped:
-        # Cancelled, or its clock failed: whatever ends the wait early, the child does not outlive it.
+    except (asyncio.CancelledError, Exception) as stopped:
+        # Cancelled, or its clock failed: whatever ends the wait early, the child does not outlive it. A coroutine closed
+        # or an interpreter exiting is not waited in.
         await child.killed("its caller stopped waiting" if isinstance(stopped, asyncio.CancelledError) else f"its wait failed: {stopped!r}")
         raise
     if not child.ended.done():
