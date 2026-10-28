@@ -33,6 +33,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.voice import loads
 from hands.threads import settles_off_loop
 from hands.voice.hold import TURN_LIMIT_SECONDS, Hold, Idle, Instant, KeyEvent, Move, step as hold_step
 
@@ -334,7 +335,7 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
     # On a thread of its own the process does not join at exit (hands.threads), as every model's load is.
     loading = settles_off_loop(lambda: Models(sample_rate), "Models")
     try:
-        with unit("trigger.loaded", emit):
+        with loads.loading("trigger.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)

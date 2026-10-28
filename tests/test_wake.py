@@ -14,7 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
 from aiohttp.streams import StreamReader
-from conftest import spoken
+from conftest import model_facts, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -174,7 +174,7 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
     async with loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
         assert wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav"))
         assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine.", tmp_path / "passing.wav"))
-    assert [(event.event, event.outcome, event.facts["phrase"]) for event in events] == [("trigger.wake_word_loaded", "ok", "Hey Jarvis")]
+    assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("trigger.wake_word_loaded", "ok", "Hey Jarvis")]
 
 
 async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(tmp_path: Path, models: Path) -> None:

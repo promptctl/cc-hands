@@ -2301,7 +2301,8 @@ which settings won (the file, the collector, the backend, server,
 model, and account, the voice), and what the run listens on (the hook socket, the proxy
 and its upstream, the tap, the display route), each added as the step that learns it is
 taken, so a start that ended first says how far it got; the display's is the address it
-was bound on. No one body runs a start, so its event is emitted as it ends (`wide.ended`)
+was bound on. It says how big hands was as it ended (`resident_mb`); the models that load after
+it say theirs on their own loads' events. No one body runs a start, so its event is emitted as it ends (`wide.ended`)
 rather than held open as a unit over the run: held open, every server and task the start
 makes would be inside it, and every unit they ran part of the start's trace. A start told
 to stop first is cancelled. A start that cannot be made is failed, with the reason, and
@@ -2448,7 +2449,11 @@ its 160 ms streaming mode (one frame of look-ahead), paired with Nemotron 3 Diar
 0.32 s preset, which decides each word's speaker before the word is decoded: on this Mac a
 hold's first words are out 0.17 to 0.4 s after they are said, and the pair hears 20 ms of a hold
 in about 8 ms. It loads on a thread of its own (the `streaming.loaded` event), so nothing waits
-on it. The
+on it. Every model's load, pocket-tts's (`tts.loaded`) and a trigger's models' included, is a unit
+of work of its own (`hands.voice.loads`) that says the process's resident set size as it ended
+(`resident_mb`, as `ps -o rss` measures it) and how much the process grew across it
+(`process_grew_mb`): the model's own cost where the load ran alone, which the events' times
+show, and the last load's size is the total with every model loaded. The
 model is the brain: Claude Code of hands' own, through hands' proxy. Measured on 2026-09-12, full
 voice-to-voice with Qwen3-30B-A3B on inferno, since retired: a turn with a tool call had
 first audio 4.3 s after key release; a plain turn 1.4 s.

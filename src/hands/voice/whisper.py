@@ -6,7 +6,8 @@ import threading
 from collections.abc import Awaitable, Callable
 
 from hands.sessions.audit import HoldHeard, Record, Unsaid
-from hands.sessions.wide import annotate, unit
+from hands.sessions.wide import annotate
+from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice import transcription
 from hands.voice.holds import SECOND, Hold
@@ -31,7 +32,7 @@ class Whisper:
 
     def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
-        with unit("whisper.loaded", record):
+        with loads.loading("whisper.loaded", record):
             transcription.load()
             annotate(model=transcription.MODEL)
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.

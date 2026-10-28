@@ -33,7 +33,8 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import EdgeTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import conversation, streaming, voices
+from hands.voice import conversation, loads, streaming, voices
+from hands.sessions.wide import annotate
 from hands.voice.holdowner import HoldOwner
 from hands.voice.whisper import Whisper
 from hands.voice.backends import ClaudeCodeBackend
@@ -83,12 +84,15 @@ def build_voice(
     # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
     # who said it: nothing the owner does waits on it, its models' load included.
     stt = HoldOwner(Whisper(prompt=prompt, record=record), (streaming.StreamingRecognizer(streaming.load, record),), record)
-    # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
-    # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
-    # own reply alike, so this is the one place all of them meet before they are heard.
-    # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
-    # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
-    tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
+    # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is.
+    with loads.loading("tts.loaded", record):
+        annotate(voice=config.voice)
+        # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
+        # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
+        # own reply alike, so this is the one place all of them meet before they are heard.
+        # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
+        # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
+        tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

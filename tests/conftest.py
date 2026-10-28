@@ -30,7 +30,7 @@ from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import MARKING, READING, Deltas
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import engaged, streaming
 from hands.voice.wake import fetched
@@ -39,6 +39,14 @@ from hands.voice.wakeword import Pretrained
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
+
+def model_facts(load: WideEvent) -> dict[str, Fact]:
+    """A model load's facts of its own: every load says how big the process was as it ended and how much it grew, which
+    are taken off here once they are shown to be there (hands.voice.loads)."""
+    facts = dict(load.facts)
+    assert isinstance(facts.pop("resident_mb"), float) and isinstance(facts.pop("process_grew_mb"), float), load.facts
+    return facts
 
 
 def spoken(text: str, at: Path) -> bytes:

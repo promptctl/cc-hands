@@ -35,7 +35,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import patiently, running, unprimed
+from conftest import events, model_facts, patiently, running, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -302,6 +302,11 @@ async def rigged(
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
+
+
+async def test_pocket_tts_loading_as_the_voice_is_built_is_a_load_of_its_own(rig: Rig) -> None:
+    [load] = events(rig.recorded, "tts.loaded")
+    assert (load.outcome, model_facts(load)) == ("ok", {"voice": voices.DEFAULT})
 
 
 async def test_a_spoken_hold_is_sent(rig: Rig) -> None:

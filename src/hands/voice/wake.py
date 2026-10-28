@@ -20,6 +20,7 @@ import numpy as np
 from openwakeword.model import Model
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.voice import loads
 from hands.voice.engaged import Act, Begun, Conversation, Disengaged, Engagement, Event, Listening, SpeechStarted, SpeechStopped, Talking, TurnEnded, TurnTooLong, Woke, Woken, in_turn, released
 from hands.voice.wakeword import Pretrained, Trained, Word, model_of
 
@@ -127,7 +128,7 @@ class WakeWord:
 @asynccontextmanager
 async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
     """`word`'s model, loaded off the loop as its own unit of work."""
-    with unit("trigger.wake_word_loaded", emit):
+    with loads.loading("trigger.wake_word_loaded", emit):
         # [LAW:nothing-unseen] which word the desk listens for, and the file it is heard with.
         annotate(phrase=word.phrase, model=str(model_of(word, models)))
         if sample_rate != SAMPLE_RATE:
