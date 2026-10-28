@@ -712,7 +712,8 @@ the turn; a question Claude put to the user is the `Questioned` step.
 session, the one `Reader` (`hands.sessions.reader`) reads its status and then what its JSONL has
 gained, ten times a second, and again through now before each of its turn's hooks, a prompt or a Stop, is
 applied, so the model decides that hook on what Claude Code had written by then however fast it wrote
-it; it hands each new record to the recognisers. A turn the registry heard of by a hook is never
+it; it hands each new record to the recognisers. A read decides what it read and lets the registry perform it in each
+session's own order, so no session's hook waits on another session's repository being compared. A turn the registry heard of by a hook is never
 history, however much of it Claude Code wrote before the file was first read. Nothing re-reads the file from its start:
 one `Following` per session holds the byte offset, the turn that is open in it, the steps
 recognised so far, and how many of them the session has been told. It also keeps up to eight

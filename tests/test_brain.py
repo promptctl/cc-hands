@@ -30,6 +30,7 @@ from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
 from hands.brain.process import BROKEN, NOBODY, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Posted, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
+from hands.sessions.hooks import hook_output
 from hands.core.permissions import heard
 from hands.core.session import Permission
 from hands.core.stopfailure import StopFailed
@@ -517,6 +518,7 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._held = set()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
+    _modelled(brain)
     with continuing(launched):
         hearing = asyncio.create_task(brain._hear_hooks(hooks))  # pyright: ignore[reportPrivateUsage]
 
@@ -1266,6 +1268,86 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
         await brain._apply(Taken(SessionId("b1"), PromptId("p2"), Stamp(3100), 3.1))  # pyright: ignore[reportPrivateUsage]
         await brain._hook(_hooked("Stop", "p2", last_assistant_message="Thirteen.", stop_hook_active=False))  # pyright: ignore[reportPrivateUsage]
     assert (turn.answered.result(), turn.others) == (BrainAnswered(answer, None), others)
+
+
+async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_though_only_the_transcript_says_it_opened(tmp_path: Path) -> None:
+    # [LAW:no-ambient-temporal-coupling] the permission is owned once Claude Code is read through now, not when a period
+    # next reads the record that opened the turn it asks in.
+    transcript = tmp_path / "projects" / "-brain-cwd" / "b1.jsonl"
+    transcript.parent.mkdir(parents=True)
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
+    recorded: list[Entry] = []
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    with unit("brain.launch", lambda _entry: None):
+        brain._launched = here()  # pyright: ignore[reportPrivateUsage]
+    brain._held = set()  # pyright: ignore[reportPrivateUsage]
+    brain._typing = set()  # pyright: ignore[reportPrivateUsage]
+    _modelled(brain)
+    asked: list[Asked] = []
+
+    def allowed(held: Asked) -> None:
+        asked.append(held)
+        held.settle(Allow())
+
+    loop = asyncio.get_running_loop()
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), allowed, begun(), TAKE_SECONDS, PromptText(" and add 3?"))  # pyright: ignore[reportPrivateUsage]
+    brain._turn = turn  # pyright: ignore[reportPrivateUsage]
+    path = str(transcript)
+    await brain._hook(_hooked("UserPromptSubmit", "p1", prompt="count to ten", transcript_path=path))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
+    await brain._hook(_hooked("UserPromptSubmit", "p1", prompt="and add 3?", transcript_path=path))  # pyright: ignore[reportPrivateUsage]
+    await brain._hook(_hooked("Stop", "p1", last_assistant_message="Ten.", stop_hook_active=False, transcript_path=path))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Unqueued(SessionId("b1"), Dequeued()))  # pyright: ignore[reportPrivateUsage]
+    # Claude Code runs the words as p2, which no hook has named, and the model asks for a tool before any read since.
+    transcript.write_text('{"type":"user","promptId":"p2","timestamp":"1970-01-01T00:00:03.100Z","message":{"role":"user","content":"and add 3?"}}\n')
+    permission = {**json.loads(_hooked("PermissionRequest", "p2", transcript_path=path)), "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
+    posted = _Posted("PermissionRequest", json.dumps(permission).encode(), loop.create_future())  # pyright: ignore[reportPrivateUsage]
+    await brain._permit(posted)  # pyright: ignore[reportPrivateUsage]
+    assert (len(asked), posted.reply.result()) == (1, hook_output(Allow()))
+
+
+async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_stops(tmp_path: Path) -> None:
+    # What stopped the reading is `exited`'s to raise, to whoever waits on the brain: the stop ends it and lets go anyway.
+    ended = asyncio.Event()
+
+    class Ended:
+        async def stop(self) -> None:
+            ended.set()
+
+    class Listener:
+        cleaned = False
+
+        async def cleanup(self) -> None:
+            self.cleaned = True
+
+    async def exited() -> int:
+        # Its end is heard a moment after its process ends, as `_run_out` hears it.
+        await ended.wait()
+        await asyncio.sleep(0.05)
+        return 0
+
+    async def reading() -> None:
+        raise OSError("the transcript went")
+
+    async def hearing() -> None:
+        await asyncio.Event().wait()
+
+    brain = object.__new__(Brain)
+    brain._claude = Ended()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._exit = asyncio.ensure_future(exited())  # pyright: ignore[reportPrivateUsage]
+    brain._reading = asyncio.ensure_future(reading())  # pyright: ignore[reportPrivateUsage]
+    brain._heard = asyncio.ensure_future(hearing())  # pyright: ignore[reportPrivateUsage]
+    await asyncio.wait({brain._reading})  # pyright: ignore[reportPrivateUsage]
+    listener = brain._listener = Listener()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._sockets = tmp_path / "sockets"  # pyright: ignore[reportPrivateUsage]
+    brain._sockets.mkdir()  # pyright: ignore[reportPrivateUsage]
+    await brain.stop()
+    await asyncio.wait({brain._heard})  # pyright: ignore[reportPrivateUsage]
+    assert (brain._heard.cancelled(), listener.cleaned, brain._sockets.exists()) == (True, True, False)  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(OSError, match="the transcript went"):
+        brain._reading.result()  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hooks_after_it_are_still_heard() -> None:

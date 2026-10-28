@@ -1,7 +1,6 @@
 """A permission hook against the real shim and socket: it waits, and the voice answer or the deadline decides it."""
 
 import asyncio
-import inspect
 import json
 import os
 import shutil
@@ -9,7 +8,6 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
-from types import CoroutineType
 
 import pytest
 from loguru import logger
@@ -326,11 +324,9 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     assert f"the hook for session {SID} request r1 closed; its reply Allow() was never delivered" in logged
 
 
-async def waits_on_its_reply(handler: asyncio.Task[object]) -> None:
-    """Return once the started handler is past applying its request: it awaits the future itself, not the apply coroutine."""
-    coroutine = handler.get_coro()
-    assert isinstance(coroutine, CoroutineType)
-    while inspect.iscoroutine(coroutine.cr_await):
+async def waits_on_its_reply(handler: asyncio.Task[HookReply], sessions: Sessions, request: RequestId) -> None:
+    """Return once the started handler is past applying its request: the future it is suspended on is its reply's."""
+    while handler._fut_waiter is not sessions._waiting.get(request):  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage, reportUnknownMemberType]  (asyncio keeps what a task waits on private)
         await asyncio.sleep(0)
 
 
@@ -339,7 +335,7 @@ async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         request, waiting = await asking_in_process(home, sessions)
-        await asyncio.wait_for(waits_on_its_reply(waiting), WAIT_SECONDS)
+        await asyncio.wait_for(waits_on_its_reply(waiting, sessions, request.request), WAIT_SECONDS)
         waiting.cancel()  # cancels the request's future at once; the handler forgets the request only when it next runs
         # A voice answer is decided, and its reply performed, before the handler has run.
         await sessions.answer(request.request, Allow())

@@ -877,12 +877,16 @@ class Brain:
         return await asyncio.shield(self._exit)
 
     async def stop(self) -> None:
-        await self._claude.stop()
-        await self.exited()
-        self._heard.cancel()
-        self._reading.cancel()
-        await self._listener.cleanup()
-        shutil.rmtree(self._sockets, ignore_errors=True)
+        """Ends the brain and lets go of what it held, however its end went. What stopped the model reading its turns is
+        `exited`'s to raise, to whoever waits on the brain, not the stop's."""
+        try:
+            await self._claude.stop()
+            await asyncio.shield(self._exit)
+        finally:
+            self._heard.cancel()
+            self._reading.cancel()
+            await self._listener.cleanup()
+            shutil.rmtree(self._sockets, ignore_errors=True)
 
     async def _type(self, typing: Callable[[Typist], None]) -> None:
         try:
@@ -943,7 +947,10 @@ class Brain:
                 with unit("brain.permission", self._record):
                     fail(f"hands could not read the permission request: {error}")
                 return
-            # What breaks in its settling is its owner's: the turn whose user it was held to be put to.
+            # [LAW:no-ambient-temporal-coupling] owned by the turn the model says goes by its id once Claude Code is read
+            # through now, as a turn's hook is decided (Reader.hooked): a turn dequeued under a new id asks before a
+            # period would have read where it opened. What breaks in its settling is its owner's.
+            await self._reader.read()
             turn = self._owner(prompt)
             with self._done_for(turn), self._dialog("brain.permission", prompt, turn):
                 annotate(tool=tool)
@@ -1020,9 +1027,13 @@ class Brain:
         await self._reader.hooked(hook)
         await self._left()
 
-    async def _apply(self, event: Event) -> None:
-        """What the brain's hooks, status and transcript say, applied; then whether the turn hands stopped is over."""
-        await self._sessions.apply(event)
+    def _apply(self, event: Event) -> "asyncio.Future[None]":
+        """What the brain's hooks, status and transcript say, decided now, as Sessions.apply decides it; done once it is
+        applied and whether the turn hands stopped is over is heard."""
+        return asyncio.ensure_future(self._applied(self._sessions.apply(event)))
+
+    async def _applied(self, applying: "asyncio.Future[None]") -> None:
+        await applying
         await self._left()
 
     def _took(self, submitted: Submitted) -> None:

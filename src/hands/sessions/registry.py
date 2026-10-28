@@ -130,9 +130,11 @@ class Sessions:
     def stamp(self) -> Stamp:
         return self._stamp()
 
-    async def apply(self, event: Event) -> None:
-        # Shielded: the event is in the registry already, so a caller that gives up never costs it its effects.
-        await asyncio.shield(self._decided(event))
+    def apply(self, event: Event) -> "asyncio.Future[None]":
+        """The event decided now, as it is called, and its effects being performed: done once they all are.
+
+        Shielded: the event is in the registry already, so a caller that gives up never costs it its effects."""
+        return asyncio.shield(self._decided(event))
 
     def hear(self, event: Event) -> None:
         """Apply an event heard where nothing waits on it: decided now, in the order it was heard, and performed after."""

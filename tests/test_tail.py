@@ -13,13 +13,14 @@ from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
 from hands.core.effects import Summarise
-from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
+from hands.core.events import Attached, Event, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold, delegating
 from hands.sessions.delta import Deltas
 from conftest import patient
 from hands.sessions.registry import Sessions
+from hands.sessions.hooks import Hook
 from hands.sessions.reader import Reader
 from hands.sessions.tail import KEPT, StoodIn, Tails, Telling
 from hands.sessions.turning import Turning
@@ -815,6 +816,43 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
         tailing.cancel()
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle)
+
+
+async def test_a_sessions_hook_is_applied_while_what_a_read_decided_for_another_is_still_being_performed(tmp_path: Path) -> None:
+    other = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000b"), pid=4343, cwd=Path("/code/b"), transcript=tmp_path / "b.jsonl")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    for joined in (member(transcript), other):
+        await sessions.apply(Joined(joined, "startup"))
+    await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
+    # What this session's read calls for is performed only once the test lets it: a repository compared slowly.
+    comparing, compared = asyncio.Event(), asyncio.Event()
+
+    def apply(event: Event) -> "asyncio.Future[None]":
+        decided = sessions.apply(event)
+        if not (isinstance(event, Taken | Read) and event.session == SID):
+            return decided
+
+        async def slowly() -> None:
+            comparing.set()
+            await decided
+            await compared.wait()
+
+        return asyncio.ensure_future(slowly())
+
+    reader = Reader(sessions, Tails(sessions), apply)
+    reading = asyncio.create_task(reader.keep_reading(0.01))
+    try:
+        await asyncio.wait_for(comparing.wait(), 5.0)
+        prompted = Prompted(other.id, at=2.0, mode=None, prompt=PromptId("q1"), text="")
+        await asyncio.wait_for(reader.hooked(Hook("UserPromptSubmit", other.id, None, prompted)), 1.0)
+        held = sessions.live_session(other.id)
+        assert held is not None and held.turn == Opened(PromptId("q1"))
+        assert not reading.done()
+    finally:
+        compared.set()
+        reading.cancel()
 
 
 # The next prompt, read before the turn before it is told: the narrator is seconds behind on another session's summary.
