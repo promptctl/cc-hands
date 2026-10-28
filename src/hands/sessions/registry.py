@@ -254,7 +254,12 @@ class Sessions:
             return waiting
         self._waiting[event.request] = waiting
         waiting.add_done_callback(lambda _: self._forget(event.request, waiting))
-        self.hear(event)
+        try:
+            self.hear(event)
+        except BaseException:
+            # The model never held it, so nothing will answer it: it waits no more, and the caller hears why.
+            waiting.cancel()
+            raise
         return waiting
 
     def _forget(self, request: RequestId, waiting: "asyncio.Future[HookReply]") -> None:

@@ -535,6 +535,24 @@ async def test_an_answer_has_replied_to_its_hook_by_the_time_it_returns(home: Ho
     assert replying.done() and replying.result() == Allow()
 
 
+async def test_a_hold_the_model_could_not_decide_raises_and_leaves_nothing_for_shutdown_to_let_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_: object) -> None:
+        raise RuntimeError("the reducer broke")
+
+    monkeypatch.setattr("hands.sessions.registry.reduce", broken)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+    with pytest.raises(RuntimeError, match="the reducer broke"):
+        sessions.hold(asked)
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
+    try:
+        sessions.release_waiting()
+    finally:
+        logger.remove(sink)
+    assert logged == []
+
+
 async def test_a_held_request_s_reply_is_never_an_error_though_performing_what_its_hold_decided_failed() -> None:
     """The hold's future resolves only with a reply: what failed performing the rest of what was decided is the
     registry's to say, on its applied event and its line."""

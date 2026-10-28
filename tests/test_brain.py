@@ -1243,7 +1243,7 @@ def _modelled(brain: Brain) -> None:
     builds it; a part of a launch of its own where the test gave it none."""
     brain._sessions = model(lambda _entry: None, brain._told, brain._took)  # pyright: ignore[reportPrivateUsage]
     brain._reader = Reader(brain._sessions, Tails(brain._sessions), brain._apply)  # pyright: ignore[reportPrivateUsage]
-    brain._moved = asyncio.Condition()  # pyright: ignore[reportPrivateUsage]
+    brain._moved = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     brain.__dict__.setdefault("_launched", root())
 
 
@@ -1404,6 +1404,18 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     assert said == ["the brain's own work failed: ValueError('the log is full')"]
     assert (turn.broken, turn.answered.done(), brain._turn) == (None, False, turn)  # pyright: ignore[reportPrivateUsage]
     assert [event.event for event in recorded if isinstance(event, WideEvent)] == ["brain.elicitation", "brain.permission"]
+
+
+async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
+    recorded: list[Entry] = []
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
+    brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
+    _modelled(brain)
+    permission = {"hook_event_name": "PermissionRequest", "session_id": "b2", "transcript_path": "/brain/projects/-brain-cwd/b2.jsonl", "cwd": "/brain/cwd", "permission_mode": "default", "prompt_id": "p9", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}}
+    assert await brain.posted("PermissionRequest", json.dumps(permission).encode()) == hook_output(Deny(NOBODY))
+    assert [(event.facts["session"], event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")] == [("b2", "p9", "Write", Deny(NOBODY))]
 
 
 async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path) -> None:

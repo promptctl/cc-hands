@@ -37,7 +37,7 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event
 from hands.core.reducer import UNTOLD
-from hands.core.session import DenyAndInterrupt, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, ids, pasted
+from hands.core.session import DenyAndInterrupt, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -557,8 +557,7 @@ class Asked:
 
     @property
     def open(self) -> bool:
-        held = self.sessions.live_session(self.session)
-        return held is not None and any(dialog.request == self.request for dialog in held.dialogs)
+        return holds(self.sessions.live_session(self.session), self.request)
 
     def settle(self, decision: Allow | Deny) -> None:
         # The first to settle it answers its hook; any later one is NotWaiting, and changes nothing.
@@ -680,9 +679,9 @@ class Brain:
         # [LAW:no-ambient-temporal-coupling] the turn in flight is the brain's own state, not its asker's: it is over
         # when the model tells the turn that answers it, whether or not anyone still waits on it, and the next is typed only then.
         self._turn: _Turn | None = None
-        # [LAW:no-ambient-temporal-coupling] notified each time what the model applied has been heard (`_heard`): what a
-        # clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
-        self._moved = asyncio.Condition()
+        # [LAW:no-ambient-temporal-coupling] set, and replaced, each time what the model applied has been heard (`_heard`):
+        # what a clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
+        self._moved = asyncio.Event()
         self._typing: set[asyncio.Task[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
@@ -851,15 +850,15 @@ class Brain:
         """Returns once Claude Code holds nothing of what it ran, as the model reads it.
 
         [LAW:one-source-of-truth] each read comes straight after the registry is drained, so every telling the model
-        decided has reached `_told` first: a stopped turn ends with the id it was told under. The lock is held across
-        the drain and the read, and let go only inside `wait`, so no notify of `_heard` falls between the read and the
-        wait. Only a clear waits here, with the input held, so there is one waiter at a time."""
-        async with self._moved:
-            while True:
-                await self._sessions.drained(self.session)
-                if self._all_told():
-                    return
-                await self._moved.wait()
+        decided has reached `_told` first: a stopped turn ends with the id it was told under. The move waited on is the
+        one current before the drain, so one heard during the drain or the read wakes the wait at once, and no hook's
+        `_heard` waits on a clear."""
+        while True:
+            moved = self._moved
+            await self._sessions.drained(self.session)
+            if self._all_told():
+                return
+            await moved.wait()
 
     async def _stop(self, turn: _Turn) -> None:
         try:
@@ -1004,7 +1003,11 @@ class Brain:
     def _foreign(self, hook: Hook | PermissionHook) -> Mapping[str, object]:
         match hook:
             case PermissionHook():
-                return hook_output(Deny(NOBODY))
+                reply = Deny(NOBODY)
+                # [LAW:nothing-unseen] one event, as every permission the brain posts is, though no turn of the brain's asked it.
+                with unit("brain.permission", self._record):
+                    annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
+                return hook_output(reply)
             case Hook():
                 return {}
 
@@ -1049,7 +1052,7 @@ class Brain:
         its hook's day. A dialog the model already refused, of a turn hands is ending, is never put to the user."""
         request = hook.asked.request
         match hook.asked.on:
-            case Permission() as permission if turn is not None and self._holds(request):
+            case Permission() as permission if turn is not None and holds(self._modelled(), request):
                 asked = Asked(permission, request, replying, self._sessions, self.session)
                 turn.asks(asked)
                 await asyncio.wait({replying}, timeout=BRAIN_REPLY_BY_SECONDS)
@@ -1062,10 +1065,6 @@ class Brain:
             case _:
                 # A dialog of questions or a plan is never put to the user by voice: the brain's own words ask them.
                 self._sessions.answer(request, Deny(UNVOICED))
-
-    def _holds(self, request: RequestId) -> bool:
-        held = self._modelled()
-        return held is not None and any(dialog.request == request for dialog in held.dialogs)
 
     def _part_of(self, owner: _Turn | None) -> Span:
         """The span of what a dialog the brain posted is a part of: its `owner`, the turn in flight it was posted for, or
@@ -1149,8 +1148,8 @@ class Brain:
         [LAW:one-source-of-truth] the registry is read once it is drained, so the model and the tellings the brain heard
         are one clock."""
         await self._sessions.drained(self.session)
-        async with self._moved:
-            self._moved.notify_all()
+        moved, self._moved = self._moved, asyncio.Event()
+        moved.set()
 
     def _modelled(self) -> Session | None:
         """The brain's session as the model holds it now, or None before its first hook."""

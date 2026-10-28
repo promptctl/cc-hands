@@ -19,7 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from pipecat.frames.frames import ErrorFrame
+from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
 from conftest import pin, running, unread
 from hands.brain.stage import OWED, BrainStage
@@ -44,7 +44,7 @@ from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from npm_registry import REGISTRY
-from test_stage import Spoken
+from test_stage import Received, Spoken
 
 # The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
 # CI's cache of it is keyed on it.
@@ -193,7 +193,8 @@ class Hands:
 
     stage: BrainStage
     out: Spoken
-    say: Callable[[str], Awaitable[None]]
+    # What hands' voice pipeline is handed, as the user aggregator hands it on.
+    queue: Callable[[Frame], Awaitable[None]]
     recorded: list[Entry]
     # Every request the brain sent, as it left hands' proxy for the mock.
     sent: list[Sent]
@@ -222,6 +223,22 @@ class Hands:
                 raise
             # [LAW:no-silent-failure] a wait that runs out says where hands was: what it said, and what the brain was doing.
             raise AssertionError(f"waited {PATIENCE_SECONDS:g}s: hands said {self.out.said()!r}, the brain's work {self.stage.work()!r}, after {len(self.sent)} requests through hands' proxy") from None
+
+    async def say(self, words: str) -> None:
+        """The user's words, spoken once they have heard all hands handed the speaker, its marks played: behind the cut
+        their turn opens with and the turn's stop, as every turn that carries words is cut (test_stage's `cut_in`). A
+        question is answered by what is said after it is heard, so words handed on without the cut are a turn of their own."""
+        reached = asyncio.Event()
+        await self.queue(Received(reached.set))
+        await self.until(reached.is_set)
+        cuts = self.out.shape().count("InterruptionFrame")
+        await self.queue(UserStartedSpeakingFrame())
+        await self.queue(InterruptionFrame())
+        await self.until(lambda: self.out.shape().count("InterruptionFrame") > cuts)
+        stops = self.out.stops
+        await self.queue(UserStoppedSpeakingFrame())
+        await self.until(lambda: self.out.stops > stops)
+        await self.queue(UserWords(words))
 
 
 async def connected(hands: Hands) -> None:
@@ -259,7 +276,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
-                    yield Hands(minded.llm, out, lambda words: run.worker.queue_frame(UserWords(words)), recorded, sent, watches, run.errors, workdir(brain))
+                    yield Hands(minded.llm, out, run.worker.queue_frame, recorded, sent, watches, run.errors, workdir(brain))
                 finally:
                     for watch in watches:
                         watch.cancel()

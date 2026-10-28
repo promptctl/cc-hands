@@ -349,6 +349,11 @@ def followed(session: Session, prompt: PromptId) -> bool:
     return prompt in ids(session.turn) or prompt in session.earlier
 
 
+def holds(session: Session | None, request: RequestId) -> bool:
+    """Whether one of the session's dialogs still waits on an answer to `request`: none does of a session not heard."""
+    return session is not None and any(held.request == request for held in session.dialogs)
+
+
 def all_told(session: Session) -> bool:
     """Whether every turn Claude Code ran is told and nothing waits in its queue to run after them: a prompt typed now
     is a turn of its own, behind nothing. [LAW:one-source-of-truth] read off the turn, never held beside it."""

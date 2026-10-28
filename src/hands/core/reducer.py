@@ -76,7 +76,7 @@ from hands.core.events import (
 from hands.core.occurrences import Cleared
 from hands.core.progress import Doing, Gathering
 from hands.core.stopfailure import StopFailed
-from hands.core.session import followed, ids, Blocker, DenyAndInterrupt, Gone, Held, Idle, Instant, Known, Membership, Mode, Opened, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Behind, HeldStop, Unnamed, Unreported, Untold, status_stamp
+from hands.core.session import followed, ids, Blocker, DenyAndInterrupt, Gone, Held, Idle, Instant, Known, Membership, Mode, Opened, Plan, PlanApproved, PromptId, Question, FinishedCall, Registry, RequestId, Running, Session, SessionId, SessionState, Told, Turn, Behind, HeldStop, Unnamed, Unreported, Untold, holds, status_stamp
 from hands.core.status import AtPrompt, Going, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
 
@@ -261,7 +261,7 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     # is heard at the session's next hook, whatever that hook moves the session to.
     mode = held if reported is None else reported
     background, overtaken = _backgrounded(event, was)
-    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialogs=_dialog(event, was.dialogs, was.ending), ending=_still_ending(event, was), background=background)
+    moved = replace(was, state=_stated(event, was), mode=mode, turn=turn, dialogs=_dialog(event, was), ending=_still_ending(event, was), background=background)
     moved, stopped = _stopped(moved, event)
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
@@ -415,17 +415,18 @@ def _since_idle(state: SessionState, written: Stamp | None) -> bool:
             return True
 
 
-def _dialog(event: Moving, dialogs: tuple[Held, ...], ending: DenyAndInterrupt | None) -> tuple[Held, ...]:
+def _dialog(event: Moving, was: Session) -> tuple[Held, ...]:
     """The dialogs the session is at after the event, as its hooks and Claude Code's idle tell it, the one on its screen
     first."""
+    dialogs = was.dialogs
     match event:
         case StatusReported(report=Report(status=at)) if isinstance(at, AtPrompt):
             # At its prompt: no dialog is up, whether it was answered at the keyboard or escaped.
             return ()
-        case PermissionRequested() if ending is not None:
+        case PermissionRequested() if was.ending is not None:
             # Asked while hands ends what the session runs: refused as it arrives (_refused), and never held.
             return dialogs
-        case PermissionRequested(request=request) if any(held.request == request for held in dialogs):
+        case PermissionRequested(request=request) if holds(was, request):
             # A request it already waits on, heard again: it is the same dialog, by request id.
             return dialogs
         case PermissionRequested(request=request, on=on):
@@ -436,7 +437,8 @@ def _dialog(event: Moving, dialogs: tuple[Held, ...], ending: DenyAndInterrupt |
             ran = next((held for held in dialogs if _same_call(held.on, call)), None)
             return tuple(held for held in dialogs if held is not ran)
         case Prompted():
-            # Typed at the session: a dialog it was typed past was answered, and one escaped is waited on no more.
+            # Typed at the session: a dialog it was typed past was answered, and one escaped is waited on no more. A prompt
+            # filed into the turn still running says so too: no prompt is typed while a dialog holds the keyboard.
             return ()
         case _:
             return dialogs
@@ -767,7 +769,7 @@ def _unwaited(event: SessionEvent) -> list[Effect]:
 
 def _abandoned(registry: Registry, session: SessionId, request: RequestId) -> Registry:
     match registry.sessions.get(session):
-        case Session(dialogs=dialogs) as was if any(held.request == request for held in dialogs):
+        case Session(dialogs=dialogs) as was if holds(was, request):
             # No hook waits for a reply, so there is nothing to withdraw, answer, or deny; the dialogs beneath it stay.
             return registry.put(replace(was, dialogs=tuple(held for held in dialogs if held.request != request)))
         case Session(stops=stops) as was if any(stop.hook == request for stop in stops):
