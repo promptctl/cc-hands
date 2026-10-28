@@ -1,6 +1,6 @@
 """The desk served as the daemon serves it: the talk key's events through the tap's own handling, the gate, the level's
 owner and the brain's tools, the speaker's cues, and Silero, Smart Turn, and the wake word's model, real, on macOS's own
-voice. Only macOS's key tap and the speaker's device are stood in for."""
+voice. macOS's key tap, the microphone's device, and the speaker's device are stood in for."""
 
 import asyncio
 import threading
@@ -162,6 +162,8 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     await settled()
     chosen = await choose.body(level="engaged")
     assert chosen["was"] == "wake word"
+    # The choice is answered as it is dequeued, before its step cues it.
+    await until(lambda: len(speaker.cues) == 2)
     assert speaker.cues == [WAKE_WORD, ENGAGED] and levels.level == "engaged" and (await level.body())["level"] == "engaged"
     await settled()
     del taken[:]
