@@ -28,10 +28,12 @@ def command(at: float) -> list[KeyEvent]:
 @pytest.mark.parametrize(
     ("events", "made"),
     [
-        # Three presses alone, inside the second: one tap, made on the third press.
+        # Three presses alone, inside the second: one tap, of Right Command on its third press, and of Right Shift as
+        # its third press is let go, known then to be no hold.
         ([*shift(1.0), *shift(1.2), *shift(1.4)], ["right shift"]),
         ([*command(1.0), *command(1.2), *command(1.4)], ["right command"]),
-        ([*shift(1.0), *shift(1.2), Pressed(1.4)], ["right shift"]),
+        ([*command(1.0), *command(1.2), CommandPressed(1.4)], ["right command"]),
+        ([*shift(1.0), *shift(1.2), Pressed(1.4)], []),
         # Two are nothing.
         ([*shift(1.0), *shift(1.2)], []),
         # Releases and the hold's own timings break no count: a hold that opens a turn is the desk's to reset.

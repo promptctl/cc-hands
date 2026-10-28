@@ -14,13 +14,13 @@ import pytest
 from aiohttp import web
 from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
 from aiohttp.streams import StreamReader
-from conftest import model_facts, spoken
+from conftest import hearing_with, model_facts, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, unit
-from hands.voice.desk import Chosen, Leveled, Made
-from hands.voice.engaged import drive
+from hands.voice.desk import Level, Leveled, Made
+from hands.voice.engaged import Choice, drive
 from hands.voice.hold import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, WakeWord, fetched, listening, loaded
@@ -51,9 +51,13 @@ async def untapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
     yield
 
 
-async def wake_word_level() -> asyncio.Queue[Chosen]:
-    chosen: asyncio.Queue[Chosen] = asyncio.Queue()
-    chosen.put_nowait(Chosen("wake word"))
+def choice(level: Level) -> Choice:
+    return Choice(level, asyncio.get_running_loop().create_future())
+
+
+async def wake_word_level() -> asyncio.Queue[Choice]:
+    chosen: asyncio.Queue[Choice] = asyncio.Queue()
+    chosen.put_nowait(choice("wake word"))
     return chosen
 
 
@@ -89,7 +93,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
         made.append(move.move)
 
     chosen = await wake_word_level()
-    driving = asyncio.create_task(drive(untapped, overheard, ScriptedEars(), woken, chosen, on_move, level, events.append))
+    driving = asyncio.create_task(drive(untapped, overheard, hearing_with(ScriptedEars(), woken), chosen, on_move, level, events.append))
     # Talk in the room opens nothing; the wake word opens a turn, the pause after it ends nothing, and the verdict on
     # the stop after what was asked sends it; and again.
     for each in (b"S", b"q", b"w", b"q", b"S", b"q", b"S", b"q", b"w", b"q", b"S", b"q"):
@@ -97,7 +101,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
     async with asyncio.timeout(1.0):
         while len(made) < 7:
             await asyncio.sleep(0.001)
-    chosen.put_nowait(Chosen("off"))
+    chosen.put_nowait(choice("off"))
     async with asyncio.timeout(1.0):
         while len(made) < 8:
             await asyncio.sleep(0.001)
@@ -106,7 +110,9 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
         await driving
     assert made == ["listen", "arm", "start", "stop", "arm", "start", "stop", "deafen"]
     desk = [event for event in events if event.event == "desk"]
-    assert [(event.outcome, dict(event.counts)["start"], dict(event.counts)["by_wake_word"], dict(event.counts)["heard"]) for event in desk] == [("cancelled", 2, 8, 0)]
+    assert [(event.facts["level"], event.outcome, dict(event.counts)["start"], dict(event.counts)["by_wake_word"]) for event in desk] == [
+        ("off", "ok", 0, 1), ("wake word", "ok", 2, 7), ("off", "cancelled", 0, 0),
+    ]
 
 
 class FakeWord(WakeWord):
@@ -131,7 +137,7 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     woken = listening(word, lambda: speaking[0], events.append)
 
     async def heard() -> list[bool]:
-        with unit("trigger.awake", events.append, counts=("heard", "muted")):
+        with unit("desk", events.append, counts=("heard", "muted")):
             deaf = await woken(b"\x01\x02" * 160)
             speaking[0] = False
             return [deaf, await woken(b"\x01\x02" * 160)]
@@ -139,7 +145,7 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     assert asyncio.run(heard()) == [False, True]
     assert word.heard == [bytes(320), b"\x01\x02" * 160]
     assert word.resets == 1
-    assert [(event.event, event.facts.get("score")) for event in events] == [("trigger.wake_word_heard", 0.9), ("trigger.awake", None)]
+    assert [(event.event, event.facts.get("score")) for event in events] == [("desk.wake_word_heard", 0.9), ("desk", None)]
     assert dict(events[1].counts) == {"heard": 1, "muted": 1}
     assert events[0].parent_id == events[1].span_id
 
@@ -167,7 +173,7 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
     async with loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
         assert wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav"))
         assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine.", tmp_path / "passing.wav"))
-    assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("trigger.wake_word_loaded", "ok", "Hey Jarvis")]
+    assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("desk.wake_word_loaded", "ok", "Hey Jarvis")]
 
 
 async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(tmp_path: Path, models: Path) -> None:
@@ -194,7 +200,7 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     with pytest.raises(ValueError, match="16000 Hz"):
         async with loaded(48_000, Path("unread"), Pretrained(), events.append):
             pass
-    assert [(event.event, event.outcome) for event in events] == [("trigger.wake_word_loaded", "failed")]
+    assert [(event.event, event.outcome) for event in events] == [("desk.wake_word_loaded", "failed")]
 
 
 @pytest.mark.parametrize(
@@ -231,7 +237,7 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
         made.append(move.move)
 
     async with ears_loaded(SAMPLE_RATE, events.append) as ears, loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
-        driving = asyncio.create_task(drive(untapped, overheard, ears, listening(word, lambda: False, events.append), await wake_word_level(), on_move, level, events.append))
+        driving = asyncio.create_task(drive(untapped, overheard, hearing_with(ears, listening(word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
                 await asyncio.sleep(0.01)
@@ -241,9 +247,9 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     assert made == ["listen", "arm", "start", "stop"]
     # The verdict before the silence it spared: a turn that ended on silence was judged incomplete, by the probability
     # its facts carry.
-    judged = [event.facts for event in events if event.event == "trigger.judged"]
+    judged = [event.facts for event in events if event.event == "desk.judged"]
     assert [facts["complete"] for facts in judged] == [True], judged
-    [desk] = [event for event in events if event.event == "desk"]
+    [desk] = [event for event in events if event.event == "desk" and event.facts["level"] == "wake word"]
     assert dict(desk.counts)["ended_on_silence"] == 0
 
 

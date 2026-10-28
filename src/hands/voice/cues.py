@@ -66,7 +66,7 @@ WORKING = QuietCue(Cue("working", ((880.0, 880.0),)), 2.0)
 
 def cues(move: Move) -> tuple[Cue, ...]:
     """What a move shows and plays: the turn's edges; nothing of the microphone arming, which every Shift does; and
-    nothing of the desk's listening, which its level's cue says (`level_cues`)."""
+    nothing of the desk's listening, which its level's cue says (`level_cue`)."""
     match move:
         case "start":
             return (OPENED,)
@@ -80,17 +80,15 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return ()
 
 
-def level_cues(leveled: Leveled) -> tuple[Cue, ...]:
-    """What a change of the desk's level plays: the level it went to; nothing for a level chosen that it was already at."""
-    if leveled.now == leveled.was:
-        return ()
+def level_cue(leveled: Leveled) -> Cue:
+    """What a change of the desk's level plays: the level it went to."""
     match leveled.now:
         case "off":
-            return (OFF,)
+            return OFF
         case "wake word":
-            return (WAKE_WORD,)
+            return WAKE_WORD
         case "engaged":
-            return (ENGAGED,)
+            return ENGAGED
 
 
 @cache

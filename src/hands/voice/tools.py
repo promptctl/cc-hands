@@ -894,7 +894,7 @@ def listening_tools(levels: Levels, wake: Word) -> list[Tool]:
             level: "off", the microphone closed between turns; "wake word", listening for the wake word; or "engaged",
                 where speech alone opens each turn.
         """
-        was = levels.choose(level)
+        was = await levels.choose(level)
         # [LAW:nothing-unseen] the level asked from lands on the call's event, so a change and a no-op read apart.
         return {"level": level, "was": was, "readback": f"{'Already' if was == level else 'Okay'}. {described(level, wake)}"}
 

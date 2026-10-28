@@ -2,18 +2,18 @@
 and another triple tap disengages."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from conftest import model_facts, spoken
+from conftest import hearing_with, model_facts, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent
-from hands.voice.desk import Chosen, Level, Leveled, Made
-from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, Ears, drive, loaded
+from hands.voice.desk import Level, Leveled, Made
+from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, Choice, Ears, drive, loaded
 from hands.voice.hold import KeyEvent, Move, Pressed, Released, Ripe
 
 # Right Shift's triple tap: what engages, and what disengages.
@@ -60,7 +60,7 @@ class Rig:
         self.made: list[Move] = []
         self.made_by: list[Made] = []
         self.levels: list[Leveled] = []
-        self.chosen: asyncio.Queue[Chosen] = asyncio.Queue()
+        self.chosen: asyncio.Queue[Choice] = asyncio.Queue()
         self.events: list[WideEvent] = []
 
     @asynccontextmanager
@@ -84,7 +84,7 @@ class Rig:
         self.levels.append(leveled)
 
     def start(self, ears: Ears | None = None) -> asyncio.Task[None]:
-        return asyncio.create_task(drive(self.tapped, self.overheard, ears or self.ears, unwoken, self.chosen, self.on_move, self.on_level, self.events.append))
+        return asyncio.create_task(drive(self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.chosen, self.on_move, self.on_level, self.events.append))
 
     async def tap(self) -> None:
         while not self.keys:
@@ -92,13 +92,12 @@ class Rig:
         for event in TAP:
             self.keys[0](event)
 
-    async def choose(self, level: Level) -> None:
-        """Choose `level` as the tool does, once the driver has stepped it."""
-        stepped = len(self.levels) + 1
-        self.chosen.put_nowait(Chosen(level))
+    async def choose(self, level: Level) -> Level:
+        """Choose `level` as the tool does, and get back the level the driver stepped it from."""
+        was: asyncio.Future[Level] = asyncio.get_running_loop().create_future()
+        self.chosen.put_nowait(Choice(level, was))
         async with asyncio.timeout(1.0):
-            while len(self.levels) < stepped:
-                await asyncio.sleep(0.001)
+            return await was
 
     async def hear(self, *audio: bytes) -> None:
         for each in audio:
@@ -113,7 +112,7 @@ class Rig:
 
 
 async def unwoken(audio: bytes) -> bool:
-    raise AssertionError("the wake word's model is run only at its own level")
+    return False
 
 
 async def stopped(driving: asyncio.Task[None]) -> None:
@@ -139,14 +138,17 @@ async def test_three_turns_with_no_key_between_them_then_a_disengage() -> None:
     for _ in range(20):
         await asyncio.sleep(0)
     await stopped(driving)
-    assert rig.made == [*TAPPED, "listen", "disarm", *["arm", "start", "stop"] * 3, *TAPPED, "deafen", "disarm"]
+    assert rig.made == [*TAPPED, "disarm", "listen", *["arm", "start", "stop"] * 3, *TAPPED, "disarm", "deafen"]
     assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", "engaged", "tap"), ("engaged", "off", "tap")]
-    [desk] = [event for event in rig.events if event.event == "desk"]
+    # One event for each stint at a level, emitted as the level changes: the stint engaged counts its turns.
+    stints = [event for event in rig.events if event.event == "desk"]
+    assert [(event.facts["level"], event.outcome) for event in stints] == [("off", "ok"), ("engaged", "ok"), ("off", "cancelled")]
+    desk = stints[1]
     counts = dict(desk.counts)
     assert {name: counts[name] for name in ("start", "stop", "held_open", "ended_on_silence", "by_engaged_conversation", "to_engaged", "to_off")} == {
-        "start": 3, "stop": 3, "held_open": 2, "ended_on_silence": 1, "by_engaged_conversation": 11, "to_engaged": 1, "to_off": 1,
+        "start": 3, "stop": 3, "held_open": 2, "ended_on_silence": 1, "by_engaged_conversation": 10, "to_engaged": 0, "to_off": 1,
     }
-    judged = [event for event in rig.events if event.event == "trigger.judged"]
+    judged = [event for event in rig.events if event.event == "desk.judged"]
     assert [event.facts["complete"] for event in judged] == [False, True, True, False]
     assert all(event.parent_id == desk.span_id for event in judged)
     leveled = [event.facts for event in rig.events if event.event == "desk.leveled"]
@@ -169,15 +171,48 @@ async def test_off_the_room_opens_nothing_and_the_held_key_still_talks() -> None
 async def test_a_level_the_tool_chose_is_stepped_as_a_tap_is() -> None:
     rig = Rig(verdicts=[True])
     driving = rig.start()
-    await rig.choose("engaged")
+    was = [await rig.choose("engaged")]
     await rig.hear(b"s", b"S", b"q")
     await rig.settle(4)
-    await rig.choose("engaged")
-    await rig.choose("off")
+    was += [await rig.choose("engaged"), await rig.choose("off")]
     await rig.settle(5)
     await stopped(driving)
     assert rig.made == ["listen", "arm", "start", "stop", "deafen"]
-    assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", "engaged", "tool"), ("engaged", "engaged", "tool"), ("engaged", "off", "tool")]
+    # The level each choice found, as the driver stepped it; one chosen again changes nothing.
+    assert was == ["off", "engaged", "engaged"]
+    assert [(leveled.was, leveled.now, leveled.by) for leveled in rig.levels] == [("off", "engaged", "tool"), ("engaged", "off", "tool")]
+
+
+async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> None:
+    rig = Rig(verdicts=[])
+
+    @asynccontextmanager
+    async def loading() -> AsyncGenerator[tuple[Ears, Callable[[bytes], Awaitable[bool]]]]:
+        await asyncio.Event().wait()
+        yield rig.ears, unwoken
+
+    driving = asyncio.create_task(drive(rig.tapped, rig.overheard, loading, rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    while not rig.keys:
+        await asyncio.sleep(0)
+    for event in (Pressed(1.0), Ripe(1.0), Released()):
+        rig.keys[0](event)
+    await rig.settle(3)
+    assert await rig.choose("engaged") == "off"
+    await stopped(driving)
+    assert rig.made_by == [Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key"), Made("listen", "engaged conversation")]
+
+
+async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
+    rig = Rig(verdicts=[])
+
+    @asynccontextmanager
+    async def unloadable() -> AsyncGenerator[tuple[Ears, Callable[[bytes], Awaitable[bool]]]]:
+        raise OSError("no Smart Turn in the hub's cache, and no network")
+        yield rig.ears, unwoken
+
+    with pytest.raises(ExceptionGroup) as failed:
+        await drive(rig.tapped, rig.overheard, unloadable, rig.chosen, rig.on_move, rig.on_level, rig.events.append)
+    assert failed.group_contains(OSError, match="no network")
 
 
 async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks() -> None:
@@ -203,7 +238,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
     assert [(event.event, event.outcome, model_facts(event)) for event in events] == [
-        ("trigger.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
+        ("desk.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
     ]
 
 
@@ -240,6 +275,6 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
         await stopped(driving)
     assert rig.made == ["listen", "arm", "start", "stop", "deafen"]
     # The turn ended on its own, by a verdict or by the silence after it, not by the level that disengaged.
-    desk = next(event for event in rig.events if event.event == "desk")
-    verdicts = [event.facts["complete"] for event in rig.events if event.event == "trigger.judged"]
+    desk = next(event for event in rig.events if event.event == "desk" and event.facts["level"] == "engaged")
+    verdicts = [event.facts["complete"] for event in rig.events if event.event == "desk.judged"]
     assert verdicts.count(True) + desk.counts["ended_on_silence"] == 1

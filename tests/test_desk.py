@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from hands.voice.cues import level_cues
+from hands.voice.cues import level_cue
 from hands.voice.desk import Act, Chosen, Desk, Event, Level, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, step
 from hands.voice.hold import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 
@@ -54,8 +54,8 @@ def test_the_held_key_opens_a_turn_at_every_level(level: Level) -> None:
         # Right Command's triple tap toggles the wake word, from off and back.
         ("off", taps(1.0, command=True), "wake word", [Made("listen", "wake word"), Leveled("off", "wake word", "tap")]),
         ("wake word", taps(1.0, command=True), "off", [Made("deafen", "wake word"), Leveled("wake word", "off", "tap")]),
-        # Right Shift's toggles engaged; its third press arms the key, as any press does, and its release disarms it.
-        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap"), Made("disarm", "held key")]),
+        # Right Shift's toggles engaged as its third press is let go, known then to be no hold.
+        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("disarm", "held key"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap")]),
         # Either switches straight from the other, with the desk listening throughout.
         ("engaged", taps(1.0, command=True), "wake word", [Leveled("engaged", "wake word", "tap")]),
         # Two taps are nothing, and a key between starts the count again.
@@ -70,6 +70,11 @@ def test_a_triple_tap_sets_the_level(start: Level, events: list[Event], level: L
 def test_a_hold_to_a_turn_is_no_tap() -> None:
     desk, _ = run([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.1), Released(), Pressed(1.3), Released()])
     assert desk.level == "off"
+
+
+def test_a_third_press_held_to_talk_is_a_turn_and_no_tap() -> None:
+    desk, made = run([Pressed(1.0), Released(), Pressed(1.1), Released(), *held(1.2)])
+    assert desk.level == "off" and made == [*TAP_SHIFT[:4], *KEY_TURN]
 
 
 def test_under_the_wake_word_the_word_opens_a_turn_and_end_of_turn_closes_it() -> None:
@@ -94,9 +99,22 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
 
 
 @pytest.mark.parametrize(("level", "opening", "left"), [("wake word", [Woken(1.0)], "stop"), ("engaged", [SpeechStarted(1.0)], "stop"), ("engaged", [SpeechStarting()], "disarm")])
-def test_a_press_over_what_the_voice_has_open_sends_or_disarms_it_then_arms(level: Level, opening: list[Event], left: Move) -> None:
-    _, made = run([*opening, Pressed(2.0)], at(level))
-    assert moves(made)[-2:] == [Made(left, "wake word" if level == "wake word" else "engaged conversation"), Made("arm", "held key")]
+def test_a_hold_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
+    _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
+    edge = "wake word" if level == "wake word" else "engaged conversation"
+    assert moves(made)[-4:] == [Made(left, edge), Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
+
+
+@pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
+def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: list[Event]) -> None:
+    edge = "wake word" if level == "wake word" else "engaged conversation"
+    desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict")], at(level))
+    assert moves(made)[-1] == Made("stop", edge) and Made("arm", "held key") not in made and desk.level == level
+
+
+def test_a_voice_turn_ended_under_a_pressed_key_leaves_it_shift() -> None:
+    _, made = run([SpeechStarted(1.0), Pressed(2.0), SpeechStopped(), TurnEnded("verdict"), Ripe(2.0), Released()], at("engaged"))
+    assert moves(made)[-1] == Made("stop", "engaged conversation")
 
 
 @pytest.mark.parametrize("level", ["wake word", "engaged"])
@@ -118,8 +136,8 @@ def test_a_key_turn_goes_on_across_a_change_of_level() -> None:
     assert made == [Made("arm", "held key"), Made("start", "held key"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool"), Made("stop", "held key")]
 
 
-def test_a_level_chosen_again_changes_nothing_and_says_so() -> None:
-    assert run([Chosen("off")])[1] == [Leveled("off", "off", "tool")]
+def test_a_level_chosen_again_changes_nothing() -> None:
+    assert run([Chosen("off")])[1] == []
 
 
 def test_a_voice_turn_open_past_the_limit_is_sent_and_a_stale_limit_is_nothing() -> None:
@@ -140,7 +158,5 @@ def test_the_wake_words_own_pause_and_its_saying_again_end_nothing(events: list[
     assert moves(run(events, at("wake word"))[1]) == [Made("arm", "wake word"), Made("start", "wake word")]
 
 
-def test_each_level_has_its_own_cue_and_a_level_chosen_again_none() -> None:
-    heard = [level_cues(Leveled("off", now, "tap")) for now in ("wake word", "engaged")] + [level_cues(Leveled("engaged", "off", "tap"))]
-    assert len({cue for each in heard for cue in each}) == 3
-    assert level_cues(Leveled("off", "off", "tool")) == ()
+def test_each_level_has_its_own_cue() -> None:
+    assert len({level_cue(Leveled("off", now, "tap")) for now in ("wake word", "engaged")} | {level_cue(Leveled("engaged", "off", "tap"))}) == 3

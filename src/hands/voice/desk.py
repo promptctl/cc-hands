@@ -85,9 +85,15 @@ class Resting:
     level: Level
 
 
+# Right Shift under a turn the voice has open: up, down and not yet held long enough to mean talk, or down as Shift.
+VoiceKey = Idle | KeyArming | Typing
+
+
 @dataclass(frozen=True)
 class Starting:
     """Engaged, with what may be speech starting: the microphone is armed and the turn is not open."""
+
+    key: VoiceKey = Idle()
 
 
 @dataclass(frozen=True)
@@ -96,6 +102,7 @@ class Woke:
     word, not of the turn."""
 
     since: Instant
+    key: VoiceKey = Idle()
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,7 @@ class Voiced:
 
     level: Listens
     since: Instant
+    key: VoiceKey = Idle()
 
 
 KeyDown = KeyArming | KeyTalking | Typing
@@ -193,31 +201,48 @@ def toggled(level: Level, key: TapKey) -> Level:
 
 def _keyed(phase: Phase, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
     level = level_of(phase)
-    hold, moves = hold_step(phase.hold if isinstance(phase, Keyed) else Idle(), event)
-    # A press over what the voice has open takes the desk for the key: what the voice armed is disarmed, and a turn
-    # it opened is sent, before the press arms.
-    left: tuple[Act, ...]
     match phase:
-        case Starting() if "arm" in moves:
-            left = (Made("disarm", "engaged conversation"),)
-        case Woke() | Voiced() if "arm" in moves:
-            left = (Made("stop", _voice(phase)),)
         case Starting() | Woke() | Voiced():
-            return phase, ()
-        case Resting() | Keyed():
-            left = ()
+            return _over_voice(phase, event)
+        case Resting():
+            hold, moves = hold_step(Idle(), event)
+        case Keyed(hold=down):
+            hold, moves = hold_step(down, event)
     made = tuple(Made(move, "held key") for move in moves)
     match hold:
         case Idle():
-            return Resting(level), (*left, *made)
+            return Resting(level), made
         case KeyArming() | KeyTalking() | Typing():
-            return Keyed(level, hold), (*left, *made)
+            return Keyed(level, hold), made
+
+
+def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
+    """Right Shift under what the voice has open: nothing until it is held long enough to mean talk, so Shift typing a
+    capital leaves the voice's turn as it is; held so long, it takes the desk for the key, what the voice armed disarmed
+    and a turn it opened sent."""
+    hold, _ = hold_step(phase.key, event)
+    match hold:
+        case KeyTalking():
+            left = Made("disarm", "engaged conversation") if isinstance(phase, Starting) else Made("stop", _voice(phase))
+            return Keyed(level_of(phase), hold), (left, Made("arm", "held key"), Made("start", "held key"))
+        case Idle() | KeyArming() | Typing():
+            return replace(phase, key=hold), ()
+
+
+def _rest(level: Level, key: VoiceKey) -> Resting | Keyed:
+    """Where the desk is once a turn the voice had open is over: resting, or with Right Shift down as Shift, whose release
+    ends nothing."""
+    match key:
+        case Idle():
+            return Resting(level)
+        case KeyArming() | Typing():
+            return Keyed(level, Typing())
 
 
 def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, ...]]:
     was = level_of(phase)
     if now == was:
-        return phase, (Leveled(was, now, by),)
+        return phase, ()
     listening: tuple[Act, ...]
     match was, now:
         case "off", ("wake word" | "engaged") as heard:
@@ -230,10 +255,10 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
         case Resting():
             return Resting(now), (*listening, Leveled(was, now, by))
         # What the voice had open is the level's: leaving it, the armed start is disarmed and the turn is sent.
-        case Starting():
-            return Resting(now), (Made("disarm", "engaged conversation"), *listening, Leveled(was, now, by))
-        case Woke() | Voiced():
-            return Resting(now), (Made("stop", _voice(phase)), *listening, Leveled(was, now, by))
+        case Starting(key=key):
+            return _rest(now, key), (Made("disarm", "engaged conversation"), *listening, Leveled(was, now, by))
+        case Woke(key=key) | Voiced(key=key):
+            return _rest(now, key), (Made("stop", _voice(phase)), *listening, Leveled(was, now, by))
         # A turn of the key's goes on as it is, at the new level.
         case Keyed(hold=hold):
             return Keyed(now, hold), (*listening, Leveled(was, now, by))
@@ -247,14 +272,14 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
             return Starting(), (Made("arm", "engaged conversation"),)
         case Resting(level="engaged"), SpeechStarted(at=at):
             return Voiced("engaged", at), (Made("arm", "engaged conversation"), Made("start", "engaged conversation"))
-        case Starting(), SpeechStarted(at=at):
-            return Voiced("engaged", at), (Made("start", "engaged conversation"),)
-        case Starting(), SpeechStopped():
-            return Resting("engaged"), (Made("disarm", "engaged conversation"),)
+        case Starting(key=key), SpeechStarted(at=at):
+            return Voiced("engaged", at, key), (Made("start", "engaged conversation"),)
+        case Starting(key=key), SpeechStopped():
+            return _rest("engaged", key), (Made("disarm", "engaged conversation"),)
         # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake
         # word complete, so only once what is asked has started does a stop go to it.
-        case Woke(since=since), SpeechStarted():
-            return Voiced("wake word", since), ()
+        case Woke(since=since, key=key), SpeechStarted():
+            return Voiced("wake word", since, key), ()
         case Woke() as turn, TurnTooLong():
             return _in_turn(turn, heard)
         case Voiced() as turn, SpeechStopped() | TurnEnded() | TurnTooLong():
@@ -266,7 +291,7 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
 def _in_turn(turn: Woke | Voiced, heard: SpeechStopped | TurnEnded | TurnTooLong) -> tuple[Phase, tuple[Act, ...]]:
     """How a turn the voice opened ends: Smart Turn's verdict on a stop, the silence after it, or the limit, which sends
     it as it stands."""
-    rest = Resting(level_of(turn))
+    rest = _rest(level_of(turn), turn.key)
     match heard:
         case SpeechStopped():
             return turn, ("judge",)

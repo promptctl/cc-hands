@@ -99,7 +99,7 @@ class WakeWord:
 @asynccontextmanager
 async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
     """`word`'s model, loaded off the loop as its own unit of work."""
-    with loads.loading("trigger.wake_word_loaded", emit):
+    with loads.loading("desk.wake_word_loaded", emit):
         # [LAW:nothing-unseen] which word the desk listens for, and the file it is heard with.
         annotate(phrase=word.phrase, model=str(model_of(word, models)))
         if sample_rate != SAMPLE_RATE:
@@ -122,8 +122,8 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
         await asyncio.to_thread(word.reset)
         count(heard=1)
         # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was; whether it opened a turn is
-        # the engagement's to say, as its count of starts.
-        with unit("trigger.wake_word_heard", emit):
+        # the desk's to say, as its count of starts.
+        with unit("desk.wake_word_heard", emit):
             annotate(score=score, threshold=THRESHOLD)
         return True
 

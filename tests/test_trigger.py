@@ -1,11 +1,12 @@
 """The level the desk listens at, as the brain's tools say it and choose it; and a wake word model that cannot be heard
 with, refused as the desk loads it."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
-from hands.voice.desk import Chosen, Leveled
+from hands.voice.desk import Leveled
 from hands.voice.tools import listening_tools
 from hands.voice.trigger import Levels
 from hands.voice.wake import Unheard, WakeWord
@@ -30,15 +31,25 @@ async def test_a_level_not_built_is_refused() -> None:
 async def test_a_level_chosen_goes_to_the_desk_and_is_said_once_the_desk_is_at_it() -> None:
     levels = Levels()
     level, choose = listening_tools(levels, Pretrained())
+    asked: list[str] = []
+
+    async def driver() -> None:
+        # As the desk's driver does: answers each choice with the level it found, then reports the level it went to.
+        while True:
+            choice = await levels.chosen.get()
+            asked.append(choice.level)
+            choice.was.set_result(levels.level)
+            if choice.level != levels.level:
+                levels.leveled(Leveled(levels.level, choice.level, "tool"))
+
+    driving = asyncio.create_task(driver())
     chosen = await choose.body(level="wake word")
     assert (chosen["level"], chosen["was"]) == ("wake word", "off")
     assert str(chosen["readback"]).startswith("Okay. The wake word: say Hey Jarvis, then what you want;")
-    assert levels.chosen.get_nowait() == Chosen("wake word")
-    # The level said is the desk's, which the driver reports once it has stepped the choice.
-    assert (await level.body())["level"] == "off"
-    levels.leveled(Leveled("off", "wake word", "tool"))
     assert (await level.body())["level"] == "wake word"
     assert str((await choose.body(level="wake word"))["readback"]).startswith("Already. The wake word")
+    assert asked == ["wake word", "wake word"]
+    driving.cancel()
 
 
 async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -> None:
