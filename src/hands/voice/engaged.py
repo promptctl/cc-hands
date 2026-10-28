@@ -24,7 +24,6 @@ from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanag
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast, get_args
 
-import httpx
 import numpy as np
 from huggingface_hub import try_to_load_from_cache
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
@@ -259,9 +258,10 @@ def ported() -> Any:
         # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be
         # left at random and every verdict after it noise.
         return cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True))
-    except (OSError, httpx.HTTPError, ValueError) as error:
-        # [LAW:single-enforcer] every way the port is not got, the hub's errors, its client's, and a strict load's, is
-        # one error, naming the port, which a switch is refused with.
+    except Exception as error:
+        # [LAW:single-enforcer] every way the port is not got is one error, naming the port, which a switch is refused
+        # with: the hub's errors, its client's, a strict load's, and MLX's on a damaged file are each a different class,
+        # and mlx-audio, untyped, says which of them it raises nowhere.
         raise Unported(f"Smart Turn, {SMART_TURN} at {SMART_TURN_REVISION}: {error}") from error
 
 
@@ -331,7 +331,7 @@ class Models:
 @asynccontextmanager
 async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, for as long as the edge listens with them."""
-    # On a thread the process does not wait for, so a load that hangs does not hold a stopped daemon open.
+    # On a thread of its own the process does not join at exit (hands.threads), as every model's load is.
     loading = settles_off_loop(lambda: Models(sample_rate), "Models")
     try:
         with unit("trigger.loaded", emit):

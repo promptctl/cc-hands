@@ -1,5 +1,7 @@
 import asyncio
+import shutil
 from pathlib import Path
+from typing import Literal
 
 import huggingface_hub
 import pytest
@@ -107,20 +109,39 @@ async def test_a_switch_to_the_wake_word_whose_models_cannot_be_fetched_is_refus
         {"HF_HUB_OFFLINE": True},
         # Out of reach: nothing listens at the endpoint, and the hub's client fails with its own error, not an OSError.
         {"ENDPOINT": "http://127.0.0.1:9", "HUGGINGFACE_CO_URL_TEMPLATE": "http://127.0.0.1:9/{repo_id}/resolve/{revision}/{filename}"},
+        # Damaged: the cache's weights are cut short, and MLX fails reading them with a RuntimeError.
+        "damaged",
     ],
 )
-async def test_a_switch_whose_smart_turn_cannot_be_fetched_is_refused_naming_it_and_the_trigger_stays(
-    trigger: Trigger, hub: dict[str, object], models: Path, monkeypatch: pytest.MonkeyPatch
+async def test_a_switch_whose_smart_turn_cannot_be_got_is_refused_naming_it_and_the_trigger_stays(
+    trigger: Trigger, hub: dict[str, object] | Literal["damaged"], models: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # At a revision the hub's cache does not hold: as a first switch with the hub out of reach.
-    for name, value in hub.items():
-        monkeypatch.setattr(huggingface_hub.constants, name, value)
-    monkeypatch.setattr(engaged, "SMART_TURN_REVISION", "0" * 40)
+    match hub:
+        case dict():
+            # At a revision the hub's cache does not hold: as a first switch with the hub out of reach.
+            for name, value in hub.items():
+                monkeypatch.setattr(huggingface_hub.constants, name, value)
+            revision = "0" * 40
+        case "damaged":
+            # A copy of the hub's cache of the port, offline, its weights cut short.
+            cached = huggingface_hub.try_to_load_from_cache(engaged.SMART_TURN, engaged.SMART_TURN_WEIGHTS, revision=engaged.SMART_TURN_REVISION)
+            assert isinstance(cached, str), "the smart_turn fixture left no weights in the hub's cache"
+            repository = Path(cached).parents[2]
+            shutil.copytree(repository, tmp_path / "hub" / repository.name, symlinks=False, ignore=shutil.ignore_patterns("blobs"))
+            weights = tmp_path / "hub" / repository.name / "snapshots" / engaged.SMART_TURN_REVISION / engaged.SMART_TURN_WEIGHTS
+            # Replaced, not written through: the hub keeps its files read-only, and the copy kept their mode.
+            cut = weights.read_bytes()[:4096]
+            weights.unlink()
+            weights.write_bytes(cut)
+            monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+            monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+            revision = engaged.SMART_TURN_REVISION
+    monkeypatch.setattr(engaged, "SMART_TURN_REVISION", revision)
     triggers = Triggers()
     _, switch = trigger_tools(triggers, models, Pretrained())
     refused = await switch.body(trigger=trigger)
     assert (refused["trigger"], refused["readback"]) == ("held key", f"The {trigger} could not be set up, so the trigger stays as it was.")
-    assert str(refused["error"]).startswith(f"{trigger} could not be readied: Smart Turn, {engaged.SMART_TURN} at {'0' * 40}: ")
+    assert str(refused["error"]).startswith(f"{trigger} could not be readied: Smart Turn, {engaged.SMART_TURN} at {revision}: ")
     assert triggers.in_use == "held key"
 
 
