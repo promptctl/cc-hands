@@ -28,6 +28,7 @@ from hands.core.effects import (
     SessionGone,
     Compare,
     Snapshot,
+    Submitted,
     Summarise,
     Tell,
     Unmatched,
@@ -262,8 +263,18 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
     after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
-    # A turn left untold is told before what the event calls for, so before a prompt marks the next.
-    return registry.put(after), [*_transition(was, after), *told, *stopped, *settled, *overtaken]
+    # A turn left untold is told before what the event calls for, so before a prompt marks the next, and before the
+    # prompt's words are said to be taken: a telling the prompt decides is never theirs.
+    return registry.put(after), [*_transition(was, after), *told, *_submitted(was, event), *stopped, *settled, *overtaken]
+
+
+def _submitted(was: Session, event: Moving) -> list[Effect]:
+    """Where a prompt hook's words went: filed under a turn the session already had, or opening one of their own."""
+    match event:
+        case Prompted(prompt=prompt, text=text):
+            return [Submitted(was.membership.id, prompt, text, queued=_names(was.turn, prompt))]
+        case _:
+            return []
 
 
 def _stopped(session: Session, event: Moving) -> tuple[Session, list[Effect]]:

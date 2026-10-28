@@ -12,7 +12,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -77,6 +77,7 @@ class Sessions:
         names: Names | None = None,
         story_sink: Callable[[Story], None] | None = None,
         heard_sink: Callable[[Heard], None] | None = None,
+        submitted_sink: Callable[[Submitted], None] = lambda _submitted: None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(sessions={}, drafts={})
@@ -115,6 +116,9 @@ class Sessions:
         # decided: by default onto the queues `story` and `heard` read, for the narrator and the speech that say them.
         self._story_sink = story_sink or self._story.put_nowait
         self._heard_sink = heard_sink or self._heard.put_nowait
+        # Where each prompt hook's words went, for whoever typed them and waits on their answer: the brain. The daemon
+        # waits on none.
+        self._submitted_sink = submitted_sink
         # Each session's latest performing still under way: what the next of that session's waits on.
         self._performing: dict[SessionId, asyncio.Task[None]] = {}
         # What was heard where nothing waits on it, still being performed.
@@ -419,6 +423,8 @@ class Sessions:
                 self._heard_sink(effect)
             case Summarise() | SessionGone():
                 self._story_sink(effect)
+            case Submitted():
+                self._submitted_sink(effect)
             case Snapshot() | Compare():
                 # [LAW:no-silent-failure] what a repository says about a turn is best effort, and may never
                 # cost the turn the thing it was read for. Both reads are guarded here rather than each
@@ -477,7 +483,7 @@ async def _all(performing: list[asyncio.Task[None]]) -> None:
 def _ordered_by(effect: Effect) -> SessionId | None:
     """The session whose order the effect keeps; None for one that waits on nothing: a line, or what is heard."""
     match effect:
-        case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session):
+        case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session) | Submitted(session=session):
             return session
         case Audit() | Narrate() | Progress() | Tell():
             return None

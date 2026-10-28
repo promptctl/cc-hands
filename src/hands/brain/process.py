@@ -34,8 +34,8 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
-from hands.core.effects import Allow, Deny, Heard, SessionGone, Story, Summarise, Text
-from hands.core.events import Event, Prompted, Stopped
+from hands.core.effects import Allow, Deny, Heard, SessionGone, Story, Submitted, Summarise, Text
+from hands.core.events import Event
 from hands.core.session import Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
@@ -595,15 +595,16 @@ class _Turn:
     broken: BaseException | None = None
 
 
-def model(record: Record, told: Callable[[Story], None]) -> Sessions:
+def model(record: Record, told: Callable[[Story], None], took: Callable[[Submitted], None]) -> Sessions:
     """The brain's Claude Code session, as the one model of a Claude Code turn reads every working session, in a registry
-    of its own: each turn it tells handed to `told`, in the order the model decided it.
+    of its own: where each prompt's words went handed to `took`, and each turn it tells to `told`, in the order the model
+    decided them.
 
     [LAW:one-type-per-behavior] the registry working sessions live in, another of it: its effects are the same, and of
     them only the tellings are the brain's to hear. It works in an empty directory, so no repository is read; and what
     its turns say is the brain's stage's to say, from the wire, never what the model makes of its session.
     """
-    return Sessions(time.monotonic, record, story_sink=told, heard_sink=_unsaid)
+    return Sessions(time.monotonic, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took)
 
 
 def _unsaid(_heard: Heard) -> None:
@@ -644,10 +645,7 @@ class Brain:
         self._pause = pause
         # [LAW:one-source-of-truth] Claude Code's turns in the brain, as the one model of a turn reads them: which runs,
         # which waits in its queue, and which is over.
-        self._sessions = model(record, self._told)
-        # [LAW:no-ambient-temporal-coupling] the model is applied one event at a time, each with what it called for done
-        # before the next is decided, so a turn it tells is handed to `_told` before a hook after it is heard.
-        self._applying = asyncio.Lock()
+        self._sessions = model(record, self._told, self._took)
         # [LAW:single-enforcer] the brain's status and transcript, read as every working session's are, on the same period.
         self._reader = Reader(self._sessions, Tails(self._sessions), self._apply)
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
@@ -1006,9 +1004,7 @@ class Brain:
             annotate(server=server)
 
     async def _hook(self, body: bytes) -> None:
-        """A hook of the brain's turns, applied to the model as a working session's is: where its transcript is, then
-        what it says. [LAW:single-enforcer] a turn is taken by the prompt Claude Code took that is what it typed, by the
-        words, whatever turn it was filed under."""
+        """A hook of the brain's turns, applied to the model as a working session's is (Reader.hooked)."""
         try:
             hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(uuid4().hex))
         except Rejected as error:
@@ -1017,40 +1013,22 @@ class Brain:
         if hook.session != self.session:
             logger.info(f"the brain's {hook.name} hook came for session {hook.session}, not the brain's")
             return
-        if hook.joining is not None:
-            await self._apply(hook.joining)
-        match hook.happened:
-            case Prompted(prompt=prompt, text=words) as prompted:
-                # As a working session's turn hooks are (serve_hooks): applied once Claude Code is read through now.
-                await self._reader.read()
-                async with self._applying:
-                    # Queued: Claude Code filed the words under a turn it already had, not under an id of their own.
-                    held = self._modelled()
-                    queued = held is not None and prompt in ids(held.turn)
-                    # Taken once what it calls for of the turns before it is done: a turn it tells is never its own.
-                    await self._applied(prompted)
-                    turn = self._turn
-                    if turn is not None and not turn.answered.done() and not turn.taken.done() and _kept(words) == _kept(turn.typed):
-                        turn.taken_under, turn.queued = prompt, queued
-                        turn.taken.set_result(None)
-            case Stopped() as stopped:
-                await self._reader.read()
-                # Held as a working session's Stop is, until the model has decided whose it is: never under `_applying`,
-                # which what decides it is applied under.
-                await self._sessions.stop(stopped)
-                self._left()
-            case happened:
-                await self._apply(happened)
+        await self._reader.hooked(hook)
+        self._left()
 
     async def _apply(self, event: Event) -> None:
-        """What the brain's status and transcript say, applied as a hook is: one event at a time."""
-        async with self._applying:
-            await self._applied(event)
-
-    async def _applied(self, event: Event) -> None:
-        """The event applied, with `_applying` held, and what it called for done, a telling handed to `_told` among it."""
+        """What the brain's hooks, status and transcript say, applied; then whether the turn hands stopped is over."""
         await self._sessions.apply(event)
         self._left()
+
+    def _took(self, submitted: Submitted) -> None:
+        """Where Claude Code filed what was typed: [LAW:single-enforcer] a turn is taken by the prompt Claude Code took
+        that is what it typed, by the words, whatever turn it was filed under. Heard in the model's order, so every
+        telling decided before it is heard first, and none decided after."""
+        turn = self._turn
+        if turn is not None and not turn.answered.done() and not turn.taken.done() and _kept(submitted.words) == _kept(turn.typed):
+            turn.taken_under, turn.queued = submitted.prompt, submitted.queued
+            turn.taken.set_result(None)
 
     def _told(self, told: Story) -> None:
         """A turn of Claude Code's the model told: the answer of the turn in flight, once what it typed was taken and waits

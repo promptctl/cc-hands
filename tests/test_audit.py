@@ -15,7 +15,7 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
+from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
 from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed
 from hands.core.permissions import Answer, NotWaiting, Permission
@@ -716,11 +716,12 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
         task.cancel()
     await asyncio.gather(*running, return_exceptions=True)
     first, second = [next(event for event in applied(recorded) if event.facts["applied"] == prompted) for prompted in prompts]
-    assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled")])
+    taken = Submitted(member().id, PromptId("p1"), "", queued=False)
+    assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled"), (taken, "not performed")])
     # The second prompt ends the first's turn: its telling and its own mark wait behind the mark cut short, and never begin.
-    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd)]
+    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd), Submitted(member().id, PromptId("p2"), "", queued=False)]
     assert (second.outcome, performed(second)) == ("cancelled", [(effect, "not performed") for effect in told])
-    assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True]
+    assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True, True, True]
 
 
 async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> None:

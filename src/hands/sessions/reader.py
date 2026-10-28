@@ -1,11 +1,13 @@
-"""What Claude Code says of every live session outside its hooks, read for the one model of a Claude Code turn: its
-status, then its transcript, once a period, and through now for whoever must decide on what it has said by then."""
+"""What Claude Code says of every live session, read for the one model of a Claude Code turn: its status, then its
+transcript, once a period, and through now before a turn's hook is applied, so the hook is decided on what Claude Code
+had said by then on every channel."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from hands.core.events import StatusReported, Transcribed
-from hands.sessions.registry import Sessions
+from hands.core.events import Event, PermissionRequested, Prompted, Stopped
+from hands.sessions.hooks import Hook
+from hands.sessions.registry import Sessions, StopHeld
 from hands.sessions.statusfile import Statuses
 from hands.sessions.tail import Tails
 
@@ -20,7 +22,7 @@ class Reader:
     """[LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts for a registry: every read of them,
     on the period or through now, is this one's, so no two are under way at once and each is applied in the order read."""
 
-    def __init__(self, sessions: Sessions, tails: Tails, apply: Callable[[StatusReported | Transcribed], Awaitable[None]]) -> None:
+    def __init__(self, sessions: Sessions, tails: Tails, apply: Callable[[Event], Awaitable[None]]) -> None:
         self._sessions = sessions
         self._tails = tails
         self._apply = apply
@@ -38,6 +40,34 @@ class Reader:
                 await self._apply(reported)
             for transcribed in await self._tails.catch_up():
                 await self._apply(transcribed)
+
+    async def hooked(self, hook: Hook) -> StopHeld | None:
+        """A session's hook applied: where its transcript is, then what it says, a turn's prompt or Stop once Claude Code
+        is read through now; how a Stop was held. [LAW:single-enforcer] the one way a hook reaches the model, a working
+        session's and the brain's alike.
+
+        [LAW:no-ambient-temporal-coupling] with only the period, a Stop that comes before any status was read is held for
+        no record (reducer `_stopping`) and ends nothing, and a Stop naming an id only the transcript says yet is decided
+        before it is read: any turn Claude Code writes faster than a period would be.
+        """
+        match hook.joining:
+            case None:
+                pass
+            case joining:
+                await self._apply(joining)
+        match hook.happened:
+            case Stopped() as stopped:
+                await self.read()
+                return await self._sessions.stop(stopped)
+            case Prompted() as prompted:
+                await self.read()
+                await self._apply(prompted)
+            case PermissionRequested():
+                # Applied by whoever answers it (Sessions.ask), which waits on the reply it is answered with.
+                pass
+            case happened:
+                await self._apply(happened)
+        return None
 
     async def keep_reading(self, period: float) -> None:
         """Read once a period, until cancelled."""

@@ -306,7 +306,20 @@ class Compare:
 # generator, or a `sed` in a shell command changes files that no step reports.
 Repository = Snapshot | Compare
 
-Effect = Audit | Reply | Heard | Story | Repository
+
+@dataclass(frozen=True)
+class Submitted:
+    """Claude Code took words at its prompt hook, under `prompt`: an id of their own, the turn they open, or, `queued`,
+    the id of a turn it already had, behind or into which they run. Handed over in its session's order, so whoever
+    typed the words hears where they went before any telling decided after."""
+
+    session: SessionId
+    prompt: PromptId
+    words: str
+    queued: bool
+
+
+Effect = Audit | Reply | Heard | Story | Repository | Submitted
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from hands.core.effects import (
+    Submitted,
     AfterEnd,
     Holding,
     HoldingBehind,
@@ -192,7 +193,7 @@ def test_a_prompt_opens_a_turn_and_one_inside_an_open_turn_is_queued_in_it() -> 
 def test_moving_between_states_that_wait_on_nothing_asks_for_nothing(before: SessionState, event: Event) -> None:
     # A prompt with no turn open marks the repository it is about to change, which asks the user nothing and is
     # not spoken. A prompt arriving mid-turn opens no turn and so marks nothing: see the test below.
-    marked = [Snapshot(ONE.id, ONE.cwd)] if isinstance(event, Prompted) else []
+    marked = [Snapshot(ONE.id, ONE.cwd), Submitted(ONE.id, TURN, "", queued=False)] if isinstance(event, Prompted) else []
     assert reduce(holding(before), event)[1] == marked
 
 
@@ -230,7 +231,7 @@ def test_a_prompt_inside_an_open_turn_leaves_the_mark_where_that_turn_began(befo
 
 def test_a_prompt_heard_after_the_busy_it_set_was_read_opens_and_marks_its_turn() -> None:
     """Claude Code sets busy before a prompt's hooks run, and the status can be read before the hook lands."""
-    assert reduce(holding(BUSY, Told(TURN)), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT, text="")) == (holding(BUSY, Opened(NEXT), earlier=frozenset({TURN})), [Snapshot(ONE.id, ONE.cwd)])
+    assert reduce(holding(BUSY, Told(TURN)), Prompted(ONE.id, at=5.0, mode=None, prompt=NEXT, text="")) == (holding(BUSY, Opened(NEXT), earlier=frozenset({TURN})), [Snapshot(ONE.id, ONE.cwd), Submitted(ONE.id, NEXT, "", queued=False)])
 
 
 @pytest.mark.parametrize("before", [holding(IDLE), holding(BUSY), in_turn()])
@@ -258,7 +259,7 @@ def test_a_turn_is_compared_before_it_is_handed_over_to_be_summarised() -> None:
 
 def test_a_prompt_marks_where_the_repository_stands_before_the_turn_can_change_it() -> None:
     """The mark is what the turn's changes are read against, so it is taken as the turn opens, not during it."""
-    assert reduce(holding(IDLE), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN, text=""))[1] == [Snapshot(ONE.id, ONE.cwd)]
+    assert reduce(holding(IDLE), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN, text=""))[1] == [Snapshot(ONE.id, ONE.cwd), Submitted(ONE.id, TURN, "", queued=False)]
 
 
 def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until_claude_code_says_idle() -> None:
@@ -525,7 +526,7 @@ WENT_IDLE = said(status.Idle(), 2000, at=10.0)
 
 
 def test_a_session_at_its_prompt_prompted_again_marks_the_repository_its_turn_starts_from() -> None:
-    assert reduce(holding(IDLE), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN, text="")) == (in_turn(IDLE), [Snapshot(ONE.id, ONE.cwd)])
+    assert reduce(holding(IDLE), Prompted(ONE.id, at=5.0, mode=None, prompt=TURN, text="")) == (in_turn(IDLE), [Snapshot(ONE.id, ONE.cwd), Submitted(ONE.id, TURN, "", queued=False)])
 
 
 REPORTING: list[SessionEvent] = [
@@ -715,7 +716,7 @@ def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_q
     state, effects = reduce(in_turn(), Taken(ONE.id, flushed, None, 9.0))
     assert effects == [] and live(state).turn == Opened(TURN, frozenset({flushed}))
     state, effects = reduce(state, Prompted(ONE.id, at=9.0, mode=None, prompt=flushed, text=""))
-    assert effects == [] and live(state).turn == Opened(TURN, frozenset({flushed}), waiting=("",))
+    assert effects == [Submitted(ONE.id, flushed, "", queued=True)] and live(state).turn == Opened(TURN, frozenset({flushed}), waiting=("",))
 
 
 def test_a_turn_a_prompt_opens_has_gone_on_under_no_other_id_yet() -> None:
@@ -725,7 +726,7 @@ def test_a_turn_a_prompt_opens_has_gone_on_under_no_other_id_yet() -> None:
 
 def test_a_prompt_that_cannot_be_told_from_one_queued_into_the_open_turn_is_queued_into_it() -> None:
     """The open turn's own id is a queued prompt's."""
-    assert reduce(in_turn(), Prompted(ONE.id, at=9.0, mode=None, prompt=TURN, text=""))[1] == []
+    assert reduce(in_turn(), Prompted(ONE.id, at=9.0, mode=None, prompt=TURN, text=""))[1] == [Submitted(ONE.id, TURN, "", queued=True)]
 
 
 @pytest.mark.parametrize("event", [

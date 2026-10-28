@@ -1176,8 +1176,7 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
 
 def _modelled(brain: Brain) -> None:
     """A brain built bare given the model it reads its turns with, as `Brain` builds it."""
-    brain._sessions = model(lambda _entry: None, brain._told)  # pyright: ignore[reportPrivateUsage]
-    brain._applying = asyncio.Lock()  # pyright: ignore[reportPrivateUsage]
+    brain._sessions = model(lambda _entry: None, brain._told, brain._took)  # pyright: ignore[reportPrivateUsage]
     brain._reader = Reader(brain._sessions, Tails(brain._sessions), brain._apply)  # pyright: ignore[reportPrivateUsage]
 
 

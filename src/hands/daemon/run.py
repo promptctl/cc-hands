@@ -238,7 +238,7 @@ async def run(
         # before each turn's hook is applied.
         tails = Tails(sessions)
         reader = Reader(sessions, tails, sessions.apply)
-        hooks = await serve_hooks(home, sessions, names, record, reader.read)
+        hooks = await serve_hooks(home, sessions, names, record, reader)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)
         wire = Wire(wire_to(record))

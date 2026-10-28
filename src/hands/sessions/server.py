@@ -1,28 +1,28 @@
 """The unix socket the shims post to, and the loopback route Claude Code posts the text it displays to."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
 from aiohttp import web
-from hands.core.events import Located, PermissionRequested, Prompted, Stopped
+from hands.core.events import PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
 from hands.sessions.audit import Record
 from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
 from hands.sessions.names import Due, Finished, NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.payload import Rejected
+from hands.sessions.reader import Reader
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import session_name
 from hands.sessions.wide import annotate, fail, unit
 
 
-async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record, read: Callable[[], Awaitable[None]]) -> web.AppRunner:
+async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record, reader: Reader) -> web.AppRunner:
     """Listen on the home's socket until the returned runner is cleaned up.
 
     A finished turn has its session's name judged again, and a prompt is answered with the name decided since the last.
-    `read` reads Claude Code's status and transcript of every session through now (Reader.read).
+    Each is applied to the model by `reader` (Reader.hooked), and answered here.
     """
 
     async def hook(request: web.Request) -> web.Response:
@@ -39,14 +39,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
             fail(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
         annotate(hook=said.name, session=said.session)
-        match said.joining:
-            case Located() as joining:
-                await sessions.apply(joining)
-            case None:
-                pass
-        # [LAW:no-ambient-temporal-coupling] a turn's hook, its prompt or its Stop, is applied once Claude Code's status and
-        # transcript are read through now, so the model decides it on what Claude Code had said by then on every channel,
-        # however fast it wrote them: a Stop decided before any status is read is held for no record (see _stopping).
+        held = await reader.hooked(said)
         match said.happened:
             case PermissionRequested() as asked:
                 # The one hook answered: the response body is the answer Claude Code reads.
@@ -55,8 +48,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                 output = hook_output(reply)
                 return web.Response(status=204) if output is None else web.json_response(output)
             case Stopped() as stopped:
-                await read()
-                annotate(stop=await sessions.stop(stopped))
+                annotate(stop=held)
                 match (stopped.closing, sessions.membership(stopped.session)):
                     case (str() as closing, Membership() as membership):
                         names.finished(Finished(membership, closing))
@@ -66,8 +58,6 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                         pass
                 return web.Response(status=204)
             case Prompted() as prompted:
-                await read()
-                await sessions.apply(prompted)
                 # [LAW:no-ambient-temporal-coupling] a hook is the only way to hand Claude Code a title, and a prompt
                 # the soonest one after a name is decided: the name waits here for it.
                 match (names.due(prompted.session), sessions.membership(prompted.session)):
@@ -92,8 +82,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                     case (Due(), None):
                         # Unreachable while a name is only decided for a session whose Stop found it joined.
                         raise AssertionError(f"a name is due for session {prompted.session}, which never joined")
-            case happened:
-                await sessions.apply(happened)
+            case _:
                 return web.Response(status=204)
 
     app = web.Application()
