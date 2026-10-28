@@ -25,6 +25,7 @@ from typing import cast
 
 import httpx
 import huggingface_hub.constants
+from huggingface_hub.errors import RevisionResolutionError
 from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
 import mlx.core as mx
 import mlx_whisper
@@ -417,6 +418,7 @@ def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[
     try:
         fetched = fetch()
     except failures as error:
+        write("failed\n")
         raise pytest.UsageError(f"the run cannot fetch {what}: {type(error).__name__}: {error}") from error
     write(f"{time.monotonic() - started:.2f} s\n")
     return fetched
@@ -473,13 +475,21 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
     monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
     stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, home))
-    # The line each fetch writes says what the run is fetching; the hub's bars would break it.
+    # The line each fetch writes says what the run is fetching; the hub's bars would break it, so they are off while it
+    # fetches, and only then.
     disable_progress_bars()
-    stack.callback(enable_progress_bars)
-    for repo, revision in WEIGHTS:
-        # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
-        # its client's and its own, which are OSErrors.
-        fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError), partial(get_model_path, repo, revision=revision))
+    try:
+        for repo, revision in WEIGHTS:
+            # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures
+            # are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
+            fetching(
+                write,
+                f"{repo} at {revision} from the Hugging Face hub",
+                (httpx.HTTPError, OSError, RevisionResolutionError),
+                partial(get_model_path, repo, revision=revision),
+            )
+    finally:
+        enable_progress_bars()
     wake_word = config.cache.mkdir("wake-word")
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(wake_word, word)))

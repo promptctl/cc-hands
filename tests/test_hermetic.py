@@ -160,12 +160,14 @@ def test_a_fetch_that_fails_stops_the_run_naming_what_and_why() -> None:
     written: list[str] = []
     with pytest.raises(pytest.UsageError, match="^the run cannot fetch the models: ConnectionRefusedError: refused$"):
         fetching(written.append, "the models", (OSError,), refused)
+    assert written == ["fetching the models: ", "failed\n"]
 
 
 def test_a_defect_in_a_fetch_is_raised_as_itself() -> None:
     written: list[str] = []
     with pytest.raises(TypeError, match="a defect"):
         fetching(written.append, "the models", (OSError,), broken)
+    assert written == ["fetching the models: "]
 
 
 def test_a_run_with_pytest_s_cache_off_stops_saying_it_fetches_into_it(pytester: pytest.Pytester) -> None:
