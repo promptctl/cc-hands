@@ -8,6 +8,7 @@ import math
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -196,6 +197,9 @@ async def test_a_hold_that_ends_is_heard_through_the_silence_after_it_and_told_w
     *_, whole = hearings(rig.recorded)
     # The words after it closed cut nothing: the hold is no longer open.
     assert (whole.facts["fate"], whole.facts["words"], whole.facts["seconds"], whole.facts["cut"]) == ("sent", said("the parser is fixed"), 0.48, False)
+    # The hold's last sample is in the run's fourth chunk, so the silence runs to the step that commits its eighth: the
+    # run fed through 24416 samples.
+    assert whole.facts["silence"] == 1.046
 
 
 async def test_a_hold_nothing_was_said_in_ends_with_no_words() -> None:
@@ -268,6 +272,19 @@ async def test_models_that_fail_to_load_fail_each_hold_once_saying_why() -> None
     assert [(event.outcome, event.error) for event in hearings(recorded)] == [("ok", None), failed, ("ok", None), ("ok", None), failed]
     [load] = loaded(recorded)
     assert (load.outcome, load.error) == ("failed", "OSError: the hub is unreachable")
+
+
+def test_a_recognizer_that_frames_the_run_with_another_fft_is_refused_before_a_session_is_made(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `through` places a hold's last mel frame by the recognizer's FFT, which the session does not check against the
+    # diarizer's.
+    import mlx_audio.stt  # pyright: ignore[reportMissingTypeStubs]
+
+    def recognizer(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(preprocessor_config=SimpleNamespace(n_fft=400))
+
+    monkeypatch.setattr(mlx_audio.stt, "load", recognizer)
+    with pytest.raises(ValueError, match="FFT of 400; hands places a hold's last mel frame on 512"):
+        nemotron()
 
 
 def test_a_speaker_is_the_number_the_session_gave_them() -> None:

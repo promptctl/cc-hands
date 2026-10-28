@@ -288,7 +288,8 @@ class StreamingRecognizer:
         self._fed += silence
 
         async def settle() -> Heard:
-            annotate(fate=fate)
+            # [LAW:nothing-unseen] the silence after a hold differs with where on the grid it ended, and costs decode.
+            annotate(fate=fate, silence=round(silence / RATE, 3))
             # [LAW:single-enforcer] a hold the broken stream did not hear raises, and the owner fails this hearing with why.
             heard = await ended
             annotate(words=heard.words, seconds=heard.seconds)
@@ -340,11 +341,14 @@ def load() -> Session:
     from mlx_audio.stt import load as loaded  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
     model = cast(Any, loaded(MODEL, revision=REVISION))
+    # [LAW:parse-dont-validate] the session checks the two models hear the same rate and hop, and `diarizer` that they
+    # are hands'; this, the recognizer's own FFT, which places a hold's last mel frame for `through`, and the chunk
+    # GATING counts in.
+    if model.preprocessor_config.n_fft != N_FFT:
+        raise ValueError(f"{MODEL} frames the run with an FFT of {model.preprocessor_config.n_fft}; hands places a hold's last mel frame on {N_FFT}")
     session = model.create_speaker_streaming_session(
         diarizer(), att_context_size=[model.default_att_context_size[0], LOOKAHEAD], cache_gating_buffer_size=GATING
     )
-    # [LAW:parse-dont-validate] the session checks the two models hear the same rate and hop; this, the chunk GATING
-    # counts in.
     if session.chunk_mel != CHUNK:
         raise ValueError(f"{MODEL}'s session takes chunks of {session.chunk_mel} mel frames; hands gates speakers in chunks of {CHUNK}")
     return _Paired(session)
