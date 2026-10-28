@@ -75,6 +75,24 @@ def scored(known: tuple[str, ...], ended: streaming.Ended) -> Counter[str]:
     )
 
 
+def measured(gating: int, meetings: list[list[tuple[tuple[str, ...], dict[str, np.ndarray]]]]) -> None:
+    """Every meeting's holds at `gating`, on a pair loaded for it alone, let go as it ends: no two pairs are held at once."""
+    pair = streaming.load(gating)
+    for shape in SHAPES:
+        total = Counter[str]()
+        for holds in meetings:
+            # A run per meeting, as hands has one: its session afresh, nobody heard yet, as the real-pair tests reset it.
+            pair.session.reset()
+            run = Live(pair)
+            for words, hold in holds:
+                total += scored(words, run.spoken(hold[shape])[1])
+        print(
+            f"{shape} GATING {gating}: {total['holds']} holds; last word right {total['last']}; words invented past the last {total['invented']}, "
+            f"cut from the end {total['cut']}, given to anyone else {total['others']}; WER {total['errors'] / total['words']:.3f}",
+            flush=True,
+        )
+
+
 def main() -> None:
     directory = Path(sys.argv[1])
     directory.mkdir(parents=True, exist_ok=True)
@@ -88,20 +106,7 @@ def main() -> None:
         alone = turns(*transcribed(archive, name), len(audio) / RATE, before=BEFORE, after=engaged.STOP_SECS)
         meetings.append([(said.words, {shape: turn(audio, said.start, said.end, after).copy() for shape, after in SHAPES.items()}) for said in alone])
     for gating in gatings:
-        pair = streaming.load(gating)
-        for shape in SHAPES:
-            total = Counter[str]()
-            for holds in meetings:
-                # A run per meeting, as hands has one: its session afresh, nobody heard yet, as the real-pair tests reset it.
-                pair.session.reset()
-                run = Live(pair)
-                for words, hold in holds:
-                    total += scored(words, run.spoken(hold[shape])[1])
-            print(
-                f"{shape} GATING {gating}: {total['holds']} holds; last word right {total['last']}; words invented past the last {total['invented']}, "
-                f"cut from the end {total['cut']}, given to anyone else {total['others']}; WER {total['errors'] / total['words']:.3f}",
-                flush=True,
-            )
+        measured(gating, meetings)
 
 
 if __name__ == "__main__":
