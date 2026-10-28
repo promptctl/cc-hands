@@ -4,8 +4,7 @@
 asks again whether the file said something this version knows.
 """
 
-import asyncio
-from collections.abc import Awaitable, Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import get_args
@@ -63,8 +62,6 @@ def _status(record: Payload, name: str) -> Status:
             return Unknown(other)
 
 
-# How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
-STATUS_SECONDS = 0.1
 # How long a session's status may go unread before that is said. Claude Code sets a status within a second of writing the
 # file (91 ms in the latest measurement, 793 ms in an earlier one), and runs the end hook 330 to 640 ms after removing
 # it as its process exits: a status unread for longer is a status hands does not have.
@@ -153,21 +150,3 @@ def _unknown(member: Membership, status: Status) -> None:
             logger.warning(f"session {member.id} reports a status hands does not know: {name!r}")
         case Idle() | Busy() | Waiting() | Shell():
             pass
-
-
-async def keep_reading_statuses(
-    sessions: Callable[[], Collection[SessionId]],
-    session: Callable[[SessionId], Session | None],
-    clock: Callable[[], Instant],
-    period: float,
-    apply: Callable[[StatusReported], Awaitable[None]],
-) -> None:
-    """Read every live session's status once a period, and apply each one set since, until cancelled.
-
-    The period is how late a session going idle is heard.
-    """
-    statuses = Statuses(clock)
-    while True:
-        for reported in statuses.read(sessions(), session):
-            await apply(reported)
-        await asyncio.sleep(period)

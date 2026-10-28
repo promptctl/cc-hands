@@ -64,6 +64,10 @@ class Registry:
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
 
+    def followed(self, session: SessionId, prompt: PromptId) -> bool:
+        # No hook of the session is heard: the tail decides alone what of the file is history.
+        return False
+
 
 # The prompt id the captured turn's records carry.
 TURN = PromptId("1dd65461-0644-432f-88e5-42aaeb27cbde")

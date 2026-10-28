@@ -17,7 +17,7 @@ from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, R
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.session import Gone, Instant, Known, Membership, PromptId, Registry, RequestId, Session, SessionId, followed, status_stamp
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.audit import Record, Typing, TypingFailed
@@ -75,6 +75,8 @@ class Sessions:
         stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
+        story_sink: Callable[[Story], None] | None = None,
+        heard_sink: Callable[[Heard], None] | None = None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(sessions={}, drafts={})
@@ -109,6 +111,10 @@ class Sessions:
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
         # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
         self._story: asyncio.Queue[Story] = asyncio.Queue()
+        # [LAW:effects-at-boundaries] where each is handed as it is performed, in the order its session's effects were
+        # decided: by default onto the queues `story` and `heard` read, for the narrator and the speech that say them.
+        self._story_sink = story_sink or self._story.put_nowait
+        self._heard_sink = heard_sink or self._heard.put_nowait
         # Each session's latest performing still under way: what the next of that session's waits on.
         self._performing: dict[SessionId, asyncio.Task[None]] = {}
         # What was heard where nothing waits on it, still being performed.
@@ -357,6 +363,11 @@ class Sessions:
             case Session() as live:
                 return live
 
+    def followed(self, session: SessionId, prompt: PromptId) -> bool:
+        """Whether hands followed the live session's turn the id names: its turn, or a turn before it, went by it."""
+        live = self.live_session(session)
+        return live is not None and followed(live, prompt)
+
     def live(self) -> list[Listing[Session]]:
         return [self._listing(session) for session in self._registry.live()]
 
@@ -401,13 +412,13 @@ class Sessions:
     async def _perform(self, effect: Effect) -> None:
         match effect:
             case Audit(record=record):
-                logger.log(*audit_line(record))
+                logger.log(*_audited(record))
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
             case Narrate() | Progress() | Tell():
-                self._heard.put_nowait(effect)
+                self._heard_sink(effect)
             case Summarise() | SessionGone():
-                self._story.put_nowait(effect)
+                self._story_sink(effect)
             case Snapshot() | Compare():
                 # [LAW:no-silent-failure] what a repository says about a turn is best effort, and may never
                 # cost the turn the thing it was read for. Both reads are guarded here rather than each
@@ -480,8 +491,7 @@ def _taken(taken: Unqueuing) -> str:
             return f"{content[:80]!r}"
 
 
-def audit_line(record: AuditRecord) -> tuple[str, str]:
-    """The level and line an audit record of the model is logged at: [LAW:single-enforcer] whichever registry decided it."""
+def _audited(record: AuditRecord) -> tuple[str, str]:
     match record:
         case Unregistered(event=ToolFinished() as event):
             # Every tool call of a session with no membership file lands here, as its prompts and stops do, which already warn.

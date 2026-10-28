@@ -7,7 +7,8 @@ about where the turn started or what of it was heard.
 
 import asyncio
 import os
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
@@ -24,11 +25,6 @@ from hands.sessions.payload import Payload, Rejected
 from hands.sessions.subagents import meta_of, started_from, subagents_of, transcript_of
 from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_of, turn_record, unqueuing, written_of
 from hands.sessions.turning import Turning
-
-
-# How late a record Claude Code has written becomes a step of the turn it belongs to. A Stop reads the rest of
-# its own transcript before telling the turn, so this is what a turn narrated while it runs waits on, not a Stop.
-TAIL_SECONDS = 0.1
 
 
 @dataclass(frozen=True)
@@ -201,6 +197,10 @@ class Following:
             first = reading.number
         return first
 
+    def followed(self, followed: Callable[[PromptId], bool]) -> int | None:
+        """The number of the first reading kept that goes by an id of a turn hands `followed`; None for none."""
+        return next((reading.number for reading in [*self.ended, self.reading] if any(followed(prompt) for prompt in reading.ids)), None)
+
     def numbered(self, number: int) -> Reading | None:
         return next((reading for reading in [self.reading, *self.ended] if reading.number == number), None)
 
@@ -246,6 +246,8 @@ class Known(Protocol):
     def stamp(self) -> Stamp: ...
 
     def membership(self, session: SessionId) -> Membership | None: ...
+
+    def followed(self, session: SessionId, prompt: PromptId) -> bool: ...
 
 
 class Tails:
@@ -436,8 +438,12 @@ class Tails:
         # Claude Code says busy while a subagent that turn started in the background works, with no turn running.
         # A turn's progress is heard while it runs, and a turn read from a file's start began before hands followed it:
         # its calls so far are history, as backfill reads them, and only the calls it makes from here on are heard.
+        # [LAW:no-ambient-temporal-coupling] but a turn the registry heard of before this read, by a hook or a record,
+        # hands followed, and every turn after it: none of them is history, however much of it Claude Code wrote before
+        # the file was first read, as all of a fast first turn can be.
+        followed = following.followed(partial(self._known.followed, session))
         made = following.reading.made()
-        if made and not history:
+        if made and (not history or followed is not None):
             heard.append((following.reading.number, Progressed(session, tuple(sorted(following.reading.ids)), tuple(made), self._known.now())))
         heard += [(following.reading.number, event) for event in self._delegated(session, following, transcript, history)]
         current, ended = following.current(), following.reading.turn.ended is not None
@@ -450,9 +456,12 @@ class Tails:
         # A subagent started in the background in a turn before the one the file ends in may still be working, and only
         # its report says it is not: those are heard whatever turn they were read into, and the reducer drops a launch
         # from before Claude Code's last idle.
-        live = [event for number, event in heard if not history or (number >= current and not ended) or isinstance(event, Launched | ReportedBack)]
+        def live_event(number: int, event: Transcribed) -> bool:
+            return not history or (followed is not None and number >= followed) or (number >= current and not ended) or isinstance(event, Launched | ReportedBack)
+
+        live = [event for number, event in heard if live_event(number, event)]
         if history:
-            following.held = [(number, event) for number, event in heard if number >= current and ended and not isinstance(event, Launched | ReportedBack)]
+            following.held = [(number, event) for number, event in heard if number >= current and not live_event(number, event)]
         if history and (heard or made):
             # [LAW:nothing-unseen] the decision explained: what was held back, and the turn the reading starts from.
             last = f"ended, its {len(following.held)} events held back until a record says it went on" if ended else "may be running"
@@ -520,19 +529,6 @@ class Tails:
             return None
         # [LAW:effects-at-boundaries] stamped from the registry's one clock, as a hook is when it arrives.
         return Interrupted(session, prompt, self._known.now())
-
-
-async def keep_tailing(tails: Tails, period: float, apply: Callable[[Transcribed], Awaitable[None]]) -> None:
-    """Read what every live transcript has gained, once a period, and apply what it held that no hook says, until cancelled.
-
-    The period is how late a record can be turned into a step, which is what a turn narrated while it runs waits on,
-    and how late a turn the user stopped is heard to have stopped.
-    """
-    while True:
-        # Applied outside the reading: an interruption is told as a stopped turn is, and the telling reads the tail.
-        for transcribed in await tails.catch_up():
-            await apply(transcribed)
-        await asyncio.sleep(period)
 
 
 class Unstarted(Exception):

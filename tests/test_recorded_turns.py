@@ -23,7 +23,7 @@ import pytest
 from hands.core.effects import Snapshot, Summarise
 from hands.core.events import Continued, Event, StatusReported, Taken
 from hands.core.reducer import reduce
-from hands.core.session import Instant, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.session import Instant, Membership, PromptId, Registry, RequestId, Session, SessionId, followed, status_stamp
 from hands.core.status import Stamp
 from hands.sessions.home import Home
 from hands.brain import pinned
@@ -88,6 +88,10 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
 
         def membership(self, session: SessionId) -> Membership | None:
             return member
+
+        def followed(self, session: SessionId, prompt: PromptId) -> bool:
+            known = registry.sessions.get(session)
+            return isinstance(known, Session) and followed(known, prompt)
 
     tails = Tails(Known())
     told: list[str] = []

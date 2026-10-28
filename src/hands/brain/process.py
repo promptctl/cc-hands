@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from uuid import uuid4
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -33,14 +34,16 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
-from hands.core.effects import Allow, Deny, Text
-from hands.core.effects import Summarise
-from hands.core.events import Prompted, Stopped
-from hands.core.session import Permission, PromptId, PromptText, RequestId, SessionId, ids, pasted
+from hands.core.effects import Allow, Deny, Heard, SessionGone, Story, Summarise, Text
+from hands.core.events import Event, Prompted, Stopped
+from hands.core.session import Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
 from hands.sessions.audit import Record
+from hands.sessions.registry import Sessions
+from hands.sessions.reader import READ_SECONDS, Reader
+from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, declared
 from hands.sessions.hooks import called, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
@@ -49,7 +52,6 @@ from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, fail, here, unit
 from hands.sessions.wrapper import EVERY_RUN, Unpackaged, packaged
-from hands.brain.turns import Turns
 from hands.voice.backends import Account
 
 # What --bare would have switched off, switched off one by one so the OAuth login stays on (hands-wire-6ic.8wu).
@@ -119,6 +121,9 @@ TAKE_SECONDS = 30.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
+# How long Claude Code has to stop a turn hands pressed Escape for: it sets the session idle within a status read of the
+# Escape, and the model tells the turn within a second of that (UNTOLD).
+STOP_SECONDS = 5.0
 
 
 def _kept(prompt: str) -> str:
@@ -324,6 +329,10 @@ async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
 
 class BrainGone(Exception):
     """The brain ended, or cannot be typed into, while a turn waited on it, or before one was asked."""
+
+
+class StopUnrecorded(Exception):
+    """The brain's Claude Code did not stop the turn hands pressed Escape for, as the model reads it: the stop is no stop."""
 
 
 class Untaken(Exception):
@@ -579,12 +588,26 @@ class _Turn:
     # Each turn of Claude Code's the model told while this one was in flight that was not its answer, by the id it was
     # told under: one that ran ahead of it, or one its typing stopped.
     others: tuple[PromptId | None, ...] = ()
-    # What the API failed each turn of Claude Code's with while this one was in flight, by the id its StopFailure named.
-    failures: dict[PromptId, StopFailed] = field(default_factory=dict[PromptId, StopFailed])
-    # Whether hands pressed the Escape that stops it: then the telling that ends it ends it BrainStopped.
+    # Whether hands pressed the Escape that stops it: then it ends BrainStopped once Claude Code holds nothing of it
+    # (`Brain._left`).
     stopped: bool = False
     # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
     broken: BaseException | None = None
+
+
+def model(record: Record, told: Callable[[Story], None]) -> Sessions:
+    """The brain's Claude Code session, as the one model of a Claude Code turn reads every working session, in a registry
+    of its own: each turn it tells handed to `told`, in the order the model decided it.
+
+    [LAW:one-type-per-behavior] the registry working sessions live in, another of it: its effects are the same, and of
+    them only the tellings are the brain's to hear. It works in an empty directory, so no repository is read; and what
+    its turns say is the brain's stage's to say, from the wire, never what the model makes of its session.
+    """
+    return Sessions(time.monotonic, record, story_sink=told, heard_sink=_unsaid)
+
+
+def _unsaid(_heard: Heard) -> None:
+    """What the brain's session would have said of its progress: the stage says the brain's turn from the wire instead."""
 
 
 class Brain:
@@ -616,12 +639,17 @@ class Brain:
         self._record = record
         # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
         self._launched = launched
-        # [LAW:no-ambient-temporal-coupling] how a take's time passes is the brain's to be handed, and is that alone: its
-        # typing waits on one pause, and no other wait of the brain's is one.
+        # [LAW:no-ambient-temporal-coupling] how the brain's bounds pass is the brain's to be handed, and is that alone: a
+        # typing's take and a stop's end wait on one pause, and no other wait of the brain's is one.
         self._pause = pause
         # [LAW:one-source-of-truth] Claude Code's turns in the brain, as the one model of a turn reads them: which runs,
         # which waits in its queue, and which is over.
-        self._turns = Turns(session, record, self._told)
+        self._sessions = model(record, self._told)
+        # [LAW:no-ambient-temporal-coupling] the model is applied one event at a time, each with what it called for done
+        # before the next is decided, so a turn it tells is handed to `_told` before a hook after it is heard.
+        self._applying = asyncio.Lock()
+        # [LAW:single-enforcer] the brain's status and transcript, read as every working session's are, on the same period.
+        self._reader = Reader(self._sessions, Tails(self._sessions), self._apply)
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
         # keys that stop one. A turn keeps it until its hook says Claude Code took the turn, and a stop's keys go in alone.
         self._input = asyncio.Lock()
@@ -637,7 +665,7 @@ class Brain:
         self._cleared = float("-inf")
         with continuing(launched):
             self._heard = asyncio.ensure_future(self._hear_hooks(hooks))
-            self._reading = asyncio.ensure_future(self._turns.keep_reading())
+            self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
             self._exit = asyncio.ensure_future(self._run_out(begun()))
 
     @property
@@ -732,9 +760,11 @@ class Brain:
         """Types `turn`, with the input held, behind nothing, and waits out a pause of `turn.take` for it to be taken, or to
         end: says whether it was. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
-        turn is typed, read through now, so the turn is Claude Code's next and runs alone."""
-        await self._turns.read()
-        if not self._turns.all_told():
+        turn is typed, so the turn is Claude Code's next and runs alone. [LAW:no-ambient-temporal-coupling] decided on
+        what Claude Code has said by now, read through now as a telling reads its transcript (Tails.tell), however late
+        the reader's period last came round."""
+        await self._reader.read()
+        if not self._all_told():
             await self._clear(turn)
         await self._type(lambda typist: typist.type(turn.typed))
         pausing = asyncio.ensure_future(self._pause(turn.take))
@@ -752,7 +782,7 @@ class Brain:
     async def _clear(self, turn: _Turn) -> None:
         """Stops whatever Claude Code runs and empties its input, with the input held, for `turn`. Escape posts no hook
         for the turn it stops: the model hears it over from the transcript and Claude Code's status."""
-        held = self._turns.held()
+        held = self._modelled()
         await self._type(lambda typist: typist.press("escape"))
         # Escape refuses a permission held at its dialog and leaves its hook unanswered for good (spike
         # hands-brain-d8g.aur): it is settled here, and nothing can answer it later.
@@ -805,11 +835,20 @@ class Brain:
         except BrainGone as error:
             self._over(turn, error)
             return
-        # Over as the model tells the turn the Escape stopped; read through now, a turn none of whose ran is over now:
-        # words taken behind the last turn's Stop that it put back in the input, and Ctrl-C cleared.
-        await self._turns.read()
-        if self._turns.all_told() and not turn.answered.done():
-            self._over(turn, BrainStopped())
+        # Over once Claude Code holds nothing of it, which `_left` hears as the model is applied: the turn the Escape
+        # stopped told, or the words it put back in the input from Claude Code's queue, which Ctrl-C cleared, taken out of
+        # it. [LAW:no-silent-failure] a turn still held after STOP_SECONDS was not stopped, and says what Claude Code showed.
+        self._left()
+        pausing = asyncio.ensure_future(self._pause(STOP_SECONDS))
+        try:
+            await asyncio.wait({turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            pausing.cancel()
+            await asyncio.wait({pausing})
+        if not pausing.cancelled():
+            pausing.result()
+        if not turn.answered.done():
+            self._over(turn, StopUnrecorded(f"the brain's Claude Code did not stop the turn hands pressed Escape for in {STOP_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}"))
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
@@ -867,7 +906,7 @@ class Brain:
     async def _hear_hooks(self, hooks: "asyncio.Queue[_Posted]") -> None:
         while True:
             posted = await hooks.get()
-            # A hook is answered before it is heard, so one whose hearing breaks is no turn's: the hooks after it are heard.
+            # A hook is answered however its hearing ends, so one whose hearing breaks is no turn's: the hooks after it are heard.
             with self._done_for(None):
                 await self._answer(posted)
 
@@ -881,9 +920,12 @@ class Brain:
                 posted.reply.set_result(DECLINED)
                 self._refused(posted.body)
             case _:
-                # Asks nothing of the turn, so it is answered at once, whatever it says.
-                posted.reply.set_result({})
-                await self._hook(posted.body)
+                # Answered once it is applied, whatever it says, as a working session's hook is (serve_hooks): Claude Code
+                # goes on only once the model has it, so nothing it writes after is read before it.
+                try:
+                    await self._hook(posted.body)
+                finally:
+                    posted.reply.set_result({})
 
     async def _permit(self, posted: _Posted) -> None:
         """Answers a permission request: held while the user is asked, when a turn of theirs is in flight to ask in.
@@ -945,7 +987,7 @@ class Brain:
         if turn is None or turn.answered.done() or not turn.taken.done() or prompt is None:
             return None
         # [LAW:single-enforcer] the model's turn, as its telling is: one a turn before it left behind is nobody's to answer.
-        held = self._turns.held()
+        held = self._modelled()
         return turn if held is not None and PromptId(prompt) in ids(held.turn) else None
 
     def _settle(self, decision: Allow | Deny) -> None:
@@ -967,13 +1009,11 @@ class Brain:
             annotate(server=server)
 
     async def _hook(self, body: bytes) -> None:
-        """A hook of the brain's turns, applied to the model: where its transcript is, then what it says, once Claude Code's
-        status and transcript are read through the moment it was heard. [LAW:no-ambient-temporal-coupling] so the model
-        decides it on what Claude Code had said by then on every channel, however its records and its hooks were spaced.
-        [LAW:single-enforcer] a turn is taken by the prompt Claude Code took that is what it typed, by the words, whatever
-        turn it was filed under."""
+        """A hook of the brain's turns, applied to the model as a working session's is: where its transcript is, then
+        what it says. [LAW:single-enforcer] a turn is taken by the prompt Claude Code took that is what it typed, by the
+        words, whatever turn it was filed under."""
         try:
-            hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._turns.now(), heard=self._turns.stamp(), request=RequestId(uuid4().hex))
+            hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(uuid4().hex))
         except Rejected as error:
             logger.warning(f"the brain posted a hook that does not parse: {error}")
             return
@@ -981,39 +1021,76 @@ class Brain:
             logger.info(f"the brain's {hook.name} hook came for session {hook.session}, not the brain's")
             return
         if hook.joining is not None:
-            self._turns.apply(hook.joining)
-        await self._turns.read()
-        turn = self._turn if self._turn is not None and not self._turn.answered.done() else None
+            await self._apply(hook.joining)
         match hook.happened:
             case Prompted(prompt=prompt, text=words) as prompted:
-                # Queued: Claude Code filed the words under a turn it already had, not under an id of their own.
-                held = self._turns.held()
-                queued = held is not None and prompt in ids(held.turn)
-                # Taken once what it calls for of the turns before it is done: a turn it tells is never its own.
-                self._turns.apply(prompted)
-                if turn is not None and not turn.taken.done() and _kept(words) == _kept(turn.typed):
-                    turn.taken_under, turn.queued = prompt, queued
-                    turn.taken.set_result(None)
-            case Stopped(prompt=prompt, failure=StopFailed() as failure) as stopped:
-                if turn is not None:
-                    turn.failures[prompt] = failure
-                self._turns.apply(stopped)
+                # As a working session's turn hooks are (serve_hooks): applied once Claude Code is read through now.
+                await self._reader.read()
+                async with self._applying:
+                    # Queued: Claude Code filed the words under a turn it already had, not under an id of their own.
+                    held = self._modelled()
+                    queued = held is not None and prompt in ids(held.turn)
+                    # Taken once what it calls for of the turns before it is done: a turn it tells is never its own.
+                    await self._applied(prompted)
+                    turn = self._turn
+                    if turn is not None and not turn.answered.done() and not turn.taken.done() and _kept(words) == _kept(turn.typed):
+                        turn.taken_under, turn.queued = prompt, queued
+                        turn.taken.set_result(None)
+            case Stopped() as stopped:
+                await self._reader.read()
+                # Held as a working session's Stop is, until the model has decided whose it is: never under `_applying`,
+                # which what decides it is applied under.
+                await self._sessions.stop(stopped)
+                self._left()
             case happened:
-                self._turns.apply(happened)
+                await self._apply(happened)
 
-    def _told(self, told: Summarise) -> None:
+    async def _apply(self, event: Event) -> None:
+        """What the brain's status and transcript say, applied as a hook is: one event at a time."""
+        async with self._applying:
+            await self._applied(event)
+
+    async def _applied(self, event: Event) -> None:
+        """The event applied, with `_applying` held, and what it called for done, a telling handed to `_told` among it."""
+        await self._sessions.apply(event)
+        self._left()
+
+    def _told(self, told: Story) -> None:
         """A turn of Claude Code's the model told: the answer of the turn in flight, once what it typed was taken and waits
-        in Claude Code's queue no more, whether it opened that turn, joined it, or was queued behind the one before; else
-        one that ran beside it."""
-        turn, held = self._turn, self._turns.held()
+        in Claude Code's queue no more as it is told, whether it opened that turn, joined it, or was queued behind the one
+        before; else one that ran beside it. A turn stopped is over once Claude Code holds nothing of it (`_left`)."""
+        match told:
+            case SessionGone():
+                logger.warning(f"the brain's session {told.session} is gone, as the model reads it")
+                return
+            case Summarise():
+                pass
+        turn = self._turn
         if turn is None or turn.answered.done():
             logger.info(f"the brain's Claude Code ended turn {told.turn}, which no turn in flight was waiting on")
             return
-        waiting = held is not None and any(_kept(words) == _kept(turn.typed) for words in held.turn.waiting)
-        if not turn.taken.done() or waiting:
+        if not turn.taken.done() or any(_kept(words) == _kept(turn.typed) for words in told.waiting):
             turn.others += (told.turn,)
             return
-        self._over(turn, BrainStopped() if turn.stopped else BrainAnswered(told.turn, None if told.turn is None else turn.failures.get(told.turn)))
+        if not turn.stopped:
+            self._over(turn, BrainAnswered(told.turn, told.failure))
+
+    def _left(self) -> None:
+        """The turn hands stopped is over once Claude Code holds nothing of it: every turn it ran is told, and nothing of
+        it waits in its queue."""
+        turn = self._turn
+        if turn is not None and turn.stopped and not turn.answered.done() and self._all_told():
+            self._over(turn, BrainStopped())
+
+    def _modelled(self) -> Session | None:
+        """The brain's session as the model holds it now, or None before its first hook."""
+        return self._sessions.live_session(self.session)
+
+    def _all_told(self) -> bool:
+        """Whether every turn Claude Code ran in the brain is told, and nothing waits in its queue: true before any is
+        heard, since nothing runs in a Claude Code nobody typed into."""
+        held = self._modelled()
+        return held is None or all_told(held)
 
     def _over(self, turn: _Turn, outcome: BrainEnded | BaseException) -> None:
         if self._turn is turn:

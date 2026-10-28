@@ -1,6 +1,7 @@
 """The unix socket the shims post to, and the loopback route Claude Code posts the text it displays to."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,10 +18,11 @@ from hands.sessions.transcript import session_name
 from hands.sessions.wide import annotate, fail, unit
 
 
-async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record) -> web.AppRunner:
+async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record, read: Callable[[], Awaitable[None]]) -> web.AppRunner:
     """Listen on the home's socket until the returned runner is cleaned up.
 
     A finished turn has its session's name judged again, and a prompt is answered with the name decided since the last.
+    `read` reads Claude Code's status and transcript of every session through now (Reader.read).
     """
 
     async def hook(request: web.Request) -> web.Response:
@@ -42,6 +44,9 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                 await sessions.apply(joining)
             case None:
                 pass
+        # [LAW:no-ambient-temporal-coupling] a turn's hook, its prompt or its Stop, is applied once Claude Code's status and
+        # transcript are read through now, so the model decides it on what Claude Code had said by then on every channel,
+        # however fast it wrote them: a Stop decided before any status is read is held for no record (see _stopping).
         match said.happened:
             case PermissionRequested() as asked:
                 # The one hook answered: the response body is the answer Claude Code reads.
@@ -50,6 +55,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                 output = hook_output(reply)
                 return web.Response(status=204) if output is None else web.json_response(output)
             case Stopped() as stopped:
+                await read()
                 annotate(stop=await sessions.stop(stopped))
                 match (stopped.closing, sessions.membership(stopped.session)):
                     case (str() as closing, Membership() as membership):
@@ -60,6 +66,7 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
                         pass
                 return web.Response(status=204)
             case Prompted() as prompted:
+                await read()
                 await sessions.apply(prompted)
                 # [LAW:no-ambient-temporal-coupling] a hook is the only way to hand Claude Code a title, and a prompt
                 # the soonest one after a name is decided: the name waits here for it.

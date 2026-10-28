@@ -22,7 +22,9 @@ from hands.sessions.audit import Entry
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
+from hands.sessions.reader import Reader
 from hands.sessions.server import serve_hooks
+from hands.sessions.tail import Tails
 from hands.sessions.wide import WideEvent
 from hands.voice.speech import Narrated
 
@@ -68,7 +70,7 @@ def clock() -> Clock:
 @pytest.fixture
 async def sessions(home: Home, clock: Clock) -> AsyncIterator[Sessions]:
     registry = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply).read)
     yield registry
     await runner.cleanup()
 
@@ -159,7 +161,7 @@ async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_tha
         return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("hook") == "PermissionRequest"]
 
     sessions = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, sessions, Names(), recorded.append)
+    runner = await serve_hooks(home, sessions, Names(), recorded.append, Reader(sessions, Tails(sessions), sessions.apply).read)
     try:
         shim, moment = await asked(home, sessions)
         await call(named(sessions, "answer_permission"), request=moment.request, decision="allow")
@@ -364,7 +366,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
 
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: Clock) -> None:
     registry = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply).read)
     shim, _ = await asked(home, registry)
     await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)
     # Empty output decides nothing: Claude Code's own dialog stands.

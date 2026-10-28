@@ -709,8 +709,11 @@ case anywhere: a failed edit records no patch, and is therefore an `Other` rathe
 the turn; a question Claude put to the user is the `Questioned` step.
 
 **The tail** runs today, in `hands.sessions.tail`. From the moment the registry lists a
-session, `keep_tailing` reads what that session's JSONL has gained, ten times a second,
-and hands each new record to the recognisers. Nothing re-reads the file from its start:
+session, the one `Reader` (`hands.sessions.reader`) reads its status and then what its JSONL has
+gained, ten times a second, and again through now before each of its turn's hooks, a prompt or a Stop, is
+applied, so the model decides that hook on what Claude Code had written by then however fast it wrote
+it; it hands each new record to the recognisers. A turn the registry heard of by a hook is never
+history, however much of it Claude Code wrote before the file was first read. Nothing re-reads the file from its start:
 one `Following` per session holds the byte offset, the turn that is open in it, the steps
 recognised so far, and how many of them the session has been told. It also keeps up to eight
 turns that ended before it, each with every prompt id its records carry, because the narrator
@@ -1125,22 +1128,25 @@ end, with the prompt id Claude Code took it under (`taken`), whether that id was
 it queued the words behind or into that turn (`queued`), the id it was told under (`told`), the tools its latest request
 offered the model (`offered`), and the ids of the turns told while it was in flight that did not answer it (`others`),
 or with the error that failed it. The brain keeps no account of Claude Code's turns: its session is a session of the
-one model of a turn (`core/reducer.py`), in a registry of its own (`brain/turns.py`), fed its hooks, its transcript and
-the status Claude Code keeps for it as a working session's are, each hook once the status and transcript are read
-through the moment it was heard; each event that model applies is a `brain.applied`, as a working session's is an
-`applied`. A turn is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it:
+one model of a turn (`core/reducer.py`), in a `Sessions` of its own (`brain.process.model`), fed as a working session's
+is: its hooks, each answered once it is applied and its Stop held as a working session's is, and its status and
+transcript by the same `Reader`, on its period and through now before each turn hook; each event that model applies is an
+`applied`, as a working session's is. What the API failed a turn with is the telling's (`Summarise.failure`), as its
+closing reply is. A turn is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it:
 out of the tags a long paste comes in, trailing whitespace trimmed. It is over at the first turn the model tells, once
 it was taken, at which its words no longer wait in Claude Code's queue: the turn they opened, the one they were taken
 into, or the one they ran as after the turn they were typed behind. Anything the model holds untold, or waiting in
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
-turn stops it with Escape and Ctrl-C before it is typed, once. A turn whose asker stopped waiting is still heard to its
-end. One that is stopped ends as the model tells the turn its Escape stopped, or at once when none of it ran. Each dialog
+turn stops it with Escape and Ctrl-C before it is typed, once, decided on Claude Code's status and transcript read through
+now. A turn whose asker stopped waiting is still heard to its end. One that is stopped ends once Claude Code holds nothing
+of it, the turn its Escape stopped told or the words it put back in the input taken out of the queue; one Claude Code still
+holds `STOP_SECONDS` after its Escape fails, `StopUnrecorded`, saying what the model holds and what Claude Code showed. Each dialog
 it posts to hands' listener is one event: a `brain.permission`, with the tool, the decision, and how long it was held,
 and a `brain.elicitation`, which is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in
 the brain's own work, a turn's typing, a dialog, a hook heard, is said once on the terminal with its traceback. The turn
 it was done for, if any, is stopped as an Escape stops it and ends with that error; a permission it broke is refused, and
-a hook is answered before it is heard, so one whose hearing broke is no turn's and the hooks after it are still heard.
+a hook is answered however its hearing ended, so one whose hearing broke is no turn's and the hooks after it are still heard.
 Each side question (`brain.aside`), asked of a Claude Code of its own, is one event from when it is asked: what it is
 for (`kind`), its Claude Code's session (`aside_session`), the question and its answer, how long it waited behind the
 ones before it (`queued_ms`, absent for a question that never had its turn; the rest of its duration is its Claude Code

@@ -257,6 +257,10 @@ class Known:
     def membership(self, session: SessionId) -> Membership | None:
         return self.member
 
+    def followed(self, session: SessionId, prompt: PromptId) -> bool:
+        # No hook of the session is heard: the tail decides alone what of the file is history.
+        return False
+
 
 async def test_each_call_a_running_turn_makes_is_read_once_as_progress(tmp_path: Path) -> None:
     transcript = tmp_path / "t.jsonl"

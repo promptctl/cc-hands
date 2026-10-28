@@ -66,6 +66,7 @@ from hands.core.session import (
 from hands.core.status import Busy, Report, Shell, Stamp, Status, Unknown, Waiting
 from hands.core import status
 from hands.core.turn import AgentId
+from hands.core.stopfailure import StopFailed
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -614,6 +615,23 @@ def test_a_prompt_taken_and_stopped_before_any_of_it_was_read_is_told_as_itself(
 
 def test_a_stop_is_told_as_the_turn_its_hook_names() -> None:
     assert reduce(in_turn(), Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), LET_STOP]
+
+
+FAILED = StopFailed("rate_limit", "API Error: 429")
+
+
+def test_a_turn_the_api_failed_is_told_with_its_failure_at_once_or_once_held_for_the_record_that_names_it() -> None:
+    # [LAW:one-source-of-truth] the failure is the telling's, as its closing reply is: whatever tells the turn says it.
+    failed = Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST, failure=FAILED)
+    assert reduce(in_turn(), failed)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None, failure=FAILED), LET_STOP]
+    held, _ = reduce(in_turn(), replace(failed, prompt=PromptId("q")))
+    assert [effect for effect in reduce(held, Taken(ONE.id, PromptId("q"), None, 9.0))[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, PromptId("q"), None, failure=FAILED)]
+
+
+def test_a_turn_is_told_with_the_words_that_still_wait_behind_it_in_claude_code_s_queue() -> None:
+    # [LAW:no-ambient-temporal-coupling] as of the telling: whoever reads it later reads what waited then.
+    queued, _ = reduce(in_turn(), Prompted(ONE.id, at=6.0, mode=None, prompt=TURN, text="and then?"))
+    assert [effect for effect in reduce(queued, STOP)[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, STOP.closing, waiting=("and then?",))]
 
 
 def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:

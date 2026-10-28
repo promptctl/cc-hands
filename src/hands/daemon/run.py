@@ -45,8 +45,8 @@ from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
-from hands.sessions.statusfile import STATUS_SECONDS, keep_reading_statuses
-from hands.sessions.tail import TAIL_SECONDS, Tails, keep_tailing
+from hands.sessions.reader import READ_SECONDS, Reader
+from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -234,7 +234,11 @@ async def run(
             clock=time.monotonic, record=record, changes=deltas, names=names,
             typist=partial(type_into, environment), keyboards=partial(tmux.keyboards, environment=environment),
         )
-        hooks = await serve_hooks(home, sessions, names, record)
+        # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
+        # before each turn's hook is applied.
+        tails = Tails(sessions)
+        reader = Reader(sessions, tails, sessions.apply)
+        hooks = await serve_hooks(home, sessions, names, record, reader.read)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)
         wire = Wire(wire_to(record))
@@ -292,7 +296,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment)
+                    await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -328,6 +332,8 @@ async def converse(
     voice: Voice,
     home: Home,
     sessions: Sessions,
+    tails: Tails,
+    reader: Reader,
     heart: heartbeat.Heart,
     degraded: Callable[[], tuple[heartbeat.Degradation, ...]],
     stop: Stop,
@@ -348,7 +354,6 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
-    tails = Tails(sessions)
     channel = SystemChannel(voice.tts, post_notification, record)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
@@ -360,7 +365,7 @@ async def converse(
         heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
-    # session stays listed, without the tail no record becomes a step, without the status reader no status Claude Code sets is heard, without the relay
+    # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay
     # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute, without the talk key no turn starts, and without the pipeline nothing is heard or said at all, so any of
     # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
     stop_if_failed = stopping(stop)
@@ -374,8 +379,7 @@ async def converse(
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the progress ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
-        asyncio.create_task(keep_tailing(tails, TAIL_SECONDS, sessions.apply), name="the transcript tail"),
-        asyncio.create_task(keep_reading_statuses(sessions.live_ids, sessions.live_session, sessions.now, STATUS_SECONDS, sessions.apply), name="the status reader"),
+        asyncio.create_task(reader.keep_reading(READ_SECONDS), name="the status and transcript reader"),
         asyncio.create_task(utterances.keep(), name="the utterances"),
         asyncio.create_task(
             relay(sessions, utterances, voice.worker.queue_frame, partial(attending, home, overlays, lambda: attention(home)), lambda progress, amount, utterance: playing.put_nowait((progress, amount, utterance)), lambda: quiet_cues.owe(WORKING)),
