@@ -128,6 +128,8 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         await asyncio.wait([serving, waited], return_when=asyncio.FIRST_COMPLETED)
         if serving.done():
             waited.cancel()
+            # Waited out as it ends, so the desk's failure is raised alone, with no wait left pending beside it.
+            await asyncio.wait([waited])
             serving.result()
             raise AssertionError("the desk ended while the test was waiting on it")
         await waited
