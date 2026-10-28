@@ -10,8 +10,9 @@ from loguru import logger
 from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
 from hands.core.events import Displayed, Ended, EndReason, Event, Joined, Located, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
-from hands.core.session import AskedQuestion, Blocker, Instant, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
+from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
+from hands.core.stopfailure import StopFailed
 from hands.sessions.home import Home
 from hands.sessions.membership import read_membership, recorded_membership
 from hands.sessions.payload import Payload, Rejected
@@ -51,6 +52,17 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
             return Hook(name, session, None if recorded is None else Located(recorded), happened)
 
 
+def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp, request: RequestId) -> Hook:
+    """A hook of a Claude Code hands started itself, the brain, whose process and directory hands knows: no shim wrote a
+    file for it, so it joins, and is found where it works now, by the transcript the hook names. Raises Rejected as
+    parse_hook does."""
+    # [LAW:parse-dont-validate] the one parser of a hook's JSON, whoever posted it.
+    payload = Payload.parse(raw)
+    session = payload.session_id()
+    located = Located(Membership(session, pid, cwd, Path(payload.text("transcript_path"))))
+    return Hook(payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+
+
 def parse_display(raw: bytes, *, at: Instant) -> Displayed:
     """A MessageDisplay hook's POST body: the lines of Claude's text it displayed, in the turn its prompt_id names.
 
@@ -73,6 +85,11 @@ def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, r
             return Prompted(session, at, _mode(payload), _prompt(payload), payload.text("prompt"))
         case "Stop":
             return Stopped(session, narration(payload, "last_assistant_message"), _mode(payload), _prompt(payload), payload.flag("stop_hook_active"), heard, request)
+        case "StopFailure":
+            # Fired in place of Stop when the API failed the turn: the turn its prompt_id names is over as at a Stop, never
+            # one another Stop hook blocked, and what failed it stands in for a closing reply.
+            failure = StopFailed(narration(payload, "error") or None, narration(payload, "last_assistant_message") or None)
+            return Stopped(session, None, _mode(payload), _prompt(payload), False, heard, request, failure)
         case "PermissionRequest":
             return PermissionRequested(session, at, request, called(payload), _mode(payload))
         case "PostToolUse" | "PostToolUseFailure":

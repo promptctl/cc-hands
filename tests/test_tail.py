@@ -1,6 +1,7 @@
 """A session's transcript, followed as Claude Code writes it, and the turn it is read into."""
 
 import asyncio
+from collections.abc import Callable
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,14 +14,16 @@ from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
 from hands.voice.tools import TURN_SENTENCE_BUDGET
 from hands.core.effects import Summarise
-from hands.core.events import Attached, Joined, Prompted, StatusReported, Stopped
+from hands.core.events import Attached, Event, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Idle, Opened, Told, Untold, delegating
 from hands.sessions.delta import Deltas
 from conftest import patient
 from hands.sessions.registry import Sessions
-from hands.sessions.tail import KEPT, StoodIn, Tails, Telling, keep_tailing
+from hands.sessions.hooks import Hook
+from hands.sessions.reader import Reader
+from hands.sessions.tail import KEPT, StoodIn, Tails, Telling
 from hands.sessions.turning import Turning
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
@@ -49,9 +52,11 @@ class Registry:
 
     members: list[Membership]
     reported: bool = True
+    # The ids of the turns a hook of the session was heard for: none, so the tail decides alone what of a file is history.
+    heard: frozenset[PromptId] = frozenset()
 
     def __post_init__(self) -> None:
-        self.heard = list(self.members)
+        self.known = list(self.members)
 
     def live_members(self) -> list[Membership]:
         return self.members
@@ -66,7 +71,10 @@ class Registry:
         return Stamp(5000)
 
     def membership(self, session: SessionId) -> Membership | None:
-        return next((member for member in self.heard if member.id == session), None)
+        return next((member for member in self.known if member.id == session), None)
+
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
+        return lambda prompt: prompt in self.heard
 
 
 async def following(transcript: Path) -> Tails:
@@ -515,7 +523,7 @@ async def test_a_session_registered_again_is_told_from_the_transcript_it_has_now
     second.write_text(lines('{"type":"user","message":{"role":"user","content":"again"}}', DONE))
     # The registry now knows the session by its new transcript, and by nothing of the old one.
     registry.members[:] = [member(second)]
-    registry.heard[:] = [member(second)]
+    registry.known[:] = [member(second)]
     await tails.catch_up()
     telling = await tails.tell(SID, None, None)
     assert telling is not None and telling.turn == Turn(Asked(None, "again"), (Said(None, "Done."),))
@@ -540,7 +548,7 @@ async def test_a_turn_whose_transcript_moved_into_a_worktree_is_told_from_where_
         if moved != transcript:
             moved.parent.mkdir()
             transcript.rename(moved)
-            registry.members[:] = registry.heard[:] = [member(moved)]
+            registry.members[:] = registry.known[:] = [member(moved)]
         with moved.open("a") as more:
             more.write(lines(DONE))
         return await tails.tell(SID, None, None)
@@ -561,7 +569,7 @@ class Relocating(Registry):
         self.moved = moved
 
     def stamp(self) -> Stamp:
-        self.members[:] = self.heard[:] = [member(self.moved)]
+        self.members[:] = self.known[:] = [member(self.moved)]
         return super().stamp()
 
 
@@ -588,7 +596,7 @@ async def test_a_transcript_moved_before_any_hook_says_where_is_read_through_onl
     with moved.open("a") as more:
         more.write(lines('{"type":"user","promptId":"p2","message":{"role":"user","content":"again"}}'))
     assert await tails.catch_up() == []
-    registry.members[:] = registry.heard[:] = [member(moved)]
+    registry.members[:] = registry.known[:] = [member(moved)]
     assert await tails.catch_up() == [Taken(SID, PromptId("p2"), None, 7.0), Read(SID, Stamp(5000))]
 
 
@@ -799,7 +807,7 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
     sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
-    tailing = asyncio.create_task(keep_tailing(Tails(sessions), 0.01, sessions.apply))
+    tailing = asyncio.create_task(Reader(sessions, Tails(sessions), sessions.apply).keep_reading(0.01))
     try:
         await sessions.apply(said_idle(at=2.0))
         with transcript.open("a") as more:
@@ -809,6 +817,74 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
         tailing.cancel()
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle)
+
+
+async def test_a_sessions_hook_is_applied_while_what_a_read_decided_for_another_is_still_being_performed(tmp_path: Path) -> None:
+    other = Membership(SessionId("0f1e2d3c-aaaa-bbbb-cccc-00000000000b"), pid=4343, cwd=Path("/code/b"), transcript=tmp_path / "b.jsonl")
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    for joined in (member(transcript), other):
+        await sessions.apply(Joined(joined, "startup"))
+    await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
+    # What this session's read calls for is performed only once the test lets it: a repository compared slowly.
+    comparing, compared = asyncio.Event(), asyncio.Event()
+
+    def apply(event: Event) -> "asyncio.Future[None]":
+        decided = sessions.apply(event)
+        if not (isinstance(event, Taken | Read) and event.session == SID):
+            return decided
+
+        async def slowly() -> None:
+            comparing.set()
+            await decided
+            await compared.wait()
+
+        return asyncio.ensure_future(slowly())
+
+    reader = Reader(sessions, Tails(sessions), apply)
+    reading = asyncio.create_task(reader.keep_reading(0.01))
+    try:
+        await asyncio.wait_for(comparing.wait(), 5.0)
+        prompted = Prompted(other.id, at=2.0, mode=None, prompt=PromptId("q1"), text="")
+        await asyncio.wait_for(reader.hooked(Hook("UserPromptSubmit", other.id, None, prompted)), 1.0)
+        held = sessions.live_session(other.id)
+        assert held is not None and held.turn == Opened(PromptId("q1"))
+        assert not reading.done()
+    finally:
+        compared.set()
+        reading.cancel()
+
+
+async def test_what_a_read_through_now_decided_says_how_its_performing_failed_with_no_period_reading(tmp_path: Path) -> None:
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(ASKED))
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(transcript), "startup"))
+    await sessions.apply(StatusReported(SID, Report(status.Busy(), Stamp(1000)), at=1.0))
+
+    def apply(event: Event) -> "asyncio.Future[None]":
+        failed = asyncio.get_running_loop().create_future()
+        failed.set_exception(OSError("the repository went"))
+        return failed
+
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
+    try:
+        # As a hook reads before the voice is up: no period reads, so nothing else waits on what this read decided.
+        await Reader(sessions, Tails(sessions), apply).read()
+        await asyncio.sleep(0)
+    finally:
+        logger.remove(sink)
+    assert "performing what a read through now decided failed: OSError: the repository went" in logged
+
+
+async def test_which_turns_hands_followed_is_said_as_the_registry_held_them_when_asked(tmp_path: Path) -> None:
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    await sessions.apply(Joined(member(tmp_path / "t.jsonl"), "startup"))
+    before = sessions.followed(SID)
+    await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
+    assert (before(PromptId("p1")), sessions.followed(SID)(PromptId("p1"))) == (False, True)
 
 
 # The next prompt, read before the turn before it is told: the narrator is seconds behind on another session's summary.
@@ -1283,6 +1359,20 @@ async def test_a_turn_a_stop_hook_sent_on_after_its_end_record_may_still_be_runn
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(lines(ASKED, DONE, STOP_SUMMARY, DONE))
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0)]
+
+
+@pytest.mark.parametrize(
+    ("before", "went_on"),
+    [((), []), ((NEXT_ASKED.replace('"p2"', '"p0"'), DONE, STOP_SUMMARY), [Continued(SID, was=PromptId("p0"), now=PromptId("p1"))])],
+    ids=["its first turn", "after a turn hands never heard"],
+)
+async def test_a_turn_hands_heard_begin_is_heard_though_claude_code_ended_it_before_its_transcript_was_first_read(tmp_path: Path, before: tuple[str, ...], went_on: list[Transcribed]) -> None:
+    # [LAW:no-ambient-temporal-coupling] how much of a turn Claude Code wrote before hands first read the file moves
+    # nothing: its prompt's hook was heard, so hands followed it, as all of a fast first turn, or the brain's, can be.
+    # A turn before it that hands never heard is history still: nothing of p0's is heard.
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(lines(*before, ASKED, DONE, STOP_SUMMARY))
+    assert heard(await Tails(Registry([member(transcript)], heard=frozenset({PromptId("p1")}))).catch_up()) == [Taken(SID, PromptId("p1"), None, 7.0), *went_on]
 
 
 # What a Stop hook that sends Claude on writes before Claude answers.

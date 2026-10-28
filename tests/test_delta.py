@@ -1135,7 +1135,7 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     (root / "queued.py").write_text("the queued turn\n")
     await sessions.apply(Stopped(SID, "Two.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "One.")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "One.", ("Also this.",))
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Two.")
     assert [file.path for file in (await deltas.taken(SID)).files] == ["queued.py"]
@@ -1181,7 +1181,7 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words
     assert not done, "the Stop's hook was let go while the queued turn was still being marked"
     repository.release.set()
     await asyncio.wait_for(stopping, 2.0)
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.", ("Also this.",))
 
 
 class Reading:

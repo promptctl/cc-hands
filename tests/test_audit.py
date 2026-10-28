@@ -15,7 +15,7 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
+from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
 from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed
 from hands.core.permissions import Answer, NotWaiting, Permission
@@ -83,6 +83,18 @@ class Hanging(NoChanges):
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
         self.begun.set()
         await asyncio.Event().wait()
+
+
+class Slow(NoChanges):
+    """Marks a turn once the test lets its repository answer, as a reader whose repository is slow."""
+
+    def __init__(self) -> None:
+        self.begun = asyncio.Event()
+        self.answer = asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        self.begun.set()
+        await self.answer.wait()
 
 
 def applied(recorded: list[Entry]) -> list[WideEvent]:
@@ -701,6 +713,23 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
     assert all(event.started_at <= mark.started_at for event, mark in zip(prompted, marks, strict=True))
 
 
+async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_decided_before_it() -> None:
+    """The brain hears where its words went in its session's order: a turn told before they were taken is heard first,
+    however long what was decided ahead of that telling takes, so it is never taken for their answer."""
+    handed: list[object] = []
+    slow = Slow()
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=slow, story_sink=handed.append, submitted_sink=handed.append)
+    await sessions.apply(Joined(member(), "startup"))
+    first, second = (Prompted(member().id, at=at, mode=None, prompt=PromptId(prompt), text=words) for at, prompt, words in [(1.0, "p1", "first"), (2.0, "p2", "second")])
+    sessions.hear(first)
+    await asyncio.wait_for(slow.begun.wait(), 1.0)
+    # The second prompt tells the turn the first opened, while that turn's mark is still being taken.
+    applying = asyncio.ensure_future(sessions.apply(second))
+    slow.answer.set()
+    await asyncio.wait_for(applying, 1.0)
+    assert handed == [Submitted(member().id, PromptId("p1"), "first", queued=False), Summarise(member().id, PromptId("p1"), None), Submitted(member().id, PromptId("p2"), "second", queued=False)]
+
+
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
     recorded: list[Entry] = []
     hanging = Hanging()
@@ -716,11 +745,12 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
         task.cancel()
     await asyncio.gather(*running, return_exceptions=True)
     first, second = [next(event for event in applied(recorded) if event.facts["applied"] == prompted) for prompted in prompts]
-    assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled")])
+    taken = Submitted(member().id, PromptId("p1"), "", queued=False)
+    assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled"), (taken, "not performed")])
     # The second prompt ends the first's turn: its telling and its own mark wait behind the mark cut short, and never begin.
-    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd)]
+    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd), Submitted(member().id, PromptId("p2"), "", queued=False)]
     assert (second.outcome, performed(second)) == ("cancelled", [(effect, "not performed") for effect in told])
-    assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True]
+    assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True, True, True]
 
 
 async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> None:

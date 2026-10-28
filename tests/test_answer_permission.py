@@ -1,7 +1,6 @@
 """A permission hook against the real shim and socket: it waits, and the voice answer or the deadline decides it."""
 
 import asyncio
-import inspect
 import json
 import os
 import shutil
@@ -9,7 +8,6 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
-from types import CoroutineType
 
 import pytest
 from loguru import logger
@@ -22,7 +20,9 @@ from hands.sessions.audit import Entry
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
+from hands.sessions.reader import Reader
 from hands.sessions.server import serve_hooks
+from hands.sessions.tail import Tails
 from hands.sessions.wide import WideEvent
 from hands.voice.speech import Narrated
 
@@ -68,7 +68,7 @@ def clock() -> Clock:
 @pytest.fixture
 async def sessions(home: Home, clock: Clock) -> AsyncIterator[Sessions]:
     registry = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     yield registry
     await runner.cleanup()
 
@@ -159,7 +159,7 @@ async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_tha
         return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("hook") == "PermissionRequest"]
 
     sessions = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, sessions, Names(), recorded.append)
+    runner = await serve_hooks(home, sessions, Names(), recorded.append, Reader(sessions, Tails(sessions), sessions.apply))
     try:
         shim, moment = await asked(home, sessions)
         await call(named(sessions, "answer_permission"), request=moment.request, decision="allow")
@@ -324,11 +324,9 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     assert f"the hook for session {SID} request r1 closed; its reply Allow() was never delivered" in logged
 
 
-async def waits_on_its_reply(handler: asyncio.Task[object]) -> None:
-    """Return once the started handler is past applying its request: it awaits the future itself, not the apply coroutine."""
-    coroutine = handler.get_coro()
-    assert isinstance(coroutine, CoroutineType)
-    while inspect.iscoroutine(coroutine.cr_await):
+async def waits_on_its_reply(handler: asyncio.Task[HookReply], sessions: Sessions, request: RequestId) -> None:
+    """Return once the started handler is past applying its request: the future it is suspended on is its reply's."""
+    while handler._fut_waiter is not sessions._waiting.get(request):  # pyright: ignore[reportAttributeAccessIssue, reportPrivateUsage, reportUnknownMemberType]  (asyncio keeps what a task waits on private)
         await asyncio.sleep(0)
 
 
@@ -337,7 +335,7 @@ async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         request, waiting = await asking_in_process(home, sessions)
-        await asyncio.wait_for(waits_on_its_reply(waiting), WAIT_SECONDS)
+        await asyncio.wait_for(waits_on_its_reply(waiting, sessions, request.request), WAIT_SECONDS)
         waiting.cancel()  # cancels the request's future at once; the handler forgets the request only when it next runs
         # A voice answer is decided, and its reply performed, before the handler has run.
         await sessions.answer(request.request, Allow())
@@ -364,7 +362,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
 
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: Clock) -> None:
     registry = Sessions(clock=clock, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     shim, _ = await asked(home, registry)
     await asyncio.wait_for(runner.cleanup(), WAIT_SECONDS)
     # Empty output decides nothing: Claude Code's own dialog stands.

@@ -4,8 +4,7 @@
 asks again whether the file said something this version knows.
 """
 
-import asyncio
-from collections.abc import Awaitable, Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import get_args
@@ -151,21 +150,3 @@ def _unknown(member: Membership, status: Status) -> None:
             logger.warning(f"session {member.id} reports a status hands does not know: {name!r}")
         case Idle() | Busy() | Waiting() | Shell():
             pass
-
-
-async def keep_reading_statuses(
-    sessions: Callable[[], Collection[SessionId]],
-    session: Callable[[SessionId], Session | None],
-    clock: Callable[[], Instant],
-    period: float,
-    apply: Callable[[StatusReported], Awaitable[None]],
-) -> None:
-    """Read every live session's status once a period, and apply each one set since, until cancelled.
-
-    The period is how late a session going idle is heard.
-    """
-    statuses = Statuses(clock)
-    while True:
-        for reported in statuses.read(sessions(), session):
-            await apply(reported)
-        await asyncio.sleep(period)

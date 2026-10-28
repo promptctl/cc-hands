@@ -7,6 +7,7 @@ from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
+from hands.core.stopfailure import StopFailed
 from hands.core.turn import AgentId, AgentTask
 
 
@@ -86,6 +87,9 @@ class Stopped:
     heard: Stamp
     # The hook's connection, which Claude Code waits on until the reducer has decided whose Stop it is (see Reply).
     request: RequestId
+    # What failed the turn, when the API did: Claude Code fires StopFailure in place of Stop, and the turn is over as at
+    # a Stop. None for a Stop.
+    failure: StopFailed | None = None
 
 
 @dataclass(frozen=True)
