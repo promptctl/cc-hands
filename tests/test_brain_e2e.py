@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import ErrorFrame
 
-from conftest import running, unread
+from conftest import pin, running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
@@ -118,10 +118,10 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
 
 @pytest.fixture(scope="session")
 async def claude_code(pytestconfig: pytest.Config) -> Path:
-    """The directory holding the brain's pinned Claude Code, fetched once, against its checksum, into pytest's cache."""
+    """The brain's pinned Claude Code, fetched once, against its checksum, into pytest's cache."""
     cache = pytestconfig.cache.mkdir("claude-code") if pytestconfig.cache else pytest.fail("the cache provider is off")
     await pinned.install(cache)
-    return cache / "pinned-claude"
+    return pinned.verified(cache)
 
 
 # What a Claude Code hands starts may connect to, as macOS's sandbox holds it and every process it starts: loopback,
@@ -161,28 +161,18 @@ HELD = [str(path) for path in POLICY if path.is_file()]
 pytestmark = pytest.mark.skipif(bool(HELD), reason=f"this machine's Claude Code policy reaches every Claude Code, the brain under test among them: {', '.join(HELD)}")
 
 
-def offline(verified: Callable[[Path], Path], brain: Path) -> Callable[[Path], Path]:
-    """pinned.verified, handing back `brain`'s pin to run in the OFFLINE sandbox: a script that execs sandbox-exec, which
-    execs the pin in its turn, so the process hands starts is that Claude Code, as without the sandbox. The pin is still
-    checked at every start, as hands checks it."""
-    script = brain / "offline-claude"
-    script.write_text(f'#!/bin/sh\nexec /usr/bin/sandbox-exec -p {shlex.quote(OFFLINE)} {shlex.quote(str(verified(brain)))} "$@"\n')
-    script.chmod(0o755)
-
-    def sandboxed(config_dir: Path) -> Path:
-        assert config_dir == brain, f"only {brain}'s Claude Code runs in the sandbox, and {config_dir}'s was started"
-        verified(config_dir)
-        return script
-
-    return sandboxed
+def offline(claude: Path, at: Path) -> Path:
+    """`claude` run in the OFFLINE sandbox: a script at `at` that execs sandbox-exec, which execs `claude` in its turn, so
+    the process hands starts is that Claude Code, as without the sandbox."""
+    at.write_text(f'#!/bin/sh\nexec /usr/bin/sandbox-exec -p {shlex.quote(OFFLINE)} {shlex.quote(str(claude))} "$@"\n')
+    at.chmod(0o755)
+    return at
 
 
-def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
-    """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
-    its pinned Claude Code the cached one."""
+def logged_in(brain: Path, mock_binary: Path) -> None:
+    """A brain directory logged in as the mock's account by the mock's own login, and the directory it works in trusted."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
-    (brain / "pinned-claude").symlink_to(claude_code)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
     assert starting_settings(brain)
     # The commands the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person:
@@ -239,15 +229,16 @@ async def connected(hands: Hands) -> None:
 @pytest.fixture
 async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
-    logged_in(brain, claude_code, mock_binary)
-    # [LAW:single-enforcer] the one checkpoint for "no network while a test runs" is the Claude Code hands runs, which every
-    # start of one, the brain's, an aside's, a login's, takes from pinned.verified: a connection it or anything it starts
-    # makes around the mock fails here, at the OS, and one that goes through its proxy is named in the mock's log.
-    monkeypatch.setattr(pinned, "verified", offline(pinned.verified, brain))
+    logged_in(brain, mock_binary)
+    # [LAW:single-enforcer] the one checkpoint for "no network while a test runs" is the brain's pinned claude, which every
+    # start of one runs, the brain's, an aside's, a login's: the cached Claude Code in the OFFLINE sandbox. A connection it
+    # or anything it starts makes around the mock fails there, at the OS, and one through its proxy is in the mock's log.
+    pin(monkeypatch, offline(claude_code, tmp_path / "offline-claude"))
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
-    # [LAW:effects-at-boundaries] the one change from the run's own wiring: the upstream hands' proxy forwards to.
+    # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
+    # forwards to.
     proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=time.time)
     home = tmp_path / "home"
     home.mkdir()

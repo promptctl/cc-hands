@@ -34,14 +34,14 @@ def test_never_collected():
     pass
 """
 
-# The hooks alone, as a plugin of the run, not the whole conftest beside them.
+# The hooks alone, as a plugin of the run, not the whole conftest beside them; the suites are synchronous, so no asyncio.
 HOOKS = SimpleNamespace(pytest_runtest_makereport=conftest.pytest_runtest_makereport, pytest_make_collect_report=conftest.pytest_make_collect_report)
 
 
 def test_a_test_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CI", "true")
     pytester.makepyfile(SUITE)
-    ran = pytester.runpytest_inprocess(plugins=[HOOKS])
+    ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     # A mark skips as the test is set up, so its failure is counted as an error.
     ran.assert_outcomes(failed=1, errors=1, xfailed=1, passed=1)
     ran.stdout.fnmatch_lines_random(["*Skipped: no jq on this machine, in CI, where every test runs*", "*Skipped: a policy on this machine, in CI, where every test runs*"])
@@ -50,7 +50,7 @@ def test_a_test_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pyt
 def test_a_module_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CI", "true")
     pytester.makepyfile(SKIPPED_MODULE)
-    ran = pytester.runpytest_inprocess(plugins=[HOOKS])
+    ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     ran.assert_outcomes(errors=1)
     ran.stdout.fnmatch_lines(["*no mlx on this machine, in CI, where every test runs*"])
 
@@ -58,4 +58,4 @@ def test_a_module_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.P
 def test_a_skip_outside_ci_is_skipped(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CI", raising=False)
     pytester.makepyfile(test_suite=SUITE, test_skipped_module=SKIPPED_MODULE)
-    pytester.runpytest_inprocess(plugins=[HOOKS]).assert_outcomes(skipped=3, xfailed=1, passed=1)
+    pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS]).assert_outcomes(skipped=3, xfailed=1, passed=1)
