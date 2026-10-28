@@ -166,6 +166,9 @@ class Unspoken:
     def decoded(self, samples: streaming.Samples) -> streaming.Spoken:
         return ()
 
+    def closed(self) -> streaming.Closed:
+        return streaming.Closed(frozenset(), ())
+
 
 @pytest.fixture(autouse=True)
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:

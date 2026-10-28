@@ -14,6 +14,7 @@ Its words are never sent: the model is weak on conversational speech (about 20% 
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each hold held.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -49,11 +50,11 @@ CHUNK = SUBSAMPLING * (1 + LOOKAHEAD)
 PRESET = "ultra_low"
 STEP = 3 * SUBSAMPLING
 AHEAD = 1 * SUBSAMPLING
-# [LAW:one-source-of-truth] how many chunks a speaker's stream is stepped from the last chunk they were heard in, that
-# one included, so GATING - 1 after it; and how many chunks past a hold's last the session is fed silence, which leaves
-# one more for the diarizer to hear them go quiet: every speaker of the hold is gated off, its last words decoded,
-# before the next hold's first sample. mlx-audio's default of 2 froze a speaker before their last word came out, and it
-# surfaced in their next hold.
+# How many chunks a speaker's stream is stepped from the last chunk the diarizer heard them in, that one included: the
+# GATING - 1 after it are their log-mel frames masked to zero, which the model does not hear as silence, so it decides
+# how a hold's last words come out. It does not decide whether they stay in the hold: the hold's end closes every
+# stream (`Session.closed`). 4 invents endings after engaged conversation's stop, 2 a third speaker's word, 1 cuts
+# words short; setting it needs recordings with known words that end in silence (promptctl-voice-i15t.qg8.23w).
 GATING = 4
 
 
@@ -66,10 +67,11 @@ def steps(samples: int) -> int:
 
 
 def through(samples: int) -> int:
-    """How far the run is fed, silence after a hold that ended at `samples`: until the diarizer has committed GATING
-    chunks past the chunk holding the hold's last sample, which the step committing them waits for."""
+    """How far the run is fed, silence after a hold that ended at `samples`: until the diarizer has committed the chunk
+    holding the hold's last sample, which the step committing it waits for, so the session decodes it before the hold
+    closes. Silence fed past it reaches a quiet speaker's stream as zero-masked frames, and ends holds on guessed words."""
     last = (samples - 1 + N_FFT // 2) // MEL_HOP
-    committed = (last // CHUNK + 1 + GATING) * CHUNK
+    committed = (last // CHUNK + 1) * CHUNK
     step = -(-committed // STEP)
     return max(samples, (STEP * step + AHEAD - 1) * MEL_HOP + N_FFT // 2)
 
@@ -90,11 +92,22 @@ class Said:
 type Spoken = tuple[Said, ...]
 
 
+@dataclass(frozen=True)
+class Closed:
+    """A hold's close: the speakers whose streams it closed, and the last words they decoded. A speaker can be closed
+    with no word, as one the diarizer marked only for a moment is."""
+
+    speakers: frozenset[int]
+    words: Spoken
+
+
 class Session(Protocol):
     """The pair's one session for the run: fed samples, it says what each speaker's stream decoded in the chunks they
-    complete."""
+    complete; closed, it decodes every stream's last words and ends them, so none comes out in the next hold."""
 
     def decoded(self, samples: Samples) -> Spoken: ...
+
+    def closed(self) -> Closed: ...
 
 
 def words(text: str) -> str | None:
@@ -113,20 +126,23 @@ def joined(spoken: Spoken) -> str | None:
 @dataclass
 class _Held:
     """The hold open, as the stream heard it: each speaker's text decoded since it opened, in the order they were first
-    heard in it, how much of each speaker's words hearings have said, and how many samples of it were heard."""
+    heard in it, how much of each speaker's words hearings have said, how many samples of it were heard, and its close,
+    which closes no stream until the silence after it is heard."""
 
     text: dict[int, str] = field(default_factory=dict[int, str])
     said: dict[int, int] = field(default_factory=dict[int, int])
     samples: int = 0
+    closed: Closed = Closed(frozenset(), ())
 
 
 @dataclass(frozen=True)
 class Ended:
-    """A hold, once the stream heard the silence after it: every word each speaker said in it, and how many seconds of it
-    were heard."""
+    """A hold, once the stream heard the silence after it: every word each speaker said in it, how many seconds of it
+    were heard, and its close, whose words are among them."""
 
     words: Spoken
     seconds: float
+    closed: Closed
 
 
 class Stream:
@@ -151,11 +167,17 @@ class Stream:
         self._decoded(samples)
 
     def silence(self, samples: int) -> None:
-        """`samples` of silence after the hold open, so every word in it is decoded before the next hold opens."""
+        """`samples` of silence after the hold open, and its close, so every word in it is decoded before the next hold
+        opens."""
         self._decoded(np.zeros(samples, np.float32))
+        self._held.closed = self._session.closed()
+        self._added(self._held.closed.words)
 
     def _decoded(self, samples: Samples) -> None:
-        for said in self._session.decoded(samples):
+        self._added(self._session.decoded(samples))
+
+    def _added(self, spoken: Spoken) -> None:
+        for said in spoken:
             self._held.text[said.speaker] = self._held.text.get(said.speaker, "") + said.text
 
     def said(self) -> Spoken:
@@ -170,7 +192,7 @@ class Stream:
     def ended(self) -> Ended:
         """The hold open, heard to the silence after it."""
         spoken = tuple(Said(speaker, said) for speaker, text in self._held.text.items() if (said := words(text)))
-        return Ended(spoken, round(self._held.samples / RATE, 3))
+        return Ended(spoken, round(self._held.samples / RATE, 3), self._held.closed)
 
 
 @dataclass(frozen=True)
@@ -298,7 +320,8 @@ class StreamingRecognizer:
             annotate(fate=fate, silence=round(silence / RATE, 3))
             # [LAW:single-enforcer] a hold the broken stream did not hear raises, and the owner fails this hearing with why.
             heard = await ended
-            annotate(words=heard.words, seconds=heard.seconds)
+            # [LAW:nothing-unseen] the close's words are among the hold's, told apart: what the floor decoded, not the feed.
+            annotate(words=heard.words, seconds=heard.seconds, closed=heard.closed.speakers, closing=heard.closed.words)
             return Heard(joined(heard.words))
 
         return (settle,)
@@ -322,6 +345,34 @@ class _Paired:
 
     def decoded(self, samples: Samples) -> Spoken:
         return tuple(Said(speaker(delta.speaker), delta.text) for delta in self.session.feed(samples))
+
+    def closed(self) -> Closed:
+        """Every speaker's stream given a chunk of silence as its last and ended, its last token decoded, and the gate
+        history emptied, so a stream is made again only for a speaker the diarizer marks in a later hold; the diarizer is
+        left as it is, so speakers keep their numbers.
+
+        [LAW:locality-or-seam] exception: mlx-audio closes only the whole session (`feed(final=True)`, the diarizer
+        with it), so this reaches its per-speaker state, here alone, on the version pyproject pins exactly;
+        promptctl-voice-i15t.qg8.35b proposes the close upstream."""
+        import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
+
+        session, last = self.session, list[Said]()
+        speakers, config = frozenset[int](session._encoders), session.model.preprocessor_config
+        # [LAW:one-source-of-truth] silence as the model's frontend hears it, the log of zero power plus its guard (the
+        # chunked frontend takes only unnormalized models): one chunk, the one frame of right context a stream needs past
+        # its speaker's last chunk. More invents words: on AMI's fifth hold, two chunks gave its second speaker "Wall.",
+        # four "Walk.", where one gives them none.
+        floor = mx.full((1, session.chunk_mel, config.features), math.log(config.log_zero_guard_value))
+        for number in sorted(speakers):
+            encoder, decoder, start, text = session._encoders.pop(number), session._decoders.pop(number), session._mel_offset // session.factor, ""
+            for encoded in encoder.push(floor, final=True):
+                prompted = session.model.apply_prompt(encoded, session.language)
+                encoder.materialize(prompted)
+                text += "".join(token.text for token in decoder.decode(prompted, start))
+                start += prompted.shape[1]
+            last += [Said(number, text)] if text else []
+        session._history.clear()
+        return Closed(speakers, tuple(last))
 
 
 def diarizer() -> Any:
