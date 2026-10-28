@@ -303,9 +303,24 @@ def test_a_speaker_is_the_number_the_session_gave_them() -> None:
 
 
 # The real pair, on real sound: the weights are fetched into the Hugging Face cache the first time, and CI keeps that
-# cache. It runs on MLX's default device, the CPU where there is no Metal, as on CI's VMs. Each test is one session, as a
-# run is. The fixtures are holds separated by half a second of exact zeros, which speech never holds for that long.
+# cache. It runs on MLX's default device, the CPU where there is no Metal, as on CI's VMs. Each test starts the session
+# afresh, as a run starts one. The fixtures are holds separated by half a second of exact zeros, which speech never holds
+# for that long.
 GAP = streaming.RATE // 2
+
+
+@pytest.fixture(scope="module")
+def pair() -> Any:
+    """The real pair, loaded once, as a run loads it: it holds 2.7 GB, and a second beside it outgrows CI's VMs, whose GPU
+    then times out loading the next."""
+    return nemotron()
+
+
+@pytest.fixture
+def paired(pair: Any) -> Any:
+    """The pair's session as a run begins it: nothing heard, nobody numbered."""
+    pair.session.reset()
+    return pair
 
 
 def fixture_holds(name: str) -> list[Samples]:
@@ -322,7 +337,7 @@ class Live:
     """One stream of the real pair, fed holds as the listener feeds it: 20 ms at a time, each followed by the silence
     `through` says."""
 
-    stream: streaming.Stream = field(default_factory=lambda: streaming.Stream(nemotron()))
+    stream: streaming.Stream
     fed: int = 0
 
     def spoken(self, samples: Samples) -> tuple[Spoken, Spoken]:
@@ -338,12 +353,12 @@ class Live:
         return live, self.stream.ended().words
 
 
-def test_every_hold_engaged_conversation_would_close_has_words_heard_while_it_was_open() -> None:
+def test_every_hold_engaged_conversation_would_close_has_words_heard_while_it_was_open(paired: Any) -> None:
     # Utterances of 0.8 to 2 s by one LibriVox reader (The Invisible Man, read solo; public domain), 20 to 30 dB down, each
     # followed by the silence engaged conversation's detector waits out before it closes a hold: the only holds whose cut
     # waits on words. One reader is one speaker, the first the run heard.
     silence = np.zeros(round(engaged.STOP_SECS * streaming.RATE), np.float32)
-    live = Live()
+    live = Live(streaming.Stream(paired))
     heard = [live.spoken(np.concatenate([samples, silence])) for samples in fixture_holds("one_reader_quiet.flac")[:8]]
     assert all(open_ for open_, _ in heard), heard
     assert {said.speaker for open_, whole in heard for said in (*open_, *whole)} == {0}, heard
@@ -352,12 +367,12 @@ def test_every_hold_engaged_conversation_would_close_has_words_heard_while_it_wa
     assert heard[0][1][0].text.rstrip(".") == "Door was ajar"
 
 
-def test_a_hold_with_no_speech_in_it_has_no_words_so_it_cuts_nothing() -> None:
+def test_a_hold_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(paired: Any) -> None:
     # What a hold engaged conversation opens can hold with nobody speaking: the room, a hiss, a tap on the desk.
     noise = np.random.default_rng(0).standard_normal(2 * streaming.RATE).astype(np.float32)
     clicks = np.where(np.arange(2 * streaming.RATE) % 4_000 == 0, 0.8, 0.0).astype(np.float32)
     holds = [np.zeros(2 * streaming.RATE, np.float32), noise * 0.01, noise * 0.056, clicks]
-    live = Live()
+    live = Live(streaming.Stream(paired))
     assert [live.spoken(samples) for samples in holds] == [((), ())] * 4
 
 
@@ -367,7 +382,7 @@ class Run:
     followed by the silence `through` says. Each token is kept with the hold it came out while feeding, and each feed it
     came out on that completed no step of the diarizer's is counted."""
 
-    session: Any = field(default_factory=lambda: cast(Any, nemotron()).session)
+    session: Any
     fed: int = 0
     holds: list[int] = field(default_factory=list[int])
     tokens: list[tuple[int, int, Any]] = field(default_factory=list[tuple[int, int, Any]])
@@ -394,14 +409,14 @@ class Run:
         return [(hold, token.text) for hold, _, token in self.tokens if token.start * streaming.RATE < self.holds[hold]]
 
 
-def test_each_word_is_the_speaker_who_said_it_and_stays_in_the_hold_it_was_said_in() -> None:
+def test_each_word_is_the_speaker_who_said_it_and_stays_in_the_hold_it_was_said_in(paired: Any) -> None:
     # Holds of two women, each speaking alone, in the order they spoke: AMI Meeting Corpus ES2004a, mixed headsets,
     # speakers FEE013 and FEE016 (CC BY 4.0, University of Edinburgh). Each hold's speaker is the one the transformers
     # path diarizing on the CPU gave it, which every word's speaker matched over all 16 holds, the run started at five
     # phases of the grid (promptctl-voice-i15t.qg8.5yl). The first six, so it stays inside the test timeout on a CPU: a
     # run's start is fed as the whole run's is, so it decides as the whole did. A later stretch alone does not: with less
     # of each voice heard, both paths take both speakers to be speaking in hold 15, and both speakers' streams say it.
-    run = Run()
+    run = Run(paired.session)
     for samples in fixture_holds("two_speakers_ami.flac")[:6]:
         run.spoken(samples)
     assert run.speakers() == [{int(who)} for who in "000100"]
@@ -410,7 +425,7 @@ def test_each_word_is_the_speaker_who_said_it_and_stays_in_the_hold_it_was_said_
     assert run.off_grid == 0
 
 
-def test_a_hold_whose_silence_ends_exactly_where_its_speaker_is_gated_off_keeps_its_last_word() -> None:
+def test_a_hold_whose_silence_ends_exactly_where_its_speaker_is_gated_off_keeps_its_last_word(paired: Any) -> None:
     # The worst phase: the hold ends where the step that commits GATING chunks past its last sample has none to spare, so
     # the silence ends one chunk after its speaker's stream is stepped for the last time. Then another speaker's hold.
     first, second = fixture_holds("two_speakers_ami.flac")[3:5]
@@ -421,16 +436,17 @@ def test_a_hold_whose_silence_ends_exactly_where_its_speaker_is_gated_off_keeps_
     # The phases repeat every frame count both a chunk and a step divide.
     cut = max(length for length in range(len(first) - math.lcm(CHUNK, STEP) * MEL_HOP, len(first)) if committed(length) % STEP == 0)
     assert STEP * steps(through(cut)) == committed(cut)
-    run = Run()
+    run = Run(paired.session)
     run.spoken(first[:cut])
     run.spoken(second)
     # The run's first speaker is 0, so the first hold's is 0 here and the second's 1.
     assert (run.speakers(), run.crossed()) == ([{0}, {1}], [])
 
 
-def test_the_diarizer_commits_on_exactly_the_feeds_steps_names() -> None:
+def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> None:
     # [LAW:one-source-of-truth] the diarizer's own count of the frames it committed, against `steps`, fed 20 ms at a time.
-    model = streaming.diarizer()
+    # The session's own diarizer, as `streaming.diarizer` set it to its preset.
+    model = paired.session.diarization_model
     state = model.init_streaming_state()
     audio = np.concatenate(fixture_holds("one_reader_quiet.flac")[:4])
     moved: list[tuple[bool, bool]] = []
