@@ -16,12 +16,18 @@ from concurrent.futures import Future
 import Quartz
 from loguru import logger
 
-from hands.voice.hold import Instant, KeyEvent, Pressed, Released, Typed
+from hands.voice.hold import CommandPressed, CommandReleased, Instant, KeyEvent, Pressed, Released, Typed
 
 # kVK_RightShift. Its presses and releases arrive as flag changes, not key downs, as every modifier's do.
 RIGHT_SHIFT = 60
 # NX_DEVICERSHIFTKEYMASK: set in an event's flags while Right Shift itself is down, whatever Left Shift is doing.
 RIGHT_SHIFT_DOWN = 0x4
+# kVK_RightCommand, which a triple tap of sets the desk listening for the wake word (`hands.voice.taps`).
+RIGHT_COMMAND = 54
+# NX_DEVICERCMDKEYMASK: set in an event's flags while Right Command itself is down.
+RIGHT_COMMAND_DOWN = 0x10
+# NX_DEVICELCMDKEYMASK: Left Command's own bit, down beside Right Command in a chord.
+LEFT_COMMAND_DOWN = 0x8
 # Declared, so the strict code that uses it sees an int.
 FLAGS_CHANGED: int = Quartz.kCGEventFlagsChanged
 # Set in Right Shift's flags when it goes down inside a chord (Cmd+Shift+4 begun with Cmd): Left Shift's own bit
@@ -33,6 +39,9 @@ OTHER_MODIFIERS: int = (
     | Quartz.kCGEventFlagMaskCommand
     | Quartz.kCGEventFlagMaskSecondaryFn
 )
+# Set in Right Command's flags when it goes down inside a chord: either Shift, Control, Option, Left Command, and fn.
+# Alone, its flags hold its own bit and the Command mask, which it sets itself.
+COMMAND_CHORD: int = (OTHER_MODIFIERS & ~Quartz.kCGEventFlagMaskCommand) | RIGHT_SHIFT_DOWN | LEFT_COMMAND_DOWN
 # Everything else a hand can do while Right Shift is held, each of which makes it Shift: a key, a modifier, a click
 # (shift-click extends a selection), a scroll (shift-scroll scrolls sideways).
 WATCHED_KINDS: tuple[int, ...] = (
@@ -59,11 +68,15 @@ def ask() -> None:
 
 
 def event_of(kind: int, keycode: int, flags: int, at: Instant) -> KeyEvent:
-    """What one tapped event is to the hold: Right Shift going down alone or coming up, or anything else."""
+    """What one tapped event is: Right Shift or Right Command going down alone or coming up, or anything else."""
     if kind == FLAGS_CHANGED and keycode == RIGHT_SHIFT:
         if not flags & RIGHT_SHIFT_DOWN:
             return Released()
         return Typed() if flags & OTHER_MODIFIERS else Pressed(at)
+    if kind == FLAGS_CHANGED and keycode == RIGHT_COMMAND:
+        if not flags & RIGHT_COMMAND_DOWN:
+            return CommandReleased()
+        return Typed() if flags & COMMAND_CHORD else CommandPressed(at)
     return Typed()
 
 

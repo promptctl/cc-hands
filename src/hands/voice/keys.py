@@ -1,27 +1,17 @@
-"""The keyboard edges: Right Shift held alone, from any app, moves the turn; `q` typed in hands' own terminal quits."""
+"""The keyboard edges: Right Shift and Right Command, from any app, reach the desk (`hands.voice.desk`); `q` typed in
+hands' own terminal quits."""
 
 import asyncio
 import sys
 import termios
 import tty
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 
 from hands.voice import talkkey
-from hands.voice.hold import Hold, Idle, KeyEvent, Move, asked, step
+from hands.voice.hold import KeyEvent, asked
 
 QUIT = "q"
-
-
-async def drive_talk_key(on_move: Callable[[Move], Awaitable[None]]) -> None:
-    """Hand every move of the turn to `on_move`, as the talk key makes them, until cancelled."""
-    heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
-    hold: Hold = Idle()
-    async with tapped(heard.put_nowait):
-        while True:
-            hold, moves = step(hold, await heard.get())
-            for move in moves:
-                await on_move(move)
 
 
 @asynccontextmanager

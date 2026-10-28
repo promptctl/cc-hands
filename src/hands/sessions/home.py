@@ -60,7 +60,7 @@ class Home:
 
     @property
     def wake_word(self) -> Path:
-        """The wake word's models, fetched by the daemon as the wake word is first switched to (hands.voice.wake)."""
+        """The wake word's models, fetched by the daemon as the desk starts, unless already here (hands.voice.wake)."""
         return self.root / "wake-word"
 
     @property

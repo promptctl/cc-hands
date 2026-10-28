@@ -10,7 +10,7 @@ run runs starts the run again, on the file as edited.
 
     [talk]
     personality = "Dry and wry, with a bit of wit."   # how hands comes across, in the user's words; hands' own by default
-    wake_word = "Hey Mycroft"     # what the wake word trigger listens for: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa
+    wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa
     wake_word_model = "~/wake/hey_computer.onnx"      # or a model of your own, trained with openWakeWord on wake_word, said as written
 
 A file left out, or a key, is the default. Secrets are not settings: the brain's login is in its own config directory. The voice is not either: the user chooses it by voice,
@@ -60,7 +60,7 @@ class Claude:
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
-    the wake word the wake word trigger listens for."""
+    the wake word the desk listens for at its wake word level."""
 
     llm: Claude = Claude()
     collector: str | None = None
@@ -241,8 +241,8 @@ def parse(text: str, model: str | None = None) -> Config:
 
 def _wake(table: Mapping[str, object]) -> Word:
     """The wake word: one of openWakeWord's own, matched however it is capitalised, or, with a model, the user's own,
-    said as written. Whether the model is there is the switch to the wake word's to find (hands.voice.trigger.readied),
-    as it is for openWakeWord's own."""
+    said as written. Whether the model is there is the desk's to find as it starts (hands.daemon.run), as it is for
+    openWakeWord's own."""
     if "wake_word" not in table:
         if "wake_word_model" in table:
             raise Rejected("[talk] wake_word_model needs wake_word, the phrase the model was trained on, which hands tells you to say")

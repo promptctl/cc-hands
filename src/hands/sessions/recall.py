@@ -30,7 +30,7 @@ Kind = Literal["heard", "said", "sent", "answered", "called"]
 @dataclass(frozen=True)
 class Moment:
     """One thing said, sent, answered, or called: when, what kind, who said it or where it went ("user", "you",
-    "sent to billing", "allowed in billing", "called set_trigger"), and what."""
+    "sent to billing", "allowed in billing", "called set_listening_level"), and what."""
 
     at: datetime
     kind: Kind

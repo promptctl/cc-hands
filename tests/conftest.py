@@ -9,13 +9,14 @@ import subprocess
 import sys
 import wave
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
 import mlx_whisper
 import pytest
+from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.observers.base_observer import BaseObserver
 from pipecat.pipeline.pipeline import Pipeline
@@ -227,8 +228,8 @@ def _dead_pid() -> int:
 
 @pytest.fixture(scope="session")
 def smart_turn() -> None:
-    """Smart Turn's MLX port in the hub's cache, so a switch to an edge it judges for fetches nothing."""
-    engaged.readied()
+    """Smart Turn's MLX port in the hub's cache, so a desk that loads it fetches nothing."""
+    engaged.ported()
 
 
 @pytest.fixture
@@ -602,3 +603,13 @@ async def unedited() -> SettingsEdited:
     """Settings a run's start watches that are never edited."""
     await asyncio.Event().wait()
     raise AssertionError("an event nothing sets was set")
+
+
+def hearing_with(ears: Ears, woken: Hears) -> Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]]:
+    """The desk driver's models, already loaded: `ears` for Silero and Smart Turn, and `woken` for the wake word."""
+
+    @asynccontextmanager
+    async def hearing() -> AsyncGenerator[tuple[Ears, Hears]]:
+        yield ears, woken
+
+    return hearing

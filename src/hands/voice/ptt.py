@@ -30,7 +30,7 @@ from hands.sessions.wide import begun, ended
 from hands.voice.hold import Move
 from hands.voice.trigger import Edge, place_of
 
-# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns while engaged, so a turn the voice
+# [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
 # opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
 # so the words said before it does are kept; or down, a hold. The edges decide every move, so the gate never sees one
 # that is not a transition.
@@ -63,7 +63,7 @@ class Gate:
 
     key: Key = "up"
     place: Place = "desk"
-    # [LAW:one-source-of-truth] engaged conversation is the desk's: at the phone, its button alone opens the microphone.
+    # [LAW:one-source-of-truth] listening between turns is the desk's: at the phone, its button alone opens the microphone.
     listens: bool = False
     # [LAW:no-ambient-temporal-coupling] how each turn ended is counted, not left in a key position: a frame is captured
     # every 20 ms and a turn can end and the next arm between two of them, so the hold owner ends each turn as these move.

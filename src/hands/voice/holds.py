@@ -34,13 +34,11 @@ RATE = 16_000
 SECOND = RATE * 2
 
 
-# Right Shift held alone for each turn (`hands.voice.hold`); or held once to engage, after which the user's voice opens
-# each turn and end-of-turn detection closes it (`hands.voice.engaged`); or the wake word said, with no key at all
-# (`hands.voice.wake`).
-Trigger = Literal["held key", "engaged conversation", "wake word"]
 # [LAW:domain-language] an edge is what moves the gate (docs/architecture.md, "The gate has one owner and several
-# edges"): the desk's is the trigger in use, and the phone's is its page's talk button, there for every call.
-Edge = Trigger | Literal["phone button"]
+# edges"). The desk has three (`hands.voice.desk`): Right Shift held alone, at every level (`hands.voice.hold`); speech,
+# engaged (`hands.voice.engaged`); and the wake word said, at its level (`hands.voice.wake`). The phone's is its page's
+# talk button, there for every call.
+Edge = Literal["held key", "engaged conversation", "wake word", "phone button"]
 # What opens a hold: an edge of the gate, or words the user typed into the conversation page
 # (`hands.voice.conversationpage`), which move no gate and are heard nowhere, so they are a hold of their own.
 Opener = Edge | Literal["typed"]

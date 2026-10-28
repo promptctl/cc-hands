@@ -56,8 +56,9 @@ from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.holds import Hold
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import engaged, hold, holdowner, streaming
-from hands.voice.engaged import Act
+from hands.voice import desk, hold, holdowner, streaming
+from hands.voice.desk import Act
+from hands.voice.hold import Move as HoldMove
 from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.holdowner import HoldOwner
 from hands.voice.whisper import Whisper
@@ -740,7 +741,7 @@ class Timeline:
 
 
 def play_out[S, E](
-    step: Callable[[S, E], tuple[S, tuple[Act, ...]]],
+    step: Callable[[S, E], tuple[S, tuple[Act | HoldMove, ...]]],
     state: S,
     asked: Callable[[S, E, S], tuple[tuple[float, E], ...]],
     told: Sequence[tuple[float, E]],
@@ -763,9 +764,15 @@ def play_out[S, E](
             for at, later in asked(was, event, state):
                 heapq.heappush(due, (at, next(arrival), later))
             for act in acts:
-                if act != "judge":
-                    moves.append(act)
-                    gate = gate.after(act, by)
+                match act:
+                    case "judge" | desk.Leveled():
+                        pass
+                    case desk.Made(move=move, by=edge):
+                        moves.append(move)
+                        gate = gate.after(move, edge)
+                    case move:
+                        moves.append(move)
+                        gate = gate.after(move, by)
         frames.append(gate.framed(SPEECH, SPEECH, 16000, 1, place_of(by)))
     return Timeline(frames, moves)
 
@@ -775,14 +782,14 @@ def held_key(told: Sequence[tuple[float, KeyEvent]], seconds: float) -> Timeline
     return play_out(hold.step, Idle(), lambda _was, event, _now: hold.asked(event), told, seconds, "held key")
 
 
-def engaged_conversation(told: Sequence[tuple[float, engaged.Event]], seconds: float) -> Timeline:
-    """Engaged conversation, told `told`, with its key's presses told as `keys.tapped` tells them and each turn's limit as
+def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: float) -> Timeline:
+    """The desk, told `told`, with its key's presses told as `keys.tapped` tells them and each turn's limit as
     `engaged.drive` tells it."""
 
-    def asked(was: engaged.Engagement, event: engaged.Event, now: engaged.Engagement) -> tuple[tuple[float, engaged.Event], ...]:
-        return (*(hold.asked(event) if isinstance(event, KeyEvent) else ()), *engaged.deadline(was.phase, now.phase))
+    def asked(was: desk.Desk, event: desk.Event, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
+        return (*(hold.asked(event) if isinstance(event, KeyEvent) else ()), *desk.deadline(was.phase, now.phase))
 
-    return play_out(engaged.step, engaged.Engagement(), asked, told, seconds, "engaged conversation")
+    return play_out(desk.step, desk.Desk(), asked, told, seconds, "engaged conversation")
 
 
 async def test_a_held_key_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
@@ -797,8 +804,8 @@ async def test_a_held_key_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 
 async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whole_as_one_turn(rig: Rig) -> None:
-    engage = [(0.0, Pressed(0.0)), (1.0, Released())]
-    timeline = engaged_conversation([*engage, (2.0, engaged.SpeechStarted(2.0)), (182.0, engaged.TurnEnded("verdict"))], 183.0)
+    engage = [(1.0, desk.Chosen("engaged"))]
+    timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0)), (182.0, desk.TurnEnded("verdict"))], 183.0)
     assert timeline.moves == ["listen", "arm", "start", "stop"]
     await rig.worker.queue_frames(timeline.frames)
     await rig.texts.put("three minutes of conversation")
@@ -823,11 +830,11 @@ async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it
 
 
 async def test_an_engaged_turn_that_never_ends_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The limit as engaged conversation schedules it: engaged.deadline reads its own name for it.
-    monkeypatch.setattr("hands.voice.engaged.TURN_LIMIT_SECONDS", 3.0)
-    engage = [(0.0, Pressed(0.0)), (1.0, Released())]
+    # The limit as the desk schedules it: desk.deadline reads its own name for it.
+    monkeypatch.setattr("hands.voice.desk.TURN_LIMIT_SECONDS", 3.0)
+    engage = [(1.0, desk.Chosen("engaged"))]
     # Speech that never stops and is never judged ended.
-    timeline = engaged_conversation([*engage, (2.0, engaged.SpeechStarted(2.0))], 6.0)
+    timeline = engaged_conversation([*engage, (2.0, desk.SpeechStarted(2.0))], 6.0)
     assert timeline.moves == ["listen", "arm", "start", "timeout"]
     await rig.worker.queue_frames(timeline.frames)
     await rig.texts.put("what I said before the limit")

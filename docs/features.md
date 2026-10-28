@@ -279,17 +279,21 @@ Need 2.
 
 Need 8. Where the microphone is.
 
-- **Gate edges as values of one type.** `held key | button | phone button | wake word`
-  as `Edge` (`hands.voice.trigger`); the desk's is the trigger the user switches by
-  voice. The `held key` edge is a macOS event tap that reports real key-down and
+- **Gate edges as values of one type.** `held key | engaged conversation | wake word | phone button`
+  as `Edge` (`hands.voice.holds`); the desk's level says which of its edges open turns
+  besides the held key. The `held key` edge is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
-- **Engaged conversation.** One hold of Right Shift engages, and from then on the
-  user's voice opens each turn and end-of-turn detection closes it: Silero says where
-  speech starts and stops on the echo-cancelled desk microphone, and Smart Turn v3
-  judges whether a stop ends the turn or is a pause inside it. Another hold
-  disengages; each is cued. Done when one press is followed by three turns with no
-  key touched, a pause mid-sentence does not send half of it, and room talk after
-  disengaging opens no turn.
+- **One desk mode, off by default.** Right Shift held alone talks at every level.
+  The microphone is off between turns until a triple tap of Right Command turns on
+  the wake word, or one of Right Shift turns on engaged conversation; the same tap
+  turns it off again, and the other switches across. Each change is cued, and the
+  brain can set the level by voice (`promptctl-voice-oalb.6xh`).
+- **Engaged conversation.** At the engaged level the user's voice opens each turn
+  and end-of-turn detection closes it: Silero says where speech starts and stops on
+  the echo-cancelled desk microphone, and Smart Turn v3 judges whether a stop ends
+  the turn or is a pause inside it. Done when one triple tap is followed by three
+  turns with no key touched, a pause mid-sentence does not send half of it, and room
+  talk after disengaging opens no turn.
 - **Wake word.** Saying "Hey Jarvis", or the wake word config.toml names, opens
   a turn with no key at all, and end-of-turn detection closes it as in an engaged
   conversation. openWakeWord's pretrained model, or one the user trained, listens to the echo-cancelled desk microphone, and hears silence

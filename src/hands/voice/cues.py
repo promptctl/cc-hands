@@ -18,6 +18,7 @@ import numpy as np
 from loguru import logger
 
 from hands.sessions.audit import Cued, Played, Record
+from hands.voice.desk import Leveled
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 CUE_SECONDS = 0.06
@@ -39,10 +40,12 @@ SENT = Cue("turn: ended", ((990.0, 660.0),))
 DROPPED = Cue("turn: dropped", ((330.0, 330.0), (330.0, 330.0)))
 # Sent, as a release sends: the line alone says the limit ended it, with the key perhaps still down.
 TIMED_OUT = Cue(f"turn: ended, open {TURN_LIMIT_SECONDS:.0f}s", SENT.glides)
-# The desk starting and stopping listening for every turn, under engaged conversation or the wake word: two rising tones
-# as it starts, two falling as it stops. Two tones, so neither is taken for a turn opening or ending.
-LISTENING = Cue("desk: listening", ((660.0, 990.0), (660.0, 990.0)))
-DEAF = Cue("desk: not listening", ((990.0, 660.0), (990.0, 660.0)))
+# The desk's level changing (`hands.voice.desk`): two falling tones as the microphone goes off between turns, two
+# rising as it listens for the wake word, and three rising as it is engaged. Two tones or more, so none is taken for a
+# turn opening or ending, and the wake word's and engagement's told apart by count.
+OFF = Cue("desk: microphone off", ((990.0, 660.0), (990.0, 660.0)))
+WAKE_WORD = Cue("desk: listening for the wake word", ((660.0, 990.0), (660.0, 990.0)))
+ENGAGED = Cue("desk: engaged", ((660.0, 990.0), (660.0, 990.0), (660.0, 990.0)))
 
 
 @dataclass(frozen=True)
@@ -62,8 +65,8 @@ WORKING = QuietCue(Cue("working", ((880.0, 880.0),)), 2.0)
 
 
 def cues(move: Move) -> tuple[Cue, ...]:
-    """What a move shows and plays: the turn's edges, and the desk starting and stopping listening for every turn; and
-    nothing of the microphone arming, which every Shift does."""
+    """What a move shows and plays: the turn's edges; nothing of the microphone arming, which every Shift does; and
+    nothing of the desk's listening, which its level's cue says (`level_cue`)."""
     match move:
         case "start":
             return (OPENED,)
@@ -73,12 +76,19 @@ def cues(move: Move) -> tuple[Cue, ...]:
             return (DROPPED,)
         case "timeout":
             return (TIMED_OUT,)
-        case "arm" | "disarm":
+        case "arm" | "disarm" | "listen" | "deafen":
             return ()
-        case "listen":
-            return (LISTENING,)
-        case "deafen":
-            return (DEAF,)
+
+
+def level_cue(leveled: Leveled) -> Cue:
+    """What a change of the desk's level plays: the level it went to."""
+    match leveled.now:
+        case "off":
+            return OFF
+        case "wake word":
+            return WAKE_WORD
+        case "engaged":
+            return ENGAGED
 
 
 @cache

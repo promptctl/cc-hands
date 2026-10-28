@@ -52,7 +52,19 @@ class Overlong:
     pressed_at: Instant
 
 
-KeyEvent = Pressed | Released | Typed | Ripe | Overlong
+@dataclass(frozen=True)
+class CommandPressed:
+    """Right Command went down by itself: to the hold, a modifier like any other; counted, a tap (`hands.voice.taps`)."""
+
+    at: Instant
+
+
+@dataclass(frozen=True)
+class CommandReleased:
+    """Right Command went up: nothing to the hold, which its press has already made Shift, and no break in a tap's count."""
+
+
+KeyEvent = Pressed | Released | Typed | Ripe | Overlong | CommandPressed | CommandReleased
 
 
 @dataclass(frozen=True)
@@ -83,7 +95,7 @@ Hold = Idle | Arming | Talking | Typing
 
 # What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
 # opens it, closes it and sends it, closes it and throws it away, or closes it and sends it for being open too long. The
-# hold makes only those; engaged conversation (`hands.voice.engaged`) also has the desk listen between turns, and stop.
+# hold makes only those; the desk (`hands.voice.desk`) also has the microphone listen between turns, and stop.
 TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "timeout"]
 Move = TurnMove | Literal["listen", "deafen"]
 
