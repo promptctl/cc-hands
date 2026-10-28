@@ -31,7 +31,7 @@ jobs:
       - name: Not built on the rewound line
         run: scripts/not-rewound.sh "$GITHUB_SHA"
       - uses: ./.github/actions/setup
-      # The wake word tests fetch openWakeWord's models into pytest's cache; kept across runs, a download outage
+      # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
       # cannot fail a PR that never touched the wake word.
       - uses: actions/cache@v4
         with:
@@ -64,9 +64,9 @@ jobs:
         id: e2e
         run: |
           claude=$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' src/hands/brain/pinned.py)
-          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/test_brain_e2e.py)
+          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/conftest.py)
           test -n "$claude" || { echo "src/hands/brain/pinned.py pins no VERSION this step can read" >&2; exit 1; }
-          test -n "$mock" || { echo "tests/test_brain_e2e.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
+          test -n "$mock" || { echo "tests/conftest.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
           echo "claude=$claude" >> "$GITHUB_OUTPUT"
           echo "mock=$mock" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4

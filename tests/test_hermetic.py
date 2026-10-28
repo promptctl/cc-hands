@@ -3,12 +3,16 @@ a tmux socket directory of its own."""
 
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import huggingface_hub
 import pytest
+from huggingface_hub.errors import OfflineModeIsEnabled
 
 from conftest import executable, hermetic, without_claude
+from hands.voice.engaged import SMART_TURN
 
 
 def test_a_path_without_claude_finds_the_tools_beside_it(tmp_path: Path) -> None:
@@ -49,7 +53,8 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "LANG": "fr_FR.ISO8859-1",
         "LC_ALL": "fr_FR.ISO8859-1",
-        "HF_HUB_OFFLINE": "1",
+        "HF_HUB_OFFLINE": "0",
+        "HF_ENDPOINT": "https://hub.example.com",
         "HF_TOKEN": "hf_developer",
         "GIT_AUTHOR_NAME": "Developer",
         "HOME": "/Users/developer",
@@ -113,3 +118,16 @@ def test_what_a_test_leaves_in_its_home_or_its_tmux_directory_no_other_test_find
     for own in (Path.home(), Path(os.environ["TMUX_TMPDIR"])):
         assert list(own.iterdir()) == []
         (own / test).write_text(test)
+
+
+def test_a_test_reaches_no_hub_for_a_weight() -> None:
+    # The run fetched every weight before the first test, and left the hub in this process offline once it had.
+    with pytest.raises(OfflineModeIsEnabled):
+        huggingface_hub.HfApi().model_info(SMART_TURN)
+
+
+def test_a_child_reaches_no_hub_for_a_weight_either() -> None:
+    asked = subprocess.run([sys.executable, "-c", f"import huggingface_hub; huggingface_hub.HfApi().model_info({SMART_TURN!r})"], capture_output=True, text=True)
+
+    assert asked.returncode != 0
+    assert "OfflineModeIsEnabled" in asked.stderr, asked.stderr

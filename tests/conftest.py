@@ -14,9 +14,10 @@ import traceback
 import wave
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast
@@ -25,6 +26,7 @@ import huggingface_hub.constants
 import mlx.core as mx
 import mlx_whisper
 import pytest
+from mlx_audio.utils import get_model_path
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -46,6 +48,7 @@ from hands.sessions.wrapper import PACKAGED
 from hands.voice import engaged, streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
+from npm_registry import REGISTRY
 
 
 def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
@@ -291,20 +294,10 @@ def _dead_pid() -> int:
 
 
 @pytest.fixture(scope="session")
-def smart_turn() -> None:
-    """Smart Turn's MLX port in the hub's cache, so a desk that loads it fetches nothing."""
-    engaged.ported()
-
-
-@pytest.fixture(scope="session")
-async def models(pytestconfig: pytest.Config, smart_turn: None) -> Path:
-    """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
-    pytest's cache, beside Smart Turn in the hub's: every model a switch to the wake word loads. A fetch, so of the run,
-    as the other fetches are, and not of a test."""
-    directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
-        await fetched(directory, word)
-    return directory
+def models(pytestconfig: pytest.Config) -> Path:
+    """The wake word's models, Hey Jarvis's and Hey Mycroft's, as the run fetched them into pytest's cache, beside Smart
+    Turn in the hub's: every model a switch to the wake word loads."""
+    return pytestconfig.stash[RUN].wake_word
 
 
 @pytest.fixture
@@ -336,11 +329,9 @@ def pytest_configure() -> None:
             raise pytest.UsageError(f"{python} is Python {version}, new enough for hands, on SYSTEM_PATH, which the tests give children as a PATH with no such Python")
 
 
-# The names a test takes from the machine as they are: macOS's per-user temporary directory; CI's word that the run is
-# in CI, which in_ci reads as each report is made; and where the Hugging Face hub fetches from and whether it may, which
-# the hub in this process took from the machine as it was imported, so a child's hub fetches as this one does. pytest's
-# own PYTEST_ names are its to set and clear.
-PASSED = ("TMPDIR", "CI", "HF_HUB_OFFLINE", "HF_ENDPOINT")
+# The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
+# is in CI, which in_ci reads as each report is made. pytest's own PYTEST_ names are its to set and clear.
+PASSED = ("TMPDIR", "CI")
 
 
 def without_claude(path: str, links: Path) -> str:
@@ -364,13 +355,14 @@ def without_claude(path: str, links: Path) -> str:
 
 def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, sockets: Path) -> dict[str, str]:
     """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
-    Hugging Face `hub` cache the weights are already in, no git config but a repository's own and one identity to commit
-    as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a `home` and a tmux socket
-    directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
+    Hugging Face `hub` cache the run fetched the weights into and the hub offline, no git config but a repository's own
+    and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
+    `home` and a tmux socket directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
     tmux's or a proxy, which hands reads as a session's own, is absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
         "PATH": path,
         "HF_HUB_CACHE": hub,
+        "HF_HUB_OFFLINE": "1",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.com",
@@ -382,17 +374,50 @@ def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, socket
     }
 
 
-@pytest.fixture(scope="session")
-def machine() -> dict[str, str]:
-    """The machine's environment as the run began, for the one fetch that builds with the developer's own toolchain and
-    its caches, `go install`, and for nothing else."""
-    return dict(os.environ)
+# The canonical mock of Anthropic's API the brain's end-to-end tests run against, at the release they were written
+# against. Moving it is one commit, and CI's cache of it is keyed on it.
+MOCK_MODULE = "github.com/promptctl/mock-anthropic"
+MOCK_RELEASE = "v0.1.0"
+
+# Every speech weight a test loads, each at the revision hands pins it to.
+WEIGHTS = ((streaming.MODEL, streaming.REVISION), (streaming.DIARIZATION, streaming.DIARIZATION_REVISION), (engaged.SMART_TURN, engaged.SMART_TURN_REVISION))
+
+# The wake words whose models a switch to the wake word loads.
+WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
 
 
-@pytest.fixture(scope="session")
-def tools(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str]) -> str:
-    """The PATH the run and every test run with, its copies made once."""
-    return without_claude(machine["PATH"], tmp_path_factory.mktemp("path"))
+@dataclass(frozen=True)
+class Run:
+    """What the session start makes once for the whole run: the machine's environment as the run began, the PATH every
+    test runs with, and where each thing the run fetched is."""
+
+    machine: dict[str, str]
+    tools: str
+    wake_word: Path
+    claude_code: Path
+    mock: Path
+
+
+RUN = pytest.StashKey[Run]()
+
+
+def fetching[T](what: str, fetch: Callable[[], T]) -> T:
+    """What `fetch` gave. [LAW:no-silent-failure] one that fails stops the run before any test, naming what it could not
+    fetch and why, never a test timed out on it."""
+    try:
+        return fetch()
+    except Exception as error:
+        raise pytest.UsageError(f"the run cannot fetch {what}: {type(error).__name__}: {error}") from error
+
+
+def installed_mock(binary: Path, machine: Mapping[str, str]) -> Path:
+    """The mock at MOCK_RELEASE, built by `go install` into its release's own directory unless it is there already, so
+    the build of one release is never taken for another. Built with the machine's own environment, its toolchain and
+    caches, the one fetch that is."""
+    if not binary.is_file():
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env={**machine, "GOBIN": str(binary.parent)})
+    return binary
 
 
 def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, home: Path) -> Generator[dict[str, str]]:
@@ -411,25 +436,54 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
         yield names
 
 
-@pytest.fixture(scope="session", autouse=True)
-def run_environment(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str) -> Generator[dict[str, str]]:
-    """The run's environment from its start, so a fixture wider than a test, which pytest sets up first, runs in it too:
-    the weights' and Claude Code's fetches, the streaming pair. The hub took its token's path from the developer's HOME as
-    it was imported, so in this process too the token is one that is not there."""
-    home = tmp_path_factory.mktemp("home")
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
-        yield from entered(monkeypatch, machine, tools, home)
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test: so no test's timeout
+    counts a download, and no test reaches the network for one.
+
+    The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
+    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Warm,
+    each fetch is a look at what is already there. Then the hub in this process goes offline for the rest of the run, as
+    a child's is by its environment, so a weight the run did not fetch fails the test that loads it and never downloads
+    inside it. Undone by the config's cleanup, which runs however the session ends."""
+    config = session.config
+    stack = ExitStack()
+    config.add_cleanup(stack.close)
+    machine = dict(os.environ)
+    run = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="hands-run-")))
+    (links := run / "path").mkdir()
+    (home := run / "home").mkdir()
+    tools = without_claude(machine["PATH"], links)
+    monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
+    monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
+    stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, home))
+    for repo, revision in WEIGHTS:
+        # What mlx_audio's loads call with these arguments, so the run fetches what a load would.
+        fetching(f"{repo} at {revision} from the Hugging Face hub", partial(get_model_path, repo, revision=revision))
+    wake_word = config.cache.mkdir("wake-word")
+    for word in WAKE_WORDS:
+        fetching(f"the {word.phrase} wake word's models", partial(asyncio.run, fetched(wake_word, word)))
+    claude_code = config.cache.mkdir("claude-code")
+    installed = fetching(f"Claude Code {pinned.VERSION} from npm", partial(asyncio.run, pinned.install(claude_code, REGISTRY)))
+    mock = fetching(f"{MOCK_MODULE}@{MOCK_RELEASE}", partial(installed_mock, config.cache.mkdir("mock-anthropic") / MOCK_RELEASE / "mock-anthropic", machine))
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+    config.stash[RUN] = Run(machine, tools, wake_word, installed.path, mock)
+
+
+@pytest.fixture(scope="session")
+def machine(pytestconfig: pytest.Config) -> dict[str, str]:
+    """The machine's environment as the run began, which no test runs in."""
+    return pytestconfig.stash[RUN].machine
 
 
 @pytest.fixture(autouse=True)
-def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str, run_environment: dict[str, str]) -> Generator[dict[str, str]]:
+def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, pytestconfig: pytest.Config) -> Generator[dict[str, str]]:
     """Each test runs in the hermetic environment afresh, whatever a test before it left, with a HOME and a tmux socket
     directory of its own that hold nothing, as pytest's own pytester gives each of its runs, so ~/.claude, ~/.hands,
     ~/.gitconfig and ~/.config are all empty and no tmux server is found. [LAW:single-enforcer] conftest is the one owner
     of the environment a test runs in: a test that needs a name sets it on top, and builds no environment of its own to
     keep the developer's out."""
-    yield from entered(monkeypatch, machine, tools, tmp_path_factory.mktemp("home"))
+    run = pytestconfig.stash[RUN]
+    yield from entered(monkeypatch, run.machine, run.tools, tmp_path_factory.mktemp("home"))
 
 
 async def unread() -> InFront:
