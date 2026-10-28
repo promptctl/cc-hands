@@ -202,7 +202,10 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
         "Hey Jarvis what is the status of the build",
         "Hey Jarvis, what is the status of the build?",
         "Hey Jarvis. [[slnc 1500]] What is the status of the build?",
-        "Hey Jarvis stop",
+        # A one-word ask, in a word Smart Turn judges complete in every voice measured, so the case is the edge's and not
+        # the model's call on a borderline word: the bare "stop" in macOS 14's Samantha is one the full-precision build
+        # misses (promptctl-voice-i15t.qg8.71j).
+        "Hey Jarvis next",
     ],
 )
 async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(text: str, tmp_path: Path, models: Path) -> None:
@@ -233,9 +236,12 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
         with pytest.raises(asyncio.CancelledError):
             await driving
     assert made == ["listen", "arm", "start", "stop", "deafen"]
+    # The verdict before the silence it spared: a turn that ended on silence was judged incomplete, by the probability
+    # its facts carry.
+    judged = [event.facts for event in events if event.event == "trigger.judged"]
+    assert [facts["complete"] for facts in judged] == [True], judged
     [awake] = [event for event in events if event.event == "trigger.awake"]
     assert dict(awake.counts)["ended_on_silence"] == 0
-    assert [event.facts["complete"] for event in events if event.event == "trigger.judged"] == [True]
 
 
 JARVIS = PRETRAINED["Hey Jarvis"]
