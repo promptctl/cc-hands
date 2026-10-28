@@ -71,8 +71,10 @@ class Run:
 def pauses(audio: np.ndarray) -> list[tuple[int, int]]:
     """Spans of `audio` louder than 35 dB below its loudest, in 1024-sample frames centred every 160 samples, as
     librosa.effects.split cuts them."""
-    frames = np.lib.stride_tricks.sliding_window_view(np.pad(audio, 512), 1024)[::160]
-    level = 20 * np.log10(np.sqrt((frames**2).mean(axis=1)) + 1e-10)
+    # Each frame's power from a running sum of the squared samples, so an hour's frames are never all held at once.
+    power = np.concatenate([[0.0], np.cumsum(np.pad(audio, 512).astype(np.float64) ** 2)])
+    starts = np.arange(0, len(audio) + 1, 160)
+    level = 10 * np.log10((power[starts + 1024] - power[starts]) / 1024 + 1e-20)
     loud = np.concatenate([[False], level > level.max() - 35, [False]])
     edges = np.flatnonzero(np.diff(loud.astype(np.int8)))
     return [(start * 160, min(end * 160, len(audio))) for start, end in zip(edges[0::2], edges[1::2])]

@@ -20,6 +20,7 @@ from typing import Any, Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
+from loguru import logger
 
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, unit
@@ -47,10 +48,11 @@ CHUNK = SUBSAMPLING * (1 + LOOKAHEAD)
 PRESET = "ultra_low"
 STEP = 3 * SUBSAMPLING
 AHEAD = 1 * SUBSAMPLING
-# [LAW:one-source-of-truth] how many chunks a speaker's stream is still stepped after the last chunk they were heard in,
-# which is also how long after a hold the session is fed silence: every speaker of the hold is gated off, its last words
-# decoded, before the next hold's first sample. mlx-audio's default of 2 froze a speaker before their last word came out,
-# and it surfaced in their next hold.
+# [LAW:one-source-of-truth] how many chunks a speaker's stream is stepped from the last chunk they were heard in, that
+# one included, so GATING - 1 after it; and how many chunks past a hold's last the session is fed silence, which leaves
+# one more for the diarizer to hear them go quiet: every speaker of the hold is gated off, its last words decoded,
+# before the next hold's first sample. mlx-audio's default of 2 froze a speaker before their last word came out, and it
+# surfaced in their next hold.
 GATING = 4
 
 
@@ -254,6 +256,8 @@ class StreamingRecognizer:
         try:
             move(self._stream)
         except Exception as error:
+            # Each hold from here fails saying why; where in the pair it broke is said once, here.
+            logger.opt(exception=error).error("the streaming session's decoding broke; no hold is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
     def _ended(self, silence: int) -> Ended:

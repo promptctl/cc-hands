@@ -14,6 +14,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import soundfile
+from loguru import logger
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
@@ -214,10 +215,18 @@ async def test_decoding_that_fails_breaks_the_runs_stream_and_each_hold_from_it_
     # The models' caches are left in a state nothing vouches for, and the grid hearings are timed on with them.
     session = Scripted([(), (), (), said("stop")], failing=frozenset({2}))
     rig = rigged(session)
-    for number in (1, 2):
-        await rig.opened(Hold(number, "engaged conversation"), sound(0))
-        await rig.heard(Hold(number, "engaged conversation"), sound(seconds(2 * STEPPED)))
-        await rig.ended(Hold(number, "engaged conversation"), "sent")
+    logged: list[Any] = []
+    sink = logger.add(lambda message: logged.append(message.record), level="ERROR")
+    try:
+        for number in (1, 2):
+            await rig.opened(Hold(number, "engaged conversation"), sound(0))
+            await rig.heard(Hold(number, "engaged conversation"), sound(seconds(2 * STEPPED)))
+            await rig.ended(Hold(number, "engaged conversation"), "sent")
+    finally:
+        logger.remove(sink)
+    # Where in the pair it broke is said once, with what was raised there.
+    [broke] = logged
+    assert broke["exception"].value.args == ("Metal ran out of memory",)
     failed = ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory")
     # The second hold, further along the run's grid, completes two steps.
     assert [(event.outcome, event.error) for event in hearings(rig.recorded)] == [("ok", None), failed, ("ok", None), ("ok", None), failed]
@@ -403,7 +412,7 @@ def test_each_word_is_the_speaker_who_said_it_and_stays_in_the_hold_it_was_said_
 
 def test_a_hold_whose_silence_ends_exactly_where_its_speaker_is_gated_off_keeps_its_last_word() -> None:
     # The worst phase: the hold ends where the step that commits GATING chunks past its last sample has none to spare, so
-    # its speaker's stream is stepped for the last time in the last chunk of silence. Then another speaker's hold.
+    # the silence ends one chunk after its speaker's stream is stepped for the last time. Then another speaker's hold.
     first, second = fixture_holds("two_speakers_ami.flac")[3:5]
 
     def committed(samples: int) -> int:
