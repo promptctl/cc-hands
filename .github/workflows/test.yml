@@ -37,24 +37,26 @@ jobs:
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
-      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization on real sound, fetched into
-      # the Hugging Face cache at the revisions streaming.py pins; kept the same way, for the same reason. The whole hub:
-      # a model's directory holds only links into the hub's shared store of blobs, where its weights are. Keyed on the
-      # revisions, the one thing the weights depend on, so an edit to the rest of the file still finds them.
+      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, and the engaged tests run
+      # Smart Turn on MLX, on real sound, fetched into the Hugging Face cache at the revisions streaming.py and engaged.py
+      # pin; kept the same way, for the same reason. The whole hub: a model's directory holds only links into the hub's
+      # shared store of blobs, where its weights are. Keyed on the revisions, the one thing the weights depend on, so an
+      # edit to the rest of either file still finds them.
       - name: The speech models' pinned revisions
-        id: nemotron
+        id: speech
         run: |
           revisions=""
-          for name in REVISION DIARIZATION_REVISION; do
-            revision=$(sed -n "s/^$name = \"\([0-9a-f]*\)\"$/\1/p" src/hands/voice/streaming.py)
-            test -n "$revision" || { echo "streaming.py pins no $name this step can read" >&2; exit 1; }
+          for pin in streaming.py:REVISION streaming.py:DIARIZATION_REVISION engaged.py:SMART_TURN_REVISION; do
+            file=${pin%%:*} name=${pin#*:}
+            revision=$(sed -n "s/^$name = \"\([0-9a-f]*\)\"$/\1/p" "src/hands/voice/$file")
+            test -n "$revision" || { echo "$file pins no $name this step can read" >&2; exit 1; }
             revisions="$revisions-$revision"
           done
           echo "revisions=$revisions" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface/hub
-          key: nemotron${{ steps.nemotron.outputs.revisions }}
+          key: speech${{ steps.speech.outputs.revisions }}
       # The brain's end-to-end tests run the pinned Claude Code, fetched into pytest's cache against its checksum, and the
       # mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the pin and on the release.
       - name: The brain's pinned Claude Code and the mock's release

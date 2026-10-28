@@ -429,7 +429,8 @@ async def converse(
             case "held key":
                 await drive_talk_key(lambda move: at_desk(move, "held key"))
             case "engaged conversation":
-                # Loaded as the trigger is switched to, in about half a second, and let go of as it is switched from.
+                # Loaded as the trigger is switched to, from the hub's cache the switch fetched Smart Turn into, and let go of as it
+                # is switched from.
                 async with loaded(voice.audio.input().sample_rate, record) as ears:
                     await drive_engaged(tapped, voice.audio.input().overheard, ears, lambda move: at_desk(move, "engaged conversation"), record)
             case "wake word":

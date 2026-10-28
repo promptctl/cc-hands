@@ -13,6 +13,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent
 from hands.voice.engaged import (
+    SMART_TURN,
+    SMART_TURN_REVISION,
     STOP_SECS,
     Act,
     Engagement,
@@ -235,11 +237,24 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
-    assert [(event.event, event.outcome, event.facts) for event in events] == [("trigger.loaded", "ok", {"vad_stop_secs": STOP_SECS})]
+    assert [(event.event, event.outcome, event.facts) for event in events] == [
+        ("trigger.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
+    ]
 
 
 def quiet(seconds: float) -> bytes:
     return bytes(round(16_000 * seconds) * 2)
+
+
+@pytest.mark.parametrize(("said", "complete"), [("create a ticket to read session history.", True), ("can you tell me about the", False)])
+async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool, tmp_path: Path) -> None:
+    # As the edge gives it: the speech as speech, then the silence the detector ends it at, then the question.
+    audio = spoken(said, tmp_path / "said.wav")
+    async with loaded(16000, lambda event: None) as models:
+        for at in range(0, len(audio), 640):
+            models.heard(audio[at : at + 640], True)
+        models.heard(quiet(STOP_SECS), False)
+        assert (await models.judge())[0] is complete
 
 
 async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models(tmp_path: Path) -> None:

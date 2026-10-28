@@ -47,6 +47,7 @@ from hands.sessions import attention as settings
 from hands.core import playback, status
 from hands.core.place import Modality
 from hands.voice.trigger import Trigger, Triggers, described, readied
+from hands.voice.engaged import Unported
 from hands.voice.wake import Unheard
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
@@ -896,7 +897,7 @@ def trigger_tools(triggers: Triggers, models: Path, wake: Word) -> list[Tool]:
         """
         try:
             fetched = await readied(trigger, models, wake)
-        except (aiohttp.ClientError, TimeoutError, OSError, Unheard) as error:
+        except (aiohttp.ClientError, TimeoutError, OSError, Unheard, Unported) as error:
             return {"error": f"{trigger} could not be readied: {error}", "trigger": triggers.in_use, "readback": f"The {trigger} could not be set up, so the trigger stays as it was."}
         was = triggers.choose(trigger)
         # [LAW:nothing-unseen] the trigger it replaced and the files fetched for it land on the call's event, so a switch,

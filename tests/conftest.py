@@ -32,7 +32,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import streaming
+from hands.voice import engaged, streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 
@@ -192,10 +192,16 @@ def _dead_pid() -> int:
     return process.pid
 
 
+@pytest.fixture(scope="session")
+def smart_turn() -> None:
+    """Smart Turn's MLX port in the hub's cache, so a switch to an edge it judges for fetches nothing."""
+    engaged.readied()
+
+
 @pytest.fixture
-async def models(pytestconfig: pytest.Config) -> Path:
+async def models(pytestconfig: pytest.Config, smart_turn: None) -> Path:
     """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
-    pytest's cache."""
+    pytest's cache, beside Smart Turn in the hub's: every model a switch to the wake word loads."""
     directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
     for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
         await fetched(directory, word)

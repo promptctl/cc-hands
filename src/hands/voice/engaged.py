@@ -22,15 +22,18 @@ from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol, get_args
+from typing import Any, Literal, Protocol, cast, get_args
 
+import numpy as np
+from huggingface_hub import try_to_load_from_cache
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.turn.smart_turn.base_smart_turn import BaseSmartTurn
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, annotate, count, unit
+from hands.threads import settles_off_loop
 from hands.voice.hold import TURN_LIMIT_SECONDS, Hold, Idle, Instant, KeyEvent, Move, step as hold_step
 
 
@@ -234,13 +237,63 @@ class Ears(Protocol):
 STOP_SECS = 0.8
 
 
+# Smart Turn v3.2 ported to MLX, fetched from the Hugging Face hub into its cache on the first load, at the revision
+# measured for it.
+SMART_TURN = "mlx-community/smart-turn-v3"
+SMART_TURN_REVISION = "74af1538ebace37b0fcc667a6a8a3d902d73eee0"
+# The port's weights, under the name its repository gives them: in the hub's cache once the port is fetched.
+SMART_TURN_WEIGHTS = "model.safetensors"
+
+
+class Unported(Exception):
+    """Smart Turn's port could not be fetched or loaded, and why."""
+
+
+def ported() -> Any:
+    """Smart Turn's MLX port, fetched into the hub's cache unless it is there already, with every weight loaded."""
+    # mlx-audio ships no types.
+    from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+
+    try:
+        # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be
+        # left at random and every verdict after it noise.
+        return cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True))
+    except Exception as error:
+        # [LAW:single-enforcer] every way the port is not got is one error, naming the port, which a switch is refused
+        # with: the hub's errors, its client's, a strict load's, and MLX's on a damaged file are each a different class,
+        # and mlx-audio, untyped, says which of them it raises nowhere.
+        raise Unported(f"Smart Turn, {SMART_TURN} at {SMART_TURN_REVISION}: {error}") from error
+
+
+def readied() -> tuple[str, ...]:
+    """Smart Turn loaded once, fetched first unless the hub's cache holds it, so a switch to an edge it judges for is
+    refused as it is asked for (`hands.voice.trigger.readied`): its name if it was fetched."""
+    cached = isinstance(try_to_load_from_cache(SMART_TURN, SMART_TURN_WEIGHTS, revision=SMART_TURN_REVISION), str)
+    ported()
+    return () if cached else (SMART_TURN,)
+
+
+class SmartTurn(BaseSmartTurn):
+    """Smart Turn v3.2 on MLX: Pipecat's analyzer keeps the speech, times the silence, and cuts the segment, and the port
+    judges it. The port is converted from the full-precision build, which Pipecat's benchmark puts ahead of the quantized
+    one its own local analyzer runs on the CPU, and judges a segment in a fifth of the time."""
+
+    def __init__(self, sample_rate: int) -> None:
+        super().__init__(sample_rate=sample_rate)
+        self._model = ported()
+
+    def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
+        verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
+        return {"prediction": verdict.prediction, "probability": verdict.probability}
+
+
 class Models:
-    """Silero's voice activity detector and Smart Turn v3, run locally on the CPU, both shipped inside Pipecat."""
+    """Silero's voice activity detector, on the CPU as Pipecat ships it, and Smart Turn on MLX."""
 
     def __init__(self, sample_rate: int) -> None:
         self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
-        self._turn = LocalSmartTurnAnalyzerV3(sample_rate=sample_rate)
+        self._turn = SmartTurn(sample_rate)
         self._turn.set_sample_rate(sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
@@ -278,10 +331,13 @@ class Models:
 @asynccontextmanager
 async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, for as long as the edge listens with them."""
-    loading = asyncio.create_task(asyncio.to_thread(Models, sample_rate))
+    # On a thread of its own the process does not join at exit (hands.threads), as every model's load is.
+    loading = settles_off_loop(lambda: Models(sample_rate), "Models")
     try:
         with unit("trigger.loaded", emit):
-            # [LAW:nothing-unseen] the pause the detector ends speech at, as it was loaded with it.
+            # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
+            # pause the detector ends speech at, as it was loaded with it.
+            annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
             annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
         yield loading.result()
     finally:

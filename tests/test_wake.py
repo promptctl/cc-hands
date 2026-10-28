@@ -3,6 +3,7 @@ detector hears silence."""
 
 import ast
 import asyncio
+import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -150,9 +151,16 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     assert events[0].parent_id == events[1].span_id
 
 
-def said(text: str, at: Path) -> bytes:
-    """`text` spoken by macOS's own voice with a second of silence either side."""
-    return bytes(SAMPLE_RATE * 2) + spoken(text, at) + bytes(SAMPLE_RATE * 2)
+def said(asked: str | Path, at: Path) -> bytes:
+    """What is `asked`, with a second of silence either side: text spoken by macOS's own voice, or a clip it was recorded
+    in once."""
+    match asked:
+        case str():
+            audio = spoken(asked, at)
+        case Path():
+            with wave.open(str(asked)) as clip:
+                audio = clip.readframes(clip.getnframes())
+    return bytes(SAMPLE_RATE * 2) + audio + bytes(SAMPLE_RATE * 2)
 
 
 def wakes(word: WakeWord, audio: bytes) -> bool:
@@ -197,18 +205,21 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
 
 
 @pytest.mark.parametrize(
-    "text",
+    "asked",
     [
         "Hey Jarvis what is the status of the build",
         "Hey Jarvis, what is the status of the build?",
         "Hey Jarvis. [[slnc 1500]] What is the status of the build?",
-        "Hey Jarvis stop",
+        # A one-word ask, recorded once in macOS 26's Samantha (`say -v Samantha --data-format=LEI16@16000`): each
+        # release's Samantha says one word differently enough to move the wake word, the detector, or Smart Turn's
+        # verdict, so said afresh it tests the voice and not the edge (promptctl-voice-i15t.qg8.71j).
+        pytest.param(Path(__file__).parent / "fixtures" / "hey_jarvis_stop.wav", id="Hey Jarvis stop"),
     ],
 )
-async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(text: str, tmp_path: Path, models: Path) -> None:
+async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(asked: str | Path, tmp_path: Path, models: Path) -> None:
     """Silero, Smart Turn, and the wake word's model, real, on macOS's own voice: Smart Turn's verdict on what was asked
     sends the turn, not the silence after it, and not the pause after the wake word."""
-    audio = said(text, tmp_path / "asked.wav") + bytes(SAMPLE_RATE * 2 * 4)
+    audio = said(asked, tmp_path / "asked.wav") + bytes(SAMPLE_RATE * 2 * 4)
     made: list[Move] = []
     events: list[WideEvent] = []
 
@@ -233,9 +244,12 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
         with pytest.raises(asyncio.CancelledError):
             await driving
     assert made == ["listen", "arm", "start", "stop", "deafen"]
+    # The verdict before the silence it spared: a turn that ended on silence was judged incomplete, by the probability
+    # its facts carry.
+    judged = [event.facts for event in events if event.event == "trigger.judged"]
+    assert [facts["complete"] for facts in judged] == [True], judged
     [awake] = [event for event in events if event.event == "trigger.awake"]
     assert dict(awake.counts)["ended_on_silence"] == 0
-    assert [event.facts["complete"] for event in events if event.event == "trigger.judged"] == [True]
 
 
 JARVIS = PRETRAINED["Hey Jarvis"]

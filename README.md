@@ -78,7 +78,9 @@ is not, what does it; it exits 0 only when every step is done.
 
 8. hands itself, in that terminal; then hold Right Shift in any app to talk. Its first
    start fetches Whisper's model, about 1.6 GB, NVIDIA's Nemotron Speech Streaming, about
-   2.3 GB, and Nemotron 3 Diarization on MLX, about 190 MB, from the Hugging Face hub:
+   2.3 GB, and Nemotron 3 Diarization on MLX, about 190 MB, from the Hugging Face hub. The
+   first switch to engaged conversation or the wake word fetches Smart Turn on MLX, about
+   32 MB, from there too:
 
    ```
    hands run
