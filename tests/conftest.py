@@ -1,6 +1,7 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
+import gc
 import hashlib
 import json
 import os
@@ -9,15 +10,19 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 import wave
-from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
+import weakref
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from importlib.metadata import metadata
 from pathlib import Path
+from typing import cast
 
 import huggingface_hub.constants
+import mlx.core as mx
 import mlx_whisper
 import pytest
 from packaging.specifiers import SpecifierSet
@@ -173,6 +178,49 @@ class Unspoken:
 
     def closed(self) -> streaming.Closed:
         return streaming.Closed(frozenset(), ())
+
+
+def chained(error: BaseException | None) -> Iterator[BaseException]:
+    """`error`, and every exception it was raised from, raised while handling, or groups, each once."""
+    seen: set[int] = set()
+    pending = [error]
+    while pending:
+        match pending.pop():
+            case BaseException() as each if id(each) not in seen:
+                seen.add(id(each))
+                yield each
+                pending += [each.__cause__, each.__context__, *(cast(BaseExceptionGroup[BaseException], each).exceptions if isinstance(each, BaseExceptionGroup) else ())]
+            case _:
+                pass
+
+
+@dataclass
+class Pairs:
+    """The one owner of every real pair of streaming models the suite loads: it holds 2.7 GB, and a second beside it
+    outgrows CI's VMs, whose GPU then times out loading the next. Each module loads its pair through `loaded`, on
+    whichever thread its models are to run on."""
+
+    _loaded: list[weakref.ref[streaming.Session]] = field(default_factory=list[weakref.ref[streaming.Session]])
+
+    def loaded(self, load: Callable[[], streaming.Session]) -> streaming.Session:
+        """The pair `load` gives, once no pair loaded before is held any more."""
+        # pytest keeps a failed test's exception, and with it the frames that held its pair, until the next test's call,
+        # which a pair loaded in that test's setup comes before: its own frames, and those of every exception it chains
+        # or groups.
+        for error in chained(getattr(sys, "last_exc", None)):
+            traceback.clear_frames(error.__traceback__)
+        gc.collect()
+        # [LAW:no-ambient-temporal-coupling] a pair is let go of where the next is loaded, whichever module runs first.
+        held = sum(pair() is not None for pair in self._loaded)
+        assert held == 0, f"{held} pair(s) of streaming models still held as another is loaded"
+        mx.clear_cache()
+        pair = load()
+        self._loaded.append(weakref.ref(pair))
+        return pair
+
+
+# [LAW:no-shared-mutable-globals] the suite's one owner of the pairs it loads.
+PAIRS = Pairs()
 
 
 @pytest.fixture(autouse=True)
