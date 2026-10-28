@@ -45,14 +45,23 @@ class Uninstallable(Exception):
     hash to the pin. Nothing is left in its place."""
 
 
+class _Unwritten(Exception):
+    """A write of fetched bytes into the partial failed: the disk's failure, told apart from the source's."""
+
+    def __init__(self, error: OSError) -> None:
+        super().__init__(error)
+        self.error = error
+
+
 # What a fetch hands each chunk of a build's bytes to, in order.
 Write = Callable[[bytes], object]
 
 
 @dataclass(frozen=True)
 class Source:
-    """Where a build of the pin is fetched from: the URL of each build, and the fetch that writes the bytes at that URL,
-    raising Uninstallable, naming the URL, when it cannot. What it fetched is the pin only if it hashes to CHECKSUMS."""
+    """Where a build of the pin is fetched from: the URL of each build, and the fetch that writes the bytes at that URL.
+    Whatever the fetch raises, install reports as that URL's failure; what it wrote is the pin only if it hashes to
+    CHECKSUMS."""
 
     url: Callable[[str], str]
     fetch: Callable[[str, Write], Awaitable[None]]
@@ -147,10 +156,19 @@ async def install(config_dir: Path, source: Source) -> Installed:
         with partial.open("wb") as written:
 
             def write(chunk: bytes) -> None:
+                try:
+                    written.write(chunk)
+                except OSError as error:
+                    raise _Unwritten(error) from error
                 digest.update(chunk)
-                written.write(chunk)
 
-            await source.fetch(url, write)
+            try:
+                await source.fetch(url, write)
+            except _Unwritten as unwritten:
+                raise unwritten.error from None
+            except Exception as error:
+                # [LAW:single-enforcer] every source's failure is classified here, once: what is not the disk's is the fetch's.
+                raise Uninstallable(f"could not fetch {url}: {error!r}") from error
         # [LAW:single-enforcer] whatever the source, the bytes are the pin's before they are put in its place.
         if digest.hexdigest() != CHECKSUMS[built]:
             raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
@@ -166,16 +184,13 @@ async def install(config_dir: Path, source: Source) -> Installed:
     return Installed(target, unpinned)
 
 
-async def _downloaded(url: str, write: Write) -> None:
-    """Anthropic's release download at `url`, written as it arrives."""
+async def download(url: str, write: Write) -> None:
+    """The body at `url`, written as it arrives, failing on a stall rather than hanging."""
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=STALL_SECONDS, sock_read=STALL_SECONDS)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http, http.get(url) as response:
-            async for chunk in response.content.iter_chunked(_CHUNK):
-                write(chunk)
-    except (aiohttp.ClientError, TimeoutError) as error:
-        raise Uninstallable(f"could not fetch {url}: {error!r}") from error
+    async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http, http.get(url) as response:
+        async for chunk in response.content.iter_chunked(_CHUNK):
+            write(chunk)
 
 
 # The release as Anthropic serves it, the one `hands install-brain` fetches.
-RELEASE = Source(url=lambda built: f"{RELEASES}/{VERSION}/{built}/claude", fetch=_downloaded)
+RELEASE = Source(url=lambda built: f"{RELEASES}/{VERSION}/{built}/claude", fetch=download)

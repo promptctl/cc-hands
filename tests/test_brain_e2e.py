@@ -7,16 +7,12 @@ the tests run on a machine with none, as CI's is. The pinned Claude Code, from n
 once, into pytest's cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
-import http.client
 import json
 import os
 import pwd
 import shlex
 import subprocess
-import tarfile
 import time
-import urllib.error
-import urllib.request
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +40,7 @@ from hands.voice.refocus import Refocus
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
+from npm_registry import REGISTRY
 from test_stage import Spoken
 
 # The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
@@ -118,32 +115,6 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
     # script. An outcome the mock adds later fails here until it is named.
     faults = [line for line in log.read_text().splitlines() if not line.startswith(FINE)]
     assert not faults, "\n".join(faults)
-
-
-async def unpacked(url: str, write: pinned.Write) -> None:
-    """The `package/claude` of npm's package at `url`, written as the tarball streams in."""
-
-    def unpack() -> None:
-        with urllib.request.urlopen(url, timeout=pinned.STALL_SECONDS) as response, tarfile.open(fileobj=response, mode="r|gz") as package:
-            member = next((member for member in package if member.name == "package/claude"), None)
-            extracted = package.extractfile(member) if member else None
-            if extracted is None:
-                raise pinned.Uninstallable(f"{url} holds no package/claude file")
-            while chunk := extracted.read(1 << 20):
-                write(chunk)
-
-    try:
-        await asyncio.to_thread(unpack)
-    except (urllib.error.URLError, http.client.HTTPException, ConnectionError, TimeoutError, tarfile.TarError) as error:
-        raise pinned.Uninstallable(f"could not fetch {url}: {error!r}") from error
-
-
-# The pin as npm's registry serves it: each build of a Claude Code release is a package of its own, whose `package/claude`
-# is the bytes of Anthropic's release, so the tests take the pin without a connection to Anthropic.
-REGISTRY = pinned.Source(
-    url=lambda built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{pinned.VERSION}.tgz",
-    fetch=unpacked,
-)
 
 
 @pytest.fixture(scope="session")
