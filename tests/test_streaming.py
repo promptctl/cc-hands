@@ -496,7 +496,9 @@ def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any) -> N
         live.spoken(np.concatenate([holds[number - 1], STOP]))
     first, second = holds[3 - 1], holds[12 - 1]
     opened, heard = live.session.fed, len(timed.tokens)
-    live.spoken(np.concatenate([first, second, STOP]))
+    _, whole = live.spoken(np.concatenate([first, second, STOP]))
+    # hands gives each person's words as theirs, FEE013's first: in the order each was first heard in the hold.
+    assert [said.speaker for said in whole.words] == [0, 1], whole.words
     boundary = seconds(opened + len(first))
     words = [(speaker, start) for speaker, start, text in timed.tokens[heard:] if any(map(str.isalnum, text))]
     # Each person's words start in their own stretch of the hold, and nobody else's do. mlx-audio dates a word from the
