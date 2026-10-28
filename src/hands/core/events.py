@@ -5,7 +5,7 @@ from typing import Literal
 
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Blocker, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
+from hands.core.session import Blocker, DenyAndInterrupt, Instant, Membership, FinishedCall, Mode, PromptId, RequestId, SessionId
 from hands.core.status import Report, Stamp
 from hands.core.stopfailure import StopFailed
 from hands.core.turn import AgentId, AgentTask
@@ -293,6 +293,15 @@ class Abandoned:
 
 
 @dataclass(frozen=True)
+class Ending:
+    """hands is ending what the session runs, until a prompt starts new work: every dialog it holds, and each one asked
+    meanwhile, is refused with `refusal`, which ends the turn it is in."""
+
+    session: SessionId
+    refusal: DenyAndInterrupt
+
+
+@dataclass(frozen=True)
 class Tick:
     """The one clock the reducer hears: when a burst of progress has settled is read against it, never against a timer."""
 
@@ -303,9 +312,12 @@ class Tick:
 # What moves a live session on its axes; its end is the one session event that moves none of them.
 Moving = Prompted | Stopped | Closed | Interrupted | CarriedOut | Taken | Continued | Unqueued | Launched | ReportedBack | Read | StatusReported | PermissionRequested | ToolFinished
 SessionEvent = Moving | Progressed | Displayed | Occurred | Ended
+# What a hook of a running session says happened in it, besides a permission request, which reaches the model only as it
+# is held (Sessions.hold) and never as one more event applied.
+Hooked = Prompted | Stopped | ToolFinished | Occurred
 # What a session's transcript says that none of its hooks do: of its turn, of its subagents in the background, and how
 # far it has been read.
 Transcribed = Taken | Interrupted | CarriedOut | Continued | Unqueued | Launched | ReportedBack | Progressed | Read
 # What the liveness sweep saw in one membership file.
 Observed = Attached | Died | MovedOn
-Event = Joined | Located | Observed | SessionEvent | Abandoned | Tick
+Event = Joined | Located | Observed | SessionEvent | Abandoned | Ending | Tick

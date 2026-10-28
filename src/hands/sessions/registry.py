@@ -239,24 +239,39 @@ class Sessions:
             del self._waiting[event.request]
             self._let_go.discard(event.request)
 
-    async def ask(self, event: PermissionRequested) -> HookReply:
-        """Apply a permission request and wait for its reply: an answer, or a withdrawal."""
+    def hold(self, event: PermissionRequested) -> "asyncio.Future[HookReply]":
+        """Hold a permission request in the model now, as it is called, and return the future its hook is answered
+        through: resolved only by the reply the model decides for it, an answer or a withdrawal, never with an error.
+
+        [LAW:no-ambient-temporal-coupling] the future is registered before the event is decided, so no reply can be
+        decided before there is somewhere for it to go; and the event is decided in this call, so the request is held
+        from the moment its hook arrives, whatever runs next. What performing the rest of what it decided raises is the
+        registry's to say, as for any event heard where nothing waits on it (`hear`)."""
+        waiting: asyncio.Future[HookReply] = asyncio.get_running_loop().create_future()
         if self._released:
             # A hook that reached the socket as shutdown began would otherwise wait with nothing left to answer it.
-            return Withdraw()
-        waiting = asyncio.get_running_loop().create_future()
-        # [LAW:no-ambient-temporal-coupling] registered before the event is applied, so no reply can be decided
-        # before there is somewhere for it to go.
+            waiting.set_result(Withdraw())
+            return waiting
         self._waiting[event.request] = waiting
+        waiting.add_done_callback(lambda _: self._forget(event.request, waiting))
+        self.hear(event)
+        return waiting
+
+    def _forget(self, request: RequestId, waiting: "asyncio.Future[HookReply]") -> None:
+        if self._waiting.get(request) is waiting:
+            del self._waiting[request]
+        self._let_go.discard(request)
+
+    async def waited(self, event: PermissionRequested, replying: "asyncio.Future[HookReply]") -> HookReply:
+        """The reply a held request's hook is answered with, waited on by the handler its hook posted to."""
         try:
-            await self.apply(event)
-            return await waiting
+            return await replying
         except asyncio.CancelledError:
             # The hook's connection closed: the user answered No or Esc at the dialog, which kills the hook, or
-            # Claude Code gave up on it, or exited. No reply can reach it now, so the session stops waiting,
-            # and a voice answer after this is told the request is gone.
+            # Claude Code gave up on it, or exited. No reply can reach it now, so the session stops waiting on that
+            # dialog, and a voice answer after this is told the request is gone.
             # [LAW:no-silent-failure] a reply decided in the instant before the close was logged as sent; this says it was not.
-            match waiting.result() if waiting.done() and not waiting.cancelled() else None:
+            match replying.result() if replying.done() and not replying.cancelled() else None:
                 case None | Withdraw():
                     # Nothing was decided, or only a withdrawal, which prints nothing either way.
                     lost = ""
@@ -265,9 +280,6 @@ class Sessions:
             logger.info(f"the hook for session {event.session} request {event.request} closed{lost}")
             await self.apply(Abandoned(event.session, event.request, self._clock()))
             raise
-        finally:
-            del self._waiting[event.request]
-            self._let_go.discard(event.request)
 
     def release_waiting(self) -> None:
         """At shutdown, let every waiting hook go undecided, and every later one as it asks: its session's own dialog stands, and the daemon can exit."""
@@ -278,14 +290,27 @@ class Sessions:
                 waiting.set_result(Withdraw())
                 self._let_go.add(request)
 
-    async def answer(self, request: RequestId, decision: Decision) -> Outcome:
+    def answer(self, request: RequestId, decision: Decision) -> Outcome:
+        """Answer a held request: decided, and its reply handed to the hook waiting on it, in this call."""
         answered = Answer(request, decision)
         before = self._registry
-        self._registry, outcome, effects = answer(before, answered)
-        if not _quiet(before, self._registry, effects):
-            performed = _unperformed(effects)
-            # Performed at once, in no session's order: the session is waiting on this very reply.
-            await self._applied(answered, performed, self._perform_all(performed, list(range(len(performed)))), begun())
+        self._registry, outcome, reply = answer(before, answered)
+        match reply:
+            case None:
+                # NotWaiting or Unfit: nothing changed and nothing is sent, so no event (`_quiet`); the tool call that
+                # gave it says what came of it.
+                pass
+            case Reply(session=session, request=held, reply=sent):
+                # Performed at once, in no session's order: the session is waiting on this very reply, and its hook is
+                # answered by the time the call returns.
+                applying = begun()
+                began = time.monotonic()
+                self._reply(session, held, sent)
+                performed = [Performed(reply, "ok", since(began), None)]
+                finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+                finished.set_result(None)
+                self._hearing.add(recording := asyncio.ensure_future(self._applied(answered, performed, finished, applying)))
+                recording.add_done_callback(self._performed)
         return outcome
 
     async def draft(self, request: DraftRequest) -> DraftOutcome:

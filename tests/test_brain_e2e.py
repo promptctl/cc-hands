@@ -15,6 +15,7 @@ import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,9 @@ from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
 from hands.brain import pinned
-from hands.brain.process import starting_settings, workdir
+from hands.brain.process import BROKEN, STOPPED, starting_settings, workdir
+from hands.core.effects import Deny
+from hands.core.session import DenyAndInterrupt
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
@@ -315,3 +318,104 @@ async def test_a_connection_the_brain_makes_past_loopback_is_refused_by_the_os(m
     # nc's own words, in the result of its call: Claude Code's prompt says "Operation not permitted" too.
     results = [answer.text for request in hands.sent for answer in tool_answers(request.body)]
     assert any("192.0.2.1" in result and "Operation not permitted" in result for result in results), results
+
+
+
+# Two addresses no setting of the brain's allows, so each WebFetch of one is asked about in default mode. WebFetch is
+# concurrency-safe, so two in one reply run their permission checks at once and Claude Code stacks their dialogs, the
+# later beneath the earlier (cmt-36bc6251, read from 2.1.308, proved here).
+ADDRESSES = ("https://example.com/first", "https://example.org/second")
+
+
+def fetch(url: str) -> dict[str, object]:
+    return {"type": "tool_use", "name": "WebFetch", "input": {"url": url, "prompt": "what does it say?"}}
+
+
+def permissions(recorded: list[Entry]) -> list[WideEvent]:
+    return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "brain.permission"]
+
+
+def overlap(one: WideEvent, other: WideEvent) -> bool:
+    """Whether each began before the other ended: held at once."""
+    ends = [event.started_at + timedelta(milliseconds=event.duration_ms) for event in (one, other)]
+    return one.started_at < ends[1] and other.started_at < ends[0]
+
+
+def shown(hands: Hands) -> str:
+    """The last lines the brain's terminal showed."""
+    return hands.stage._brain._claude.shown()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+
+
+def held(hands: Hands) -> tuple[object, ...]:
+    """The dialogs the brain's model holds now: what Claude Code has stacked, the first on its screen."""
+    session = hands.stage._brain._modelled()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+    return () if session is None else session.dialogs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+
+
+async def test_two_fetches_the_brain_asks_about_at_once_are_held_together_and_each_put_to_the_user_in_the_order_asked(mock_api: MockApi, hands: Hands) -> None:
+    """Both hooks are open at once and both dialogs held in the brain's model; each is put to the user in turn, and each
+    refusal goes to the dialog it answers."""
+    mock_api.script("1-unfetched", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "I left them unfetched."})
+    mock_api.script("2-fetch", {"lastUserContains": ["fetch both pages"], "bodyContains": [TURN]}, *(fetch(url) for url in ADDRESSES), stop="tool_use")
+    await connected(hands)
+    await hands.say("fetch both pages")
+    await hands.until(lambda: len(held(hands)) == 2)
+    # The dialog on the brain's screen is the first held, the one asked first. It is drawn below whatever lists the calls,
+    # so the screen's last mention of either domain is the dialog's.
+    await hands.until(lambda: (screen := shown(hands)).rfind("example.com") > screen.rfind("example.org"))
+    for url in ADDRESSES:
+        await hands.until(lambda: f"May I use WebFetch on {url}? Say yes to allow it." in hands.out.said())
+        await hands.say("no")
+    await hands.until(lambda: "I left them unfetched." in "".join(hands.out.said()))
+    one, other = permissions(hands.recorded)
+    assert overlap(one, other)
+    assert [(event.facts["tool"], type(event.facts["decision"])) for event in (one, other)] == [("WebFetch", Deny)] * 2
+
+
+@pytest.mark.parametrize("fetches", [1, 2], ids=["one dialog on screen", "one on screen and one stacked beneath it"])
+async def test_a_stop_pressed_while_the_brain_holds_dialogs_refuses_each_with_interrupt_and_ends_the_turn(mock_api: MockApi, hands: Hands, fetches: int) -> None:
+    """Every refusal of a stopped turn ends it, so no request carrying one reaches the mock: none is scripted, and the
+    mock's fault check fails the test on any request it has no answer for. The turn after it is answered."""
+    mock_api.script("1-fetch", {"lastUserContains": ["fetch the pages"], "bodyContains": [TURN]}, *(fetch(url) for url in ADDRESSES[:fetches]), stop="tool_use")
+    mock_api.script("2-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
+    await connected(hands)
+    await hands.say("fetch the pages")
+    await hands.until(lambda: len(held(hands)) == fetches)
+    work = hands.stage.work()
+    assert isinstance(work, Working)
+    assert hands.stage.stop(work.turn) == Stopping()
+    await hands.until(lambda: hands.stage.work() == Idle())
+    await hands.until(lambda: len(permissions(hands.recorded)) == fetches)
+    assert [event.facts["decision"] for event in permissions(hands.recorded)] == [DenyAndInterrupt(STOPPED)] * fetches
+    assert held(hands) == ()
+    await hands.say("say hello")
+    await hands.until(lambda: "Hello." in "".join(hands.out.said()))
+
+
+async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_with_interrupt_and_ends(mock_api: MockApi, hands: Hands, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refusal of a turn the brain broke ends it as a stop's does, so no request carrying it reaches the mock."""
+    mock_api.script("1-fetch", {"lastUserContains": ["fetch the page"], "bodyContains": [TURN]}, fetch(ADDRESSES[0]), stop="tool_use")
+    mock_api.script("2-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
+
+    def broken(*_: object) -> None:
+        raise RuntimeError("no voice")
+
+    # What the brain calls to put a dialog to the user, as the stage hands it to each turn. Put back by itself: the
+    # fixture's pin of the sandboxed claude is on the same monkeypatch.
+    put = hands.stage._put  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(hands.stage, "_put", broken)
+    await connected(hands)
+    await hands.say("fetch the page")
+    # The turn's failure is the run's error, read here rather than failing the waits.
+    async with asyncio.timeout(PATIENCE_SECONDS):
+        while not (hands.errors and permissions(hands.recorded)):
+            await asyncio.sleep(0.05)
+    [permission] = permissions(hands.recorded)
+    assert permission.facts["decision"] == DenyAndInterrupt(BROKEN)
+    assert any("no voice" in str(error.error) for error in hands.errors)
+    hands.errors.clear()
+    monkeypatch.setattr(hands.stage, "_put", put)
+    await hands.until(lambda: hands.stage.work() == Idle())
+    assert held(hands) == ()
+    await hands.say("say hello")
+    await hands.until(lambda: "Hello." in "".join(hands.out.said()))

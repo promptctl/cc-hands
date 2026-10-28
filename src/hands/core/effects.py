@@ -9,7 +9,7 @@ from hands.core.events import SessionEvent, Unqueuing
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
 from hands.core.stopfailure import StopFailed
-from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
+from hands.core.session import Blocker, CommandName, DenyAndInterrupt, Keystroke, PromptId, PromptText, RequestId, SessionId
 from hands.core.tmux import Pane
 from hands.core.turn import AgentId, AgentTask
 
@@ -190,7 +190,7 @@ class Withdraw:
 # [LAW:types-are-the-program] what a person can decide is not what the daemon replies: nothing the user or the
 # model says can produce a Withdraw, and answers become an AllowWith only against the question they answer.
 Decision = Allow | Deny | Answers | Approve | KeepPlanning
-HookReply = Allow | AllowWith | Approve | Deny | Withdraw
+HookReply = Allow | AllowWith | Approve | Deny | DenyAndInterrupt | Withdraw
 
 
 @dataclass(frozen=True)

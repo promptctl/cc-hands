@@ -178,6 +178,8 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **hook-url:** Claude Code puts no variable in a hook's URL (measured on 2.1.288)
 - **dialog-race:** Claude Code shows its permission dialog at once and runs the PermissionRequest hook beside it, and whichever answers first decides (measured on 2.1.270)
 - **dialog-race:** answering No or Esc at the dialog fires no post-tool hook and no Stop, but Claude Code kills the waiting hook, and the closed connection releases the session (measured on 2.1.270)
+- **dialog-stack:** consecutive concurrency-safe tool calls (Read, Glob, Grep, WebFetch, WebSearch, read-only Bash, read-only MCP tools) run their permission checks at once, each posting its PermissionRequest hook, and a dialog asked while another is up is queued beneath it [ref: promptctl-brain-q9s8.caq cmt-36bc6251] (read from its source, not measured; tests/test_brain_e2e.py proves it on CI) (measured on 2.1.308)
+- **permission-reply:** a PermissionRequest hook's deny takes `interrupt: true`, which ends the turn as well as refusing the call [ref: promptctl-brain-q9s8.caq cmt-3f434862] (read from its hook schema, not measured; tests/test_brain_e2e.py proves it on CI) (measured on 2.1.308)
 - **session-end:** Claude Code ends a session on SIGTERM as on a closed terminal, firing SessionEnd (measured on 2.1.289)
 - **session-end:** /exit and a double Ctrl-C report prompt_input_exit, /clear reports clear, and a closed terminal reports other (measured on 2.1.270)
 

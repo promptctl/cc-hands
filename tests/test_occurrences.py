@@ -19,7 +19,7 @@ from hands.core.status import Stamp
 from hands.sessions.attention import changed, described
 from hands.sessions.audit import Entry
 from hands.sessions.home import Home
-from hands.sessions.hooks import parse_hook
+from hands.sessions.hooks import Hook, parse_hook
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
@@ -46,9 +46,9 @@ EVERY: tuple[tuple[str, Occurrence], ...] = (
 
 
 def hooked(home: Home, **fields: object) -> Occurrence:
-    happened = parse_hook(json.dumps({**COMMON, **fields}).encode(), home=home, at=1.0, heard=Stamp(1), request=RequestId("r1")).happened
-    assert isinstance(happened, Occurred) and happened.session == SID
-    return happened.occurrence
+    hook = parse_hook(json.dumps({**COMMON, **fields}).encode(), home=home, at=1.0, heard=Stamp(1), request=RequestId("r1"))
+    assert isinstance(hook, Hook) and isinstance(hook.happened, Occurred) and hook.happened.session == SID
+    return hook.happened.occurrence
 
 
 @pytest.fixture

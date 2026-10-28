@@ -683,9 +683,11 @@ whichever answers first decides. An answer typed at the dialog does not end the 
 it runs on to its own end and its output is ignored. So the daemon never learns of a
 keyboard answer directly. It learns that the session moved on: the asked-about tool
 finishing (`PostToolUse` or `PostToolUseFailure` with the same tool and input, or for a
-question the same questions, since it comes back with the answers added), or the
-next `UserPromptSubmit`, `Stop`, `SessionEnd`, or `PermissionRequest`, withdraws the
-waiting reply, which prints nothing. A hook whose connection closes first ends the wait with
+question the same questions, since it comes back with the answers added), the session
+at its prompt, or the next `UserPromptSubmit` or `SessionEnd`, withdraws the waiting
+reply, which prints nothing. A `PermissionRequest` asked while a dialog is up does not:
+Claude Code queues its dialog beneath the one on screen, so a session holds every dialog
+it has stacked, in the order asked (`Session.dialogs`), and each waits for its own answer. A hook whose connection closes first ends the wait with
 no reply at all, so a later voice answer hears that the request is gone rather than
 that it went through. That is how a keyboard refusal arrives: answering No or Esc at
 the dialog fires no post-tool hook and no `Stop`, but Claude Code kills the waiting
@@ -1143,7 +1145,12 @@ into, or the one they ran as after the turn they were typed behind. Anything the
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
 turn stops it with Escape and Ctrl-C before it is typed, once, decided on the model as its period and hooks have read it. A turn whose asker stopped waiting is still heard to its end. One that is stopped ends once Claude Code holds nothing
 of it, the turn its Escape stopped told or the words it put back in the input taken out of the queue; one Claude Code still
-holds `INTERRUPT_SECONDS` after its Escape fails, `StopUnrecorded`, saying what the model holds and what Claude Code showed. Each dialog
+holds `INTERRUPT_SECONDS` after its Escape fails, `StopUnrecorded`, saying what the model holds and what Claude Code showed. The
+brain's dialogs are the model's too: each hook is handled as it arrives, and a `PermissionRequest` is held in the model
+(`Reader.asked`) before anything is awaited, so what the model holds is every dialog Claude Code has up. A stop, a broken
+turn or the brain's exit is an `Ending`: every dialog held is refused with `interrupt: true`, which ends the turn whether
+it reaches Claude Code before the Escape or after it, and so is every one asked until a prompt starts new work, never put
+to the user. One Claude Code went on past unanswered is refused as let go. Each dialog
 it posts to hands' listener is one event: a `brain.permission`, with the tool, the decision, and how long it was held,
 and a `brain.elicitation`, which is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in

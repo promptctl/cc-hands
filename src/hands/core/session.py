@@ -146,6 +146,15 @@ class PlanApproved:
 FinishedCall = Permission | Question | PlanApproved
 
 
+# [LAW:one-way-deps] a hook reply (hands.core.effects), defined here because a session holds it while hands ends its turn.
+@dataclass(frozen=True)
+class DenyAndInterrupt:
+    """The tool does not run, the agent reads the message, and the turn it is in ends: the deny with `interrupt` set.
+    Only hands decides it, for a turn it is ending; no person's answer is one."""
+
+    message: str
+
+
 @dataclass(frozen=True)
 class Held:
     """At a dialog whose PermissionRequest hook hands holds open, waiting on a reply by voice for as long as Claude Code
@@ -299,7 +308,13 @@ class Session:
     # SessionStart, idle_prompt, and SessionEnd carry none.
     mode: Mode | None
     turn: Turn = Told()
-    dialog: Held | None = None
+    # Every dialog Claude Code has stacked, in the order it asked: the first is the one on its screen. Concurrency-safe
+    # tool calls ask at once, each with a PermissionRequest of its own, and each dialog drawn while one is up is queued
+    # beneath it, so a session can hold several.
+    dialogs: tuple[Held, ...] = ()
+    # [LAW:single-enforcer] hands is ending what the session runs, until a prompt starts new work: every dialog asked
+    # meanwhile is refused this as it arrives, and none is held.
+    ending: DenyAndInterrupt | None = None
     # Every id the turns before this one went by, each told as the turn after it replaced it: a late Stop naming one ends
     # nothing, in whatever phase the turn now is. [LAW:types-are-the-program] kept here, and not on the turn, so every
     # phase answers "was this turn told" the same way, across a restart too.

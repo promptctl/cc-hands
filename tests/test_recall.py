@@ -11,7 +11,7 @@ import pytest
 from hands.core.trace import Span
 from hands.core.effects import Allow, AllowWith, Approve, Command, Deny, Fritter, HookReply, Input, Key, Reply, Text, Type, Withdraw
 from hands.core.events import Attached, Event, PermissionRequested, Tick
-from hands.core.session import AskedQuestion, Blocker, CommandName, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
+from hands.core.session import AskedQuestion, Blocker, CommandName, DenyAndInterrupt, Membership, Option, Permission, Plan, PromptText, Question, RequestId, SessionId
 from hands.daemon import cli
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, Typing, TypingFailed, forwards, segment
 from hands.sessions.home import Home
@@ -207,7 +207,7 @@ def test_an_answered_question_is_recalled_with_what_the_user_chose(tmp_path: Pat
 # rather than in a recall that meets its first line.
 INPUTS: tuple[Input, ...] = (Text(PromptText("p")), Command(CommandName("c"), None), Key("escape"))
 BLOCKERS: tuple[Blocker, ...] = (Permission("Bash", {}), Question((), {}), Plan("p"))
-REPLIES: tuple[HookReply, ...] = (Allow(), AllowWith({"answers": {}}), Approve("default"), Deny("no"), Withdraw())
+REPLIES: tuple[HookReply, ...] = (Allow(), AllowWith({"answers": {}}), Approve("default"), Deny("no"), DenyAndInterrupt("stopped"), Withdraw())
 
 
 def test_recall_reads_every_input_request_and_reply_the_log_can_hold(tmp_path: Path) -> None:
@@ -221,7 +221,9 @@ def test_recall_reads_every_input_request_and_reply_the_log_can_hold(tmp_path: P
         + [line for number, (on, reply) in enumerate(zip(BLOCKERS * 2, REPLIES)) for line in (asked(f"r{number}", on), answered(f"r{number}", reply))],
     )
     # The Withdraw decided nothing, so it is the one reply with no moment.
-    assert len(recall(home.audit, [], 20).moments) == len(INPUTS) + len(REPLIES) - 1
+    moments = recall(home.audit, [], 20).moments
+    assert len(moments) == len(INPUTS) + len(REPLIES) - 1
+    assert any(moment.heading.startswith("denied and stopped in") and moment.text.endswith(", told: stopped") for moment in moments)
 
 
 def test_a_session_hands_saw_join_goes_by_its_project_as_hands_speaks_it_and_a_silent_reply_is_no_moment(tmp_path: Path) -> None:

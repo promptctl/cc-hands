@@ -619,9 +619,10 @@ def describe_listing(listing: Listing[Session]) -> dict[str, str]:
 
 
 def _spoken_state(session: Session) -> str:
-    match (session.dialog, session.state, session.turn):
+    # The dialog on its screen is the first it asked; the rest are queued beneath it.
+    match (next(iter(session.dialogs), None), session.state, session.turn):
         case (Held(on=on), _, _):
-            # Said by what it asks, though the status saying it waits may not have been read yet.
+            # Said by what it asks on its screen, though the status saying it waits may not have been read yet.
             return _waiting_on(on)
         case (None, Running(status=Busy()), Opened(latest=Doing() as latest)):
             # [LAW:one-source-of-truth] the progress a session that is not the focus is noted with, for the brain, whose
@@ -1398,7 +1399,7 @@ def permission_tools(sessions: Sessions) -> list[Tool]:
 async def _decide(sessions: Sessions, request: str, decision: Callable[[], Decision]) -> Result:
     # [LAW:no-silent-failure] the model hears a refused answer and says it; the tool's event keeps it.
     try:
-        outcome = await sessions.answer(_request_id(request), decision())
+        outcome = sessions.answer(_request_id(request), decision())
     except Rejected as error:
         return {"error": str(error)}
     return {"readback": answer_readback(outcome, lambda id: spoken_name(sessions, id))}

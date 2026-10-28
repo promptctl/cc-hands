@@ -7,8 +7,9 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from hands.core.events import Event, PermissionRequested, Prompted, Stopped
-from hands.sessions.hooks import Hook
+from hands.core.effects import HookReply
+from hands.core.events import Event, Prompted, Stopped
+from hands.sessions.hooks import Hook, PermissionHook
 from hands.sessions.registry import Sessions, StopHeld
 from hands.sessions.statusfile import Statuses
 from hands.sessions.tail import Tails
@@ -76,13 +77,23 @@ class Reader:
             case Prompted() as prompted:
                 await self.read()
                 await self._apply(prompted)
-            case PermissionRequested():
-                # Applied only by Sessions.ask, which waits on the reply it is answered with: a hook answered anywhere else
-                # leaves the model holding no dialog for it.
-                pass
             case happened:
                 await self._apply(happened)
         return None
+
+    def asked(self, hook: PermissionHook) -> "asyncio.Future[HookReply]":
+        """A permission request held in the model now, in this call, with the session it is of joined first: the future
+        its hook is answered through (Sessions.hold). [LAW:single-enforcer] the one way a permission request reaches the
+        model, a working session's and the brain's alike.
+
+        [LAW:no-ambient-temporal-coupling] nothing is awaited before it is held, so a dialog is held from the moment its
+        hook arrives, never behind hooks still being applied or a read of Claude Code through now."""
+        match hook.joining:
+            case None:
+                pass
+            case joining:
+                self._apply(joining).add_done_callback(_said)
+        return self._sessions.hold(hook.asked)
 
     async def keep_reading(self, period: float) -> None:
         """Read once a period, and wait out what each read decided before the next, until cancelled.

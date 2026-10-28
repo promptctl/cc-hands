@@ -1041,7 +1041,7 @@ def waiting_on(session: SessionId, request: str) -> Session:
     """The session live, its dialog waiting on the user to answer `request`."""
     member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
     dialog = Held(Permission("Bash", {"command": "ls"}), RequestId(request))
-    return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=dialog)
+    return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialogs=(dialog,))
 
 
 async def test_a_request_heard_while_the_key_is_held_is_handed_the_brain_after_the_users_turn(rig: Rig) -> None:

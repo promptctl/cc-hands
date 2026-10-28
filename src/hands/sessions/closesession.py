@@ -59,7 +59,7 @@ def done(session: Session) -> bool:
     # work it was set to and has not finished, which ending the session would kill. A turn opens on its prompt's hook, before the
     # status that says it is busy is read, so an opened turn runs whatever the status still says.
     match session:
-        case Session(state=Idle(status=status.Idle()), dialog=None, turn=Untold() | Told()):
+        case Session(state=Idle(status=status.Idle()), dialogs=(), turn=Untold() | Told()):
             return True
         case _:
             return False

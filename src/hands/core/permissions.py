@@ -3,8 +3,8 @@
 import re
 from dataclasses import dataclass, replace
 
-from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, Effect, HookReply, KeepPlanning, Reply
-from hands.core.session import Blocker, Held, Known, Permission, Plan, Question, Registry, RequestId, Session, SessionId
+from hands.core.effects import Allow, AllowWith, Answers, Approve, Decision, Deny, HookReply, KeepPlanning, Reply
+from hands.core.session import Blocker, Held, Permission, Plan, Question, Registry, RequestId, Session, SessionId
 
 
 @dataclass(frozen=True)
@@ -39,20 +39,20 @@ class Unfit:
 Outcome = Answered | NotWaiting | Unfit
 
 
-def answer(registry: Registry, request: Answer) -> tuple[Registry, Outcome, list[Effect]]:
+def answer(registry: Registry, request: Answer) -> tuple[Registry, Outcome, Reply | None]:
     """One answer in; the next registry, what came of it, and the reply it calls for out. No I/O."""
-    waiting = [session for session in registry.sessions.values() if _waits_on(session, request.request)]
+    waiting = [(session, held) for session in registry.sessions.values() if isinstance(session, Session) for held in session.dialogs if held.request == request.request]
     match waiting:
-        case [Session(dialog=Held(on=on)) as session]:
+        case [(session, Held(on=on) as held)]:
             match _reply(on, request.decision):
                 case None:
-                    return registry, Unfit(request.request, on, request.decision), []
+                    return registry, Unfit(request.request, on, request.decision), None
                 case reply:
-                    # The turn carries on from here, with the tool run or refused.
-                    answered = registry.put(replace(session, dialog=None))
-                    return answered, Answered(session.membership.id, on, request.decision), [Reply(session.membership.id, request.request, reply)]
+                    # The turn carries on from here, with the tool run or refused; the dialogs beneath it stay.
+                    answered = registry.put(replace(session, dialogs=tuple(each for each in session.dialogs if each is not held)))
+                    return answered, Answered(session.membership.id, on, request.decision), Reply(session.membership.id, request.request, reply)
         case _:
-            return registry, NotWaiting(request.request), []
+            return registry, NotWaiting(request.request), None
 
 
 def _reply(on: Blocker, decision: Decision) -> HookReply | None:
@@ -71,14 +71,6 @@ def _reply(on: Blocker, decision: Decision) -> HookReply | None:
             return AllowWith({**input, "answers": {question.question: answer for question, answer in zip(asked, chosen)}})
         case _:
             return None
-
-
-def _waits_on(session: Known, request: RequestId) -> bool:
-    match session:
-        case Session(dialog=Held(request=held)):
-            return held == request
-        case _:
-            return False
 
 
 # [LAW:types-are-the-program] a yes is said only in these words, and at least one of them says it: anything else the user

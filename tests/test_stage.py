@@ -7,6 +7,7 @@ set up on purpose, not waited for.
 
 import asyncio
 import json
+from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -33,13 +34,15 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import patiently, running
-from hands.brain.process import NOBODY, SPOKEN_OVER, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken
+from hands.brain.process import BROKEN, NOBODY, SPOKEN_OVER, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
 from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
 from hands.core.effects import Allow, Deny
 from hands.core import place
 from hands.core.place import Modality
 from hands.core.playback import Bookmark
-from hands.core.session import Permission
+from hands.core.events import Ending, Joined, PermissionRequested
+from hands.core.session import DenyAndInterrupt, Membership, Permission, RequestId
+from hands.sessions.registry import Sessions
 from hands.brain.mcp import CallSpans
 from hands.brain.stage import ACTED_UNTOLD, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
@@ -143,11 +146,25 @@ class FakeBrain:
         self.turns.append(turn)
         return await asyncio.shield(turn)
 
+    # The brain's session, as the brain's own model holds it: what a permission is held in, and settled through.
+    sessions: Sessions = field(default_factory=lambda: model(lambda _: None, lambda _: None, lambda _: None))
+    held: int = 0
+
     def permit(self, tool: str, input: dict[str, object]) -> Asked:
-        """The turn in flight holding a permission its setup asks about, as the real brain does at its hook."""
-        asked = Asked(Permission(tool, input), asyncio.get_running_loop().create_future())
-        self.tellers[-1](asked)
-        return asked
+        """The turn in flight holding a permission its setup asks about, as the real brain does at its hook: held in the
+        brain's model, and put to the user as a view of it."""
+        held = self.holding(tool, input)
+        self.tellers[-1](held)
+        return held
+
+    def holding(self, tool: str, input: dict[str, object]) -> Asked:
+        """A permission held in the brain's model, as the brain holds one at its hook, not yet put to any turn."""
+        if self.sessions.live_session(self.session) is None:
+            self.sessions.hear(Joined(Membership(self.session, pid=1, cwd=Path("/brain"), transcript=Path("/brain/t.jsonl")), "startup"))
+        self.held += 1
+        permission = Permission(tool, input)
+        asked = PermissionRequested(self.session, at=0.0, request=RequestId(f"r{self.held}"), on=permission, mode=None)
+        return Asked(permission, asked.request, self.sessions.hold(asked), self.sessions, self.session)
 
     def interrupt(self) -> bool:
         """Asked to stop the turn in flight, as the real brain is: whether there was one. The test ends it, as Escape would."""
@@ -1546,7 +1563,7 @@ async def test_a_permission_the_brain_holds_is_asked_after_its_words_and_the_use
     # The user starting to answer stops what is playing, and stops nothing of the turn: it waits on their answer.
     await rig.cut_in("Yes, go ahead.")
     await rig.until(lambda: not asked.open)
-    assert asked.decision.result() == Allow()
+    assert (await asked.decided()) == Allow()
     # The turn goes on, and what it says next is heard.
     after, route = rig.request()
     assert isinstance(route, Send) and route.refusal == "final"
@@ -1567,7 +1584,7 @@ async def test_anything_but_a_plain_yes_refuses_the_permission_and_hands_the_bra
     await rig.until(lambda: "May I use Edit on notes.txt? Say yes to allow it." in rig.out.said())
     await rig.cut_in("No, put it in the to-do list instead.")
     await rig.until(lambda: not asked.open)
-    match asked.decision.result():
+    match (await asked.decided()):
         case Deny(message=message):
             assert '"No, put it in the to-do list instead."' in message
         case other:
@@ -1607,6 +1624,26 @@ async def test_a_refusal_the_brain_says_nothing_after_is_said_by_hands_so_silenc
     assert acknowledgements(rig) == ["I did not use Edit on notes.txt, so that is not done."]
     [turn] = turns(rig.recorded)
     assert (turn.facts["refusals"], turn.counts["refused"]) == (("I did not use Edit on notes.txt, so that is not done.",), 1)
+
+
+@pytest.mark.parametrize("why", [STOPPED, BROKEN], ids=["hands stopped its turn", "hands broke settling it"])
+async def test_a_permission_heard_asked_then_refused_as_hands_ends_its_turn_is_counted_and_said_as_a_refusal(rig: Rig, why: str) -> None:
+    """The refusal that ends a turn is a refusal the user heard asked all the same: silence never passes for it done."""
+    await rig.say("make the notes say hello")
+    exchange, _ = rig.request()
+    rig.stream(exchange, "I'll write it.")
+    question = "May I use Edit on notes.txt? Say yes to allow it."
+    asked = rig.brain.permit("Edit", {"file_path": "/Users/bmf/notes.txt"})
+    await rig.until(lambda: question in rig.out.said())
+    rig.brain.sessions.hear(Ending(rig.brain.session, DenyAndInterrupt(why)))
+    assert (await asked.decided()) == DenyAndInterrupt(why)
+    after, _ = rig.request()
+    rig.stream(after, "  ")
+    rig.brain.end()
+    await rig.turned()
+    assert acknowledgements(rig) == ["I did not use Edit on notes.txt, so that is not done."]
+    [turn] = turns(rig.recorded)
+    assert turn.counts["refused"] == 1
 
 
 async def test_a_refusal_the_brain_speaks_to_is_not_said_again_by_hands(rig: Rig) -> None:
@@ -1675,7 +1712,7 @@ async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_a
     await rig.until(lambda: "I'll write it." in rig.out.said())
     await rig.interrupt()
     asked = rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"})
-    assert asked.decision.result() == Deny(SPOKEN_OVER)
+    assert (await asked.decided()) == Deny(SPOKEN_OVER)
     assert rig.out.said() == ["I'll write it."]
     rig.brain.end()
 
@@ -1691,7 +1728,7 @@ async def test_words_said_before_a_permission_is_asked_are_a_turn_of_their_own_a
     await rig.until(lambda: "May I use Write on notes.txt? Say yes to allow it." in rig.out.said())
     await rig.cut_in("yes")
     await rig.until(lambda: not asked.open)
-    assert asked.decision.result() == Allow()
+    assert (await asked.decided()) == Allow()
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     assert rig.brain.asked == [heard("make the notes say hello"), heard("also check the logs")]
@@ -1731,7 +1768,7 @@ async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_
     # Said over what is still playing: the question was never heard to its end, so nothing waits on the user's words.
     rig.out.playing = Bookmark(("I'll clear out the build directory.", question), 0)
     await rig.interrupt()
-    assert asked.decision.result() == Deny(SPOKEN_OVER)
+    assert (await asked.decided()) == Deny(SPOKEN_OVER)
     await rig.worker.queue_frame(UserWords("yeah"))
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
@@ -1751,10 +1788,10 @@ async def test_permissions_held_at_once_are_asked_one_at_a_time_and_each_answer_
     assert "May I use Bash to run make b? Say yes to allow it." not in rig.out.said()
     await rig.cut_in("yes")
     await rig.until(lambda: "May I use Bash to run make b? Say yes to allow it." in rig.out.said())
-    assert first.decision.result() == Allow() and second.open
+    assert (await first.decided()) == Allow() and second.open
     await rig.cut_in("not that one")
     await rig.until(lambda: not second.open)
-    assert isinstance(second.decision.result(), Deny)
+    assert isinstance((await second.decided()), Deny)
     rig.brain.end()
 
 
@@ -1774,9 +1811,9 @@ async def test_a_permission_held_for_a_turn_the_stage_no_longer_asks_is_refused(
     teller = rig.brain.tellers[-1]
     rig.brain.end()
     await rig.turned()
-    asked = Asked(Permission("Write", {"file_path": "/Users/bmf/notes.txt"}), asyncio.get_running_loop().create_future())
+    asked = rig.brain.holding("Write", {"file_path": "/Users/bmf/notes.txt"})
     teller(asked)
-    assert asked.decision.result() == Deny(NOBODY)
+    assert (await asked.decided()) == Deny(NOBODY)
 
 
 def acknowledgements(rig: Rig) -> list[str]:
@@ -2054,7 +2091,7 @@ async def test_a_question_asked_after_the_cut_is_not_answered_by_its_words(rig: 
     assert "Got it. I'll come to that when this is done." not in rig.out.said()
     await rig.cut_in("yes")
     await rig.until(lambda: not asked.open)
-    assert asked.decision.result() == Allow()
+    assert (await asked.decided()) == Allow()
     await rig.until(lambda: "Got it. I'll come to that when this is done." in rig.out.said())
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
@@ -2071,7 +2108,7 @@ async def test_a_question_queued_behind_one_heard_does_not_make_its_answer_a_bar
     await rig.until(lambda: "May I use Bash to run make a? Say yes to allow it." in rig.out.said())
     await rig.cut_in("yes")
     await rig.until(lambda: not first.open)
-    assert first.decision.result() == Allow() and second.open
+    assert (await first.decided()) == Allow() and second.open
     rig.brain.end()
 
 

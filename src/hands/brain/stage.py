@@ -51,7 +51,7 @@ from hands.core.place import Modality
 from hands.core.playback import Bookmark
 from hands.core.permissions import heard
 from hands.core.front import InFront
-from hands.core.session import Permission, SessionId
+from hands.core.session import DenyAndInterrupt, Permission, SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
     Answering,
@@ -769,10 +769,11 @@ class BrainStage(FrameProcessor):
         match question:
             case Asked(permission=permission) as asked:
                 # One question at a time, so what the user answers is the question they heard last.
-                await asyncio.wait({asked.decision})
+                decision = await asked.decided()
                 # Owed only for a question the user heard to its end: one cut off or never reached they cannot take
-                # for the work done. Said once, however often the brain asked it again in silence.
-                if turn.heard is asked and isinstance(asked.decision.result(), Deny):
+                # for the work done. Said once, however often the brain asked it again in silence. A refusal that ends
+                # the turn, because hands stopped it or broke, is a refusal they heard asked all the same.
+                if turn.heard is asked and isinstance(decision, Deny | DenyAndInterrupt):
                     turn.refused += 1
                     if permission not in turn.unacknowledged:
                         turn.unacknowledged.append(permission)

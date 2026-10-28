@@ -254,6 +254,9 @@ def _answer(reply: object) -> tuple[str, str] | None:
             return "answered", f", chose: {'; '.join(str(answer) for answer in cast(dict[str, object], answers).values())}"
         case {"type": "Deny", "message": str(message)}:
             return "denied", f", told: {message}"
+        # A refusal hands sent as it ended the turn the request was part of: the turn ended with it.
+        case {"type": "DenyAndInterrupt", "message": str(message)}:
+            return "denied and stopped", f", told: {message}"
         case {"type": "Withdraw"}:
             return None
         case _:
