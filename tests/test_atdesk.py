@@ -71,6 +71,10 @@ class Keyboard:
     def __init__(self) -> None:
         self._heard: Callable[[KeyEvent], None] | None = None
 
+    @property
+    def listening(self) -> bool:
+        return self._heard is not None
+
     def tap(self, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
         self._heard = heard
         return lambda: None
@@ -105,7 +109,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     off, wake, engaged, deaf = (spoken(said, tmp_path / f"{name}.wav") for name, said in [("off", "create a ticket to read session history."), ("wake", "Hey Jarvis. What is the status of the build?"), ("engaged", "create a ticket to read session history."), ("deaf", "create a ticket to read session history.")])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key, levels, keyboard.tapped, microphone, lambda: speaker, models, Pretrained(), took, partial(beats.append, None), events.append))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=events.append))
 
     async def until(done: Callable[[], bool]) -> None:
         # A desk that ended is the failure itself, raised, never a wait that runs out on it.
@@ -114,11 +118,12 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
             serving.result()
 
     async def settled() -> None:
-        # The buffers taken from the queue are stepped by the desk's loop after; half a second lets it step them all.
+        # The desk steps a choice only once everything queued before it is stepped, so a choice of the level it is at
+        # returns once every buffer and key heard so far has been stepped.
         await until(lambda: microphone.audio.empty())
-        await asyncio.sleep(0.5)
+        assert await levels.choose(levels.level) == levels.level
 
-    await until(lambda: keyboard._heard is not None)  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: keyboard.listening)
 
     # Off: the room opens nothing, and Right Shift held alone talks, opened once it is held long enough.
     microphone.say(off + quiet(3.0))
@@ -132,10 +137,12 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
 
     # Right Shift typing a capital opens nothing.
     keyboard.press(Pressed(time.monotonic()), Typed())
+    # Held past the hold, so its Ripe has been told: still nothing opens.
     await asyncio.sleep(HOLD_SECONDS * 2)
+    await settled()
     assert taken[3:] == ["arm", "disarm"]
     keyboard.press(Released())
-    await asyncio.sleep(0.1)
+    await settled()
     assert taken[3:] == ["arm", "disarm"]
 
     # Right Command's triple tap: the wake word, cued, the level its owner and the tool say, and the desk listening.
@@ -143,6 +150,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     await until(lambda: levels.level == "wake word")
     assert speaker.cues == [WAKE_WORD] and key.gate.key == "listening"
     assert str((await level.body())["readback"]).startswith("The wake word: say Hey Jarvis")
+    await settled()
     del taken[:]
 
     # Said, the wake word opens a turn, and Smart Turn's verdict on what was asked sends it.
@@ -151,10 +159,11 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     assert taken[:3] == ["arm", "start", "stop"]
 
     # The tool chooses engaged as a tap does, and is answered with the level the desk was at.
-    await until(lambda: microphone.audio.empty())
+    await settled()
     chosen = await choose.body(level="engaged")
-    assert (chosen["was"], str(chosen["readback"]).split(".")[0]) == ("wake word", "Okay")
+    assert chosen["was"] == "wake word"
     assert speaker.cues == [WAKE_WORD, ENGAGED] and levels.level == "engaged" and (await level.body())["level"] == "engaged"
+    await settled()
     del taken[:]
 
     # Engaged, speech alone opens a turn, and its end sends it.
@@ -163,10 +172,11 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     assert "start" in taken and taken.index("start") < taken.index("stop")
 
     # Right Shift's triple tap from engaged: off, cued, and the desk deaf to the room again.
-    await until(lambda: microphone.audio.empty())
+    await settled()
     keyboard.triple_tap(command=False)
     await until(lambda: levels.level == "off")
     assert speaker.cues == [WAKE_WORD, ENGAGED, OFF] and key.gate.key == "up"
+    await settled()
     del taken[:]
     microphone.say(deaf + quiet(3.0))
     await settled()

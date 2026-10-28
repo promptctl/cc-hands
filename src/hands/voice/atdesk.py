@@ -38,6 +38,7 @@ class Speaker(Protocol):
 
 
 async def serve_desk(
+    *,
     key: PushToTalk,
     levels: Levels,
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
