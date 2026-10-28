@@ -41,7 +41,7 @@ from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
 from hands.sessions.wide import annotate, count, unit
 
-# Turns a long result goes whole before it goes as a line, and how many turns' results go at once.
+# Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
 # How long the sentence an old result goes as is waited on, from its turn, however long it waited for it: one reply,
 # with thinking. Nothing waits on a line but the batch it is for.

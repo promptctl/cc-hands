@@ -19,7 +19,7 @@ import aiohttp
 
 from hands.brain.fork import Newest, fork
 from hands.core.trace import Span
-from hands.core.wire import Fork, Observed, Route, Sent, Written
+from hands.core.wire import Fork, Garbled, Observed, Route, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
@@ -119,16 +119,16 @@ class Asides:
     async def _in_turn(self, question: str, within: Within) -> str:
         queued = time.monotonic()
         # What its asker's time running out means where it stands: waiting for a main turn to fork, or for anything else.
-        waiting = Unanswered.TIMED_OUT
+        waiting = (Unanswered.TIMED_OUT, "no answer")
         async with contextlib.AsyncExitStack() as taken:
             try:
                 # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
                 async with asyncio.timeout(within.seconds if isinstance(within, Deadline) else None) as clock:
                     # Waited for before its turn: nothing is asked of a brain that has sent nothing, so no asker holds the
                     # others back on that.
-                    waiting = Unanswered.UNFORKED
+                    waiting = (Unanswered.UNFORKED, "the brain sent no main turn to fork")
                     await self._newest.turn()
-                    waiting = Unanswered.TIMED_OUT
+                    waiting = (Unanswered.TIMED_OUT, "no answer")
                     await self._one.acquire()
                     taken.callback(self._one.release)
                     # queued_ms only once it has its turn: the rest of its duration_ms is its request answered.
@@ -141,8 +141,8 @@ class Asides:
                     turn = await self._newest.turn()
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
-                seen = {Unanswered.UNFORKED: f"the brain sent no main turn to fork within {within}"}.get(waiting, f"no answer within {within}")
-                raise AsideFailed(waiting, seen) from error
+                why, seen = waiting
+                raise AsideFailed(why, f"{seen} within {within}") from error
 
     async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
         annotate(forked=forked)
@@ -167,5 +167,8 @@ class Asides:
                 if message.stop_reason == "end_turn" and said:
                     return said
                 raise AsideFailed(Unanswered.WORDLESS, f"the model's reply ended {message.stop_reason!r} with {said!r}")
+            case Garbled(reason=reason) if response.status == 200:
+                # Answered, then cut off on the way: the stream ended before its reply was whole.
+                raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
             case other:
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")

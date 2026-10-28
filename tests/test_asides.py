@@ -289,6 +289,11 @@ async def test_a_reply_that_breaks_off_fails_the_question_and_nothing_else(brain
     with pytest.raises(AsideFailed) as failed:
         await rig.asides.ask(AsideKind.LINE, "cut", Deadline(10))
     assert failed.value.why == Unanswered.BROKEN
+    # Answered 200 and then cut off mid-frame, the connection ending cleanly: broken too, not refused.
+    rig.answers.append([*stream("Half")[:2], b"event: message_del"])
+    with pytest.raises(AsideFailed, match="its reply broke off") as cut:
+        await rig.asides.ask(AsideKind.LINE, "cut short", Deadline(10))
+    assert cut.value.why == Unanswered.BROKEN
     assert await rig.asides.ask(AsideKind.LINE, "again", Deadline(10)) == "Hello."
 
 

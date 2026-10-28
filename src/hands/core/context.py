@@ -14,7 +14,7 @@ from hands.core.sentences import Digest, cut, digest
 from hands.core.wire import tool_answers, tool_calls, turns
 
 # The summariser's version in every result's key: a change to how a result is asked about is a new key for each.
-VERSION = "tool-result-2"
+VERSION = "tool-result-3"
 # How much of a call's input a question quotes to name the call, and how much of its result it shows: a longer result
 # is shown by its two ends, which say what was read and how it came out.
 QUOTED = 300
@@ -60,7 +60,7 @@ def key(result: Result) -> Digest:
 
 
 def question(result: Result) -> str:
-    """What a Claude Code with no conversation is asked about a result: the call, what came back, and the one sentence wanted of it."""
+    """What a side question forked from the brain asks about a result: the call, what came back, and the one sentence wanted of it."""
     given = json.dumps(result.input, sort_keys=True)
     quoted = given if len(given) <= QUOTED else given[:QUOTED] + "…"
     shown = cut(result.text, SHOWN)
