@@ -350,7 +350,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
     # How big hands was as its start ended.
-    assert isinstance(event.facts["resident_mb"], float) and event.facts["resident_mb"] > 0
+    assert isinstance(event.facts["footprint_mb"], float) and event.facts["footprint_mb"] > 0
     chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",

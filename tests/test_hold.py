@@ -160,7 +160,7 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
     assert (took["event"], took["outcome"], took["facts"]["holder"]) == ("hands.hold", "ok", None)
     assert (refused["event"], refused["outcome"]) == ("hands.start", "failed") and "has no Input Monitoring grant" in refused["error"]
     # A start that failed says how big hands was as it ended, as a ready one does.
-    assert refused["facts"]["resident_mb"] > 0
+    assert refused["facts"]["footprint_mb"] > 0
 
 
 def asking(home: Path, then: str) -> str:

@@ -45,7 +45,7 @@ def model_facts(load: WideEvent) -> dict[str, Fact]:
     """A model load's facts of its own: every load says how big the process was as it ended and how much it grew, which
     are taken off here once they are shown to be there (hands.voice.loads)."""
     facts = dict(load.facts)
-    assert isinstance(facts.pop("resident_mb"), float) and isinstance(facts.pop("process_grew_mb"), float), load.facts
+    assert isinstance(facts.pop("footprint_mb"), float) and isinstance(facts.pop("process_grew_mb"), float), load.facts
     return facts
 
 
