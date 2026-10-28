@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import wave
 from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -247,18 +248,14 @@ def smart_turn() -> None:
     engaged.ported()
 
 
-async def fetch_all(directory: Path, words: Sequence[Pretrained]) -> None:
-    for word in words:
-        await fetched(directory, word)
-
-
 @pytest.fixture(scope="session")
-def models(pytestconfig: pytest.Config, smart_turn: None) -> Path:
+async def models(pytestconfig: pytest.Config, smart_turn: None) -> Path:
     """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
     pytest's cache, beside Smart Turn in the hub's: every model a switch to the wake word loads. A fetch, so of the run,
     as the other fetches are, and not of a test."""
     directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    asyncio.run(fetch_all(directory, (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))))
+    for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
+        await fetched(directory, word)
     return directory
 
 
@@ -317,13 +314,15 @@ def without_claude(path: str, links: Path) -> str:
 
 def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, sockets: Path) -> dict[str, str]:
     """The environment a test runs in, from the `machine`'s: the names PASSED, a `path` of its tools, the Hugging Face
-    `hub` cache the weights are already in, no git config but a repository's own, and a `home` and a tmux socket
-    directory of the test's own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
-    tmux's or a proxy, which hands reads as a session's own, is absent, as it is on CI."""
+    `hub` cache the weights are already in, no git config but a repository's own, one UTF-8 locale whatever the
+    machine's, and a `home` and a tmux socket directory of the test's own. Every other name the machine has, a
+    credential, a Claude Code session's, hands', git's, tmux's or a proxy, which hands reads as a session's own, is
+    absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
         "PATH": path,
         "HF_HUB_CACHE": hub,
         "GIT_CONFIG_NOSYSTEM": "1",
+        "LANG": "en_US.UTF-8",
         "HOME": str(home),
         "TMUX_TMPDIR": str(sockets),
     }
@@ -336,7 +335,7 @@ def tools(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(autouse=True)
-def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, tools: str) -> dict[str, str]:
+def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, tools: str) -> Generator[dict[str, str]]:
     """Each test runs in the hermetic environment, with a HOME and a tmux socket directory of its own that hold nothing,
     as pytest's own pytester gives each of its runs, so ~/.claude, ~/.hands, ~/.gitconfig and ~/.config are all empty
     and no tmux server is found. [LAW:single-enforcer] the one owner of the environment a test runs in: a test that needs
@@ -345,12 +344,15 @@ def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPa
     back after each test."""
     # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
     # there too, and not the hub's token beside them.
-    tested = hermetic(os.environ, tools, huggingface_hub.constants.HF_HUB_CACHE, tmp_path_factory.mktemp("home"), tmp_path_factory.mktemp("tmux"))
-    for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
-        monkeypatch.delenv(name)
-    for name, value in tested.items():
-        monkeypatch.setenv(name, value)
-    return tested
+    # Under /tmp, not pytest's basetemp: a socket's path holds 104 bytes on macOS, and basetemp under macOS's TMPDIR
+    # leaves no room for tmux's tmux-<uid>/<name> beneath it.
+    with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
+        tested = hermetic(os.environ, tools, huggingface_hub.constants.HF_HUB_CACHE, tmp_path_factory.mktemp("home"), Path(sockets))
+        for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
+            monkeypatch.delenv(name)
+        for name, value in tested.items():
+            monkeypatch.setenv(name, value)
+        yield tested
 
 
 async def unread() -> InFront:

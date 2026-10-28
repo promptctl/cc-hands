@@ -42,13 +42,13 @@ def installed_shim(root: Path) -> Path:
 
 
 def on_a_pipe(argv: Sequence[str], path: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, env={"PATH": path, **(env or {})}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return subprocess.run(argv, env=os.environ | {"PATH": path, **(env or {})}, stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
 
 def on_a_terminal(argv: Sequence[str], path: str, env: dict[str, str] | None = None) -> str:
     """What argv prints when a terminal is its stdin, stdout, and stderr."""
     controller, terminal = os.openpty()
-    process = subprocess.Popen(argv, env={"PATH": path, "TMPDIR": "/tmp", **(env or {})}, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
+    process = subprocess.Popen(argv, env=os.environ | {"PATH": path, "TMPDIR": "/tmp", **(env or {})}, stdin=terminal, stdout=terminal, stderr=terminal, start_new_session=True)
     os.close(terminal)
     printed = b""
     while True:
@@ -140,7 +140,7 @@ def test_the_real_claude_is_found_as_the_shim_finds_it_past_every_shim(root: Pat
 def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) -> None:
     shim = installed_shim(root)
     path = entries.format(bin=root / "bin")
-    ran = subprocess.run([str(shim)], env={"PATH": path}, cwd=root / "real", stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    ran = subprocess.run([str(shim)], env=os.environ | {"PATH": path}, cwd=root / "real", stdin=subprocess.DEVNULL, capture_output=True, text=True)
     assert ran.stdout == "claude  socket=unset\n"
 
 

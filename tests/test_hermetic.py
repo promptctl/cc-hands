@@ -46,6 +46,8 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "PATH": "/opt/homebrew/bin:/usr/bin",
         "TMPDIR": "/var/folders/t/",
         "CI": "true",
+        "LANG": "fr_FR.ISO8859-1",
+        "LC_ALL": "fr_FR.ISO8859-1",
         "HOME": "/Users/developer",
         "ANTHROPIC_API_KEY": "sk-ant-developer",
         "CLAUDE_CODE_OAUTH_TOKEN": "developer's",
@@ -67,6 +69,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
         "GIT_CONFIG_NOSYSTEM": "1",
+        "LANG": "en_US.UTF-8",
         "HOME": "/tmp/home",
         "TMUX_TMPDIR": "/tmp/sockets",
     }
