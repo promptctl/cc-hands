@@ -27,7 +27,7 @@ from uuid import uuid4
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, cast, get_args
+from typing import Any, Literal, cast, get_args
 
 from aiohttp import web
 from loguru import logger
@@ -36,6 +36,7 @@ from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, Deny, Heard, SessionGone, Story, Submitted, Summarise, Text
 from hands.core.events import Event
+from hands.core.reducer import UNTOLD
 from hands.core.session import Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
@@ -121,9 +122,13 @@ TAKE_SECONDS = 30.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
-# How long Claude Code has to stop a turn hands pressed Escape for: it sets the session idle within a status read of the
-# Escape, and the model tells the turn within a second of that (UNTOLD).
-STOP_SECONDS = 5.0
+# How long Claude Code has to set its session idle once hands pressed Escape: it does in milliseconds, and the rest is
+# room for a loaded machine.
+ESCAPE_SECONDS = 4.0
+# How long Claude Code has to interrupt a turn hands pressed Escape for: its idle, then a status read to hear it, then the
+# model's wait past an idle for the record of how the turn ended (UNTOLD). [LAW:one-source-of-truth] the model's two
+# bounds are the model's, so a change to either moves this one.
+INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
 
 
 def _kept(prompt: str) -> str:
@@ -588,8 +593,10 @@ class _Turn:
     # Each turn of Claude Code's the model told while this one was in flight that was not its answer, by the id it was
     # told under: one that ran ahead of it, or one its typing stopped.
     others: tuple[PromptId | None, ...] = ()
+    # The id the model told the turn that answers it under, stopped or not: its answer, or what it got as far as.
+    told: PromptId | None = None
     # Whether hands pressed the Escape that stops it: then it ends BrainStopped once Claude Code holds nothing of it
-    # (`Brain._left`).
+    # (`Brain._left`), whether or not its telling came first.
     stopped: bool = False
     # What broke in the brain's own work for the turn: it ends with this once Claude Code's turn is stopped.
     broken: BaseException | None = None
@@ -742,12 +749,11 @@ class Brain:
             except (BrainGone, Untaken) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
-            annotate(taken=turn.taken_under, queued=turn.queued, offered=turn.offered, others=turn.others)
+            annotate(taken=turn.taken_under, queued=turn.queued, offered=turn.offered, others=turn.others, told=turn.told)
             match turn.answered.exception() or turn.answered.result():
-                case BrainAnswered(prompt=prompt, error=None):
-                    annotate(told=prompt)
-                case BrainAnswered(prompt=prompt, error=error):
-                    annotate(told=prompt)
+                case BrainAnswered(error=None):
+                    pass
+                case BrainAnswered(error=error):
                     fail(f"the brain's turn ended in error: {error}")
                 case BrainStopped():
                     annotate(stopped=True)
@@ -762,17 +768,22 @@ class Brain:
         if not self._all_told():
             await self._clear(turn)
         await self._type(lambda typist: typist.type(turn.typed))
-        pausing = asyncio.ensure_future(self._pause(turn.take))
+        await self._waited(turn.take, turn.taken, turn.answered)
+        return turn.taken.done() or turn.answered.done()
+
+    async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
+        """Until the first of `ending` is done, or a pause of `seconds` on the brain's one pause has passed.
+
+        [LAW:no-silent-failure] a pause that failed, however the wait ended, says so, and is not taken for the time
+        running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on."""
+        pausing = asyncio.ensure_future(self._pause(seconds))
         try:
-            await asyncio.wait({turn.taken, turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({*ending, pausing}, return_when=asyncio.FIRST_COMPLETED)
         finally:
             pausing.cancel()
             await asyncio.wait({pausing})
-        # [LAW:no-silent-failure] a pause that failed, however its take ended it, says so, and is not taken for the take's
-        # time running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on.
         if not pausing.cancelled():
             pausing.result()
-        return turn.taken.done() or turn.answered.done()
 
     async def _clear(self, turn: _Turn) -> None:
         """Stops whatever Claude Code runs and empties its input, with the input held, for `turn`. Escape posts no hook
@@ -832,18 +843,11 @@ class Brain:
             return
         # Over once Claude Code holds nothing of it, which `_left` hears as the model is applied: the turn the Escape
         # stopped told, or the words it put back in the input from Claude Code's queue, which Ctrl-C cleared, taken out of
-        # it. [LAW:no-silent-failure] a turn still held after STOP_SECONDS was not stopped, and says what Claude Code showed.
+        # it. [LAW:no-silent-failure] a turn still held after INTERRUPT_SECONDS was not stopped, and says what Claude Code showed.
         self._left()
-        pausing = asyncio.ensure_future(self._pause(STOP_SECONDS))
-        try:
-            await asyncio.wait({turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            pausing.cancel()
-            await asyncio.wait({pausing})
-        if not pausing.cancelled():
-            pausing.result()
+        await self._waited(INTERRUPT_SECONDS, turn.answered)
         if not turn.answered.done():
-            self._over(turn, StopUnrecorded(f"the brain's Claude Code did not stop the turn hands pressed Escape for in {STOP_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}"))
+            self._over(turn, StopUnrecorded(f"the brain's Claude Code did not stop the turn hands pressed Escape for in {INTERRUPT_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}"))
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""
@@ -1047,6 +1051,7 @@ class Brain:
         if not turn.taken.done() or any(_kept(words) == _kept(turn.typed) for words in told.waiting):
             turn.others += (told.turn,)
             return
+        turn.told = told.turn
         if not turn.stopped:
             self._over(turn, BrainAnswered(told.turn, told.failure))
 

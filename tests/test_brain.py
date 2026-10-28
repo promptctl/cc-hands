@@ -27,7 +27,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered, Within, aside_command
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
-from hands.brain.process import BROKEN, NOBODY, SLIM, STOP_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Posted, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, NOBODY, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Posted, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny
 from hands.core.permissions import heard
 from hands.core.session import Permission
@@ -598,7 +598,8 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     finally:
         await brain.stop()
     [turn] = events(recorded, "brain.turn")
-    assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"]) == ("ok", True, "p1")
+    # The turn its Escape stopped was told, under the id it ran under, before it was over.
+    assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
 
 
 async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_the_model_holds_and_what_it_showed(tmp_path: Path, fake_claude: Path) -> None:
@@ -609,7 +610,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
 
     async def pause(seconds: float) -> None:
         # A take waits as long as one does; the stop's time passes once the stand-in has read its keys.
-        await (stopping.wait() if seconds == STOP_SECONDS else asyncio.sleep(seconds))
+        await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
     brain = await start(launch(tmp_path), recorded.append, pause)
     try:
@@ -619,7 +620,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
         assert not asking.done()
         stopping.set()
-        with pytest.raises(StopUnrecorded, match=r"did not stop the turn hands pressed Escape for in 5s: the model holds Session\(.*turn=Opened\(turn='p1'.*it showed:"):
+        with pytest.raises(StopUnrecorded, match=rf"did not stop the turn hands pressed Escape for in {re.escape(f'{INTERRUPT_SECONDS:g}')}s: the model holds Session\(.*turn=Opened\(turn='p1'.*it showed:"):
             await asyncio.wait_for(asking, 10)
     finally:
         await brain.stop()

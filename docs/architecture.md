@@ -1142,7 +1142,7 @@ into, or the one they ran as after the turn they were typed behind. Anything the
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
 turn stops it with Escape and Ctrl-C before it is typed, once, decided on the model as its period and hooks have read it. A turn whose asker stopped waiting is still heard to its end. One that is stopped ends once Claude Code holds nothing
 of it, the turn its Escape stopped told or the words it put back in the input taken out of the queue; one Claude Code still
-holds `STOP_SECONDS` after its Escape fails, `StopUnrecorded`, saying what the model holds and what Claude Code showed. Each dialog
+holds `INTERRUPT_SECONDS` after its Escape fails, `StopUnrecorded`, saying what the model holds and what Claude Code showed. Each dialog
 it posts to hands' listener is one event: a `brain.permission`, with the tool, the decision, and how long it was held,
 and a `brain.elicitation`, which is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in

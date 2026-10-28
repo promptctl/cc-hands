@@ -63,7 +63,8 @@ class Reader:
                 await self.read()
                 await self._apply(prompted)
             case PermissionRequested():
-                # Applied by whoever answers it (Sessions.ask), which waits on the reply it is answered with.
+                # Applied only by Sessions.ask, which waits on the reply it is answered with: a hook answered anywhere else
+                # leaves the model holding no dialog for it.
                 pass
             case happened:
                 await self._apply(happened)
