@@ -10,11 +10,12 @@ from hands.brain import pinned
 
 
 def claude_of(tarball: IO[bytes], write: pinned.Write) -> None:
-    """The `package/claude` of the npm package in `tarball`, written out; raises naming it when the package has none."""
-    with tarfile.open(fileobj=tarball, mode="r:gz") as package:
-        extracted = package.extractfile("package/claude")
+    """The `package/claude` of the npm package in `tarball`, written out as it is read, in one pass of the gunzip."""
+    with tarfile.open(fileobj=tarball, mode="r|gz") as package:
+        member = next((member for member in package if member.name == "package/claude"), None)
+        extracted = package.extractfile(member) if member else None
         if extracted is None:
-            raise tarfile.ExtractError("the package's package/claude is not a file")
+            raise tarfile.ExtractError("the package holds no package/claude file")
         while chunk := extracted.read(1 << 20):
             write(chunk)
 
@@ -31,4 +32,5 @@ async def unpacked(url: str, write: pinned.Write) -> None:
 REGISTRY = pinned.Source(
     url=lambda built: f"https://registry.npmjs.org/@anthropic-ai/claude-code-{built}/-/claude-code-{built}-{pinned.VERSION}.tgz",
     fetch=unpacked,
+    failures=(*pinned.DOWNLOAD_FAILURES, tarfile.TarError),
 )

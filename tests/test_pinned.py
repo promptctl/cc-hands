@@ -179,14 +179,17 @@ async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_
     assert brain_claude(config_dir) == pinned.claude(config_dir)
 
 
-def serving(*chunks: bytes) -> pinned.Source:
-    """A source of the pin other than Anthropic's release, writing `chunks` for every build."""
+def serving(*chunks: bytes | Exception) -> pinned.Source:
+    """A source of the pin other than Anthropic's release, writing `chunks` for every build, or raising one that is an
+    exception, and failing as a connection does."""
 
     async def fetch(url: str, write: pinned.Write) -> None:
         for chunk in chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
             write(chunk)
 
-    return pinned.Source(url=lambda built: f"elsewhere:{built}", fetch=fetch)
+    return pinned.Source(url=lambda built: f"elsewhere:{built}", fetch=fetch, failures=(ConnectionError,))
 
 
 async def test_install_holds_every_source_to_the_pin_and_leaves_nothing_of_one_that_is_not_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -197,14 +200,14 @@ async def test_install_holds_every_source_to_the_pin_and_leaves_nothing_of_one_t
         await pinned.install(config_dir, serving(OTHER[:4], OTHER[4:]))
     assert str(refused.value) == f"elsewhere:{built} hashes to {hashlib.sha256(OTHER).hexdigest()}, not the {hashlib.sha256(RELEASE).hexdigest()} Claude Code {pinned.VERSION} is pinned to"
     assert list(pinned.claude(config_dir).parent.iterdir()) == []
-    # What a source raises is its fetch's failure, an OSError of the network's among them, never the disk's.
-    async def reset(url: str, write: pinned.Write) -> None:
-        write(RELEASE[:4])
-        raise ConnectionResetError(54, "Connection reset by peer")
-
+    # A failure the source names is its fetch's, an OSError among them, never the disk's.
     with pytest.raises(pinned.Uninstallable) as refused:
-        await pinned.install(config_dir, pinned.Source(url=lambda built: f"elsewhere:{built}", fetch=reset))
+        await pinned.install(config_dir, serving(RELEASE[:4], ConnectionResetError(54, "Connection reset by peer")))
     assert str(refused.value) == f"could not fetch elsewhere:{built}: ConnectionResetError(54, 'Connection reset by peer')"
+    assert list(pinned.claude(config_dir).parent.iterdir()) == []
+    # One it does not name is a defect, raised as itself.
+    with pytest.raises(TypeError, match="a defect"):
+        await pinned.install(config_dir, serving(RELEASE[:4], TypeError("a defect")))
     assert list(pinned.claude(config_dir).parent.iterdir()) == []
     # Its bytes the pin's, written in pieces, it is the brain's.
     installed = await pinned.install(config_dir, serving(RELEASE[:4], RELEASE[4:]))
