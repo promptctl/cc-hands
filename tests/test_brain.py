@@ -1406,6 +1406,28 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     assert [event.event for event in recorded if isinstance(event, WideEvent)] == ["brain.elicitation", "brain.permission"]
 
 
+async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_runs() -> None:
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
+    _modelled(brain)
+    brain._turn, brain._typing = None, set()  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path("/brain/projects/-brain-cwd/b1.jsonl"))))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(Prompted(SessionId("b1"), 0.0, "default", PromptId("p2"), "next"))  # pyright: ignore[reportPrivateUsage]
+    loop = asyncio.get_running_loop()
+    over, current = (_Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(f" {typed}")) for typed in ("first", "next"))  # pyright: ignore[reportPrivateUsage]
+    brain._turn = current  # pyright: ignore[reportPrivateUsage]
+    said, sink = failures()
+    try:
+        # What the turn before it left running breaks late, once the next turn's prompt has started new work.
+        brain._broke(over, RuntimeError("late"))  # pyright: ignore[reportPrivateUsage]
+    finally:
+        logger.remove(sink)
+    held = brain._modelled()  # pyright: ignore[reportPrivateUsage]
+    assert held is not None
+    assert (said, held.ending, current.broken, brain._typing) == (["the brain's own work failed: RuntimeError('late')"], None, None, set())  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)

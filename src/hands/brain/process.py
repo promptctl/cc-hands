@@ -740,9 +740,11 @@ class Brain:
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
         """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
         came from, and the end of the turn it was done for, stopped as an Escape stops it, so no dialog of it is left open
-        for the next turn's Return, its asker is answered, and the turns behind it are typed."""
+        for the next turn's Return, its asker is answered, and the turns behind it are typed. A turn already over is ended
+        already: what Claude Code still runs of it is no turn's (`_owner`), and is cleared before the next is typed
+        (`_taking`), so its break ends nothing the turn in flight runs."""
         logger.opt(exception=error).error(f"the brain's own work failed: {error!r}")
-        if turn is not None:
+        if turn is not None and turn is self._turn:
             # [LAW:single-enforcer] the turn's dialogs are refused, and it ends, in the step this is learned, whether or not
             # its stop's keys go in: the model keeps whichever ending came first.
             self._sessions.hear(Ending(self.session, DenyAndInterrupt(BROKEN)))
