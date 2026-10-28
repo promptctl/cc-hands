@@ -1,8 +1,8 @@
 """The brain's context, kept from the proxy: old tool results sent as a line, and compaction steered to what a voice
 session needs.
 
-Each line is asked as a side question once the turn its result came in has ended, of a Claude Code of its own that is
-shown the result (`hands.brain.asides`): never of the brain, whose input is the user's. A line is used from the first
+Each line is asked as a side question once the turn its result came in has ended, a /btw forked from the brain's newest
+main turn (`hands.brain.asides`): never typed into the brain, whose input is the user's. A line is used from the first
 main turn whose batch takes its result, and on every request after that shares the brain's history: a fork of the
 brain's and its compaction too, so each of them shares the main turn's cached prefix.
 """
@@ -168,27 +168,19 @@ class Hearing(Protocol):
     def hear(self, observed: Observed) -> None: ...
 
 
-class Asking(Hearing, Protocol):
-    """What answers hands' side questions, as the wire sees it: a question's own request is its part."""
-
-    def adopted(self, sent: Sent, routed: Route) -> Route: ...
-
-
 class Kept:
-    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own and a
-    side question's own request inside the question, and everything heard too by whatever else reads the wire: the
-    brain, and what answers hands' side questions."""
+    """The brain's listener on the wire: the stage's route, with the keeper's changes made before the stage's own, and
+    everything heard too by whatever else reads the wire: the brain, and what answers hands' side questions."""
 
-    def __init__(self, stage: Listener, keeper: Keeper, asides: Asking, *others: Hearing) -> None:
+    def __init__(self, stage: Listener, keeper: Keeper, *others: Hearing) -> None:
         self._stage = stage
         self._keeper = keeper
-        self._asides = asides
-        self._others = (*others, asides)
+        self._others = others
 
     def route(self, sent: Sent) -> Route:
         # The keeper's first: a history it cannot read fails the whole route before the stage has counted the request.
         kept = self._keeper.changes(sent)
-        match self._asides.adopted(sent, self._stage.route(sent)):
+        match self._stage.route(sent):
             # [LAW:one-source-of-truth] the stage's Send as it routed it, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))

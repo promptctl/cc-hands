@@ -9,7 +9,7 @@ import pytest
 
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
 from hands.brain.asides import AsideFailed, Unanswered
-from hands.core.context import LONG, QUOTED, SHOWN, Result, aged, boundary, key, line, question
+from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
 from hands.core.wire import (
@@ -47,6 +47,10 @@ SPAN = root()
 MARKED = {"type": "ephemeral"}
 
 
+# A result of some length: how long, nothing decides by.
+SIZE = 400
+
+
 def prompt(text: str, marked: bool = False) -> dict[str, object]:
     block: dict[str, object] = {"type": "text", "text": text}
     return {"role": "user", "content": [{**block, "cache_control": MARKED} if marked else block]}
@@ -58,7 +62,7 @@ def turn(n: int, text: str | None = None) -> list[dict[str, object]]:
     return [
         prompt(f"question {n}"),
         {"role": "assistant", "content": [{"type": "tool_use", "id": call, "name": "Read", "input": {"file_path": f"/{n}"}}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": [{"type": "text", "text": text or f"{n}" * LONG}]}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call, "content": [{"type": "text", "text": text or f"{n}" * SIZE}]}]},
         {"role": "assistant", "content": [{"type": "text", "text": f"answer {n}"}]},
     ]
 
@@ -75,9 +79,9 @@ def test_the_boundary_moves_once_every_k_turns_and_every_result_before_it_is_mor
     assert all((held - 1) - (boundary(held, 3) - 1) > 3 for held in range(1, 40) if boundary(held, 3))
 
 
-def test_only_long_results_from_before_the_boundary_are_aged() -> None:
+def test_every_result_from_before_the_boundary_is_aged_a_short_one_too() -> None:
     body = history(6, short=frozenset({1}))
-    assert [result.call for result in aged(body, 3)] == ["call0", "call2"]
+    assert [result.call for result in aged(body, 3)] == ["call0", "call1", "call2"]
     assert aged(history(5), 3) == ()
 
 
@@ -102,15 +106,15 @@ def test_the_trim_stubs_exactly_the_old_results_and_the_prefix_is_byte_identical
 
 
 def test_a_question_shows_the_call_and_its_result_a_long_one_by_its_ends_and_the_key_is_what_came_back() -> None:
-    result = Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * LONG + " tail", 7)
+    result = Result("call7", "Read", {"file_path": "/7"}, "head " + "7" * SIZE + " tail", 7)
     assert 'Tool: Read\nInput: {"file_path": "/7"}\n\n<recorded_result>\n' + result.text + "\n</recorded_result>" in question(result)
-    # The question stands alone: whoever answers it has no conversation, so it names no call of theirs.
+    # The question names the call by what was called, never by its id.
     assert "call7" not in question(result)
     long = Result("call8", "Bash", {"command": "x" * 400}, "head " + "8" * 2 * SHOWN + " tail", 8)
     assert f"head {'8' * (SHOWN // 2 - 5)}\n[{len(long.text) - SHOWN} characters left out]\n{'8' * (SHOWN // 2 - 5)} tail\n</recorded_result>" in question(long)
     assert 'Input: {"command": "' + "x" * (QUOTED - len('{"command": "')) + "…\n" in question(long)
     assert key(result) == key(Result("call9", "Read", {"file_path": "/7"}, result.text, 2))
-    assert key(result) != key(Result("call7", "Read", {"file_path": "/7"}, "8" * LONG, 7))
+    assert key(result) != key(Result("call7", "Read", {"file_path": "/7"}, "8" * SIZE, 7))
 
 
 class Asked:

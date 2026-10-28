@@ -970,6 +970,17 @@ class Sent:
 
 
 @dataclass(frozen=True)
+class Forwarded:
+    """A request as the proxy sends it upstream: its path, its end-to-end headers, and its bytes with hands' changes made.
+    Its headers carry the client's credentials, so it is heard and never recorded."""
+
+    exchange: str
+    path: str
+    headers: tuple[tuple[str, str], ...]
+    body: bytes
+
+
+@dataclass(frozen=True)
 class Heard:
     """One event of a streamed reply, as its frame arrived."""
 
@@ -1069,4 +1080,4 @@ class Exchanged:
     span: Span
 
 
-Observed = Sent | Heard | Answering | Exchanged
+Observed = Sent | Forwarded | Heard | Answering | Exchanged

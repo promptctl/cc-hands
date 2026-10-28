@@ -1,7 +1,7 @@
 """A Claude Code run on a pseudo-terminal hands holds: read as fast as it draws, the last of what it showed kept, and
 ended by hands' end however that comes.
 
-The brain, each side question, and the smoke test's working session all run so; what each runs, and in what environment,
+The brain and the smoke test's working session both run so; what each runs, and in what environment,
 is theirs to say.
 """
 

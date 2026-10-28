@@ -1,51 +1,31 @@
-"""Side questions: what hands asks in the background, each of a slim Claude Code started for it alone.
+"""Side questions: what hands asks in the background, each a /btw forked from the brain's newest main turn.
 
-A summary of a backlog or of a session's turns, and the line an old tool result goes as, are asked here and never of
-the brain. The brain's input is the user's: a question that is slow, or stuck, or never answered holds nothing a spoken
-turn waits on, and nothing asked here is in the brain's conversation.
+A summary of a backlog or of a session's turns, and the line an old tool result goes as, are asked here and never typed
+into the brain. The brain's input is the user's: a question that is slow, or stuck, or never answered holds nothing a
+spoken turn waits on, and nothing asked here enters the brain's conversation.
 
-Each question has a Claude Code of its own, on the brain's login and with no tools, because a side question's answer
-stays in the history of the ones asked after it.
-Started for one question, it carries that question and nothing else, and it is ended with its answer. It leaves nothing
-of the question in the brain's config directory.
-
-It is Claude Code as anyone runs it, interactive on a terminal, and the question is the prompt it is started with:
-`claude ... -- "/btw ..."`. Claude Code asks its opening prompt itself once its input is up, so nothing is typed into it and
-nothing depends on when its input comes up (a `/btw` typed as the input came up was left in it unsent, 12 of 12; as the
-opening prompt it went out 0.4s after the start, 6 of 6). Its answer is read from the wire.
+Each question is one request through hands' proxy, built as the brain's Claude Code builds a side question
+(`hands.brain.fork`): no Claude Code is started to ask it. Its answer is read from that request's own reply.
 """
 
 import asyncio
 import contextlib
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
-from uuid import uuid4
 
-from loguru import logger
+import aiohttp
 
-from hands.brain.process import Fresh, Station, Unstartable, brain_claude, slim, spawn
-from hands.sessions.pseudoterminal import ClaudeCode
-from hands.core.effects import Command
-from hands.core.session import CommandName, SessionId, pasted
-from hands.core.trace import Span
-from hands.core.wire import Exchanged, Observed, Reached, Route, Sent, Written
+from hands.brain.fork import Newest, fork
+from hands.core.wire import Fork, Observed, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, here, since, unit, within
-
-# The side question Claude Code asks of a fork of its session, which here holds nothing but the question.
-ASIDE = CommandName("btw")
-# No built-in tool and no MCP server, whatever the brain's own setup gives it: the question is all its request carries.
-CLOSED = ("--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}')
+from hands.sessions.replies import reply_reader
+from hands.sessions.wide import annotate, since, unit
 
 
-def aside_command(claude: Path, model: str, session: SessionId, question: str) -> list[str]:
-    """A side question's command line: the slim Claude Code, closed, opening with the question."""
-    # The question as the characters it shows, behind the command, as the prompt its Claude Code opens with. `--` ends
-    # the options: without it, --mcp-config takes every word up to the next option, the prompt as a second config file.
-    return [*slim(claude, model, Fresh(session, None)), *CLOSED, "--", Command(ASIDE, pasted(question)).typed]
+# What a question's reply cost, as its usage names it: what it read of the brain's cached prefix, and what it wrote.
+USAGE = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
 
 
 class AsideKind(StrEnum):
@@ -60,8 +40,8 @@ class AsideKind(StrEnum):
 class Unanswered(StrEnum):
     """Why a side question has no answer."""
 
-    UNSTARTED = "unstarted"  # no Claude Code could be started to ask it
-    EXITED = "exited"  # its Claude Code ended before it answered
+    UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
+    REFUSED = "refused"  # its request was answered with something other than a reply
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
 
@@ -88,122 +68,84 @@ class TimeLimit:
     seconds: float
 
 
-# How long a side question's asker waits on its answer, its turn, its Claude Code's start, and its reply all inside it.
+# How long a side question's asker waits on its answer, its turn and its reply both inside it.
 Within = Deadline | TimeLimit
 
 
-@dataclass
-class _Asked:
-    """The question being asked now: the session its Claude Code was started under, its unit of work's span, and its
-    answer, or why it has none."""
-
-    # [LAW:one-source-of-truth] chosen by hands, so the request on the wire that asks the question is known as its own.
-    session: SessionId
-    span: Span
-    answer: "asyncio.Future[str | AsideFailed]"
-
-
 class Asides:
-    """What answers hands' side questions: `ask` starts a Claude Code, asks it, and ends it."""
+    """What answers hands' side questions: `ask` forks the brain's newest main turn with the question, through the proxy."""
 
-    def __init__(self, station: Station, record: Record) -> None:
-        self._station = station
+    def __init__(self, proxy_url: str, newest: Newest, record: Record) -> None:
+        self._proxy_url = proxy_url
+        self._newest = newest
         self._record = record
-        # One at a time: each is a process of its own, and nothing asked here is waited on by the user.
+        # One at a time: nothing asked here is waited on by the user, and the brain's account answers the user's turns first.
         self._one = asyncio.Lock()
-        self._asked: _Asked | None = None
+        # As the proxy's own client: the reply read as sent, and no header added that the brain's Claude Code left out.
+        self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None), auto_decompress=False, skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"))
+
+    async def close(self) -> None:
+        await self._client.close()
+
+    def hear(self, observed: Observed) -> None:
+        self._newest.hear(observed)
 
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
-        """The answer to `question`, from a Claude Code that is asked nothing else; raises AsideFailed when it has none,
+        """The answer to `question`, asked beside the brain's conversation; raises AsideFailed when it has none,
         TIMED_OUT once its asker's time is up."""
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
         with unit("brain.aside", self._record):
-            asked = _Asked(SessionId(str(uuid4())), here(), asyncio.get_running_loop().create_future())
-            annotate(kind=kind, question=question, aside_session=asked.session)
+            annotate(kind=kind, question=question)
             try:
-                reply = await self._in_turn(asked, question, within)
+                reply = await self._in_turn(question, within)
             except AsideFailed as failure:
                 annotate(unanswered=failure.why)
                 raise
             annotate(reply=reply)
             return reply
 
-    async def _in_turn(self, asked: _Asked, question: str, within: Within) -> str:
+    async def _in_turn(self, question: str, within: Within) -> str:
         queued = time.monotonic()
-        # Unwound outside its asker's clock, in reverse: its Claude Code ended, as gracefully as it will end, and only then
-        # the next question's turn; each registered as what it undoes is taken.
+        # What its asker's time running out means where it stands: waiting for a main turn to fork, or for anything else.
+        waiting = Unanswered.TIMED_OUT
         async with contextlib.AsyncExitStack() as taken:
             try:
                 # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
                 async with asyncio.timeout(within.seconds if isinstance(within, Deadline) else None) as clock:
                     await self._one.acquire()
                     taken.callback(self._one.release)
-                    # queued_ms only once it has its turn: the rest of its duration_ms is its Claude Code answering.
+                    # queued_ms only once it has its turn: the rest of its duration_ms is its request answered.
                     annotate(queued_ms=since(queued))
                     match within:
                         case TimeLimit(seconds=seconds):
                             clock.reschedule(asyncio.get_running_loop().time() + seconds)
                         case Deadline():
                             pass
-                    self._asked = asked
-                    taken.callback(self._answered_or_left)
-                    claude = await self._started(asked, question)
-                    taken.push_async_callback(claude.stop)
-                    return await self._answered(claude, asked)
+                    waiting = Unanswered.UNFORKED
+                    turn = await self._newest.turn()
+                    waiting = Unanswered.TIMED_OUT
+                    return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
-                raise AsideFailed(Unanswered.TIMED_OUT, f"no answer within {within}") from error
+                seen = {Unanswered.UNFORKED: f"the brain sent no main turn to fork within {within}"}.get(waiting, f"no answer within {within}")
+                raise AsideFailed(waiting, seen) from error
 
-    def _answered_or_left(self) -> None:
-        self._asked = None
-
-    async def _started(self, asked: _Asked, question: str) -> ClaudeCode:
-        try:
-            # A Claude Code cut short as it starts is killed by spawn itself.
-            # Off the loop: a copy not hashed yet this process is read whole, about 230 MB.
-            claude = await asyncio.to_thread(brain_claude, self._station.config_dir)
-            return await spawn(self._station, aside_command(claude, self._station.model, asked.session, question))
-        except (Unstartable, OSError) as error:
-            # No claude to run, or a question longer than a command line can be; a claude that cannot be run exits, and says why.
-            raise AsideFailed(Unanswered.UNSTARTED, f"no Claude Code to ask: {error}") from error
-
-    async def _answered(self, claude: ClaudeCode, asked: _Asked) -> str:
-        try:
-            await asyncio.wait({asked.answer, claude.exit}, return_when=asyncio.FIRST_COMPLETED)
-        except asyncio.CancelledError:
-            # [LAW:nothing-unseen] what it showed as its asker stopped waiting, its time up or hands stopping: a question it
-            # was still answering, or a screen over its input.
-            annotate(shown=claude.shown())
-            raise
-        if not asked.answer.done():
-            raise AsideFailed(Unanswered.EXITED, f"its Claude Code exited ({claude.exit.result()}) before it answered; it showed:\n{claude.shown()}")
-        match asked.answer.result():
-            case AsideFailed() as failure:
-                raise failure
-            case said:
-                return said
-
-    def adopted(self, sent: Sent, routed: Route) -> Route:
-        """`routed` as the question being asked now has it: its own request, inside the question's unit of work."""
-        asked = self._asked
-        return replace(routed, span=within(asked.span)) if asked is not None and sent.session == asked.session else routed
-
-    def hear(self, observed: Observed) -> None:
-        """A side question's answer, read from the wire: the reply to its own Claude Code's request."""
-        asked = self._asked
-        match observed:
-            # [LAW:one-source-of-truth] the question's own request is told by the session hands chose for it, never by the
-            # kind its body reads as: a reading that changes cannot leave an answer unheard (promptctl-brain-lq3.6ca).
-            case Exchanged(session=session, reply=reply) if asked is not None and session == asked.session and not asked.answer.done():
-                match reply:
-                    case Reached(status=200, body=Written(message=message)):
-                        said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
-                        # Read from the wire, not from what Claude Code shows: for a reply that did not end in words it
-                        # shows words of its own.
-                        ended = message.stop_reason == "end_turn" and bool(said)
-                        asked.answer.set_result(said if ended else AsideFailed(Unanswered.WORDLESS, f"the model's reply ended {message.stop_reason!r} with {said!r}"))
-                    case _:
-                        # Claude Code asks again after a request that failed; the question waits for that, or for its time.
-                        logger.warning(f"a side question's request was answered {reply}")
-            case _:
-                pass
+    async def _answered(self, headers: tuple[tuple[str, str], ...], body: bytes, path: str, forked: str) -> str:
+        annotate(forked=forked)
+        async with self._client.post(self._proxy_url + path, headers=list(headers), data=body) as response:
+            # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
+            reader = reply_reader(Fork(), response.headers, lambda _event: None)
+            async for chunk in response.content.iter_any():
+                reader.feed(chunk)
+            read = reader.finish(None)
+        request_id = response.headers.get("request-id")
+        annotate(status=response.status, request_id=request_id)
+        match read:
+            case Written(message=message) if response.status == 200:
+                annotate(**{name: tokens for name in USAGE if isinstance(tokens := message.usage.get(name), int)})
+                said = " ".join(block.text for block in message.content if isinstance(block, Said)).strip()
+                if message.stop_reason == "end_turn" and said:
+                    return said
+                raise AsideFailed(Unanswered.WORDLESS, f"the model's reply ended {message.stop_reason!r} with {said!r}")
+            case other:
+                raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")

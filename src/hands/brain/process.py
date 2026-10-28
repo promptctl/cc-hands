@@ -3,7 +3,7 @@
 It is Claude Code as anyone runs it: interactive, on a terminal hands holds, under fritter, and asked nothing a person
 at its keyboard could not ask. A turn is typed into its input and sent with Return, and Escape stops a prompt that is no
 turn's, or a turn hands' own work broke. Nothing else is typed into it: its input is the user's, and what hands asks in
-the background is asked of a Claude Code of its own (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
+the background is a /btw forked from its newest main turn through the proxy (`hands.brain.asides`). What it says is read from the wire, not from its screen [the design's rule: primary facts
 from the wire, derivative ones from the harness], and the harness is heard only through the hooks it posts to a
 listener of hands' own: that a typed turn was taken, and that it ended, or that the API failed it.
 
@@ -141,7 +141,7 @@ def _kept(prompt: str) -> str:
 
 @dataclass(frozen=True)
 class Station:
-    """What every slim Claude Code of hands' own runs on, the brain and each one a side question is asked of."""
+    """What every slim Claude Code of hands' own runs on."""
 
     config_dir: Path
     cwd: Path

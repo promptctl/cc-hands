@@ -1080,7 +1080,7 @@ turn together are timed from the last of them. Each call the brain's replies mad
 it, timed as the stage heard it on the wire. Each model round trip is the proxy's own `Exchanged` line, which carries a
 span inside the turn's (`span`), and reaches the collector as a `proxy.exchange` span under it: no second record of a
 round trip is kept. The brain's other requests in a turn, a subagent's or a fork's, and one hands held, are the turn's
-too; a side question's own request is under its `brain.aside`. The router decides each exchange's span as it routes it,
+too, a side question hands forks from the brain's newest main turn among them. The router decides each exchange's span as it routes it,
 and an exchange made for no unit of work, a wrapped session's through the tap or the brain's outside a turn, is a
 `proxy.exchange` span at the root of a trace of its own, saying its session, kind and path. A turn hands stopped mid-way
 still emits its event, cancelled, with what it had done.
@@ -1159,12 +1159,12 @@ launch. A body hands cannot read is answered as its hook asks, and its event fai
 the brain's own work, a turn's typing, a dialog, a hook heard, is said once on the terminal with its traceback. The turn
 it was done for, if any, is stopped as an Escape stops it and ends with that error; a permission it broke is refused, and
 a hook is answered however its hearing ended, so one whose hearing broke is no turn's and the hooks after it are still heard.
-Each side question (`brain.aside`), asked of a Claude Code of its own, is one event from when it is asked: what it is
-for (`kind`), its Claude Code's session (`aside_session`), the question and its answer, how long it waited behind the
-ones before it (`queued_ms`, absent for a question that never had its turn; the rest of its duration is its Claude Code
-answering), or why it has none (`unanswered`), its asker's time running out among them (a `Deadline` from asking, or for the
-line an old result goes as a `TimeLimit` from its turn), with what its Claude Code showed then (`shown`). Its Claude
-Code is always ended gracefully, after its asker's time if need be: it shares the brain's config directory. An explanation is a part of
+Each side question (`brain.aside`), a /btw forked from the brain's newest main turn and sent through the proxy, is one
+event from when it is asked: what it is for (`kind`), the question and its answer, the main turn it forked (`forked`),
+its reply's `status`, `request_id` and token counts, how long it waited behind the ones before it (`queued_ms`, absent
+for a question that never had its turn; the rest of its duration is its request answered), or why it has none
+(`unanswered`): no main turn to fork yet, a refused request, a wordless reply, or its asker's time running out (a
+`Deadline` from asking, or for the line an old result goes as a `TimeLimit` from its turn). An explanation is a part of
 the `utterance` it delays, a summary of the `summary.backlog` or `summary.turns` pass that asked it, and a name of
 its `name.judged`; a line, asked once its result's turn has ended, begins a trace of its own.
 
@@ -1450,11 +1450,11 @@ directory at connect is the model for it. The brain gets no note: each request i
 makes carries the same listing, composed as the request leaves, as a last text block after
 the block holding Claude Code's cache marker (`hands.voice.briefing.tail`). The cached
 prefix is exactly what Claude Code sent, and its history never keeps a stale listing. The
-brain's history is kept small on the way out the same way (`hands.brain.context`): a long
+brain's history is kept small on the way out the same way (`hands.brain.context`): every
 tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
 the cached prefix changes once a batch, with the sentence asked once the result's turn
-ends, as a side question that shows the result to a Claude Code started for that question
-alone (`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
+ends, as a side question that shows the result, forked from the brain's newest main turn
+(`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
 is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
 that go whole because no sentence had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
