@@ -4,6 +4,7 @@ one's and a quiet hands' always are. What a session asks is said for every one, 
 
 import asyncio
 import json
+import os
 import subprocess
 import zlib
 from dataclasses import fields
@@ -404,7 +405,7 @@ async def test_a_session_that_is_not_running_cannot_have_its_overlay_set(tmp_pat
 
 def skill(plugin: Path, home: Home, cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     """`/hands:attention` as the skill runs it: the plugin's launcher, in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd)}
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH}
     return subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.attention", *arguments], env=environment, cwd=cwd, capture_output=True, text=True)
 
 

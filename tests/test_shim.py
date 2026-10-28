@@ -164,7 +164,7 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
 
 def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
     """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd), **environment}
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, **environment}
     return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 

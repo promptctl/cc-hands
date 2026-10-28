@@ -65,7 +65,7 @@ def test_another_interpreter_is_another_plugin(tmp_path: Path) -> None:
 def test_a_launcher_whose_interpreter_is_gone_says_which_and_how_to_bring_the_plugin_back(tmp_path: Path) -> None:
     gone = tmp_path / "uninstalled hands" / "bin" / "python"
     plugin = render(Home(tmp_path / "home"), str(gone)).plugin
-    ran = subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.shim"], capture_output=True, text=True, env={"PATH": SYSTEM_PATH}, check=False)
+    ran = subprocess.run([plugin / LAUNCHER, "-m", "hands.sessions.shim"], capture_output=True, text=True, env=os.environ | {"PATH": SYSTEM_PATH}, check=False)
     assert (ran.returncode, ran.stdout) == (1, "")
     assert ran.stderr == f"hands: the plugin runs {gone}, which is gone; install hands, then run `claude plugin update hands@cc-hands`\n"
 

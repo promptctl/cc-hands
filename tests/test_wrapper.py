@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import SYSTEM_PATH
+from conftest import SYSTEM_PATH, executable
 from hands.daemon.cli import main
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
@@ -31,13 +31,6 @@ def root() -> Iterator[Path]:
     root = Path(tempfile.mkdtemp(prefix="wrap-", dir="/tmp")).resolve()
     yield root
     shutil.rmtree(root)
-
-
-def executable(path: Path, text: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    path.chmod(0o755)
-    return path
 
 
 def installed_shim(root: Path) -> Path:
