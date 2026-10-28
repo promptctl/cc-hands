@@ -9,10 +9,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import traceback
 import wave
 import weakref
-from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -20,6 +21,7 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast
 
+import huggingface_hub.constants
 import mlx.core as mx
 import mlx_whisper
 import pytest
@@ -258,6 +260,14 @@ int main(int argc, char **argv) {
 """
 
 
+def executable(path: Path, text: str) -> Path:
+    """A script at `path` that runs `text`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o755)
+    return path
+
+
 def stand_in(at: Path) -> Path:
     """A program built at `at` that runs as a session does, until it is killed, signed as the linker signs any program
     not Apple's, as Claude Code and Homebrew's tmux are: macOS 26 kills a copy of one of Apple's own programs as it
@@ -286,10 +296,11 @@ def smart_turn() -> None:
     engaged.ported()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 async def models(pytestconfig: pytest.Config, smart_turn: None) -> Path:
     """The wake word's models, Hey Jarvis's and Hey Mycroft's, fetched from openWakeWord's release once and kept in
-    pytest's cache, beside Smart Turn in the hub's: every model a switch to the wake word loads."""
+    pytest's cache, beside Smart Turn in the hub's: every model a switch to the wake word loads. A fetch, so of the run,
+    as the other fetches are, and not of a test."""
     directory = pytestconfig.cache.mkdir("wake-word") if pytestconfig.cache else pytest.fail("the cache provider is off")
     for word in (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft")):
         await fetched(directory, word)
@@ -323,6 +334,102 @@ def pytest_configure() -> None:
         version = subprocess.run([python, "-c", "import platform; print(platform.python_version())"], capture_output=True, text=True, check=True).stdout.strip()
         if version in SpecifierSet(metadata("hands")["Requires-Python"]):
             raise pytest.UsageError(f"{python} is Python {version}, new enough for hands, on SYSTEM_PATH, which the tests give children as a PATH with no such Python")
+
+
+# The names a test takes from the machine as they are: macOS's per-user temporary directory; CI's word that the run is
+# in CI, which in_ci reads as each report is made; and where the Hugging Face hub fetches from and whether it may, which
+# the hub in this process took from the machine as it was imported, so a child's hub fetches as this one does. pytest's
+# own PYTEST_ names are its to set and clear.
+PASSED = ("TMPDIR", "CI", "HF_HUB_OFFLINE", "HF_ENDPOINT")
+
+
+def without_claude(path: str, links: Path) -> str:
+    """`path`'s absolute directories, each that holds a `claude` in place of one in `links` that holds a link to
+    everything else in it: the developer's tools, lit and go among them, and not their logged-in Claude Code beside them.
+    A relative or empty entry is the directory a test is in, which no PATH made once can say holds no `claude`."""
+
+    def kept(index: int, directory: str) -> str:
+        if shutil.which("claude", path=directory) is None:
+            return directory
+        copy = links / str(index)
+        copy.mkdir()
+        # casefold: on macOS's case-insensitive disk, a `Claude` is what a lookup for `claude` finds.
+        for entry in Path(directory).iterdir():
+            if entry.name.casefold() != "claude":
+                (copy / entry.name).symlink_to(entry)
+        return str(copy)
+
+    return os.pathsep.join(kept(index, directory) for index, directory in enumerate(path.split(os.pathsep)) if os.path.isabs(directory))
+
+
+def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, sockets: Path) -> dict[str, str]:
+    """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
+    Hugging Face `hub` cache the weights are already in, no git config but a repository's own and one identity to commit
+    as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a `home` and a tmux socket
+    directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
+    tmux's or a proxy, which hands reads as a session's own, is absent."""
+    return {name: machine[name] for name in PASSED if name in machine} | {
+        "PATH": path,
+        "HF_HUB_CACHE": hub,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+        "LANG": "en_US.UTF-8",
+        "HOME": str(home),
+        "TMUX_TMPDIR": str(sockets),
+    }
+
+
+@pytest.fixture(scope="session")
+def machine() -> dict[str, str]:
+    """The machine's environment as the run began, for the one fetch that builds with the developer's own toolchain and
+    its caches, `go install`, and for nothing else."""
+    return dict(os.environ)
+
+
+@pytest.fixture(scope="session")
+def tools(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str]) -> str:
+    """The PATH the run and every test run with, its copies made once."""
+    return without_claude(machine["PATH"], tmp_path_factory.mktemp("path"))
+
+
+def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, home: Path) -> Generator[dict[str, str]]:
+    """[LAW:single-enforcer] the hermetic environment, and nothing else but pytest's own names, as the process's own while
+    the generator is held, with `home` and a tmux socket directory that hold nothing. The sockets sit under /tmp, not
+    pytest's basetemp: a socket's path holds 104 bytes on macOS, and basetemp under macOS's TMPDIR leaves no room for
+    tmux's tmux-<uid>/<name> beneath it."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
+        # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
+        # there too.
+        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, home, Path(sockets))
+        for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
+            monkeypatch.delenv(name)
+        for name, value in names.items():
+            monkeypatch.setenv(name, value)
+        yield names
+
+
+@pytest.fixture(scope="session", autouse=True)
+def run_environment(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str) -> Generator[dict[str, str]]:
+    """The run's environment from its start, so a fixture wider than a test, which pytest sets up first, runs in it too:
+    the weights' and Claude Code's fetches, the streaming pair. The hub took its token's path from the developer's HOME as
+    it was imported, so in this process too the token is one that is not there."""
+    home = tmp_path_factory.mktemp("home")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
+        yield from entered(monkeypatch, machine, tools, home)
+
+
+@pytest.fixture(autouse=True)
+def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str, run_environment: dict[str, str]) -> Generator[dict[str, str]]:
+    """Each test runs in the hermetic environment afresh, whatever a test before it left, with a HOME and a tmux socket
+    directory of its own that hold nothing, as pytest's own pytester gives each of its runs, so ~/.claude, ~/.hands,
+    ~/.gitconfig and ~/.config are all empty and no tmux server is found. [LAW:single-enforcer] conftest is the one owner
+    of the environment a test runs in: a test that needs a name sets it on top, and builds no environment of its own to
+    keep the developer's out."""
+    yield from entered(monkeypatch, machine, tools, tmp_path_factory.mktemp("home"))
 
 
 async def unread() -> InFront:
@@ -405,17 +512,17 @@ def pinned_to(script: Path) -> str:
 @pytest.fixture
 def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """The brain's pinned `claude`, wherever its directory, that reports its login from LOGGED_IN, or from an `auth login` or a first run (`--setting-sources user` alone, which also records its onboarding, the trust of the directory it ran in, and its approval of an API key its settings.json sets) it recorded, made by AUTH_METHOD (claude.ai unless named, api_key after an `auth login --console`, holding what Claude Code says of each) through API_PROVIDER (firstParty unless named), and as the brain is Claude Code at a keyboard: it
-    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and posts the hooks its --settings name; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
+    reads its terminal raw, STARTS_AFTER seconds in if named, in bursts, takes a prompt when a Return that ends a burst sends it, and says each turn as Claude Code does on each channel hands reads: the hooks its --settings name, as Claude Code fills them, the records of its transcript, and the status in its sessions/<pid>.json, idle as it starts; a prompt sent within STOP_TAIL seconds of a Stop, if named, is queued as Claude Code queues one sent while its other Stop hooks still run. Everything it
     reads is written, one line each, to the file TYPED names, a side question with the session it was asked under, and
     each prompt a Return sent is a line in the file ANSWERED names once it is done with all it does with it at once; a side
-    question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "fail" is failed by the API, "deaf"
-    is never taken, "late" is taken only once the next prompt is sent, ahead of it, "later" is too, and then runs LATER_SECONDS before its Stop, what is sent while it runs queued behind it until its Stop or an Escape that stops it puts the queue back in the input, unless a "racy" is queued, which is then taken as the late one ends just ahead of the Escape, that stops it instead, "garbled" is taken as other words and runs until Escape, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
+    question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "stuck" runs whatever is pressed, "fail" is failed by the API, "deaf"
+    is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
     ["played", name] once it has said all of it."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -441,13 +548,30 @@ if sys.argv[1:3] == ["auth", "status"]:
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
 session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
+sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+import turns
+# Where Claude Code keeps the session's transcript, and the file it keeps its status in, under its config directory.
+transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
+status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
     [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]
-    body = json.dumps({{"session_id": session, "hook_event_name": event, **fields}}).encode()
+    body = json.dumps({{"session_id": session, "transcript_path": transcript, "cwd": os.getcwd(), "permission_mode": "default", "hook_event_name": event, **fields}}).encode()
     return json.loads(urllib.request.urlopen(urllib.request.Request(url, body, {{"Content-Type": "application/json"}}), timeout=30).read())
 def typed(line):
     with open(os.environ["TYPED"], "a") as log:
         log.write(json.dumps(line) + "\\n")
+def written(record):
+    # Each record stamped as Claude Code stamps it, in UTC to the millisecond.
+    os.makedirs(os.path.dirname(transcript), exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    with open(transcript, "a") as file:
+        file.write(turns.transcribed({{"sessionId": session, "timestamp": stamp, **record}}))
+def stated(name):
+    # Rewritten whole, as Claude Code rewrites it each time it sets the status.
+    os.makedirs(os.path.dirname(status), exist_ok=True)
+    with open(status + ".tmp", "w") as file:
+        json.dump({{"pid": os.getpid(), "sessionId": session, "status": name, "statusUpdatedAt": round(time.time() * 1000)}}, file)
+    os.replace(status + ".tmp", status)
 # As a loaded machine starts it slowly.
 time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # Raw without flushing: Claude Code keeps what was typed while it started (keys typed
@@ -455,7 +579,8 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
 os.write(1, b"\\x1b[?2004h> ")
-pending, box, turn, turn_text, prompts, late, running, behind = b"", "", None, "", 0, None, None, []
+stated("idle")
+pending, box, turn, turn_text, prompts = b"", "", None, "", 0
 # The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
 last, tail = None, 0.0
 # A prompt as Claude Code's UserPromptSubmit says it took it: a paste of four lines or more in its tags, with a
@@ -464,26 +589,31 @@ def taken(text):
     if text.count("\\n") < 3:
         return text.rstrip()
     return '\\n\\n<pasted_content id="4c2e">\\n' + (text if text.endswith("\\n") else text + "\\n") + '</pasted_content id="4c2e">\\n'
+# Claude Code taking a prompt, as it takes one at its prompt: its UserPromptSubmit, then busy, then the prompt's record
+# under its id.
+def took(prompt, kept, text):
+    post("UserPromptSubmit", prompt_id=prompt, prompt=kept)
+    stated("busy")
+    written({{"type": "user", "promptId": prompt, "message": {{"role": "user", "content": text.strip()}}}})
+# A turn's end: Claude's reply written, its Stop or StopFailure posted, and the session set idle.
+def ended(event, prompt, reply, **fields):
+    written({{"type": "assistant", "message": {{"role": "assistant", "content": [{{"type": "text", "text": reply if isinstance(reply, str) else "odd"}}]}}}})
+    post(event, prompt_id=prompt, **fields)
+    stated("idle")
 # A turn as Claude Code was recorded running it: each hook posted, each record appended to the session's transcript and
 # each status set in its file, in the order Claude Code said them and each stamped as it is said, the words typed the
 # opening prompt on both channels that carry it. It runs the recording's prompts, the typed one first.
 def play(name, text):
     global prompts, last, tail
-    sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
-    import turns
-    project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()))
-    os.makedirs(project, exist_ok=True)
-    transcript = os.path.join(project, session + ".jsonl")
-    status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
-    os.makedirs(os.path.dirname(status), exist_ok=True)
     lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
     for line in lines:
         line = turns.shifted(line, time.time() - line.at)
         if isinstance(line, turns.Posted):
-            post(line.body["hook_event_name"], transcript_path=transcript, cwd=os.getcwd(), **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
+            post(line.body["hook_event_name"], **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
         elif isinstance(line, turns.Written):
-            with open(transcript, "a") as written:
-                written.write(turns.transcribed(line.record))
+            os.makedirs(os.path.dirname(transcript), exist_ok=True)
+            with open(transcript, "a") as file:
+                file.write(turns.transcribed(line.record))
         else:
             with open(status + ".tmp", "w") as file:
                 file.write(turns.status_file(line, pid=os.getpid(), session=session))
@@ -492,7 +622,7 @@ def play(name, text):
     last, tail = turns.stops(lines)[-1], time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
     typed(["played", name])
 def submit(text):
-    global turn, turn_text, prompts, late, running, last, tail
+    global turn, turn_text, prompts, last, tail
     if text.startswith("/btw "):
         if text == "/btw stubborn":
             signal.signal(signal.SIGTERM, lambda *_: typed(["sigterm", text, session]))
@@ -501,53 +631,42 @@ def submit(text):
             os.write(1, b"bye\\r\\n")
             sys.exit(3)
         return
-    if running is not None:
-        behind.append(text)
-        return
-    if late is not None and late[1].strip() == "later":
-        # Taken late, and runs on: what was sent is queued behind it.
-        post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
-        running, late = (late[0], late[1], time.monotonic() + float(os.environ["LATER_SECONDS"])), None
-        behind.append(text)
-        return
     if time.monotonic() < tail:
         # Sent while the last prompt's other Stop hooks still run: queued, and taken as they end. Its UserPromptSubmit is
         # posted before it has a prompt id of its own, under the last prompt's, holding what was queued, which Claude Code
-        # trims of its leading whitespace; it then runs under an id of its own, which its Stop names.
+        # trims of its leading whitespace; Claude Code's queue records say it was queued and taken out to run, and it
+        # then runs under an id of its own, which its records and its Stop name.
         time.sleep(tail - time.monotonic())
-        post("UserPromptSubmit", prompt_id=last, prompt=taken(text.lstrip()))
+        kept = taken(text.lstrip())
+        post("UserPromptSubmit", prompt_id=last, prompt=kept)
         typed(["prompt", text])
+        written({{"type": "queue-operation", "operation": "enqueue", "content": kept}})
+        written({{"type": "queue-operation", "operation": "dequeue"}})
         prompts += 1
         last = f"p{{prompts}}"
-        post("Stop", prompt_id=last, last_assistant_message="Two.")
+        stated("busy")
+        written({{"type": "user", "promptId": last, "message": {{"role": "user", "content": text.strip()}}}})
+        ended("Stop", last, "Two.", last_assistant_message="Two.", stop_hook_active=False)
         tail = time.monotonic() + float(os.environ["STOP_TAIL"])
         return
     typed(["prompt", text])
     prompts += 1
     prompt = f"p{{prompts}}"
     said = text.strip()
-    if late is not None:
-        # Taken late, as Claude Code takes a prompt it read after its turn had ended: then the prompt sent behind it.
-        post("UserPromptSubmit", prompt_id=late[0], prompt=taken(late[1]))
-        post("Stop", prompt_id=late[0], last_assistant_message="Late.")
-        late = None
     if said.startswith("play "):
         play(said[len("play "):], text)
         return
     if said == "deaf":
         return
-    if said in ("late", "later"):
-        late = prompt, text
-        return
     if said == "garbled":
-        post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text) + " (as kept)")
+        took(prompt, taken(text) + " (as kept)", text)
         turn, turn_text = prompt, text
         return
-    post("UserPromptSubmit", prompt_id=prompt, prompt=taken(text))
+    took(prompt, taken(text), text)
     if said == "die":
         os.write(1, b"bye\\r\\n")
         sys.exit(3)
-    if said == "wait":
+    if said in ("wait", "stuck"):
         turn, turn_text = prompt, text
         return
     if said == "slow":
@@ -558,8 +677,8 @@ def submit(text):
         notes = os.path.join(os.path.dirname(os.environ["TYPED"]), "notes.txt")
         decision = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": notes, "content": "hello"}})["hookSpecificOutput"]["decision"]
         if decision["behavior"] == "allow":
-            with open(notes, "w") as written:
-                written.write("hello")
+            with open(notes, "w") as file:
+                file.write("hello")
         typed(["permission", decision["behavior"], decision.get("message", "")])
         declined = post("Elicitation", prompt_id=prompt, mcp_server_name="probe", message="Which?")
         typed(["elicitation", declined["hookSpecificOutput"]["action"]])
@@ -568,15 +687,15 @@ def submit(text):
         stray = post("PermissionRequest", prompt_id="p0", tool_name="Write", tool_input={{"file_path": "notes.txt", "content": "hello"}})["hookSpecificOutput"]["decision"]
         typed(["permission", stray["behavior"], stray.get("message", "")])
     if said == "fail":
-        post("StopFailure", prompt_id=prompt, error="unknown", last_assistant_message="API Error: 400 refused")
+        ended("StopFailure", prompt, "API Error: 400 refused", error="unknown", last_assistant_message="API Error: 400 refused")
     elif said == "fail blank":
-        post("StopFailure", prompt_id=prompt, error="authentication_failed", last_assistant_message="")
+        ended("StopFailure", prompt, "", error="authentication_failed", last_assistant_message="")
     elif said == "fail odd":
-        post("StopFailure", prompt_id=prompt, error="server_error", last_assistant_message={{"text": "odd"}})
+        ended("StopFailure", prompt, {{"text": "odd"}}, error="server_error", last_assistant_message={{"text": "odd"}})
     elif said == "fail unnamed":
-        post("StopFailure", prompt_id=prompt)
+        ended("StopFailure", prompt, "")
     else:
-        post("Stop", prompt_id=prompt, last_assistant_message="Two.")
+        ended("Stop", prompt, "Two.", last_assistant_message="Two.", stop_hook_active=False)
     last, tail = prompt, time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
 # As Claude Code reads its options: --mcp-config takes every word up to the next option or `--`, each a config or a
 # config's file, and one that is neither ends the program (a prompt read as a path: ENAMETOOLONG, exit 1).
@@ -594,13 +713,6 @@ if end < len(sys.argv):
     [opening] = sys.argv[end + 1:]
     submit(opening)
 while True:
-    if running is not None and not select.select([0], [], [], max(0.0, running[2] - time.monotonic()))[0]:
-        post("Stop", prompt_id=running[0], last_assistant_message="Late.")
-        running, queued = None, behind
-        behind = []
-        for text in queued:
-            submit(text)
-        continue
     data = os.read(0, 65536)
     if not data:
         break
@@ -622,19 +734,11 @@ while True:
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
             typed(["escape", box])
-            if running is not None and [queued.strip() for queued in behind] == ["racy"]:
-                # The late prompt ended, and the one queued behind it was taken, just before the Escape, which stops it.
-                post("Stop", prompt_id=running[0], last_assistant_message="Late.")
-                prompts += 1
-                post("UserPromptSubmit", prompt_id=f"p{{prompts}}", prompt=taken(behind[0]))
-                box, running = behind[0], None
-                behind = []
-            if running is not None:
-                # As Claude Code does, the stopped prompt is put back in the input, and the queue behind it with it; no Stop.
-                box, running = running[1] + "".join(behind), None
-                behind = []
-            if turn is not None:
-                # As Claude Code does, the stopped prompt is put back in the input.
+            if turn is not None and turn_text.strip() != "stuck":
+                # As Claude Code does, the stopped prompt is put back in the input, and the turn's end is the record of its
+                # interruption, written under its id, and the session set idle: no Stop.
+                written({{"type": "user", "promptId": turn, "message": {{"role": "user", "content": [{{"type": "text", "text": "[Request interrupted by user]"}}]}}}})
+                stated("idle")
                 box, turn = turn_text, None
         elif pending.startswith(b"\x03"):
             pending = pending[1:]
@@ -661,7 +765,6 @@ while True:
     monkeypatch.setenv("LOGGED_IN", "1")
     monkeypatch.setenv("TYPED", str(tmp_path / "typed.jsonl"))
     monkeypatch.setenv("ANSWERED", str(tmp_path / "answered"))
-    monkeypatch.setenv("LATER_SECONDS", "1")
     return script
 
 

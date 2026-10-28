@@ -12,12 +12,12 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
 from hands.core.reducer import reduce
-from hands.core.session import Gone, Instant, Known, Membership, Registry, RequestId, Session, SessionId, status_stamp
+from hands.core.session import Gone, Instant, Known, Membership, PromptId, Registry, RequestId, Session, SessionId, followed, status_stamp
 from hands.core.status import Stamp
 from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.audit import Record, Typing, TypingFailed
@@ -75,6 +75,9 @@ class Sessions:
         stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
+        story_sink: Callable[[Story], None] | None = None,
+        heard_sink: Callable[[Heard], None] | None = None,
+        submitted_sink: Callable[[Submitted], None] = lambda _submitted: None,
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(sessions={}, drafts={})
@@ -109,6 +112,13 @@ class Sessions:
         self._heard: asyncio.Queue[Heard] = asyncio.Queue()
         # Apart from what is heard: a summary takes seconds of model time, which must not hold up a permission request.
         self._story: asyncio.Queue[Story] = asyncio.Queue()
+        # [LAW:effects-at-boundaries] where each is handed as it is performed, in the order its session's effects were
+        # decided: by default onto the queues `story` and `heard` read, for the narrator and the speech that say them.
+        self._story_sink = story_sink or self._story.put_nowait
+        self._heard_sink = heard_sink or self._heard.put_nowait
+        # Where each prompt hook's words went, for whoever typed them and waits on their answer: the brain. The daemon
+        # waits on none.
+        self._submitted_sink = submitted_sink
         # Each session's latest performing still under way: what the next of that session's waits on.
         self._performing: dict[SessionId, asyncio.Task[None]] = {}
         # What was heard where nothing waits on it, still being performed.
@@ -120,15 +130,24 @@ class Sessions:
     def stamp(self) -> Stamp:
         return self._stamp()
 
-    async def apply(self, event: Event) -> None:
-        # Shielded: the event is in the registry already, so a caller that gives up never costs it its effects.
-        await asyncio.shield(self._decided(event))
+    def apply(self, event: Event) -> "asyncio.Future[None]":
+        """The event decided now, as it is called, and its effects being performed: done once they all are.
+
+        Shielded: the event is in the registry already, so a caller that gives up never costs it its effects."""
+        return asyncio.shield(self._decided(event))
 
     def hear(self, event: Event) -> None:
         """Apply an event heard where nothing waits on it: decided now, in the order it was heard, and performed after."""
         hearing = self._decided(event)
         self._hearing.add(hearing)
         hearing.add_done_callback(self._performed)
+
+    async def drained(self, session: SessionId) -> None:
+        """Returns once nothing decided for `session` is still being performed, so what the registry holds of it now its
+        sinks have been handed. [LAW:no-ambient-temporal-coupling] a reader of the registry that hears the session's
+        effects too reads it after them, never ahead: what was decided while it waited is waited on as well."""
+        while (performing := self._performing.get(session)) is not None and not performing.done():
+            await asyncio.wait({performing})
 
     def _performed(self, hearing: asyncio.Future[None]) -> None:
         self._hearing.discard(hearing)
@@ -357,6 +376,13 @@ class Sessions:
             case Session() as live:
                 return live
 
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
+        """Whether hands followed the live session's turn an id names, its turn or a turn before it going by it, as the
+        registry holds it now: [LAW:no-ambient-temporal-coupling] a session held is never changed, so what is applied
+        after this is not in what it says, from whatever thread it is asked."""
+        live = self.live_session(session)
+        return lambda prompt: live is not None and followed(live, prompt)
+
     def live(self) -> list[Listing[Session]]:
         return [self._listing(session) for session in self._registry.live()]
 
@@ -405,9 +431,11 @@ class Sessions:
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
             case Narrate() | Progress() | Tell():
-                self._heard.put_nowait(effect)
+                self._heard_sink(effect)
             case Summarise() | SessionGone():
-                self._story.put_nowait(effect)
+                self._story_sink(effect)
+            case Submitted():
+                self._submitted_sink(effect)
             case Snapshot() | Compare():
                 # [LAW:no-silent-failure] what a repository says about a turn is best effort, and may never
                 # cost the turn the thing it was read for. Both reads are guarded here rather than each
@@ -466,7 +494,7 @@ async def _all(performing: list[asyncio.Task[None]]) -> None:
 def _ordered_by(effect: Effect) -> SessionId | None:
     """The session whose order the effect keeps; None for one that waits on nothing: a line, or what is heard."""
     match effect:
-        case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session):
+        case Reply(session=session) | Summarise(session=session) | SessionGone(session=session) | Snapshot(session=session) | Compare(session=session) | Submitted(session=session):
             return session
         case Audit() | Narrate() | Progress() | Tell():
             return None

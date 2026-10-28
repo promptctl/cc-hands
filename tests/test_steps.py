@@ -8,10 +8,11 @@ test runners wrote, passing and failing, captured on 2026-09-21, and go's subtes
 from pathlib import Path
 
 import pytest
+from collections.abc import Callable
 
 from dataclasses import dataclass
 
-from hands.core.session import Membership, SessionId
+from hands.core.session import Membership, PromptId, SessionId
 from hands.core.status import Stamp
 from hands.core.steps import Call, Result, recognise
 from hands.core.testrun import RUNNERS, report_of
@@ -45,6 +46,10 @@ class Registry:
 
     def membership(self, session: SessionId) -> Membership | None:
         return self.member if session == self.member.id else None
+
+    def followed(self, session: SessionId) -> Callable[[PromptId], bool]:
+        # No hook of the session is heard: the tail decides alone what of the file is history.
+        return lambda _prompt: False
 
 
 @pytest.fixture

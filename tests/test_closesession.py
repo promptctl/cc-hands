@@ -95,8 +95,12 @@ def joined(home: Home, sessions: Sessions, tmp_path: Path, pid: int, name: str, 
     folder.mkdir()
     member = Membership(SessionId(name), pid, folder, folder / "t.jsonl")
     write_membership(home, member)
-    for event in (Joined(member, "startup"), *(event(member.id) for event in events)):
-        asyncio.run(sessions.apply(event))
+
+    async def applied() -> None:
+        for event in (Joined(member, "startup"), *(event(member.id) for event in events)):
+            await sessions.apply(event)
+
+    asyncio.run(applied())
     return member.id
 
 

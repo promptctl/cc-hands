@@ -8,6 +8,7 @@ from typing import Literal, NewType, Self
 
 from hands.core.progress import Doing, Gathering
 from hands.core.status import AtPrompt, Busy, Going, Stamp
+from hands.core.stopfailure import StopFailed
 from hands.core.turn import AgentId, AgentTask
 
 SessionId = NewType("SessionId", str)
@@ -268,6 +269,8 @@ class Unnamed:
     prompt: PromptId
     closing: str | None
     again: bool
+    # What failed the turn, for the StopFailure Claude Code fires in place of a Stop when the API failed it.
+    failure: StopFailed | None
     # When its hook was heard, on Claude Code's clock.
     fired: Stamp
     # The hook Claude Code waits on meanwhile, let go once the Stop is decided; None once it stopped waiting.
@@ -323,6 +326,21 @@ def delegating(session: Session) -> bool:
         case Session(state=Running(status=Busy()), turn=Untold() | Told(), background=background):
             return bool(background)
         case _:
+            return False
+
+
+def followed(session: Session, prompt: PromptId) -> bool:
+    """Whether hands followed the turn the id names: the session's turn, or a turn before it, went by it."""
+    return prompt in ids(session.turn) or prompt in session.earlier
+
+
+def all_told(session: Session) -> bool:
+    """Whether every turn Claude Code ran is told and nothing waits in its queue to run after them: a prompt typed now
+    is a turn of its own, behind nothing. [LAW:one-source-of-truth] read off the turn, never held beside it."""
+    match session.turn:
+        case Told(waiting=()):
+            return True
+        case Opened() | Untold() | Told():
             return False
 
 

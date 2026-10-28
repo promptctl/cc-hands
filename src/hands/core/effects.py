@@ -8,6 +8,7 @@ from typing import Literal
 from hands.core.events import SessionEvent, Unqueuing
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
+from hands.core.stopfailure import StopFailed
 from hands.core.session import Blocker, CommandName, Keystroke, PromptId, PromptText, RequestId, SessionId
 from hands.core.tmux import Pane
 from hands.core.turn import AgentId, AgentTask
@@ -256,6 +257,11 @@ class Summarise:
     # it, and the tail tells the turn it is on.
     turn: PromptId | None
     closing: str | None
+    # The words that still wait in Claude Code's queue as the turn is told, oldest first: they run after it, so this
+    # telling is not theirs. [LAW:no-ambient-temporal-coupling] said as of the telling, whatever is read after it.
+    waiting: tuple[str, ...] = ()
+    # What failed the turn, where the API did: its StopFailure's account, which ends the turn as a Stop does.
+    failure: StopFailed | None = None
 
 
 @dataclass(frozen=True)
@@ -300,7 +306,20 @@ class Compare:
 # generator, or a `sed` in a shell command changes files that no step reports.
 Repository = Snapshot | Compare
 
-Effect = Audit | Reply | Heard | Story | Repository
+
+@dataclass(frozen=True)
+class Submitted:
+    """Claude Code took words at its prompt hook, under `prompt`: an id of their own, the turn they open, or, `queued`,
+    the id of a turn it already had, behind or into which they run. Handed over in its session's order, so whoever
+    typed the words hears where they went before any telling decided after."""
+
+    session: SessionId
+    prompt: PromptId
+    words: str
+    queued: bool
+
+
+Effect = Audit | Reply | Heard | Story | Repository | Submitted
 
 
 @dataclass(frozen=True)

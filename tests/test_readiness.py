@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import SYSTEM_PATH, pin, stand_in
+from conftest import SYSTEM_PATH, executable, pin, stand_in
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
@@ -56,13 +56,6 @@ def only_this_tests_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
         return Terminals(found.found, [each for each in found.unread if each.parent == os.getpid()])
 
     monkeypatch.setattr(readiness, "terminal_processes", own)
-
-
-def executable(path: Path, text: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
-    path.chmod(0o755)
-    return path
 
 
 def claude_listing(root: Path, plugins: object) -> str:

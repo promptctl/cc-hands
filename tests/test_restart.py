@@ -48,7 +48,7 @@ def ran(recorded: list[audit.Entry]) -> list[tuple[str, object, object]]:
 
 def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
     """`/hands:restart` as the skill runs it: the plugin's launcher, in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd)}
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH}
     return subprocess.run([plugin / LAUNCHER, "-m", "hands.daemon", "restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
 
 

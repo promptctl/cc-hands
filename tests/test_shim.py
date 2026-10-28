@@ -28,8 +28,9 @@ from hands.core.events import Located, StatusReported
 from hands.core.status import Busy, Report, Stamp
 from hands.sessions.audit import Entry
 from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
+from hands.sessions.reader import Reader
 from hands.sessions.server import serve_hooks
-from hands.sessions.untap import untapped
+from hands.sessions.tail import Tails
 from hands.sessions.wide import Fact, WideEvent
 from conftest import SYSTEM_PATH
 
@@ -55,18 +56,14 @@ def home() -> Iterator[Home]:
 @pytest.fixture
 async def sessions(home: Home) -> AsyncIterator[Sessions]:
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     yield registry
     await runner.cleanup()
 
 
 async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None, given: Mapping[str, str] = {}) -> tuple[int | None, str, str]:
     """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it: with only HANDS_HOME to go on."""
-    # The shim reads FRITTER_SOCKET from its environment, so the tests say what is in it
-    # rather than inheriting whatever the run happens to have. Without this, running the
-    # suite from inside a wrapped session would change what the shim records.
-    # A tap and its file of commands are a session's too, and a run inside one must not write into that session's file.
-    environment = {key: value for key, value in untapped(os.environ).items() if key not in ("FRITTER_SOCKET", "CLAUDE_ENV_FILE")} | dict(given)
+    environment = os.environ | dict(given)
     if fritter is not None:
         environment["FRITTER_SOCKET"] = fritter
     process = await asyncio.create_subprocess_exec(
@@ -167,7 +164,7 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
 
 def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
     """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd), **environment}
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, **environment}
     return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 
@@ -206,6 +203,35 @@ async def test_a_session_running_before_the_plugin_joins_on_its_first_hook_and_i
     assert await asyncio.wait_for(sessions.story(), 1.0) == Summarise(SID, PromptId("p1"), "done")
 
 
+async def test_a_stop_is_decided_on_the_status_and_transcript_claude_code_wrote_before_it_however_soon_it_came(home: Home, tmp_path: Path) -> None:
+    # [LAW:no-ambient-temporal-coupling] no read on the period came between the prompt and the Stop: the Stop names the
+    # id Claude went on under, which only the transcript says, and it is read through the hook first.
+    config = tmp_path / "claude"
+    transcript = config / "projects" / "-code-a" / f"{SID}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    located = {"transcript_path": str(transcript)}
+    registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
+    try:
+        await shim(home, {**START, **located})
+        await shim(home, {**PROMPT, **located})
+        # Under the process the shim recorded the session as.
+        pid = read_membership(home, SID).pid
+        status = config / "sessions" / f"{pid}.json"
+        status.parent.mkdir()
+        status.write_text(json.dumps({"pid": pid, "sessionId": SID, "status": "busy", "statusUpdatedAt": 1000}))
+        said = [("p1", "hi", "On it."), ("p2", "and then?", "done")]
+        # Compact, as Claude Code writes its records.
+        transcript.write_text("".join(json.dumps(record, separators=(",", ":")) + "\n" for prompt, asked, answer in said for record in (
+            {"type": "user", "promptId": prompt, "message": {"role": "user", "content": asked}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}},
+        )))
+        assert await shim(home, {**STOP, **located, "prompt_id": "p2"}) == (0, "", "")
+        assert await asyncio.wait_for(registry.story(), 1.0) == Summarise(SID, PromptId("p2"), "done")
+    finally:
+        await runner.cleanup()
+
+
 async def test_a_later_hook_leaves_the_membership_its_start_wrote(home: Home, sessions: Sessions) -> None:
     await shim(home, START, fritter="/tmp/fritter-abc.sock")
     await shim(home, {**PROMPT, "cwd": "/code/a/sub"})
@@ -229,7 +255,7 @@ async def test_a_hook_naming_the_transcript_claude_code_moved_moves_the_session_
     stays the start's, since a hook's cwd is the shell's, which a `cd` moves too."""
     recorded: list[Entry] = []
     registry = Sessions(clock=lambda: 10.0, record=recorded.append)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     start, entered = _entered_worktree(tmp_path)
     moved = str(entered["transcript_path"])
     try:
@@ -314,7 +340,7 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
 async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Home) -> None:
     recorded: list[Entry] = []
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.2)
-    runner = await serve_hooks(home, registry, Names(), recorded.append)
+    runner = await serve_hooks(home, registry, Names(), recorded.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
         await shim(home, {**COMMON, "hook_event_name": "Notification"})
@@ -349,7 +375,7 @@ async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
     dead.close()
     assert home.socket.exists()
     registry = Sessions(clock=lambda: 0.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry, Names(), lambda _: None)
+    runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         assert await shim(home, START) == (0, STARTED, "")
         assert len(registry.live()) == 1
@@ -404,7 +430,7 @@ async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_c
     names = Names()
     given: list[Entry] = []
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
-    runner = await serve_hooks(home, registry, names, given.append)
+    runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
         await shim(home, PROMPT)
@@ -432,7 +458,7 @@ async def test_a_name_set_since_hands_decided_one_is_not_overwritten_by_it(home:
     transcript.write_text('{"type":"custom-title","customTitle":"my thing","sessionId":"s"}\n')
     at = {"transcript_path": str(transcript)}
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry, names, given.append)
+    runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, {**START, **at})
         names.rename(SID, "naming fix", None)
@@ -449,7 +475,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
     # A directory where the transcript should be: reading the session's title fails.
     at = {"transcript_path": str(tmp_path)}
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None)
-    runner = await serve_hooks(home, registry, names, given.append)
+    runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, {**START, **at})
         names.rename(SID, "naming fix", None)
@@ -464,7 +490,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
 async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
     names = Names()
     registry = Sessions(clock=lambda: 10.0, record=lambda _: None, stop_hold=0.05)
-    runner = await serve_hooks(home, registry, names, lambda _: None)
+    runner = await serve_hooks(home, registry, names, lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
         await shim(home, PROMPT)
