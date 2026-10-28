@@ -53,6 +53,9 @@ reportMatchNotExhaustive = "error"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# pytester, for the tests of conftest's own hooks (tests/test_ci_skips.py): pytest_plugins is read only from the
+# rootdir's conftest.
+addopts = ["-p", "pytester"]
 # [LAW:single-enforcer] the one owner of "no test hangs": one that never finishes fails here, named, with the stack it
 # was stuck in. A wait inside a test (conftest's `patiently`) is for failing fast on a stall, and leans on this to end
 # a run that keeps moving for ever, or holds the loop for ever. The slowest test takes 14 s on a quiet machine, and

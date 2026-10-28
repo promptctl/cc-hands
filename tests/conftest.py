@@ -8,7 +8,7 @@ import stat
 import subprocess
 import sys
 import wave
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
@@ -35,6 +35,20 @@ from hands.sessions.wrapper import PACKAGED
 from hands.voice import engaged, streaming
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport() -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """A test skipped in CI fails there, with the skip's own reason: CI provisions every tool and machine a test needs,
+    so a skip there is one of them gone missing. An expected failure is not a skip."""
+    report = yield
+    # [LAW:no-silent-failure] a runner image that drops jq, or gains a Claude Code policy, would otherwise pass the run
+    # with the tests that needed it never run, and nothing in the log but a count.
+    if os.environ.get("CI") == "true" and report.skipped and not hasattr(report, "wasxfail"):
+        assert isinstance(report.longrepr, tuple), report.longrepr
+        report.outcome = "failed"
+        report.longrepr = f"{report.longrepr[2]}, in CI, where every test runs"
+    return report
+
 
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
