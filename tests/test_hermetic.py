@@ -2,13 +2,21 @@
 a tmux socket directory of its own."""
 
 import os
+import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Never
 
 import huggingface_hub
 import pytest
+from huggingface_hub.errors import OfflineModeIsEnabled
 
-from conftest import executable, hermetic, without_claude
+import conftest
+from conftest import executable, fetching, hermetic, without_claude
+from hands.voice.engaged import SMART_TURN
 
 
 def test_a_path_without_claude_finds_the_tools_beside_it(tmp_path: Path) -> None:
@@ -49,7 +57,8 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "LANG": "fr_FR.ISO8859-1",
         "LC_ALL": "fr_FR.ISO8859-1",
-        "HF_HUB_OFFLINE": "1",
+        "HF_HUB_OFFLINE": "0",
+        "HF_ENDPOINT": "https://hub.example.com",
         "HF_TOKEN": "hf_developer",
         "GIT_AUTHOR_NAME": "Developer",
         "HOME": "/Users/developer",
@@ -113,3 +122,57 @@ def test_what_a_test_leaves_in_its_home_or_its_tmux_directory_no_other_test_find
     for own in (Path.home(), Path(os.environ["TMUX_TMPDIR"])):
         assert list(own.iterdir()) == []
         (own / test).write_text(test)
+
+
+def test_a_test_reaches_no_hub_for_a_weight() -> None:
+    # The run fetched every weight before the first test, and left the hub in this process offline once it had.
+    with pytest.raises(OfflineModeIsEnabled):
+        huggingface_hub.HfApi().model_info(SMART_TURN)
+
+
+def test_a_child_reaches_no_hub_for_a_weight_either() -> None:
+    asked = subprocess.run([sys.executable, "-c", f"import huggingface_hub; huggingface_hub.HfApi().model_info({SMART_TURN!r})"], capture_output=True, text=True)
+
+    assert asked.returncode != 0
+    assert "OfflineModeIsEnabled" in asked.stderr, asked.stderr
+
+
+def test_a_fetch_is_named_as_it_starts_and_timed_once_it_is_done() -> None:
+    written: list[str] = []
+
+    def fetch() -> int:
+        assert written == ["fetching the models: "]
+        return 7
+
+    assert fetching(written.append, "the models", (OSError,), fetch) == 7
+    assert re.fullmatch(r"\d+\.\d\d s\n", written[1]), written
+
+
+def refused() -> Never:
+    raise ConnectionRefusedError("refused")
+
+
+def broken() -> Never:
+    raise TypeError("a defect")
+
+
+def test_a_fetch_that_fails_stops_the_run_naming_what_and_why() -> None:
+    written: list[str] = []
+    with pytest.raises(pytest.UsageError, match="^the run cannot fetch the models: ConnectionRefusedError: refused$"):
+        fetching(written.append, "the models", (OSError,), refused)
+    assert written == ["fetching the models: ", "failed\n"]
+
+
+def test_a_defect_in_a_fetch_is_raised_as_itself() -> None:
+    written: list[str] = []
+    with pytest.raises(TypeError, match="a defect"):
+        fetching(written.append, "the models", (OSError,), broken)
+    assert written == ["fetching the models: "]
+
+
+def test_a_run_with_pytest_s_cache_off_stops_saying_it_fetches_into_it(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile("def test_passed():\n    pass\n")
+    ran = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", plugins=[SimpleNamespace(pytest_configure=conftest.pytest_configure)])
+
+    assert ran.ret == pytest.ExitCode.USAGE_ERROR
+    ran.stderr.fnmatch_lines(["*the run fetches what its tests need into pytest's cache, and the cache provider is off*"])

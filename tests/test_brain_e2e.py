@@ -4,7 +4,7 @@ mock is the upstream hands' proxy forwards to, and the brain's way to every othe
 login is one the mock accepts. The OS holds the brain to it: every Claude Code hands starts, and all it starts in turn,
 runs in a sandbox whose only connections are to loopback. A machine's Claude Code policy reaches every Claude Code, so
 the tests run on a machine with none, as CI's is. The pinned Claude Code, from npm's registry, and the mock are fetched
-once, into pytest's cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
+before the run, into pytest's cache (conftest). What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
 import json
@@ -21,11 +21,10 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import pin, running, unread
+from conftest import RUN, pin, running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
-from hands.brain import pinned
 from hands.brain.process import BROKEN, STOPPED, starting_settings, workdir
 from hands.core.effects import Deny
 from hands.core.session import DenyAndInterrupt
@@ -43,13 +42,8 @@ from hands.voice.refocus import Refocus
 from hands.sessions.sentences import Sentences
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
-from npm_registry import REGISTRY
 from test_stage import Received, Spoken
 
-# The canonical mock of Anthropic's API, at the release these tests were written against. Moving it is one commit, and
-# CI's cache of it is keyed on it.
-MOCK_MODULE = "github.com/promptctl/mock-anthropic"
-MOCK_RELEASE = "v0.1.0"
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
@@ -78,16 +72,9 @@ class MockApi:
 
 
 @pytest.fixture(scope="session")
-def mock_binary(pytestconfig: pytest.Config, machine: dict[str, str]) -> Path:
-    """The mock at MOCK_RELEASE, built once by `go install` into pytest's cache, a directory per release."""
-    cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    binary = cache / MOCK_RELEASE / "mock-anthropic"
-    if not binary.is_file():
-        # [LAW:no-silent-failure] an install that fails stops the session in go's own words. The binary is installed into its
-        # release's directory, so the cache of one release is never taken for another.
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env=machine | {"GOBIN": str(binary.parent)})
-    return binary
+def mock_binary(pytestconfig: pytest.Config) -> Path:
+    """The mock at the release conftest pins, as the run built it into pytest's cache."""
+    return pytestconfig.stash[RUN].mock
 
 
 # The outcomes the mock writes its records under that are no fault: a request served, a connection closed, a request
@@ -121,11 +108,9 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
 
 
 @pytest.fixture(scope="session")
-async def claude_code(pytestconfig: pytest.Config) -> Path:
-    """The brain's pinned Claude Code, fetched once from npm's registry, against its checksum, into pytest's cache."""
-    cache = pytestconfig.cache.mkdir("claude-code") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    await pinned.install(cache, REGISTRY)
-    return pinned.verified(cache)
+def claude_code(pytestconfig: pytest.Config) -> Path:
+    """The brain's pinned Claude Code, as the run fetched it from npm's registry, against its checksum, into pytest's cache."""
+    return pytestconfig.stash[RUN].claude_code
 
 
 # What a Claude Code hands starts may connect to, as macOS's sandbox holds it and every process it starts: loopback,
