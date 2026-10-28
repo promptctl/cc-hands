@@ -760,10 +760,7 @@ class Brain:
         """Types `turn`, with the input held, behind nothing, and waits out a pause of `turn.take` for it to be taken, or to
         end: says whether it was. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
-        turn is typed, so the turn is Claude Code's next and runs alone. [LAW:no-ambient-temporal-coupling] decided on
-        what Claude Code has said by now, read through now as a telling reads its transcript (Tails.tell), however late
-        the reader's period last came round."""
-        await self._reader.read()
+        turn is typed, so the turn is Claude Code's next and runs alone."""
         if not self._all_told():
             await self._clear(turn)
         await self._type(lambda typist: typist.type(turn.typed))
