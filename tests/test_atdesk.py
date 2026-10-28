@@ -5,7 +5,7 @@ voice. macOS's key tap, the microphone's device, and the speaker's device are st
 import asyncio
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -27,6 +27,9 @@ from hands.voice.wakeword import Pretrained
 
 # Twenty milliseconds of the desk's microphone, as it hands audio over.
 BUFFER = 640
+
+# The units of work the desk loads its models in, Silero's and Smart Turn's, and the wake word's.
+LOADS = {"desk.loaded", "desk.wake_word_loaded"}
 
 
 class Speaker:
@@ -105,17 +108,34 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     async def took(move: Move) -> None:
         taken.append(move)
 
+    # Once each of the desk's loads is in, it hears with them; one that failed ends the desk, which ends any wait.
+    ready = asyncio.Event()
+
+    def record(event: WideEvent) -> None:
+        events.append(event)
+        if LOADS <= {each.event for each in events if each.outcome == "ok"}:
+            ready.set()
+
     # Rendered before the desk runs, so macOS's `say` never holds the loop the desk, the tap, and its timers run on.
     off, wake, engaged, deaf = (spoken(said, tmp_path / f"{name}.wav") for name, said in [("off", "create a ticket to read session history."), ("wake", "Hey Jarvis. What is the status of the build?"), ("engaged", "create a ticket to read session history."), ("deaf", "create a ticket to read session history.")])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=events.append))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record))
+
+    async def alongside(waiting: Awaitable[object]) -> None:
+        """`waiting`, beside the desk: a desk that ended is the failure itself, raised, never a wait that runs out on it."""
+        waited = asyncio.ensure_future(waiting)
+        await asyncio.wait([serving, waited], return_when=asyncio.FIRST_COMPLETED)
+        if serving.done():
+            waited.cancel()
+            # Waited out as it ends, so the desk's failure is raised alone, with no wait left pending beside it.
+            await asyncio.wait([waited])
+            serving.result()
+            raise AssertionError("the desk ended while the test was waiting on it")
+        await waited
 
     async def until(done: Callable[[], bool]) -> None:
-        # A desk that ended is the failure itself, raised, never a wait that runs out on it.
-        await patiently(lambda: serving.done() or done(), lambda: (len(taken), len(speaker.cues), microphone.audio.qsize(), len(events)))
-        if serving.done():
-            serving.result()
+        await alongside(patiently(done, lambda: (len(taken), len(speaker.cues), microphone.audio.qsize(), len(events))))
 
     async def settled() -> None:
         # The desk steps a choice only once everything queued before it is stepped, so a choice of the level it is at
@@ -123,6 +143,9 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         await until(lambda: microphone.audio.empty())
         assert await levels.choose(levels.level) == levels.level
 
+    # The desk loads its models as it starts, which moves nothing `until` can watch, the first MLX load in the process
+    # longest: so the first wait is for them, bounded by the run's timeout alone.
+    await alongside(ready.wait())
     await until(lambda: keyboard.listening)
 
     # Off: the room opens nothing, and Right Shift held alone talks, opened once it is held long enough.
