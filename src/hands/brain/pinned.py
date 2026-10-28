@@ -13,6 +13,7 @@ import hashlib
 import os
 import platform
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,6 +43,19 @@ class Unpinned(Exception):
 class Uninstallable(Exception):
     """The pinned release could not be put in place: no build of it for this machine, or a fetch that failed or did not
     hash to the pin. Nothing is left in its place."""
+
+
+# What a fetch hands each chunk of a build's bytes to, in order.
+Write = Callable[[bytes], object]
+
+
+@dataclass(frozen=True)
+class Source:
+    """Where a build of the pin is fetched from: the URL of each build, and the fetch that writes the bytes at that URL,
+    raising Uninstallable, naming the URL, when it cannot. What it fetched is the pin only if it hashes to CHECKSUMS."""
+
+    url: Callable[[str], str]
+    fetch: Callable[[str, Write], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -106,9 +120,9 @@ def _sha256(path: Path, identity: tuple[int, int, int, int, int]) -> str:
         return hashlib.file_digest(held, "sha256").hexdigest()
 
 
-async def install(config_dir: Path) -> Installed:
-    """The pinned claude in the brain's directory: fetched and checked against its checksum unless the pin is there
-    already, and whole or not there at all."""
+async def install(config_dir: Path, source: Source) -> Installed:
+    """The pinned claude in the brain's directory: fetched from `source` and checked against its checksum unless the pin
+    is there already, and whole or not there at all."""
     try:
         return Installed(verified(config_dir), unpinned=None)
     except Unpinned as error:
@@ -120,7 +134,7 @@ async def install(config_dir: Path) -> Installed:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise Uninstallable(f"could not make {target.parent} for Claude Code {VERSION}: {error!r}") from error
-    url = f"{RELEASES}/{VERSION}/{built}/claude"
+    url = source.url(built)
     try:
         # A name of this install's own: two at once never write, rename, or remove each other's download.
         handle, name = tempfile.mkstemp(dir=target.parent, prefix=f"{target.name}.", suffix=".partial")
@@ -128,13 +142,18 @@ async def install(config_dir: Path) -> Installed:
         raise Uninstallable(f"could not write {url} to {target}: {error!r}") from error
     os.close(handle)
     partial = Path(name)
+    digest = hashlib.sha256()
     try:
-        try:
-            digest = await _fetched(url, partial)
-        except (aiohttp.ClientError, TimeoutError) as error:
-            raise Uninstallable(f"could not fetch {url}: {error!r}") from error
-        if digest != CHECKSUMS[built]:
-            raise Uninstallable(f"{url} hashes to {digest}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
+        with partial.open("wb") as written:
+
+            def write(chunk: bytes) -> None:
+                digest.update(chunk)
+                written.write(chunk)
+
+            await source.fetch(url, write)
+        # [LAW:single-enforcer] whatever the source, the bytes are the pin's before they are put in its place.
+        if digest.hexdigest() != CHECKSUMS[built]:
+            raise Uninstallable(f"{url} hashes to {digest.hexdigest()}, not the {CHECKSUMS[built]} Claude Code {VERSION} is pinned to")
         os.chmod(partial, 0o755)
         # [LAW:one-source-of-truth] a file under its own name is the whole of it: a copy that is not the pin is replaced whole.
         partial.replace(target)
@@ -147,14 +166,16 @@ async def install(config_dir: Path) -> Installed:
     return Installed(target, unpinned)
 
 
-async def _fetched(url: str, partial: Path) -> str:
-    """Download `url` into `partial`, and the SHA-256 of what it wrote."""
-    digest = hashlib.sha256()
+async def _downloaded(url: str, write: Write) -> None:
+    """Anthropic's release download at `url`, written as it arrives."""
     timeout = aiohttp.ClientTimeout(total=None, sock_connect=STALL_SECONDS, sock_read=STALL_SECONDS)
-    async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http:
-        async with http.get(url) as response:
-            with partial.open("wb") as written:
-                async for chunk in response.content.iter_chunked(_CHUNK):
-                    digest.update(chunk)
-                    written.write(chunk)
-    return digest.hexdigest()
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, raise_for_status=True) as http, http.get(url) as response:
+            async for chunk in response.content.iter_chunked(_CHUNK):
+                write(chunk)
+    except (aiohttp.ClientError, TimeoutError) as error:
+        raise Uninstallable(f"could not fetch {url}: {error!r}") from error
+
+
+# The release as Anthropic serves it, the one `hands install-brain` fetches.
+RELEASE = Source(url=lambda built: f"{RELEASES}/{VERSION}/{built}/claude", fetch=_downloaded)
