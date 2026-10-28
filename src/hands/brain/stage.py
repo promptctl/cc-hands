@@ -815,7 +815,8 @@ class BrainStage(FrameProcessor):
         # Another session's request is made for no unit of the stage's: the root of a trace of its own.
         if sent.session != self._brain.session:
             return Send(span=root())
-        # [LAW:single-enforcer] every request of the brain's is final, whatever its kind and whether a turn asked it: asked
+        # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
+        # asked it (a side question's own request is hands', never routed here): asked
         # again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it would wait out to
         # continue the task on its own at the reset, hours on, with nobody asking (hands-wire-zi2).
         turn = self._turn

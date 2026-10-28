@@ -12,14 +12,14 @@ import asyncio
 import contextlib
 import json
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 
 import aiohttp
 
 from hands.brain.fork import Newest, fork
 from hands.core.trace import Span
-from hands.core.wire import Fork, Garbled, Observed, Route, Send, Sent, Written
+from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
@@ -95,19 +95,12 @@ class Asides:
     def hear(self, observed: Observed) -> None:
         self._newest.hear(observed)
 
-    def adopted(self, sent: Sent, routed: Route) -> Route:
-        """`routed` as the question being sent now has it: its own request, inside the question's unit of work."""
+    def own(self, sent: Sent) -> Send | None:
+        """The route of the question being sent now, when `sent` is its request: inside the question's unit of work, and
+        a refusal passed on as the API said it, since its client is hands, which never asks again."""
         sending = self._sending
         # [LAW:one-source-of-truth] its request is told by the very body it was sent as; a fork's kind narrows the compare.
-        if sending is None or not isinstance(sent.kind, Fork) or sent.body != sending[1]:
-            return routed
-        match routed:
-            # Its client is hands, which never asks again: a refusal held final would reach it as the proxy's own 502,
-            # and the question would fail saying that, not what the API answered.
-            case Send():
-                return replace(routed, span=within(sending[0]), refusal="retried")
-            case _:
-                return replace(routed, span=within(sending[0]))
+        return Send(span=within(sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else None
 
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, asked beside the brain's conversation; raises AsideFailed when it has none,

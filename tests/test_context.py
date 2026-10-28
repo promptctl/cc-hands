@@ -147,8 +147,8 @@ class Store:
 class NoAsides:
     """No side question asked: every request goes as the stage routed it."""
 
-    def adopted(self, sent: Sent, routed: Route) -> Route:
-        return routed
+    def own(self, sent: Sent) -> Send | None:
+        return None
 
     def hear(self, observed: Observed) -> None:
         pass

@@ -209,10 +209,12 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
 
         class Listening:
             def route(self, sent: Sent) -> Route:
-                # The route the brain's stage gives every request of the brain's that is not a main turn.
-                adopted = asides.adopted(sent, Send(refusal="final", span=root()))
-                routed.append(adopted.span)
-                return adopted
+                # As Kept routes: the question's own request by the question, the rest as the stage routes every request
+                # of the brain's that is not a main turn.
+                owned = asides.own(sent)
+                route = Send(refusal="final", span=root()) if owned is None else owned
+                routed.append(route.span)
+                return route
 
             def hear(self, observed: Observed) -> None:
                 asides.hear(observed)
@@ -271,8 +273,8 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
 
 
 # A refusal fails the question at once, saying what the API answered: nothing asks again. Those on record: a login at
-# its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload,
-# which the proxy holds final as it does a spent limit.
+# its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload.
+# The limit and the overload are the two the proxy would hold final, and pass on as its own 502, for Claude Code.
 @pytest.mark.parametrize(("status", "error", "headers"), [
     (400, "invalid_request_error", {}),
     (403, "permission_error", {}),
