@@ -20,10 +20,7 @@ dependencies = [
     "livekit>=1.1.20,<2",
     "openwakeword>=0.6,<0.7",
     "tomlkit>=0.15.1",  # hands.daemon.config sets the model chosen by voice in config.toml, every other line kept
-    "transformers>=5.20.2,<6",  # hands.voice.diarization runs Nemotron 3 Diarization through it, the first release that has it
-    "librosa>=1.0",  # transformers' feature extractor for it builds its mel filters with librosa
-    "torch>=2.14,<3",  # hands.voice.diarization runs the model's steps on it, which transformers leaves to the app to install
-    "mlx-audio>=0.6.2,<0.7",  # hands.voice.streaming runs Nemotron Speech Streaming on its streaming parts, put together as its own sessions do, so the minor is pinned
+    "mlx-audio>=0.6.2,<0.7",  # hands.voice.streaming runs Nemotron Speech Streaming paired with Nemotron 3 Diarization in its speaker streaming session, whose settings hands measured, so the minor is pinned
 ]
 
 [project.scripts]

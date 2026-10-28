@@ -33,7 +33,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import EdgeTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import conversation, diarization, streaming, voices
+from hands.voice import conversation, streaming, voices
 from hands.voice.holdowner import HoldOwner
 from hands.voice.whisper import Whisper
 from hands.voice.backends import ClaudeCodeBackend
@@ -68,7 +68,7 @@ class Voice:
 def build_voice(
     config: VoiceConfig, llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, prompt: Callable[[], Awaitable[str | None]], record: Record
 ) -> Voice:
-    """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer and the diarizer listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
+    """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and the hold owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
@@ -80,10 +80,9 @@ def build_voice(
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
-    # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, and who
-    # spoke in it is told beside it: nothing the owner does waits on either listener, their models' loads included.
-    listeners = (streaming.StreamingRecognizer(streaming.load, record), diarization.Diarizer(diarization.load, record))
-    stt = HoldOwner(Whisper(prompt=prompt, record=record), listeners, record)
+    # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
+    # who said it: nothing the owner does waits on it, its models' load included.
+    stt = HoldOwner(Whisper(prompt=prompt, record=record), (streaming.StreamingRecognizer(streaming.load, record),), record)
     # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
     # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
     # own reply alike, so this is the one place all of them meet before they are heard.

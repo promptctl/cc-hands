@@ -312,18 +312,19 @@ Need 8. Where the microphone is.
 
 So that in conversation hands can tell the owner from another person, and from its own voice.
 
-- **Who spoke in each hold.** NVIDIA's Nemotron 3 Diarization hears every hold as it is
-  spoken, in one stream for the run, so a speaker keeps the same number from hold to hold;
-  each hold the key sent or dropped is one of the diarizer's `hearing` events, with its
-  speakers and the seconds each spoke (`hands.voice.diarization`). Measured 2026-10-25 through that code by
-  `scripts/measure-diarization.py`, in holds: 73.7 min of one LibriVox reader in 1492 holds,
-  all of it one speaker and none of it anyone else; AMI test meetings ES2004a, 4 speakers found
-  of 4, 26 of 28 holds given their own speaker and the other 2 heard as nobody, and IS1009a,
-  3 of 4, 28 of 29, the miss one woman's only hold given to another's speaker. Quiet holds of
-  0.8 to 2 s at 20 to 30 dB down, the kind the first speaker check filed as a guest's, were
-  one speaker in 24 of 24. Two LibriVox readers alternating turns of 6 s or less were one
-  speaker, even to the model run offline, and two at 12 s turns. Built:
-  tests/test_diarization.py; not verified live.
+- **Who said each word.** NVIDIA's Nemotron 3 Diarization hears every hold as it is spoken,
+  paired with the streaming recognizer in one session for the run, so each word a hold's
+  stream hears comes with its speaker, and a speaker keeps the same number from hold to hold;
+  each hold the key sent or dropped ends in one of the streaming listener's `hearing` events,
+  with each speaker's words (`hands.voice.streaming`). Measured 2026-10-27 through that code by
+  `scripts/measure-diarization.py`, a hold's speaker being whoever said most of its words:
+  73.7 min of one LibriVox reader in 1493 holds, all 12851 words one speaker and none anyone
+  else's, 4 holds with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of 28
+  holds given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 24 of 29,
+  4 holds with no words and the miss one woman's only hold given to another's speaker. On the
+  two-speaker AMI fixture, every word's speaker matched what the transformers path on the CPU
+  decided for the same audio, 663 of 663 over five phases of the grid. Built:
+  tests/test_streaming.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)
 

@@ -130,8 +130,8 @@ class Listener(Protocol):
         ...
 
     def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        """The hold open ends, sent or thrown away: what the listener still has to hear of it, such as the speakers of its
-        last frames, which settle after it closes."""
+        """The hold open ends, sent or thrown away: what the listener still has to hear of it, such as the last words the
+        streaming recognizer decodes from the silence after it, which settle after it closes."""
         ...
 
 
