@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from conftest import ManualClock, patiently
+from conftest import BrokenClock, ManualClock
 from hands.sessions import child
 from hands.sessions.child import Ran, run
 
@@ -63,13 +63,20 @@ async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: lis
 async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     clock = ManualClock()
     running = asyncio.create_task(run("sleep", "30", timeout=5, clock=clock))
-    await patiently(lambda: clock.waking == (5.0,), lambda: clock.waking)
+    await clock.paused(5.0)
     clock.advance(5)
     with pytest.raises(TimeoutError):
         await running
     assert reaped(started[0])
     assert any(f"killed sleep ({started[0].pid})" in line and "ran past 5.0s" in line for line in logged)
 
+
+
+async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure_leaves(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
+    with pytest.raises(RuntimeError, match="no timer"):
+        await run("sleep", "30", timeout=5, clock=BrokenClock())
+    assert reaped(started[0])
+    assert any(f"killed sleep ({started[0].pid})" in line and "its wait failed" in line for line in logged)
 
 async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
     pid = tmp_path / "pid"

@@ -50,6 +50,8 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
         timer.cancel()
         # Both over before this returns, so nothing of the wait outlives it.
         await asyncio.wait((every, timer))
-    # [LAW:no-silent-failure] a pause that raised is its clock failing, never the time running out.
-    if not timer.cancelled():
-        timer.result()
+    # [LAW:no-silent-failure] a pause that raised is its clock failing, never the time running out, and a wait that raised
+    # (on no futures at all, as `asyncio.wait` does) is never everything done.
+    for side in (every, timer):
+        if not side.cancelled():
+            side.result()

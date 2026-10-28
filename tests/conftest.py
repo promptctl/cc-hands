@@ -119,6 +119,7 @@ class ManualClock:
     def __init__(self) -> None:
         self.at = 0.0
         self._pauses: list[tuple[float, asyncio.Future[None]]] = []
+        self._watched: list[tuple[float, asyncio.Future[None]]] = []
 
     def now(self) -> float:
         return self.at
@@ -126,19 +127,51 @@ class ManualClock:
     async def pause(self, seconds: float) -> None:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
+        self._seen()
+        # A pause already due wakes at once, as `asyncio.sleep(0)` does.
+        self._wake()
         await woken
 
     def advance(self, seconds: float) -> None:
         self.at += seconds
-        for until, woken in self._pauses:
-            if until <= self.at and not woken.done():
-                woken.set_result(None)
-        self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+        self._wake()
+
+    async def paused(self, until: float) -> None:
+        """Once a pause that wakes at `until` is waiting on this clock, however long the unit takes to come to it: a test
+        moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling], and a
+        unit that never comes to it is ended by the suite's timeout."""
+        seen = asyncio.get_running_loop().create_future()
+        self._watched.append((until, seen))
+        self._seen()
+        await seen
 
     @property
     def waking(self) -> tuple[float, ...]:
         """When each pause still waiting wakes, on this clock."""
         return tuple(until for until, woken in self._pauses if not woken.done())
+
+    def _wake(self) -> None:
+        for until, woken in self._pauses:
+            if until <= self.at and not woken.done():
+                woken.set_result(None)
+        self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+
+    def _seen(self) -> None:
+        waking = self.waking
+        for until, seen in self._watched:
+            if until in waking and not seen.done():
+                seen.set_result(None)
+        self._watched = [(until, seen) for until, seen in self._watched if not seen.done()]
+
+
+class BrokenClock:
+    """A clock whose pause fails."""
+
+    def now(self) -> float:
+        return 0.0
+
+    async def pause(self, seconds: float) -> None:
+        raise RuntimeError("no timer")
 
 
 def patient[D: Deltas](kind: type[D], record: Record, clock: ManualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:

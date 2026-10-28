@@ -77,7 +77,7 @@ class Ran:
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock = SYSTEM) -> Ran:
     """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, and OSError when it cannot start.
 
-    The one place hands runs a child to completion: timed out or its caller cancelled, the child and every process
+    The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process
     it started are killed, and the child reaped, before the error leaves. Each caller says what a timeout means for
     it. Its output goes to files, which the child's own thread reads once it has reaped it.
     """
@@ -98,8 +98,9 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     try:
         # Waited on, not awaited: what the child's thread raised is the child's outcome, told below as its own.
         await wait(clock, (child.ended,), timeout)
-    except asyncio.CancelledError:
-        await child.killed("its caller stopped waiting")
+    except BaseException as stopped:
+        # Cancelled, or its clock failed: whatever ends the wait early, the child does not outlive it.
+        await child.killed("its caller stopped waiting" if isinstance(stopped, asyncio.CancelledError) else f"its wait failed: {stopped!r}")
         raise
     if not child.ended.done():
         await child.killed(f"it ran past {timeout:.1f}s")

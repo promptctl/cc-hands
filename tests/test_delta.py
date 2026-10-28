@@ -3,6 +3,7 @@
 import asyncio
 import gc
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -24,7 +25,7 @@ from hands.core.session import Membership, Opened, PromptId, RequestId, SessionI
 from hands.sessions.audit import Entry, Record
 from hands.sessions.clock import Clock
 from hands.sessions.delta import HELD, MARKING, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Capture, Deltas, Mark, Standing, Unread
-from conftest import ManualClock, patient, patiently
+from conftest import ManualClock, patient
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 
@@ -172,7 +173,7 @@ def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str) -> Path:
     bin.mkdir()
     asked = tmp_path / "asked"
     gh = bin / "gh"
-    gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\ncat {tmp_path / 'answer'}\n")
+    gh.write_text(f"#!/bin/sh\necho \"$*\" >> {shlex.quote(str(asked))}\ncat {shlex.quote(str(tmp_path / 'answer'))}\n")
     gh.chmod(0o755)
     answering(tmp_path, answer)
     monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
@@ -387,7 +388,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     await deltas.compare(SID, again=False)
     # The forge's budget is the narrator's patience less SPARE, spent here while gh is still being waited on.
     asked = PATIENCE - SPARE
-    await patiently(lambda: asked in clock.waking, lambda: clock.waking)
+    await clock.paused(asked)
     clock.advance(asked)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
@@ -1247,7 +1248,7 @@ async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_l
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     taking = asyncio.create_task(deltas.taken(SID))
-    await patiently(lambda: PATIENCE in clock.waking, lambda: clock.waking)
+    await clock.paused(PATIENCE)
     clock.advance(PATIENCE)
     assert not await taking
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
