@@ -18,18 +18,8 @@ OFF_THE_LINE = "is not built on the line master was rewound away from on 2026-10
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def git_env() -> dict[str, str]:
-    """git committing as a test, in the environment conftest gives every test: no config but the repository's own."""
-    return os.environ | {
-        "GIT_AUTHOR_NAME": "Test",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "Test",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-    }
-
-
 def git(cwd: Path, *args: str) -> str:
-    return subprocess.run(("git", *args), cwd=cwd, env=git_env(), capture_output=True, text=True, check=True).stdout.strip()
+    return subprocess.run(("git", *args), cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
 
 
 def commit(repo: Path, message: str, *parents: str) -> str:
@@ -64,7 +54,7 @@ def history(tmp_path: Path) -> History:
 
 
 def checked(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run((str(SCRIPT), *args), cwd=cwd, env=git_env(), capture_output=True, text=True)
+    return subprocess.run((str(SCRIPT), *args), cwd=cwd, capture_output=True, text=True)
 
 
 def clone(history: History, branch: str, dest: Path, *options: str) -> Path:
@@ -164,7 +154,7 @@ def test_a_first_commit_that_names_no_commit_fails_rather_than_accepting(history
 def test_outside_a_repository_it_fails_after_gits_own_error(tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
-    env = git_env() | {"GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    env = os.environ | {"GIT_CEILING_DIRECTORIES": str(tmp_path)}
     result = subprocess.run((str(SCRIPT), "HEAD"), cwd=plain, env=env, capture_output=True, text=True)
     assert result.returncode == 2
     assert "not a git repository" in result.stderr

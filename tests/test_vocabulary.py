@@ -19,8 +19,7 @@ from hands.voice.vocabulary import TOKENS, WORDS, Lexicon, prompt, vocabulary
 
 
 def git(repository: Path, *args: str) -> None:
-    identity = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True, env={**os.environ, **identity})
+    subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True)
 
 
 def commit(repository: Path, *names: str) -> None:

@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 
+import huggingface_hub
 import pytest
 
 from conftest import executable, hermetic, without_claude
@@ -48,6 +49,9 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "LANG": "fr_FR.ISO8859-1",
         "LC_ALL": "fr_FR.ISO8859-1",
+        "HF_HUB_OFFLINE": "1",
+        "HF_TOKEN": "hf_developer",
+        "GIT_AUTHOR_NAME": "Developer",
         "HOME": "/Users/developer",
         "ANTHROPIC_API_KEY": "sk-ant-developer",
         "CLAUDE_CODE_OAUTH_TOKEN": "developer's",
@@ -67,18 +71,41 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "PATH": "/links/0:/usr/bin",
         "TMPDIR": "/var/folders/t/",
         "CI": "true",
+        "HF_HUB_OFFLINE": "1",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
         "LANG": "en_US.UTF-8",
         "HOME": "/tmp/home",
         "TMUX_TMPDIR": "/tmp/sockets",
     }
 
 
-def test_a_test_runs_in_the_hermetic_environment(environment: dict[str, str]) -> None:
+def test_a_test_runs_in_the_hermetic_environment(environment: dict[str, str], machine: dict[str, str]) -> None:
     assert {name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")} == environment
     assert Path.home() == Path(environment["HOME"])
     assert shutil.which("claude") is None
+    # Nor does the hub in this process read the developer's token, from under the HOME it found as it was imported.
+    assert not Path(huggingface_hub.constants.HF_TOKEN_PATH).is_relative_to(machine["HOME"])
+    assert huggingface_hub.get_token() is None
+
+
+@pytest.fixture(scope="module")
+def wider() -> dict[str, str]:
+    """The environment a fixture wider than a test is set up in."""
+    return {name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")}
+
+
+def test_a_fixture_wider_than_a_test_runs_in_the_hermetic_environment_too(wider: dict[str, str], environment: dict[str, str], machine: dict[str, str]) -> None:
+    # Of the machine's names, what a test sees, each test's own HOME and tmux sockets apart. A library may add names of
+    # its own as it is imported, torch's inductor its cache directory among them, which are no developer's.
+    def machine_s(names: dict[str, str]) -> dict[str, str]:
+        return {name: value for name, value in names.items() if name in machine and name not in ("HOME", "TMUX_TMPDIR")}
+
+    assert machine_s(wider) == machine_s(environment)
 
 
 @pytest.mark.parametrize("test", ["first", "second"])

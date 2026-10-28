@@ -288,9 +288,11 @@ def pytest_configure() -> None:
             raise pytest.UsageError(f"{python} is Python {version}, new enough for hands, on SYSTEM_PATH, which the tests give children as a PATH with no such Python")
 
 
-# The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
-# is in CI, which in_ci reads as each report is made. pytest's own PYTEST_ names are its to set and clear.
-PASSED = ("TMPDIR", "CI")
+# The names a test takes from the machine as they are: macOS's per-user temporary directory; CI's word that the run is
+# in CI, which in_ci reads as each report is made; and where the Hugging Face hub fetches from and whether it may, which
+# the hub in this process took from the machine as it was imported, so a child's hub fetches as this one does. pytest's
+# own PYTEST_ names are its to set and clear.
+PASSED = ("TMPDIR", "CI", "HF_HUB_OFFLINE", "HF_ENDPOINT")
 
 
 def without_claude(path: str, links: Path) -> str:
@@ -313,15 +315,19 @@ def without_claude(path: str, links: Path) -> str:
 
 
 def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, sockets: Path) -> dict[str, str]:
-    """The environment a test runs in, from the `machine`'s: the names PASSED, a `path` of its tools, the Hugging Face
-    `hub` cache the weights are already in, no git config but a repository's own, one UTF-8 locale whatever the
-    machine's, and a `home` and a tmux socket directory of the test's own. Every other name the machine has, a
-    credential, a Claude Code session's, hands', git's, tmux's or a proxy, which hands reads as a session's own, is
-    absent."""
+    """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
+    Hugging Face `hub` cache the weights are already in, no git config but a repository's own and one identity to commit
+    as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a `home` and a tmux socket
+    directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
+    tmux's or a proxy, which hands reads as a session's own, is absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
         "PATH": path,
         "HF_HUB_CACHE": hub,
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
         "LANG": "en_US.UTF-8",
         "HOME": str(home),
         "TMUX_TMPDIR": str(sockets),
@@ -329,30 +335,53 @@ def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, socket
 
 
 @pytest.fixture(scope="session")
-def tools(tmp_path_factory: pytest.TempPathFactory) -> str:
-    """The PATH every test runs with, its copies made once."""
-    return without_claude(os.environ["PATH"], tmp_path_factory.mktemp("path"))
+def machine() -> dict[str, str]:
+    """The machine's environment as the run began, for the one fetch that builds with the developer's own toolchain and
+    its caches, `go install`, and for nothing else."""
+    return dict(os.environ)
+
+
+@pytest.fixture(scope="session")
+def tools(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str]) -> str:
+    """The PATH the run and every test run with, its copies made once."""
+    return without_claude(machine["PATH"], tmp_path_factory.mktemp("path"))
+
+
+def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, home: Path) -> Generator[dict[str, str]]:
+    """[LAW:single-enforcer] the hermetic environment, and nothing else but pytest's own names, as the process's own while
+    the generator is held, with `home` and a tmux socket directory that hold nothing. The sockets sit under /tmp, not
+    pytest's basetemp: a socket's path holds 104 bytes on macOS, and basetemp under macOS's TMPDIR leaves no room for
+    tmux's tmux-<uid>/<name> beneath it."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
+        # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
+        # there too.
+        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, home, Path(sockets))
+        for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
+            monkeypatch.delenv(name)
+        for name, value in names.items():
+            monkeypatch.setenv(name, value)
+        yield names
+
+
+@pytest.fixture(scope="session", autouse=True)
+def run_environment(tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str) -> Generator[dict[str, str]]:
+    """The run's environment from its start, so a fixture wider than a test, which pytest sets up first, runs in it too:
+    the weights' and Claude Code's fetches, the streaming pair. The hub took its token's path from the developer's HOME as
+    it was imported, so in this process too the token is one that is not there."""
+    home = tmp_path_factory.mktemp("home")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
+        yield from entered(monkeypatch, machine, tools, home)
 
 
 @pytest.fixture(autouse=True)
-def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, tools: str) -> Generator[dict[str, str]]:
-    """Each test runs in the hermetic environment, with a HOME and a tmux socket directory of its own that hold nothing,
-    as pytest's own pytester gives each of its runs, so ~/.claude, ~/.hands, ~/.gitconfig and ~/.config are all empty
-    and no tmux server is found. [LAW:single-enforcer] the one owner of the environment a test runs in: a test that needs
-    a name sets it on top, and builds no environment of its own to keep the developer's out. A fixture wider than a test,
-    which fetches and builds tools and weights, runs before it, in the machine's environment, which monkeypatch gives
-    back after each test."""
-    # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
-    # there too, and not the hub's token beside them.
-    # Under /tmp, not pytest's basetemp: a socket's path holds 104 bytes on macOS, and basetemp under macOS's TMPDIR
-    # leaves no room for tmux's tmux-<uid>/<name> beneath it.
-    with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
-        tested = hermetic(os.environ, tools, huggingface_hub.constants.HF_HUB_CACHE, tmp_path_factory.mktemp("home"), Path(sockets))
-        for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
-            monkeypatch.delenv(name)
-        for name, value in tested.items():
-            monkeypatch.setenv(name, value)
-        yield tested
+def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, machine: dict[str, str], tools: str, run_environment: dict[str, str]) -> Generator[dict[str, str]]:
+    """Each test runs in the hermetic environment afresh, whatever a test before it left, with a HOME and a tmux socket
+    directory of its own that hold nothing, as pytest's own pytester gives each of its runs, so ~/.claude, ~/.hands,
+    ~/.gitconfig and ~/.config are all empty and no tmux server is found. [LAW:single-enforcer] conftest is the one owner
+    of the environment a test runs in: a test that needs a name sets it on top, and builds no environment of its own to
+    keep the developer's out."""
+    yield from entered(monkeypatch, machine, tools, tmp_path_factory.mktemp("home"))
 
 
 async def unread() -> InFront:
