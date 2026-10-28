@@ -31,11 +31,12 @@ func TestMain(m *testing.M) {
 }
 
 // hermetic is the environment the tests run in, which every child they start inherits:
+// the machine's TMPDIR, where os.TempDir puts what fritter makes, as it does under hands,
 // the system's tools, all a child here needs (sh, curl, head and the test binary), and a
 // HOME of their own. Nothing else of the machine's reaches them: no credential, no proxy,
 // no certificates the tap would hand on, no Claude Code session's names, no ~/.curlrc.
-func hermetic(home string) map[string]string {
-	return map[string]string{"PATH": "/usr/bin:/bin", "HOME": home}
+func hermetic(tmpdir, home string) map[string]string {
+	return map[string]string{"TMPDIR": tmpdir, "PATH": "/usr/bin:/bin", "HOME": home}
 }
 
 // as starts the test binary as the program named, with args, in the test's environment.
@@ -64,8 +65,9 @@ func tested(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "cannot make the tests' HOME read-only: %v\n", err)
 		return 1
 	}
+	names := hermetic(os.Getenv("TMPDIR"), home)
 	os.Clearenv()
-	for name, value := range hermetic(home) {
+	for name, value := range names {
 		os.Setenv(name, value)
 	}
 	return m.Run()
@@ -74,7 +76,7 @@ func tested(m *testing.M) int {
 func TestATestRunsInTheHermeticEnvironment(t *testing.T) {
 	home := os.Getenv("HOME")
 	var want []string
-	for name, value := range hermetic(home) {
+	for name, value := range hermetic(os.Getenv("TMPDIR"), home) {
 		want = append(want, name+"="+value)
 	}
 	environment := os.Environ()

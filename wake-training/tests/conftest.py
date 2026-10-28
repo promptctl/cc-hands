@@ -35,7 +35,7 @@ def entered(monkeypatch: pytest.MonkeyPatch, names: Mapping[str, str]) -> None:
         monkeypatch.setenv(name, value)
 
 
-_run = pytest.StashKey[tuple[pytest.MonkeyPatch, Path, dict[str, str]]]()
+_machine = pytest.StashKey[dict[str, str]]()
 
 
 @pytest.hookimpl(trylast=True)
@@ -47,20 +47,20 @@ def pytest_configure(config: pytest.Config) -> None:
     machine = dict(os.environ)
     home = Path(tempfile.mkdtemp(prefix="wake-training-home-", dir="/tmp"))
     monkeypatch = pytest.MonkeyPatch()
+
+    def left() -> None:
+        monkeypatch.undo()
+        shutil.rmtree(home)
+
+    config.add_cleanup(left)
     entered(monkeypatch, hermetic(machine, home))
-    config.stash[_run] = (monkeypatch, home, machine)
-
-
-def pytest_unconfigure(config: pytest.Config) -> None:
-    monkeypatch, home, _ = config.stash[_run]
-    monkeypatch.undo()
-    shutil.rmtree(home)
+    config.stash[_machine] = machine
 
 
 @pytest.fixture(scope="session")
 def machine(pytestconfig: pytest.Config) -> dict[str, str]:
     """The machine's environment as the run began."""
-    return pytestconfig.stash[_run][2]
+    return pytestconfig.stash[_machine]
 
 
 @pytest.fixture(autouse=True)
