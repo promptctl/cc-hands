@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import wave
 import weakref
@@ -22,7 +23,9 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast
 
+import httpx
 import huggingface_hub.constants
+from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
 import mlx.core as mx
 import mlx_whisper
 import pytest
@@ -318,9 +321,12 @@ def plugin(tmp_path: Path) -> Path:
 SYSTEM_PATH = "/usr/bin:/bin"
 
 
-def pytest_configure() -> None:
+def pytest_configure(config: pytest.Config) -> None:
     """[LAW:single-enforcer] SYSTEM_PATH holds what it is said to, proven once before any test gives it to a child: a
-    machine whose system directories break it stops the suite, naming what they hold."""
+    machine whose system directories break it stops the suite, naming what they hold. And pytest's cache is there for
+    the run to fetch into."""
+    if not config.pluginmanager.has_plugin("cacheprovider"):
+        raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
     if claude := shutil.which("claude", path=SYSTEM_PATH):
         raise pytest.UsageError(f"{claude} is on SYSTEM_PATH, which the tests give children as a PATH with no Claude Code")
     if python := shutil.which("python3", path=SYSTEM_PATH):
@@ -401,13 +407,19 @@ class Run:
 RUN = pytest.StashKey[Run]()
 
 
-def fetching[T](what: str, fetch: Callable[[], T]) -> T:
-    """What `fetch` gave. [LAW:no-silent-failure] one that fails stops the run before any test, naming what it could not
-    fetch and why, never a test timed out on it."""
+def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
+    """What `fetch` gave, `what` it is written as it starts and how long it took once it is done, so a fetch that hangs
+    is the one named last. [LAW:no-silent-failure] one that fails as a fetch does, in one of its `failures`, stops the
+    run before any test, naming what it could not fetch and why, never a test timed out on it; anything else is a
+    defect, raised as itself with its stack."""
+    write(f"fetching {what}: ")
+    started = time.monotonic()
     try:
-        return fetch()
-    except Exception as error:
+        fetched = fetch()
+    except failures as error:
         raise pytest.UsageError(f"the run cannot fetch {what}: {type(error).__name__}: {error}") from error
+    write(f"{time.monotonic() - started:.2f} s\n")
+    return fetched
 
 
 def installed_mock(binary: Path, machine: Mapping[str, str]) -> Path:
@@ -436,7 +448,9 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
         yield names
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
+# Around the session start's other hooks, the terminal's among them, so what the run fetches is written below its header.
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test: so no test's timeout
     counts a download, and no test reaches the network for one.
 
@@ -445,7 +459,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     each fetch is a look at what is already there. Then the hub in this process goes offline for the rest of the run, as
     a child's is by its environment, so a weight the run did not fetch fails the test that loads it and never downloads
     inside it. Undone by the config's cleanup, which runs however the session ends."""
+    yield
     config = session.config
+    terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
+    write = partial(terminal.write, flush=True)
     stack = ExitStack()
     config.add_cleanup(stack.close)
     machine = dict(os.environ)
@@ -456,15 +473,24 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
     monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
     stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, home))
+    # The line each fetch writes says what the run is fetching; the hub's bars would break it.
+    disable_progress_bars()
+    stack.callback(enable_progress_bars)
     for repo, revision in WEIGHTS:
-        # What mlx_audio's loads call with these arguments, so the run fetches what a load would.
-        fetching(f"{repo} at {revision} from the Hugging Face hub", partial(get_model_path, repo, revision=revision))
+        # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
+        # its client's and its own, which are OSErrors.
+        fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError), partial(get_model_path, repo, revision=revision))
     wake_word = config.cache.mkdir("wake-word")
     for word in WAKE_WORDS:
-        fetching(f"the {word.phrase} wake word's models", partial(asyncio.run, fetched(wake_word, word)))
+        fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(wake_word, word)))
     claude_code = config.cache.mkdir("claude-code")
-    installed = fetching(f"Claude Code {pinned.VERSION} from npm", partial(asyncio.run, pinned.install(claude_code, REGISTRY)))
-    mock = fetching(f"{MOCK_MODULE}@{MOCK_RELEASE}", partial(installed_mock, config.cache.mkdir("mock-anthropic") / MOCK_RELEASE / "mock-anthropic", machine))
+    installed = fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(claude_code, REGISTRY)))
+    mock = fetching(
+        write,
+        f"{MOCK_MODULE}@{MOCK_RELEASE}",
+        (subprocess.CalledProcessError, OSError),
+        partial(installed_mock, config.cache.mkdir("mock-anthropic") / MOCK_RELEASE / "mock-anthropic", machine),
+    )
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, wake_word, installed.path, mock)
 
