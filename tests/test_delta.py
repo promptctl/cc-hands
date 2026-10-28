@@ -166,15 +166,23 @@ def published(tmp_path: Path) -> Path:
 
 
 def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str) -> Path:
-    """A `gh` on the PATH that answers every question with `answer` and writes down what it was asked."""
+    """A `gh` on the PATH that answers every question with what `answering` last set, `answer` until then, and writes
+    down what it was asked."""
     bin = tmp_path / "bin"
     bin.mkdir()
     asked = tmp_path / "asked"
     gh = bin / "gh"
-    gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\ncat <<'EOF'\n{answer}\nEOF\n")
+    gh.write_text(f"#!/bin/sh\necho \"$*\" >> {asked}\ncat {tmp_path / 'answer'}\n")
     gh.chmod(0o755)
+    answering(tmp_path, answer)
     monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
     return asked
+
+
+def answering(tmp_path: Path, answer: str) -> None:
+    """What the forge answers from now on: set inside a turn, as `gh pr create` opens a pull request inside one, so its
+    stamp falls between the turn's mark and its end on any machine, however slow."""
+    (tmp_path / "answer").write_text(answer)
 
 
 def stamp(at: datetime) -> str:
@@ -219,16 +227,16 @@ async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_
     """`gh pr create` writes nothing in the repository, so the forge is the one witness — and a pull request the
     branch had before the turn is not the turn's."""
     root = published(tmp_path)
-    now, before = datetime.now(UTC), datetime.now(UTC) - timedelta(days=1)
-    asked = forge(
-        tmp_path,
-        monkeypatch,
-        f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(now)}"}}, {{"number": 3, "url": "https://x/3", "createdAt": "{stamp(before)}"}}]',
-    )
+    asked = forge(tmp_path, monkeypatch, "[]")
 
     def open_one() -> None:
         git(root, "checkout", "-q", "-b", "fix")
         git(root, "push", "-q", "-u", "origin", "fix")
+        now, before = datetime.now(UTC), datetime.now(UTC) - timedelta(days=1)
+        answering(
+            tmp_path,
+            f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(now)}"}}, {{"number": 3, "url": "https://x/3", "createdAt": "{stamp(before)}"}}]',
+        )
 
     delta = await turn(root, open_one)
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
@@ -440,12 +448,13 @@ async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing
 
 async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_forge_cost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
-    forge(tmp_path, monkeypatch, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC))}"}}]')
+    forge(tmp_path, monkeypatch, "[]")
 
     def open_one() -> None:
         git(root, "checkout", "-q", "-b", "fix")
         git(root, "commit", "-q", "--allow-empty", "-m", "tidy")
         git(root, "push", "-q", "-u", "origin", "fix")
+        answering(tmp_path, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC))}"}}]')
 
     record: list[Entry] = []
     await turn(root, open_one, record)
@@ -1579,8 +1588,15 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
 
 async def test_a_pull_request_opened_as_the_turn_ended_is_the_turns_on_a_forge_whose_clock_runs_ahead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
-    forge(tmp_path, monkeypatch, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC) + timedelta(seconds=1))}"}}]')
-    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    forge(tmp_path, monkeypatch, "[]")
+
+    def open_one() -> None:
+        git(root, "checkout", "-q", "-b", "fix")
+        git(root, "push", "-q", "-u", "origin", "fix")
+        # Stamped a second ahead of this machine as the turn ends, which is inside SKEW.
+        answering(tmp_path, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC) + timedelta(seconds=1))}"}}]')
+
+    delta = await turn(root, open_one)
     assert PullRequested(7, "https://x/7", "created") in delta.changes
 
 
