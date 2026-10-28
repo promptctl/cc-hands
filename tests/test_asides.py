@@ -209,7 +209,8 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
 
         class Listening:
             def route(self, sent: Sent) -> Route:
-                adopted = asides.adopted(sent, Send(span=root()))
+                # The route the brain's stage gives every request of the brain's that is not a main turn.
+                adopted = asides.adopted(sent, Send(refusal="final", span=root()))
                 routed.append(adopted.span)
                 return adopted
 
@@ -264,17 +265,18 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     rig.answers.append(stream("", stop="tool_use"))
     with pytest.raises(AsideFailed, match="ended 'tool_use'"):
         await rig.asides.ask(AsideKind.LINE, "silent", Deadline(10))
-    # A refusal fails the question at once, saying what the API answered: nothing asks again.
-    rig.answers.append(web.Response(status=400, text='{"type":"error","error":{"type":"invalid_request_error","message":"no"}}', headers={"request-id": "req_2", "Content-Type": "application/json"}))
-    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_2\)"):
-        await rig.asides.ask(AsideKind.LINE, "refused", Deadline(10))
     assert [(event.facts["question"], event.facts.get("unanswered")) for event in events(recorded)] == [
-        ("early", Unanswered.UNFORKED), ("silent", Unanswered.WORDLESS), ("refused", Unanswered.REFUSED),
+        ("early", Unanswered.UNFORKED), ("silent", Unanswered.WORDLESS),
     ]
 
 
-# The refusals on record: a login at its limit told to wait days, and a login expired. Neither waits out the deadline.
+# A refusal fails the question at once, saying what the API answered: nothing asks again. Those on record: a login at
+# its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload,
+# which the proxy holds final as it does a spent limit.
 @pytest.mark.parametrize(("status", "error", "headers"), [
+    (400, "invalid_request_error", {}),
+    (403, "permission_error", {}),
+    (529, "overloaded_error", {}),
     (429, "rate_limit_error", {"retry-after": "240711", "anthropic-ratelimit-unified-status": "rejected"}),
     (401, "authentication_error", {}),
 ])
