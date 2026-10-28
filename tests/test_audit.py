@@ -687,10 +687,10 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
-    hook = asyncio.create_task(sessions.ask(asked))
+    hook = asyncio.create_task(sessions.waited(asked, sessions.hold(asked)))
     await asyncio.sleep(0)
     recorded.clear()
-    await sessions.answer(RequestId("r1"), Deny("no"))
+    sessions.answer(RequestId("r1"), Deny("no"))
     await asyncio.wait_for(hook, 1.0)
     [event] = [event for event in applied(recorded) if event.facts["applied"] == Answer(RequestId("r1"), Deny("no"))]
     assert [(type(effect).__name__, outcome) for effect, outcome in performed(event)] == [("Reply", "ok")]
@@ -758,7 +758,7 @@ async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> 
     sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     recorded.clear()
-    assert await sessions.answer(RequestId("gone"), Deny("no")) == NotWaiting(RequestId("gone"))
+    assert sessions.answer(RequestId("gone"), Deny("no")) == NotWaiting(RequestId("gone"))
     assert recorded == []
 
 

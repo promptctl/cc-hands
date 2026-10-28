@@ -7,8 +7,8 @@ from typing import get_args, overload
 
 from loguru import logger
 
-from hands.core.effects import Allow, AllowWith, Approve, Deny, HookReply, ModeAfterPlan, Withdraw
-from hands.core.events import Displayed, Ended, EndReason, Event, Joined, Located, Occurred, PermissionRequested, Prompted, SessionEvent, StartSource, Stopped, ToolFinished
+from hands.core.effects import Allow, AllowWith, Approve, Deny, DenyAndInterrupt, HookReply, ModeAfterPlan, Withdraw
+from hands.core.events import Displayed, Ended, EndReason, Hooked, Joined, Located, Occurred, PermissionRequested, Prompted, StartSource, Stopped, ToolFinished
 from hands.core.occurrences import AutoDenied, CompactTrigger, Compacting, ConfigChanged, ConfigSource, SubagentStarted, SubagentStopped, TaskCompleted, Unrecognised
 from hands.core.session import AskedQuestion, Blocker, Instant, Membership, Mode, Option, PermissionMode, Permission, Plan, PlanApproved, PromptId, Question, FinishedCall, RequestId, SessionId, UnknownMode
 from hands.core.status import Stamp
@@ -30,10 +30,24 @@ class Hook:
     # shim has removed; and for a hook whose session has no file, which ended or whose process has moved on to another
     # session.
     joining: Located | None
-    happened: Event
+    happened: Joined | Ended | Hooked
 
 
-def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: RequestId) -> Hook:
+@dataclass(frozen=True)
+class PermissionHook:
+    """A PermissionRequest hook: a dialog Claude Code put up, which its hook holds open until it is answered. A type of its
+    own, so it reaches the model only as it is held (Reader.asked), never as an event applied (Reader.hooked)."""
+
+    name: str
+    session: SessionId
+    joining: Located | None
+    # The prompt id the hook carried: which turn the dialog is a part of. None only when it carried none.
+    prompt: str | None
+    tool: str
+    asked: PermissionRequested
+
+
+def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
     """Raises Rejected, naming the problem, for anything that is not a hook hands handles."""
     # [LAW:parse-dont-validate] past this function nothing looks at hook JSON again.
     payload = Payload.parse(raw)
@@ -47,12 +61,11 @@ def parse_hook(raw: bytes, *, home: Home, at: Instant, heard: Stamp, request: Re
         case "SessionEnd":
             return Hook(name, session, None, Ended(session, _end_reason(payload.text("reason"))))
         case _:
-            happened = _happened(payload, session, at, heard, request)
             recorded = recorded_membership(home, session)
-            return Hook(name, session, None if recorded is None else Located(recorded), happened)
+            return _hook(payload, name, session, None if recorded is None else Located(recorded), _happened(payload, session, at, heard, request))
 
 
-def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp, request: RequestId) -> Hook:
+def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp, request: RequestId) -> Hook | PermissionHook:
     """A hook of a Claude Code hands started itself, the brain, whose process and directory hands knows: no shim wrote a
     file for it, so it joins, and is found where it works now, by the transcript the hook names. Raises Rejected as
     parse_hook does."""
@@ -60,7 +73,15 @@ def parse_own_hook(raw: bytes, *, pid: int, cwd: Path, at: Instant, heard: Stamp
     payload = Payload.parse(raw)
     session = payload.session_id()
     located = Located(Membership(session, pid, cwd, Path(payload.text("transcript_path"))))
-    return Hook(payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+    return _hook(payload, payload.text("hook_event_name"), session, located, _happened(payload, session, at, heard, request))
+
+
+def _hook(payload: Payload, name: str, session: SessionId, joining: Located | None, happened: Hooked | PermissionRequested) -> Hook | PermissionHook:
+    match happened:
+        case PermissionRequested() as asked:
+            return PermissionHook(name, session, joining, payload.optional_text("prompt_id"), payload.text("tool_name"), asked)
+        case _:
+            return Hook(name, session, joining, happened)
 
 
 def parse_display(raw: bytes, *, at: Instant) -> Displayed:
@@ -78,7 +99,7 @@ def parse_display(raw: bytes, *, at: Instant) -> Displayed:
             raise Rejected(f"hook event {other!r} is not taken here: only MessageDisplay is posted to this route")
 
 
-def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, request: RequestId) -> SessionEvent:
+def _happened(payload: Payload, session: SessionId, at: Instant, heard: Stamp, request: RequestId) -> Hooked | PermissionRequested:
     """What a hook of a running session says happened in it."""
     match payload.text("hook_event_name"):
         case "UserPromptSubmit":
@@ -256,7 +277,7 @@ def name_output(name: str) -> Mapping[str, object]:
 
 
 @overload
-def hook_output(reply: Allow | AllowWith | Approve | Deny) -> Mapping[str, object]: ...
+def hook_output(reply: Allow | AllowWith | Approve | Deny | DenyAndInterrupt) -> Mapping[str, object]: ...
 @overload
 def hook_output(reply: HookReply) -> Mapping[str, object] | None: ...
 def hook_output(reply: HookReply) -> Mapping[str, object] | None:
@@ -274,6 +295,9 @@ def hook_output(reply: HookReply) -> Mapping[str, object] | None:
             decision = {"behavior": "allow", "updatedInput": {}, "updatedPermissions": _MODE_AFTER_PLAN[mode]}
         case Deny(message=message):
             decision = {"behavior": "deny", "message": message}
+        case DenyAndInterrupt(message=message):
+            # Refused, and the turn it is in ends: hands is ending it, so it runs on to no other tool.
+            decision = {"behavior": "deny", "message": message, "interrupt": True}
         case Withdraw():
             return None
     return {"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}}

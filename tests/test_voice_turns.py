@@ -1040,8 +1040,8 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
 def waiting_on(session: SessionId, request: str) -> Session:
     """The session live, its dialog waiting on the user to answer `request`."""
     member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
-    dialog = Held(Permission("Bash", {"command": "ls"}), RequestId(request))
-    return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=dialog)
+    dialog = Held(Permission("Bash", {"command": "ls"}), RequestId(request), 0.0)
+    return Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialogs=(dialog,))
 
 
 async def test_a_request_heard_while_the_key_is_held_is_handed_the_brain_after_the_users_turn(rig: Rig) -> None:

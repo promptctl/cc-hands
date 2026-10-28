@@ -5,11 +5,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from aiohttp import web
-from hands.core.events import PermissionRequested, Prompted, Stopped
+from hands.core.events import Prompted, Stopped
 from hands.core.session import Membership, RequestId
 from hands.sessions.home import Home
 from hands.sessions.audit import Record
-from hands.sessions.hooks import hook_output, name_output, parse_display, parse_hook
+from hands.sessions.hooks import PermissionHook, hook_output, name_output, parse_display, parse_hook
 from hands.sessions.names import Due, Finished, NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.reader import Reader
@@ -39,14 +39,15 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
             fail(f"rejected hook: {error}")
             return web.Response(status=400, text=str(error))
         annotate(hook=said.name, session=said.session)
+        if isinstance(said, PermissionHook):
+            # The one hook answered: the response body is the answer Claude Code reads. Held as it arrives, before any
+            # read of Claude Code through now (Reader.asked).
+            reply = await sessions.waited(said.asked, reader.asked(said))
+            annotate(reply=reply)
+            output = hook_output(reply)
+            return web.Response(status=204) if output is None else web.json_response(output)
         held = await reader.hooked(said)
         match said.happened:
-            case PermissionRequested() as asked:
-                # The one hook answered: the response body is the answer Claude Code reads.
-                reply = await sessions.ask(asked)
-                annotate(reply=reply)
-                output = hook_output(reply)
-                return web.Response(status=204) if output is None else web.json_response(output)
             case Stopped() as stopped:
                 annotate(stop=held)
                 match (stopped.closing, sessions.membership(stopped.session)):

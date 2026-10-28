@@ -28,7 +28,7 @@ from hands.core.status import Stamp
 from hands.sessions.home import Home
 from hands.brain import pinned
 from hands.sessions.hookconfig import plugin_hooks
-from hands.sessions.hooks import parse_display, parse_hook
+from hands.sessions.hooks import Hook, PermissionHook, parse_display, parse_hook
 from hands.sessions.membership import write_membership
 from hands.sessions.statusfile import parse_report
 from hands.sessions.tail import Tails
@@ -150,7 +150,12 @@ async def _told(name: str, schedule: str, tmp: Path) -> Reading:
                 # As the server applies a hook: where its session is first, then what it says.
                 if hook.joining is not None:
                     apply(hook.joining)
-                apply(hook.happened)
+                match hook:
+                    case PermissionHook(asked=asked):
+                        # Held in the model as the server holds it (Reader.asked): the request, decided at once.
+                        apply(asked)
+                    case Hook(happened=happened):
+                        apply(happened)
                 reached[body["hook_event_name"]] += 1
                 if schedule != "records at the next status":
                     await read()

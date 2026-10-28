@@ -522,7 +522,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, time, tty, urllib.request
+import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -669,6 +669,17 @@ def submit(text):
     if said in ("wait", "stuck"):
         turn, turn_text = prompt, text
         return
+    if said in ("ask and wait", "ask twice and wait"):
+        # Its setup asks before each write, as concurrency-safe calls do, each hook posted at once from a thread of its
+        # own while the turn goes on reading keys: an Escape reaches it with its dialogs up, and leaves their hooks open,
+        # as the spike on the real binary saw (cmt-39ab5996). Each decision is written as it comes.
+        def asking(index):
+            decision = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": f"notes{{index}}.txt", "content": "hello"}})["hookSpecificOutput"]["decision"]
+            typed(["permission", decision["behavior"], decision.get("message", ""), decision.get("interrupt", False)])
+        for index in range(2 if said == "ask twice and wait" else 1):
+            threading.Thread(target=asking, args=(index,), daemon=True).start()
+        turn, turn_text = prompt, text
+        return
     if said == "slow":
         time.sleep(0.5)
     if said == "write":
@@ -679,13 +690,13 @@ def submit(text):
         if decision["behavior"] == "allow":
             with open(notes, "w") as file:
                 file.write("hello")
-        typed(["permission", decision["behavior"], decision.get("message", "")])
+        typed(["permission", decision["behavior"], decision.get("message", ""), decision.get("interrupt", False)])
         declined = post("Elicitation", prompt_id=prompt, mcp_server_name="probe", message="Which?")
         typed(["elicitation", declined["hookSpecificOutput"]["action"]])
     if said == "stray":
         # A permission an earlier turn left behind, posted under that turn's prompt id.
         stray = post("PermissionRequest", prompt_id="p0", tool_name="Write", tool_input={{"file_path": "notes.txt", "content": "hello"}})["hookSpecificOutput"]["decision"]
-        typed(["permission", stray["behavior"], stray.get("message", "")])
+        typed(["permission", stray["behavior"], stray.get("message", ""), stray.get("interrupt", False)])
     if said == "fail":
         ended("StopFailure", prompt, "API Error: 400 refused", error="unknown", last_assistant_message="API Error: 400 refused")
     elif said == "fail blank":

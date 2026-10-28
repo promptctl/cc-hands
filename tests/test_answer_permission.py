@@ -12,12 +12,13 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.core.effects import Allow, HookReply, Narrate, Withdraw, Asking
-from hands.core.events import PermissionRequested, StatusReported, Tick, ToolFinished
-from hands.core.session import AskedQuestion, Held, Option, Permission, Plan, Question, RequestId, SessionId
+from hands.core.effects import Allow, Heard, HookReply, Narrate, Withdraw, Asking
+from hands.core.events import Joined, Located, PermissionRequested, StatusReported, Tick, ToolFinished
+from hands.core.session import AskedQuestion, Held, Membership, Option, Permission, Plan, Question, RequestId, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
 from hands.sessions.audit import Entry
 from hands.sessions.home import Home
+from hands.sessions.hooks import PermissionHook
 from hands.sessions.registry import Sessions
 from hands.sessions.names import Names
 from hands.sessions.reader import Reader
@@ -139,14 +140,14 @@ def decision(stdout: str) -> object:
 
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
-    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request)]
+    assert [[(held.on, held.request) for held in listing.session.dialogs] for listing in sessions.live()] == [[(moment.on, moment.request)]]
     assert shim.process.returncode is None, "the hook returned before anyone answered"
 
     tool = named(sessions, "answer_permission")
     assert await call(tool, request=moment.request, decision="allow") == {"readback": "Allowed Bash for cc-hands."}
     code, stdout, _ = await shim.finished()
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
-    assert [listing.session.dialog for listing in sessions.live()] == [None]
+    assert [listing.session.dialogs for listing in sessions.live()] == [()]
     assert await call(tool, request=moment.request, decision="deny") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, by voice or at the keyboard, or the session moved on past it."
     }
@@ -204,7 +205,7 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     assert readback in str((await call(named(sessions, tool), request=moment.request, **arguments))["readback"])
     await asyncio.sleep(0.2)
     assert shim.process.returncode is None, "the hook was answered with something that does not answer it"
-    assert [listing.session.dialog for listing in sessions.live()] == [Held(on=moment.on, request=moment.request)]
+    assert [[(held.on, held.request) for held in listing.session.dialogs] for listing in sessions.live()] == [[(moment.on, moment.request)]]
     await call(named(sessions, "answer_question"), request=moment.request, answers=["red", "pear"])
     await shim.finished()
 
@@ -305,7 +306,7 @@ async def asking_in_process(home: Home, sessions: Sessions) -> tuple[PermissionR
     assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     await sessions.apply(StatusReported(SID, BUSY, at=0.0))
     request = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
-    waiting = asyncio.create_task(sessions.ask(request))
+    waiting = asyncio.create_task(sessions.waited(request, sessions.hold(request)))
     await asyncio.wait_for(sessions.heard(), WAIT_SECONDS)
     return request, waiting
 
@@ -315,7 +316,7 @@ async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(h
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
         request, waiting = await asking_in_process(home, sessions)
-        await sessions.answer(request.request, Allow())
+        sessions.answer(request.request, Allow())
         waiting.cancel()  # the connection closes before the handler resumes with the reply
         with pytest.raises(asyncio.CancelledError):
             await waiting
@@ -338,7 +339,7 @@ async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is
         await asyncio.wait_for(waits_on_its_reply(waiting, sessions, request.request), WAIT_SECONDS)
         waiting.cancel()  # cancels the request's future at once; the handler forgets the request only when it next runs
         # A voice answer is decided, and its reply performed, before the handler has run.
-        await sessions.answer(request.request, Allow())
+        sessions.answer(request.request, Allow())
         with pytest.raises(asyncio.CancelledError):
             await waiting
     finally:
@@ -353,7 +354,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
         request, waiting = await asking_in_process(home, sessions)
         sessions.release_waiting()
         # A voice answer is decided, and its reply performed, before the handler has run with its Withdraw.
-        await sessions.answer(request.request, Allow())
+        sessions.answer(request.request, Allow())
         assert await waiting == Withdraw()
     finally:
         logger.remove(sink)
@@ -373,7 +374,7 @@ async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Hom
     assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     sessions.release_waiting()
     request = PermissionRequested(SID, at=0.0, request=RequestId("late"), on=Permission("Bash", {}), mode=None)
-    assert await asyncio.wait_for(sessions.ask(request), WAIT_SECONDS) == Withdraw()
+    assert await asyncio.wait_for(sessions.waited(request, sessions.hold(request)), WAIT_SECONDS) == Withdraw()
 
 
 async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(sessions: Sessions) -> None:
@@ -402,7 +403,7 @@ async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answe
     shim.process.kill()
     await shim.process.wait()
     await asyncio.sleep(0.2)  # the daemon notices the closed connection
-    assert [listing.session.dialog for listing in sessions.live()] == [None]
+    assert [listing.session.dialogs for listing in sessions.live()] == [()]
     assert await call(named(sessions, "answer_permission"), request=moment.request, decision="allow") == {
         "readback": "That request is no longer waiting for a voice answer: it was already answered, by voice or at the keyboard, or the session moved on past it."
     }
@@ -511,3 +512,59 @@ def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
     assert isinstance(narrated, Narrated)
     content = narrated.text
     assert long in content and "Request id: p-3" in content and "answer_plan" in content
+
+
+async def test_a_permission_request_is_held_in_the_model_before_reader_asked_returns_with_its_session_joined(home: Home, sessions: Sessions) -> None:
+    """[LAW:no-ambient-temporal-coupling] held as its hook arrives: nothing is awaited between the post and the hold, so no
+    hook still being applied and no read of Claude Code through now comes first."""
+    member = Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere.jsonl"))
+    asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+    reader = Reader(sessions, Tails(sessions), sessions.apply)
+    replying = reader.asked(PermissionHook("PermissionRequest", SID, Located(member), "p1", "Bash", asked))
+    held = sessions.live_session(SID)
+    assert held is not None and held.dialogs == (Held(on=asked.on, request=asked.request, asked=asked.at),)
+    sessions.answer(asked.request, Allow())
+    assert replying.done() and replying.result() == Allow()
+
+
+async def test_an_answer_has_replied_to_its_hook_by_the_time_it_returns(home: Home, sessions: Sessions) -> None:
+    assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
+    asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+    replying = sessions.hold(asked)
+    sessions.answer(asked.request, Allow())
+    assert replying.done() and replying.result() == Allow()
+
+
+async def test_a_hold_the_model_could_not_decide_raises_and_leaves_nothing_for_shutdown_to_let_go(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(*_: object) -> None:
+        raise RuntimeError("the reducer broke")
+
+    monkeypatch.setattr("hands.sessions.registry.reduce", broken)
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+    with pytest.raises(RuntimeError, match="the reducer broke"):
+        sessions.hold(asked)
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
+    try:
+        sessions.release_waiting()
+    finally:
+        logger.remove(sink)
+    assert logged == []
+
+
+async def test_a_held_request_s_reply_is_never_an_error_though_performing_what_its_hold_decided_failed() -> None:
+    """The hold's future resolves only with a reply: what failed performing the rest of what was decided is the
+    registry's to say, on its applied event and its line."""
+    def failing(_: Heard) -> None:
+        raise RuntimeError("the narration sink broke")
+
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, heard_sink=failing)
+    await sessions.apply(Joined(Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere.jsonl")), "startup"))
+    asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
+    replying = sessions.hold(asked)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not replying.done()
+    sessions.answer(asked.request, Allow())
+    assert replying.result() == Allow()

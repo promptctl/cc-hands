@@ -60,5 +60,5 @@ async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
     await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=PromptId("p1"), text=""))
     request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")
     await sessions.apply(request)
-    await sessions.answer(RequestId("r1"), Allow())
+    sessions.answer(RequestId("r1"), Allow())
     assert describe_listing(sessions.live()[0])["mode"] == "plan mode"

@@ -8,7 +8,7 @@ import pytest
 from hands.core.events import Ended, Event, Joined, Located, PermissionRequested, Prompted, Stopped, ToolFinished
 from hands.core.session import AskedQuestion, Membership, Mode, Option, Permission, Plan, PlanApproved, PromptId, Question, RequestId, SessionId, UnknownMode
 from hands.sessions.home import Home
-from hands.sessions.hooks import Hook, parse_hook
+from hands.sessions.hooks import Hook, PermissionHook, parse_hook
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
 from hands.core.status import Stamp
@@ -30,8 +30,12 @@ MEMBER = Membership(SID, pid=51810, cwd=Path("/code/a"), transcript=Path(TRANSCR
 
 
 def parse(home: Home, raw: bytes) -> Event:
-    """What the hook says happened, past the session it may join."""
-    return parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST).happened
+    """What the hook says happened, past the session it may join: a permission hook's request, or any other's event."""
+    match parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST):
+        case PermissionHook(asked=asked):
+            return asked
+        case Hook(happened=happened):
+            return happened
 
 
 @pytest.fixture
@@ -120,6 +124,15 @@ def test_a_permission_request_carries_the_tool_and_its_input(home: Home) -> None
     raw = body(hook_event_name="PermissionRequest", tool_name="Bash", tool_input={"command": "rm -r build"}, permission_suggestions=[])
     permission = Permission(tool="Bash", input={"command": "rm -r build"})
     assert parse(home, raw) == PermissionRequested(SID, at=12.5, request=REQUEST, on=permission, mode=None)
+
+
+def test_a_permission_request_is_a_permission_hook_with_its_prompt_and_tool_and_no_other_hook_is(home: Home) -> None:
+    """[LAW:types-are-the-program] a permission request reaches the model only as it is held (Reader.asked): the type that
+    carries it is not the one Reader.hooked takes."""
+    raw = body(hook_event_name="PermissionRequest", prompt_id="p1", tool_name="Bash", tool_input={"command": "ls"}, permission_suggestions=[])
+    parsed = parse_hook(raw, home=home, at=12.5, heard=STOP_HEARD, request=REQUEST)
+    assert isinstance(parsed, PermissionHook) and (parsed.prompt, parsed.tool) == ("p1", "Bash")
+    assert isinstance(parse_hook(body(hook_event_name="UserPromptSubmit", prompt_id="p1", prompt="hi"), home=home, at=12.5, heard=STOP_HEARD, request=REQUEST), Hook)
 
 
 def test_a_finished_or_failed_tool_names_its_call_as_a_permission_does(home: Home) -> None:

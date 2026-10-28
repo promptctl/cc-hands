@@ -32,7 +32,7 @@ def asks(session: SessionId, request: str, on: Permission = BASH) -> Narrate:
 def held(session: SessionId, request: str, on: Permission = BASH) -> Mapping[SessionId, Session]:
     """The session live, its dialog waiting on an answer to `request`."""
     member = Membership(session, pid=4242, cwd=Path("/code/a"), transcript=Path("/code/a/t.jsonl"))
-    return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialog=Held(on, RequestId(request)))}
+    return {session: Session(member, Running(Busy(), Stamp(1000), None), mode=None, dialogs=(Held(on, RequestId(request), 0.0),))}
 
 
 GONE = SessionGone(SessionId("old"))

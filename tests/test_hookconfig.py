@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-from hands.core.effects import AllowWith, Allow, Deny, Withdraw
+from hands.core.effects import AllowWith, Allow, Deny, DenyAndInterrupt, Withdraw
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
     BRAIN_REPLY_BY_SECONDS,
@@ -75,6 +75,7 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     decided = {"hookEventName": "PermissionRequest"}
     assert hook_output(Allow()) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow"}}}
     assert hook_output(Deny("not on main")) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "deny", "message": "not on main"}}}
+    assert hook_output(DenyAndInterrupt("hands stopped this turn")) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "deny", "message": "hands stopped this turn", "interrupt": True}}}
     assert hook_output(Withdraw()) is None
     answered: dict[str, object] = {"questions": [{"question": "Which?", "options": []}], "answers": {"Which?": "this"}}
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}

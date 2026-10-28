@@ -14,7 +14,7 @@ from hands.core.effects import Narrate, SessionGone
 from hands.core.narration import Segment
 from hands.core.occurrences import Occurrence
 from hands.core.progress import Doing
-from hands.core.session import Held, Opened, PromptId, RequestId, Session, SessionId, ids
+from hands.core.session import Opened, PromptId, Session, SessionId, holds, ids
 from hands.core.turn import AgentId, AgentTask
 
 
@@ -131,20 +131,11 @@ def _waits(pending: Pending, live: Mapping[SessionId, Session]) -> bool:
     """Whether what `pending` tells is still so as it is told."""
     match pending:
         case Narrate(moment=moment):
-            return _asks(live.get(moment.session), moment.request)
+            return holds(live.get(moment.session), moment.request)
         case Working(session=session, of=of):
             return current(live.get(session), of)
         case _:
             return True
-
-
-def _asks(session: Session | None, request: RequestId) -> bool:
-    """Whether the session's dialog still waits on an answer to `request`."""
-    match session:
-        case Session(dialog=Held() as dialog):
-            return dialog.request == request
-        case _:
-            return False
 
 
 def current(session: Session | None, of: frozenset[PromptId] | AgentTask) -> bool:
