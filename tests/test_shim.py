@@ -31,7 +31,6 @@ from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.reader import Reader
 from hands.sessions.server import serve_hooks
 from hands.sessions.tail import Tails
-from hands.sessions.untap import untapped
 from hands.sessions.wide import Fact, WideEvent
 from conftest import SYSTEM_PATH
 
@@ -64,11 +63,7 @@ async def sessions(home: Home) -> AsyncIterator[Sessions]:
 
 async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = None, given: Mapping[str, str] = {}) -> tuple[int | None, str, str]:
     """The shim's exit, stdout, and stderr for one hook, run as the plugin runs it: with only HANDS_HOME to go on."""
-    # The shim reads FRITTER_SOCKET from its environment, so the tests say what is in it
-    # rather than inheriting whatever the run happens to have. Without this, running the
-    # suite from inside a wrapped session would change what the shim records.
-    # A tap and its file of commands are a session's too, and a run inside one must not write into that session's file.
-    environment = {key: value for key, value in untapped(os.environ).items() if key not in ("FRITTER_SOCKET", "CLAUDE_ENV_FILE")} | dict(given)
+    environment = os.environ | dict(given)
     if fritter is not None:
         environment["FRITTER_SOCKET"] = fritter
     process = await asyncio.create_subprocess_exec(
@@ -169,7 +164,7 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
 
 def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
     """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd), **environment}
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, **environment}
     return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 

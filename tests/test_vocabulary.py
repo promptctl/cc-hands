@@ -17,12 +17,9 @@ from hands.sessions.registry import Listing, Sessions
 from hands.voice import vocabulary as lexicon
 from hands.voice.vocabulary import TOKENS, WORDS, Lexicon, prompt, vocabulary
 
-ENVIRONMENT = {"PATH": os.environ["PATH"], "HOME": "/nonexistent"}
-
 
 def git(repository: Path, *args: str) -> None:
-    identity = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True, env={**ENVIRONMENT, **identity})
+    subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True)
 
 
 def commit(repository: Path, *names: str) -> None:
@@ -54,7 +51,7 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
     focus = session(repository / "src")
     other = session(tmp_path / "cc-hands", "s2")
 
-    primed = await vocabulary([Listing(focus, None), Listing(other, "dictation bias")], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([Listing(focus, None), Listing(other, "dictation bias")], focus, os.environ, time.monotonic())
 
     assert primed.words.index("old_billing") < primed.words.index("authMiddleware") < primed.words.index("sessionStore")
     assert "GUIDE" in primed.words and primed.words.count("README") == 1
@@ -69,7 +66,7 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path) 
     git(repository, "add", "-N", "ledger.ts")
     focus = session(repository)
 
-    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([], focus, os.environ, time.monotonic())
 
     assert primed.words == ("billing", "ledger", "auth-rework")
 
@@ -78,7 +75,7 @@ async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path) 
     commit(repository, "<|endoftext|>.ts", "ledger.ts")
     focus = session(repository)
 
-    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([], focus, os.environ, time.monotonic())
 
     assert primed.words == ("ledger", "auth-rework")
     # As MLX Whisper encodes an initial prompt, which raises on a special token's text.
@@ -92,7 +89,7 @@ async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pyt
     commit(repository, "authMiddleware.ts")
     focus = session(repository)
 
-    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([], focus, os.environ, time.monotonic())
 
     assert len(primed.words) == WORDS
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
@@ -103,7 +100,7 @@ async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens
     commit(repository, *named)
     focus = session(repository)
 
-    primed = await vocabulary([], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([], focus, os.environ, time.monotonic())
 
     # The newest words, as many as fit: one more of the older ones would not.
     assert primed.words[-1] == "auth-rework" and 0 < len(primed.words) < WORDS
@@ -122,7 +119,7 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
     focus = session(tmp_path / "notes")
     (tmp_path / "notes").mkdir()
 
-    primed = await vocabulary([Listing(focus, "planning")], focus, {**ENVIRONMENT, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, time.monotonic())
+    primed = await vocabulary([Listing(focus, "planning")], focus, {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}, time.monotonic())
 
     assert (primed.words, primed.failed) == (("notes, planning",), None)
 
@@ -131,7 +128,7 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
     (repository / "authMiddleware.ts").write_text("new")
     focus = session(repository)
 
-    primed = await vocabulary([Listing(focus, None)], focus, ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([Listing(focus, None)], focus, os.environ, time.monotonic())
 
     assert (primed.words, primed.failed) == (("authMiddleware", "auth-rework", "shop"), None)
 
@@ -147,7 +144,7 @@ async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_w
 
 
 async def test_a_focus_that_cannot_be_read_says_so(tmp_path: Path) -> None:
-    primed = await vocabulary([], Unreadable("garbled"), ENVIRONMENT, time.monotonic())
+    primed = await vocabulary([], Unreadable("garbled"), os.environ, time.monotonic())
 
     assert (primed.focus, primed.words, primed.failed) == (None, (), "the focus: garbled")
     assert level(primed) == "error"
@@ -157,7 +154,7 @@ async def test_with_nothing_focused_and_nothing_running_whisper_is_unprimed_and_
     recorded: list[Entry] = []
     home = Home(tmp_path)
     set_focus(home, None)
-    lexicon = Lexicon(Sessions(clock=lambda: 0.0, record=recorded.append), home, ENVIRONMENT, recorded.append)
+    lexicon = Lexicon(Sessions(clock=lambda: 0.0, record=recorded.append), home, os.environ, recorded.append)
 
     assert await lexicon() is None
     assert [(entry.focus, entry.words, entry.failed) for entry in recorded if isinstance(entry, Primed)] == [(None, (), None)]

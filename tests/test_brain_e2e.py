@@ -75,7 +75,7 @@ class MockApi:
 
 
 @pytest.fixture(scope="session")
-def mock_binary(pytestconfig: pytest.Config) -> Path:
+def mock_binary(pytestconfig: pytest.Config, machine: dict[str, str]) -> Path:
     """The mock at MOCK_RELEASE, built once by `go install` into pytest's cache, a directory per release."""
     cache = pytestconfig.cache.mkdir("mock-anthropic") if pytestconfig.cache else pytest.fail("the cache provider is off")
     binary = cache / MOCK_RELEASE / "mock-anthropic"
@@ -83,7 +83,7 @@ def mock_binary(pytestconfig: pytest.Config) -> Path:
         # [LAW:no-silent-failure] an install that fails stops the session in go's own words. The binary is installed into its
         # release's directory, so the cache of one release is never taken for another.
         binary.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env={**os.environ, "GOBIN": str(binary.parent)})
+        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env=machine | {"GOBIN": str(binary.parent)})
     return binary
 
 
@@ -246,7 +246,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
     # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
     # e2e fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
-    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
+    environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
     refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
