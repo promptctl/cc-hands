@@ -35,6 +35,7 @@ from hands.threads import settles_off_loop
 from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Heard, Keyed, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, Woke, Woken, deadline, listens, step
 from hands.voice.hold import Instant, KeyEvent, Move
 from hands.voice.holds import Edge
+from hands.voice.trigger import Choice
 
 
 class Ears(Protocol):
@@ -167,8 +168,9 @@ _COUNTED: tuple[str, ...] = (
     "held_open", "ended_on_silence", "heard", "muted",
 )
 
-# Whether a buffer of the desk's microphone ends with the wake word (`hands.voice.wake`).
-Hears = Callable[[bytes], Awaitable[bool]]
+# Whether a buffer of the desk's microphone ends with the wake word (`hands.voice.wake`), heard afresh from it when its
+# level has just started.
+Hears = Callable[[bytes, bool], Awaitable[bool]]
 
 
 @dataclass(frozen=True)
@@ -178,14 +180,6 @@ class Overheard:
     audio: bytes
     ears: Ears
     woken: Hears
-
-
-@dataclass(frozen=True)
-class Choice:
-    """A level the brain's tool chose, and the level the desk was at as the choice was stepped, answered once it is."""
-
-    level: Level
-    was: asyncio.Future[Level]
 
 
 async def drive(
@@ -226,6 +220,8 @@ async def drive(
     # The models the last buffer was heard with: None until they are loaded, while Smart Turn has heard nothing.
     ears: Ears | None = None
     heard: deque[Event] = deque()
+    # The level the last buffer was heard at: off, where nothing has heard it, as the desk starts.
+    overheard_at: Level = "off"
     async with tapped(events.put_nowait), asyncio.TaskGroup() as group:
         group.create_task(overhearing(), name="the desk's microphone, overheard")
         group.create_task(choosing(), name="the levels the tools chose")
@@ -238,20 +234,30 @@ async def drive(
                 while desk.level == level:
                     if not heard:
                         match await events.get():
+                            # [LAW:types-are-the-program] off, the microphone is closed between turns, and nothing
+                            # hears the room.
+                            case Overheard() if not listens(desk.level):
+                                overheard_at = desk.level
                             case Overheard(audio=audio, ears=ears, woken=woken):
+                                # Each model hears from where its level started, with nothing of the room before it.
+                                begun = desk.level != overheard_at
+                                overheard_at = desk.level
+                                if begun:
+                                    ears.afresh()
+                                    detected = VADState.QUIET
                                 state = await ears.detect(audio)
                                 # Smart Turn hears speech only where the detector is sure of it, as Pipecat feeds it,
-                                # and only while the desk listens with no key down, so the room it hears otherwise is
-                                # trimmed as silence is.
-                                listening = listens(desk.level) and not isinstance(desk.phase, Keyed)
-                                silent_too_long = ears.heard(audio, listening and state == VADState.SPEAKING)
-                                # [LAW:dataflow-not-control-flow] the wake word's model hears every buffer, so it is
-                                # current whenever its level is chosen; the desk says whether a hearing opens a turn.
-                                word = await woken(audio)
+                                # and only with no key down, so the room it hears otherwise is trimmed as silence is.
+                                silent_too_long = ears.heard(audio, not isinstance(desk.phase, Keyed) and state == VADState.SPEAKING)
+                                # The wake word's model is run only where it can open a turn.
+                                word = desk.level == "wake word" and await woken(audio, begun)
                                 heard.extend([*_changed(detected, state, clock), *([Woken(clock())] if word else []), *([TurnEnded("silence")] if silent_too_long else [])])
                                 detected = state
                             case Choice(level=chose, was=was_level):
-                                was_level.set_result(desk.level)
+                                # A tool call cancelled while it waited, the user cutting the brain off, is answered by
+                                # no one; its choice is the user's all the same.
+                                if not was_level.cancelled():
+                                    was_level.set_result(desk.level)
                                 heard.append(Chosen(chose))
                             case event:
                                 heard.append(event)

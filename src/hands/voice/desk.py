@@ -229,14 +229,16 @@ def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase
             return replace(phase, key=hold), ()
 
 
-def _rest(level: Level, key: VoiceKey) -> Resting | Keyed:
-    """Where the desk is once a turn the voice had open is over: resting, or with Right Shift down as Shift, whose release
-    ends nothing."""
+def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tuple[Act, ...]]:
+    """Where the desk is once what the voice had open is `left`: resting, or with Right Shift down, which a press still
+    arming arms for itself, so a hold to talk goes on to open its turn."""
     match key:
         case Idle():
-            return Resting(level)
-        case KeyArming() | Typing():
-            return Keyed(level, Typing())
+            return Resting(level), (left,)
+        case KeyArming():
+            return Keyed(level, key), (left, Made("arm", "held key"))
+        case Typing():
+            return Keyed(level, key), (left,)
 
 
 def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, ...]]:
@@ -256,9 +258,11 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
             return Resting(now), (*listening, Leveled(was, now, by))
         # What the voice had open is the level's: leaving it, the armed start is disarmed and the turn is sent.
         case Starting(key=key):
-            return _rest(now, key), (Made("disarm", "engaged conversation"), *listening, Leveled(was, now, by))
+            rest, left = _rest(now, key, Made("disarm", "engaged conversation"))
+            return rest, (*left, *listening, Leveled(was, now, by))
         case Woke(key=key) | Voiced(key=key):
-            return _rest(now, key), (Made("stop", _voice(phase)), *listening, Leveled(was, now, by))
+            rest, left = _rest(now, key, Made("stop", _voice(phase)))
+            return rest, (*left, *listening, Leveled(was, now, by))
         # A turn of the key's goes on as it is, at the new level.
         case Keyed(hold=hold):
             return Keyed(now, hold), (*listening, Leveled(was, now, by))
@@ -275,7 +279,7 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
         case Starting(key=key), SpeechStarted(at=at):
             return Voiced("engaged", at, key), (Made("start", "engaged conversation"),)
         case Starting(key=key), SpeechStopped():
-            return _rest("engaged", key), (Made("disarm", "engaged conversation"),)
+            return _rest("engaged", key, Made("disarm", "engaged conversation"))
         # [LAW:types-are-the-program] the pause after the wake word is no end of the turn: Smart Turn judges the wake
         # word complete, so only once what is asked has started does a stop go to it.
         case Woke(since=since, key=key), SpeechStarted():
@@ -291,15 +295,14 @@ def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
 def _in_turn(turn: Woke | Voiced, heard: SpeechStopped | TurnEnded | TurnTooLong) -> tuple[Phase, tuple[Act, ...]]:
     """How a turn the voice opened ends: Smart Turn's verdict on a stop, the silence after it, or the limit, which sends
     it as it stands."""
-    rest = _rest(level_of(turn), turn.key)
     match heard:
         case SpeechStopped():
             return turn, ("judge",)
         case TurnEnded():
-            return rest, (Made("stop", _voice(turn)),)
+            return _rest(level_of(turn), turn.key, Made("stop", _voice(turn)))
         # [LAW:no-ambient-temporal-coupling] a limit counts only for the turn it was set for.
         case TurnTooLong(opened_at=opened_at) if opened_at == turn.since:
-            return rest, (Made("timeout", _voice(turn)),)
+            return _rest(level_of(turn), turn.key, Made("timeout", _voice(turn)))
         case TurnTooLong():
             return turn, ()
 

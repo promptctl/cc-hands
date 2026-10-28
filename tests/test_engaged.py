@@ -2,7 +2,7 @@
 and another triple tap disengages."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,7 +13,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
-from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, Choice, Ears, drive, loaded
+from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, Ears, Hears, drive, loaded
+from hands.voice.trigger import Choice
 from hands.voice.hold import KeyEvent, Move, Pressed, Released, Ripe
 
 # Right Shift's triple tap: what engages, and what disengages.
@@ -47,7 +48,7 @@ class ScriptedEars:
         self.cleared += 1
 
     def afresh(self) -> None:
-        raise AssertionError("engaged conversation has no wake word to hear afresh from")
+        pass
 
 
 class Rig:
@@ -111,7 +112,7 @@ class Rig:
             await asyncio.sleep(0)
 
 
-async def unwoken(audio: bytes) -> bool:
+async def unwoken(audio: bytes, begun: bool) -> bool:
     return False
 
 
@@ -187,7 +188,7 @@ async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> 
     rig = Rig(verdicts=[])
 
     @asynccontextmanager
-    async def loading() -> AsyncGenerator[tuple[Ears, Callable[[bytes], Awaitable[bool]]]]:
+    async def loading() -> AsyncGenerator[tuple[Ears, Hears]]:
         await asyncio.Event().wait()
         yield rig.ears, unwoken
 
@@ -206,13 +207,46 @@ async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
     rig = Rig(verdicts=[])
 
     @asynccontextmanager
-    async def unloadable() -> AsyncGenerator[tuple[Ears, Callable[[bytes], Awaitable[bool]]]]:
+    async def unloadable() -> AsyncGenerator[tuple[Ears, Hears]]:
         raise OSError("no Smart Turn in the hub's cache, and no network")
         yield rig.ears, unwoken
 
     with pytest.raises(ExceptionGroup) as failed:
         await drive(rig.tapped, rig.overheard, unloadable, rig.chosen, rig.on_move, rig.on_level, rig.events.append)
     assert failed.group_contains(OSError, match="no network")
+
+
+async def test_a_choice_whose_tool_call_was_cancelled_is_stepped_and_the_desk_goes_on() -> None:
+    rig = Rig(verdicts=[])
+    driving = rig.start()
+    cancelled: asyncio.Future[Level] = asyncio.get_running_loop().create_future()
+    cancelled.cancel()
+    rig.chosen.put_nowait(Choice("engaged", cancelled))
+    assert await rig.choose("off") == "engaged"
+    await stopped(driving)
+    assert rig.made == ["listen", "deafen"]
+
+
+async def test_each_level_hears_from_where_it_started() -> None:
+    rig = Rig(verdicts=[])
+    begun: list[bool] = []
+
+    async def woken(audio: bytes, afresh: bool) -> bool:
+        begun.append(afresh)
+        return False
+
+    driving = asyncio.create_task(drive(rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    # Off, nothing hears the room; the wake word's model hears from its level's first buffer, afresh each time it starts.
+    await rig.hear(b"q")
+    for level in ("wake word", "off", "wake word"):
+        await rig.choose(level)
+        await rig.hear(b"q", b"q")
+        while rig.audio.qsize():
+            await asyncio.sleep(0.001)
+        for _ in range(20):
+            await asyncio.sleep(0)
+    await stopped(driving)
+    assert begun == [True, False, True, False]
 
 
 async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks() -> None:

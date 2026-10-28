@@ -20,7 +20,8 @@ from pipecat.metrics.metrics import TurnMetricsData
 
 from hands.sessions.wide import WideEvent, unit
 from hands.voice.desk import Level, Leveled, Made
-from hands.voice.engaged import Choice, drive
+from hands.voice.engaged import drive
+from hands.voice.trigger import Choice
 from hands.voice.hold import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, WakeWord, fetched, listening, loaded
@@ -86,7 +87,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
 
         yield buffers()
 
-    async def woken(heard: bytes) -> bool:
+    async def woken(heard: bytes, begun: bool) -> bool:
         return heard == b"w"
 
     async def on_move(move: Made) -> None:
@@ -138,9 +139,9 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
 
     async def heard() -> list[bool]:
         with unit("desk", events.append, counts=("heard", "muted")):
-            deaf = await woken(b"\x01\x02" * 160)
+            deaf = await woken(b"\x01\x02" * 160, False)
             speaking[0] = False
-            return [deaf, await woken(b"\x01\x02" * 160)]
+            return [deaf, await woken(b"\x01\x02" * 160, False)]
 
     assert asyncio.run(heard()) == [False, True]
     assert word.heard == [bytes(320), b"\x01\x02" * 160]

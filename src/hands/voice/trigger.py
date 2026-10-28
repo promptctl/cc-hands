@@ -5,11 +5,11 @@ the voice alone at their own.
 """
 
 import asyncio
+from dataclasses import dataclass
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
 from hands.voice.desk import Level, Leveled
-from hands.voice.engaged import Choice
 from hands.voice.holds import Edge, Opener
 from hands.voice.wakeword import Word
 
@@ -37,6 +37,14 @@ def turn_start(opener: Opener) -> TurnStart:
             return "on words"
         case "held key" | "phone button" | "wake word" | "typed":
             return "on the hold"
+
+
+@dataclass(frozen=True)
+class Choice:
+    """A level the brain's tool chose, and the level the desk was at as the choice was stepped, answered once it is."""
+
+    level: Level
+    was: asyncio.Future[Level]
 
 
 class Levels:

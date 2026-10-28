@@ -112,8 +112,13 @@ def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: lis
     assert moves(made)[-1] == Made("stop", edge) and Made("arm", "held key") not in made and desk.level == level
 
 
-def test_a_voice_turn_ended_under_a_pressed_key_leaves_it_shift() -> None:
+def test_a_hold_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
     _, made = run([SpeechStarted(1.0), Pressed(2.0), SpeechStopped(), TurnEnded("verdict"), Ripe(2.0), Released()], at("engaged"))
+    assert moves(made)[-4:] == [Made("stop", "engaged conversation"), *KEY_TURN]
+
+
+def test_shift_typing_under_a_voice_turn_that_ends_opens_nothing() -> None:
+    _, made = run([SpeechStarted(1.0), Pressed(2.0), Typed(), SpeechStopped(), TurnEnded("verdict"), Released()], at("engaged"))
     assert moves(made)[-1] == Made("stop", "engaged conversation")
 
 

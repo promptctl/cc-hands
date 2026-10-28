@@ -108,11 +108,15 @@ async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[Wid
     yield heard
 
 
-def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes], Awaitable[bool]]:
-    """Whether each buffer of the desk's microphone ends with the wake word, deaf while hands speaks."""
+def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes, bool], Awaitable[bool]]:
+    """Whether each buffer of the desk's microphone ends with the wake word, deaf while hands speaks, and heard afresh
+    from a buffer the wake word's level `begun` with, with nothing of the room before it."""
 
-    async def woken(audio: bytes) -> bool:
-        # [LAW:dataflow-not-control-flow] the detector hears every buffer; while hands speaks, what it hears is silence.
+    async def woken(audio: bytes, begun: bool) -> bool:
+        if begun:
+            await asyncio.to_thread(word.reset)
+        # [LAW:dataflow-not-control-flow] the detector hears every buffer at its level; while hands speaks, what it
+        # hears is silence.
         muted = speaking()
         count(muted=int(muted))
         score = await asyncio.to_thread(word.score, bytes(len(audio)) if muted else audio)

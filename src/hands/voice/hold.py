@@ -95,7 +95,7 @@ Hold = Idle | Arming | Talking | Typing
 
 # What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
 # opens it, closes it and sends it, closes it and throws it away, or closes it and sends it for being open too long. The
-# hold makes only those; engaged conversation (`hands.voice.engaged`) also has the desk listen between turns, and stop.
+# hold makes only those; the desk (`hands.voice.desk`) also has the microphone listen between turns, and stop.
 TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "timeout"]
 Move = TurnMove | Literal["listen", "deafen"]
 
