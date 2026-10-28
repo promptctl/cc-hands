@@ -4,8 +4,10 @@ conversation would close, none in noise, and each word from the speaker who said
 
 import asyncio
 import contextlib
+import dataclasses
 import re
 import threading
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +18,7 @@ import pytest
 import soundfile
 from loguru import logger
 
-from conftest import model_facts
+from conftest import PAIRS, model_facts
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import engaged, streaming
@@ -329,17 +331,16 @@ def test_a_speaker_is_the_number_the_session_gave_them() -> None:
 
 
 # The real pair, on real sound: the weights are fetched into the Hugging Face cache the first time, and CI keeps that
-# cache. It runs on MLX's default device, the CPU where there is no Metal, as on CI's VMs. Each test starts the session
-# afresh, as a run starts one. The fixtures are holds separated by half a second of exact zeros, which speech never holds
-# for that long.
+# cache. It runs on MLX's CPU device, as on CI's VMs (conftest's `Pairs`). Each test starts the session afresh, as a run
+# starts one. The fixtures are holds separated by half a second of exact zeros, which speech never holds for that long.
 GAP = streaming.RATE // 2
 
 
 @pytest.fixture(scope="module")
-def pair() -> Any:
-    """The real pair, loaded once, as a run loads it: it holds 2.7 GB, and a second beside it outgrows CI's VMs, whose GPU
-    then times out loading the next."""
-    return nemotron()
+def pair() -> Generator[Any]:
+    """The real pair, loaded once, as a run loads it, and the only one the suite holds while this module runs."""
+    with PAIRS.alone():
+        yield PAIRS.loaded(nemotron)
 
 
 @pytest.fixture
@@ -430,13 +431,20 @@ def test_each_hold_opens_on_its_own_first_word_not_the_last_of_the_hold_before(p
     assert first == {3: (0, "and"), 4: (0, "but"), 6: (0, "that"), 7: (0, "simply"), 8: (0, "and"), 9: (0, "he"), 10: (0, "the")}
 
 
+# A woman coughing three times ("Woman coughing three times.wav", Ashe (OwlStorm on Freesound), CC0, from Wikimedia
+# Commons), and 3 s of a computer keyboard typed on ("Computer keyboard.ogg", russiandoll, public domain, from Wikimedia
+# Commons, from 1.5 s in), each made mono at 16 kHz.
+NOT_SPEECH = [*fixture_holds("cough.flac"), *fixture_holds("keyboard_typing.flac")]
+
+
 def test_a_hold_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(paired: Session) -> None:
-    # What a hold engaged conversation opens can hold with nobody speaking: the room, a hiss, a tap on the desk.
+    # What a hold engaged conversation opens can hold with nobody speaking: the room, a hiss, a tap on the desk, a cough,
+    # the keyboard.
     noise = np.random.default_rng(0).standard_normal(2 * streaming.RATE).astype(np.float32)
     clicks = np.where(np.arange(2 * streaming.RATE) % 4_000 == 0, 0.8, 0.0).astype(np.float32)
-    holds = [np.zeros(2 * streaming.RATE, np.float32), noise * 0.01, noise * 0.056, clicks]
+    holds = [np.zeros(2 * streaming.RATE, np.float32), noise * 0.01, noise * 0.056, clicks, *NOT_SPEECH]
     live = Live(paired)
-    assert [(open_, whole.words) for open_, whole in map(live.spoken, holds)] == [((), ())] * 4
+    assert [(open_, whole.words) for open_, whole in map(live.spoken, holds)] == [((), ())] * len(holds)
 
 
 def test_each_word_is_the_speaker_who_said_it_and_each_hold_closes_its_own_speakers_streams(paired: Session) -> None:
@@ -454,6 +462,46 @@ def test_each_word_is_the_speaker_who_said_it_and_each_hold_closes_its_own_speak
     assert [hold.closed.speakers for hold in ended] == [{0}, {0}, {0}, {0, 1}, {0, 2}, {0}]
     # [LAW:one-source-of-truth] `steps` is what times a hearing: no word comes out on a feed it says no step completed.
     assert live.session.off_grid == 0
+
+
+@dataclass
+class Timed:
+    """The pair's mlx-audio session, keeping each token it decodes as it is fed, with its speaker and when it starts, in
+    seconds of the run: mlx-audio's own alignment, which `Said` leaves out."""
+
+    session: Any
+    tokens: list[tuple[int, float, str]] = field(default_factory=list[tuple[int, float, str]])
+
+    def feed(self, samples: Samples) -> Any:
+        decoded = self.session.feed(samples)
+        self.tokens += [(streaming.speaker(delta.speaker), token.start, token.text) for delta in decoded for token in delta.tokens]
+        return decoded
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything else the pair's close reaches is the session's own.
+        return getattr(self.session, name)
+
+
+def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any) -> None:
+    # The run hears each woman alone first, FEE013 in holds 1 and 5 and FEE016 in holds 4, 10, 13 and 15, so FEE013 is
+    # speaker 0 and FEE016 speaker 1; then one hold of each pair, both ways round. A voice heard in only one hold before
+    # can be given the other's number in a hold they share (promptctl-voice-i15t.qg8.2d2): after holds 1 and 4 alone, 12
+    # then 3 gives most of FEE016's words to speaker 0. Decided on when each word starts, not on its text, which is
+    # about 20% wrong on AMI; the close's words are GATING's to settle (promptctl-voice-i15t.qg8.23w).
+    timed = Timed(paired.session)
+    live = Live(dataclasses.replace(paired, session=timed))
+    holds = fixture_holds("two_speakers_ami.flac")
+    for number in (1, 4, 5, 10, 13, 15):
+        live.spoken(np.concatenate([holds[number - 1], STOP]))
+    speakers = {12: 1, 3: 0}
+    for first, second in ((12, 3), (3, 12)):
+        opened, heard = live.session.fed, len(timed.tokens)
+        live.spoken(np.concatenate([holds[first - 1], holds[second - 1], STOP]))
+        boundary = seconds(opened + len(holds[first - 1]))
+        words = [(speaker, start) for speaker, start, text in timed.tokens[heard:] if any(map(str.isalnum, text))]
+        # Each person's words start in their own stretch of the hold, and nobody else's do.
+        assert {speaker for speaker, _ in words} == {speakers[first], speakers[second]}, words
+        assert [(speaker, start) for speaker, start in words if (speaker == speakers[first]) != (start < boundary)] == [], (boundary, words)
 
 
 def test_a_hold_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(paired: Session) -> None:
