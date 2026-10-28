@@ -20,7 +20,7 @@ import asyncio
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast, get_args
 
@@ -332,18 +332,22 @@ class Models:
 @asynccontextmanager
 async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, for as long as the edge listens with them."""
-    # On a thread of its own the process does not join at exit (hands.threads), as every model's load is.
-    loading = settles_off_loop(lambda: Models(sample_rate), "Models")
-    try:
+    async with AsyncExitStack() as held:
         with loads.loading("trigger.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
+            # On a thread of its own the process does not join at exit (hands.threads), as every model's load is; started
+            # inside the unit, so the load's time and growth are all on it.
+            loading = settles_off_loop(lambda: Models(sample_rate), "Models")
+            held.push_async_callback(_let_go, loading)
             annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
         yield loading.result()
-    finally:
-        # A switch away while they load waits the load out, so what it built is let go of too.
-        await (await loading).close()
+
+
+async def _let_go(loading: asyncio.Future[Models]) -> None:
+    """A switch away while they load waits the load out, so what it built is let go of too."""
+    await (await loading).close()
 
 
 # [LAW:one-source-of-truth] each move the edge makes is counted on its engagement's event, by the move's name.

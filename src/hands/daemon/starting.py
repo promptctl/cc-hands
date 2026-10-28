@@ -18,7 +18,7 @@ from hands.sessions import heartbeat
 from hands.sessions.home import Home
 from hands.sessions import wide
 from hands.sessions.wide import Fact, WideEvent, begun
-from hands.voice import loads
+from hands import footprint
 
 # The signals that stop a run as the q key does: closing its terminal is how a run in a terminal is most often ended.
 QUIT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -182,7 +182,7 @@ class Start:
         self._ended = True
         # What raised is the caller's to raise on; the event only writes it down. [LAW:nothing-unseen] how big hands was
         # as its start ended: the models that load after it are on their own loads' events (hands.voice.loads).
-        wide.ended("hands.start", emit, self._began, raised, **self._facts, **loads.size(loads.measured(loads.resident)))
+        wide.ended("hands.start", emit, self._began, raised, **self._facts, **footprint.size(footprint.measured(footprint.footprint)))
 
     @contextmanager
     def ending(self, emit: Callable[[WideEvent], None]) -> Generator[None]:
