@@ -85,6 +85,18 @@ class Hanging(NoChanges):
         await asyncio.Event().wait()
 
 
+class Slow(NoChanges):
+    """Marks a turn once the test lets its repository answer, as a reader whose repository is slow."""
+
+    def __init__(self) -> None:
+        self.begun = asyncio.Event()
+        self.answer = asyncio.Event()
+
+    async def snapshot(self, session: SessionId, cwd: Path) -> None:
+        self.begun.set()
+        await self.answer.wait()
+
+
 def applied(recorded: list[Entry]) -> list[WideEvent]:
     """The event of each event or answer the registry applied, in the order they ended."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "applied"]
@@ -699,6 +711,23 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
     assert [(mark.trace_id, mark.parent_id) for mark in marks] == [(event.trace_id, event.span_id) for event in prompted]
     # Timed from when it was decided: what its effects did lies inside it.
     assert all(event.started_at <= mark.started_at for event, mark in zip(prompted, marks, strict=True))
+
+
+async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_decided_before_it() -> None:
+    """The brain hears where its words went in its session's order: a turn told before they were taken is heard first,
+    however long what was decided ahead of that telling takes, so it is never taken for their answer."""
+    handed: list[object] = []
+    slow = Slow()
+    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=slow, story_sink=handed.append, submitted_sink=handed.append)
+    await sessions.apply(Joined(member(), "startup"))
+    first, second = (Prompted(member().id, at=at, mode=None, prompt=PromptId(prompt), text=words) for at, prompt, words in [(1.0, "p1", "first"), (2.0, "p2", "second")])
+    sessions.hear(first)
+    await asyncio.wait_for(slow.begun.wait(), 1.0)
+    # The second prompt tells the turn the first opened, while that turn's mark is still being taken.
+    applying = asyncio.ensure_future(sessions.apply(second))
+    slow.answer.set()
+    await asyncio.wait_for(applying, 1.0)
+    assert handed == [Submitted(member().id, PromptId("p1"), "first", queued=False), Summarise(member().id, PromptId("p1"), None), Submitted(member().id, PromptId("p2"), "second", queued=False)]
 
 
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
