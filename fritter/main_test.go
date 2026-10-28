@@ -31,12 +31,17 @@ func TestMain(m *testing.M) {
 }
 
 // hermetic is the environment the tests run in, which every child they start inherits:
-// the machine's TMPDIR, where os.TempDir puts what fritter makes, as it does under hands,
-// the system's tools, all a child here needs (sh, curl, head and the test binary), and a
+// the TMPDIR `machine` has, where os.TempDir puts what fritter makes, as it does under
+// hands (none where the machine has none, so os.TempDir falls back to /tmp as it does
+// there, never to an empty name), the system's tools, all a child here needs (sh, curl, head and the test binary), and a
 // HOME of their own. Nothing else of the machine's reaches them: no credential, no proxy,
 // no certificates the tap would hand on, no Claude Code session's names, no ~/.curlrc.
-func hermetic(tmpdir, home string) map[string]string {
-	return map[string]string{"TMPDIR": tmpdir, "PATH": "/usr/bin:/bin", "HOME": home}
+func hermetic(machine func(string) (string, bool), home string) map[string]string {
+	names := map[string]string{"PATH": "/usr/bin:/bin", "HOME": home}
+	if tmpdir, ok := machine("TMPDIR"); ok {
+		names["TMPDIR"] = tmpdir
+	}
+	return names
 }
 
 // as starts the test binary as the program named, with args, in the test's environment.
@@ -60,23 +65,29 @@ func tested(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "cannot make the tests a HOME: %v\n", err)
 		return 1
 	}
-	defer os.Remove(home)
 	if err := os.Chmod(home, 0o500); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot make the tests' HOME read-only: %v\n", err)
 		return 1
 	}
-	names := hermetic(os.Getenv("TMPDIR"), home)
+	names := hermetic(os.LookupEnv, home)
 	os.Clearenv()
 	for name, value := range names {
 		os.Setenv(name, value)
 	}
-	return m.Run()
+	code := m.Run()
+	// [LAW:no-silent-failure] a HOME that will not go held something a test wrote, which is a
+	// failure of the run, however its tests went.
+	if err := os.Remove(home); err != nil {
+		fmt.Fprintf(os.Stderr, "the tests' HOME was left holding something: %v\n", err)
+		return 1
+	}
+	return code
 }
 
 func TestATestRunsInTheHermeticEnvironment(t *testing.T) {
 	home := os.Getenv("HOME")
 	var want []string
-	for name, value := range hermetic(os.Getenv("TMPDIR"), home) {
+	for name, value := range hermetic(os.LookupEnv, home) {
 		want = append(want, name+"="+value)
 	}
 	environment := os.Environ()

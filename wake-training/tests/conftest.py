@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-PASSED = ("TMPDIR",)
+# The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
+# is in CI, which pytest reads as each report is made, to show a failure whole.
+PASSED = ("TMPDIR", "CI")
 
 
 def hermetic(machine: Mapping[str, str], home: Path) -> dict[str, str]:

@@ -101,10 +101,12 @@ func TestTheModeIsReadFromCommandsAndNotFromWhatTheChildPrints(t *testing.T) {
 // wrap runs argv under fritter on a pty of its own and returns a way to ask it things.
 func wrap(t *testing.T, argv ...string) (*Wrapped, func(string) response, chan int) {
 	t.Helper()
-	return wrapOnto(t, io.Discard, argv...)
+	return wrapOnto(t, io.Discard, nil, argv...)
 }
 
-func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(string) response, chan int) {
+// wrapOnto wraps argv as wrap does, its output copied to stdout, with env set on the
+// child's environment and nowhere else.
+func wrapOnto(t *testing.T, stdout io.Writer, env []string, argv ...string) (*Wrapped, func(string) response, chan int) {
 	t.Helper()
 	socket, err := listen(shortTempDir(t))
 	if err != nil {
@@ -112,7 +114,7 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 	}
 	t.Cleanup(socket.close)
 
-	wrapped, err := start(argv, []string{"FRITTER_SOCKET=" + socket.address})
+	wrapped, err := start(argv, append(env, "FRITTER_SOCKET="+socket.address))
 	if err != nil {
 		t.Fatalf("cannot start %v: %v", argv, err)
 	}
@@ -190,8 +192,7 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() []string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "reads")
-	t.Setenv(program, "recorder")
-	wrapped, ask, exited := wrap(t, os.Args[0], log, strconv.Itoa(reads))
+	wrapped, ask, exited := wrapOnto(t, io.Discard, []string{program + "=recorder"}, os.Args[0], log, strconv.Itoa(reads))
 	defer func() {
 		if t.Failed() {
 			_ = wrapped.cmd.Process.Kill()
@@ -374,7 +375,7 @@ func TestRunReturnsOnlyOnceTheChildsOutputHasBeenWritten(t *testing.T) {
 	// still in flight behind it. Returning there hands the caller a finished session
 	// whose last words have not been written yet - and the caller's next move is to exit.
 	slow := &unhurried{}
-	_, _, exited := wrapOnto(t, slow, "sh", "-c", "echo done")
+	_, _, exited := wrapOnto(t, slow, nil, "sh", "-c", "echo done")
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):

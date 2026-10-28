@@ -33,6 +33,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
 
     assert hermetic(machine, Path("/tmp/home")) == {
         "TMPDIR": "/var/folders/t/",
+        "CI": "true",
         "PATH": "/usr/bin:/bin",
         "LANG": "en_US.UTF-8",
         "HOME": "/tmp/home",

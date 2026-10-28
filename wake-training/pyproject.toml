@@ -36,7 +36,7 @@ dependencies = [
 train-wake-word = "wake_training.cli:main"
 
 [dependency-groups]
-dev = ["pyright>=1.1", "pytest>=8"]
+dev = ["pyright>=1.1", "pytest>=8", "pytest-timeout>=2.3"]
 
 [build-system]
 requires = ["hatchling"]
@@ -57,6 +57,10 @@ reportMatchNotExhaustive = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# [LAW:single-enforcer] the one owner of "no test hangs", as in hands' own suite: one that never finishes, a child
+# pytest or a download among them, fails here, named, with the stack it was stuck in.
+timeout = 120
+timeout_method = "signal"
 
 [tool.uv]
 # Trained on the Mac hands runs on.
