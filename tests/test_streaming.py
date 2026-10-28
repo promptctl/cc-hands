@@ -16,6 +16,7 @@ import pytest
 import soundfile
 from loguru import logger
 
+from conftest import model_facts
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import engaged, streaming
@@ -256,7 +257,7 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
     await hearing
     assert rig.told() == [("ok", "words", said("hello"))]
     [load] = loaded(recorded)
-    assert (load.outcome, {name: load.facts[name] for name in ("model", "revision", "diarization", "diarization_revision", "preset", "gating", "transcription_delay_ms")}) == (
+    assert (load.outcome, model_facts(load)) == (
         "ok",
         {
             "model": streaming.MODEL, "revision": streaming.REVISION, "diarization": streaming.DIARIZATION,

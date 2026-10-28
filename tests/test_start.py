@@ -24,7 +24,10 @@ def test_a_start_that_comes_up_is_one_event_with_which_run_it_is_and_what_it_lea
     run_start.ended(recorded.append, None)
     [event] = events(recorded)
     assert (event.event, event.outcome, event.error, event.parent_id) == ("hands.start", "ok", None, None)
-    assert dict(event.facts) == {"pid": os.getpid(), "restarted": True, "after_crash": False, "proxy": "http://127.0.0.1:5000", "tap": Path("/home/wire.sock"), "voice": "charles"}
+    facts = dict(event.facts)
+    # How big hands was as its start ended, beside what it learned.
+    assert isinstance(facts.pop("footprint_mb"), float)
+    assert facts == {"pid": os.getpid(), "restarted": True, "after_crash": False, "proxy": "http://127.0.0.1:5000", "tap": Path("/home/wire.sock"), "voice": "charles"}
     assert event.duration_ms >= 0 and len(recorded) == 1
 
 

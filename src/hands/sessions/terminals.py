@@ -5,7 +5,6 @@ Read from the kernel through libproc and sysctl, the sources ps and lsof read.
 """
 
 import ctypes
-import ctypes.util
 import errno
 import os
 import struct
@@ -13,6 +12,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
+
+from hands.darwin import libc, libproc, raise_errno
 
 
 @dataclass(frozen=True)
@@ -89,13 +90,13 @@ def process_table() -> dict[int, Process]:
     tab through, so a line of parents runs unbroken from a session up to its app."""
     mib = (ctypes.c_int * 3)(*_KERN_PROC_ALL)
     size = ctypes.c_size_t(0)
-    if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
-        _raise_errno("kern.proc.all")
+    if libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+        raise_errno("kern.proc.all")
     # With room to spare for processes started between the two calls.
     size.value += 256 * _KINFO_PROC_SIZE
     table = ctypes.create_string_buffer(size.value)
-    if _libc.sysctl(mib, len(mib), table, ctypes.byref(size), None, 0) != 0:
-        _raise_errno("kern.proc.all")
+    if libc.sysctl(mib, len(mib), table, ctypes.byref(size), None, 0) != 0:
+        raise_errno("kern.proc.all")
     if size.value % _KINFO_PROC_SIZE:
         # A record of another size is a kernel whose struct is not the one laid out above; no errno says so.
         raise OSError(f"kern.proc.all gave {size.value} bytes, not a whole number of this kernel's {_KINFO_PROC_SIZE}-byte kinfo_proc")
@@ -151,20 +152,13 @@ _P_CONTROLT = 0x2
 # libproc: struct proc_bsdinfo (136 bytes), asked only whether a process still exists, struct proc_vnodepathinfo
 # (two vnode_info_path of 1176 bytes, the cwd's first, its path after a 152-byte vnode_info), and struct
 # vnode_fdinfowithpath (a 24-byte proc_fileinfo, then a vnode_info_path), whose vnode's vinfo_stat has st_rdev at 116, a dev_t as e_tdev is.
-_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
 _PROC_PIDTBSDINFO, _BSDINFO_SIZE = 3, 136
 _PROC_PIDVNODEPATHINFO, _VNODEPATHINFO_SIZE, _CWD_PATH_AT, _MAXPATHLEN = 9, 2352, 152, 1024
 _PROC_PIDFDVNODEPATHINFO, _FDVNODEPATHINFO_SIZE = 2, 1200
 _FD_RDEV = struct.Struct("=140xi1056x")
 # kern.procargs2.<pid>: argc, the path the process was exec'd by as execve was given it, padding, its arguments, and
 # its environment, each string ending in a NUL.
-_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
 _KERN_PROCARGS2 = (1, 49)  # CTL_KERN, KERN_PROCARGS2
-
-
-def _raise_errno(what: str) -> NoReturn:
-    failure = ctypes.get_errno()
-    raise OSError(failure, f"{what} could not be read: {os.strerror(failure)}")
 
 
 def _terminal(process: Process, tty: int) -> Terminal | Undescribed | None:
@@ -203,7 +197,7 @@ def _cwd(pid: int) -> Path:
 def _device(pid: int, fd: int) -> int | None:
     """The device a file pid has open as fd is, as `st_rdev`; None for a pipe, a socket, or an fd it has not open."""
     record = ctypes.create_string_buffer(_FDVNODEPATHINFO_SIZE)
-    filled = _libproc.proc_pidfdinfo(pid, fd, _PROC_PIDFDVNODEPATHINFO, record, _FDVNODEPATHINFO_SIZE)
+    filled = libproc.proc_pidfdinfo(pid, fd, _PROC_PIDFDVNODEPATHINFO, record, _FDVNODEPATHINFO_SIZE)
     if filled <= 0:
         failure = ctypes.get_errno()
         # EBADF is an fd that is no file, or no fd at all: nothing a terminal is.
@@ -221,10 +215,10 @@ def _started_as(pid: int) -> tuple[Path, tuple[str, ...], dict[str, str]]:
     """The path pid was exec'd by, its arguments after the program, and its environment."""
     mib = (ctypes.c_int * 3)(*_KERN_PROCARGS2, pid)
     size = ctypes.c_size_t(0)
-    if _libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
+    if libc.sysctl(mib, len(mib), None, ctypes.byref(size), None, 0) != 0:
         _raise_unless_exited(pid, "kern.procargs2")
     record = ctypes.create_string_buffer(size.value)
-    if _libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
+    if libc.sysctl(mib, len(mib), record, ctypes.byref(size), None, 0) != 0:
         _raise_unless_exited(pid, "kern.procargs2")
     raw = record.raw[: size.value]
     argc = ctypes.c_int.from_buffer_copy(raw, 0).value
@@ -254,7 +248,7 @@ class _Refused(Exception):
 
 def _pidinfo(pid: int, flavor: int, size: int) -> ctypes.Array[ctypes.c_char]:
     record = ctypes.create_string_buffer(size)
-    filled = _libproc.proc_pidinfo(pid, flavor, 0, record, size)
+    filled = libproc.proc_pidinfo(pid, flavor, 0, record, size)
     if filled <= 0:
         _raise_unless_exited(pid, f"proc_pidinfo flavor {flavor}")
     if filled != size:
@@ -269,7 +263,7 @@ def _raise_unless_exited(pid: int, call: str) -> NoReturn:
     # [LAW:single-enforcer] the one test for an exit, whichever call failed: libproc has nothing on a process that
     # exited, or is a zombie waiting on its parent.
     probe = ctypes.create_string_buffer(_BSDINFO_SIZE)
-    if _libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, probe, _BSDINFO_SIZE) <= 0 and ctypes.get_errno() == errno.ESRCH:
+    if libproc.proc_pidinfo(pid, _PROC_PIDTBSDINFO, 0, probe, _BSDINFO_SIZE) <= 0 and ctypes.get_errno() == errno.ESRCH:
         raise _Exited
     # [LAW:no-silent-failure] anything else is the kernel refusing a question about one of this user's own processes.
     raise _Refused(call, failure)

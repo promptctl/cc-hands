@@ -8,7 +8,7 @@ import mlx_whisper
 import numpy as np
 import pytest
 
-from conftest import events
+from conftest import events, model_facts
 from hands.sessions.audit import Entry, HoldHeard, Unsaid
 from hands.voice import transcription
 from hands.voice.holds import Hold
@@ -68,7 +68,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
     assert loaded == held == {"path_or_hf_repo": transcription.MODEL, "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
-    assert event.outcome == "ok" and event.facts["model"] == transcription.MODEL
+    assert (event.outcome, model_facts(event)) == ("ok", {"model": transcription.MODEL})
 
 
 async def test_each_hold_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:

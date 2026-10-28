@@ -23,7 +23,8 @@ import numpy.typing as npt
 from loguru import logger
 
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, unit
+from hands.sessions.wide import annotate
+from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Sound, decoded
 
@@ -224,7 +225,7 @@ class StreamingRecognizer:
         """The run's stream, on the pair; or, where it fails to load, one that fails each hold with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
-            with unit("streaming.loaded", self._record):
+            with loads.loading("streaming.loaded", self._record):
                 annotate(
                     model=MODEL,
                     revision=REVISION,

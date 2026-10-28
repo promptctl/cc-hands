@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from conftest import spoken
+from conftest import model_facts, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -237,7 +237,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
-    assert [(event.event, event.outcome, event.facts) for event in events] == [
+    assert [(event.event, event.outcome, model_facts(event)) for event in events] == [
         ("trigger.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
     ]
 
