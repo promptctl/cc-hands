@@ -3,16 +3,19 @@ model's replies scripted by the mock of Anthropic's API. No login, no subscripti
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
 login is one the mock accepts. The OS holds the brain to it: every Claude Code hands starts, and all it starts in turn,
 runs in a sandbox whose only connections are to loopback. A machine's Claude Code policy reaches every Claude Code, so
-the tests run on a machine with none, as CI's is. The pinned Claude Code and the mock are fetched once, into pytest's
-cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
+the tests run on a machine with none, as CI's is. The pinned Claude Code, from npm's registry, and the mock are fetched
+once, into pytest's cache. What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
 import json
 import os
+import platform
 import pwd
 import shlex
 import subprocess
+import tarfile
 import time
+import urllib.request
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,11 +119,39 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
     assert not faults, "\n".join(faults)
 
 
+# Where npm's registry serves Anthropic's packages: each build of a Claude Code release is a package of its own, whose
+# `package/claude` is the same bytes Anthropic's release downloads serve, so the tests fetch the pin without a connection
+# to Anthropic.
+REGISTRY = "https://registry.npmjs.org/@anthropic-ai"
+
+
+def from_registry(target: Path) -> None:
+    """The pinned release's build for this machine, as npm's registry serves it, written whole to `target`."""
+    built = pinned.build(platform.machine())
+    url = f"{REGISTRY}/claude-code-{built}/-/claude-code-{built}-{pinned.VERSION}.tgz"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_suffix(".partial")
+    # [LAW:no-silent-failure] a fetch that fails, or a package with no `package/claude`, stops the session in its own words.
+    with urllib.request.urlopen(url, timeout=pinned.STALL_SECONDS) as response, tarfile.open(fileobj=response, mode="r|gz") as package:
+        member = next((member for member in package if member.name == "package/claude"), None)
+        assert member is not None, f"{url} holds no package/claude"
+        extracted = package.extractfile(member)
+        assert extracted is not None, f"{url}'s package/claude is not a file"
+        partial.write_bytes(extracted.read())
+    partial.chmod(0o755)
+    partial.replace(target)
+
+
 @pytest.fixture(scope="session")
-async def claude_code(pytestconfig: pytest.Config) -> Path:
-    """The brain's pinned Claude Code, fetched once, against its checksum, into pytest's cache."""
+def claude_code(pytestconfig: pytest.Config) -> Path:
+    """The brain's pinned Claude Code, fetched once from npm's registry into pytest's cache, and held to its checksum."""
     cache = pytestconfig.cache.mkdir("claude-code") if pytestconfig.cache else pytest.fail("the cache provider is off")
-    await pinned.install(cache)
+    try:
+        return pinned.verified(cache)
+    except pinned.Unpinned:
+        # Missing, or not the pin's bytes: fetched over.
+        from_registry(pinned.claude(cache))
+    # [LAW:single-enforcer] the pin's checksum, checked where every brain's is: bytes that are not the pin's fail here.
     return pinned.verified(cache)
 
 
