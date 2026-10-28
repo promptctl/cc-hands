@@ -57,13 +57,10 @@ from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
-from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues, level_cue
+from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
 from hands.voice.holds import Edge
-from hands.voice import wake
-from hands.voice.desk import Leveled, Made
-from hands.voice.engaged import Ears, Hears, drive, loaded
-from hands.sessions.wide import annotate, unit
+from hands.voice.atdesk import serve_desk
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
@@ -408,40 +405,16 @@ async def converse(
         # The indicator reads the key from the heartbeat, so the edge is written now rather than at the next beat.
         beat()
 
-    async def at_desk(made: Made) -> None:
-        match voice.key.move(made.move, made.by):
-            case None:
-                # A Shift at the desk while the turn is the phone's: nothing of it is cued, said, or beaten.
-                return
-            case taken:
-                after_move(taken)
-                for fact in told(taken, voice.audio.devices):
-                    await channel.say(fact)
-
-    async def at_level(leveled: Leveled) -> None:
-        levels.leveled(leveled)
-        cue = level_cue(leveled)
-        logger.info(cue.line)
-        voice.audio.output().cue(cue)
-        beat()
+    async def taken_at_desk(taken: Move) -> None:
+        after_move(taken)
+        for fact in told(taken, voice.audio.devices):
+            await channel.say(fact)
 
     async def drive_desk_once_started() -> None:
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await drive(tapped, voice.audio.input().overheard, hearing, levels.chosen, at_desk, at_level, record)
-
-    @asynccontextmanager
-    async def hearing() -> AsyncGenerator[tuple[Ears, Hears]]:
-        rate = voice.audio.input().sample_rate
-        # [LAW:no-silent-failure] the models every level hears with are fetched and loaded once, beside the talk key as
-        # the desk starts: one that cannot be is the run's failure, said with what could not be loaded, never a level
-        # that fails as it is chosen.
-        # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files it fetched, none once they are kept.
-        with unit("desk.fetched", record):
-            annotate(fetched=", ".join(await wake.fetched(home.wake_word, wake_word)))
-        async with loaded(rate, record) as ears, wake.loaded(rate, home.wake_word, wake_word, record) as word:
-            yield ears, wake.listening(word, lambda: voice.audio.output().hands_speaking, record)
+        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.

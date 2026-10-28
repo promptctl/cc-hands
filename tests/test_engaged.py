@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from conftest import hearing_with, model_facts, spoken
+from conftest import quiet, hearing_with, model_facts, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -289,10 +289,6 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     assert [(event.event, event.outcome, model_facts(event)) for event in events] == [
         ("desk.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
     ]
-
-
-def quiet(seconds: float) -> bytes:
-    return bytes(round(16_000 * seconds) * 2)
 
 
 @pytest.mark.parametrize(("said", "complete"), [("create a ticket to read session history.", True), ("can you tell me about the", False)])
