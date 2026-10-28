@@ -11,13 +11,6 @@ from conftest import hermetic
 IMPORTED = dict(os.environ)
 
 
-def machine_s(names: dict[str, str], machine: dict[str, str]) -> dict[str, str]:
-    """Of the machine's names, what `names` holds, HOME and pytest's own apart. A library may add names of its own as it
-    is imported, which are no developer's, so an environment is compared on the machine's names, not on every name it
-    has."""
-    return {name: value for name, value in names.items() if name in machine and name != "HOME" and not name.startswith("PYTEST_")}
-
-
 def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
     machine = {
         "TMPDIR": "/var/folders/t/",
@@ -46,8 +39,9 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
 
 def test_a_test_and_its_module_s_import_run_in_the_hermetic_environment(environment: dict[str, str], machine: dict[str, str]) -> None:
     assert {name: value for name, value in os.environ.items() if not name.startswith("PYTEST_")} == environment
-    assert machine_s(IMPORTED, machine) == machine_s(environment, machine)
-    assert not Path(IMPORTED["HOME"]).is_relative_to(machine["HOME"])
+    home = Path(IMPORTED.get("HOME", ""))
+    assert home.parent == Path("/tmp") and home.name.startswith("wake-training-home-")
+    assert {name: IMPORTED.get(name) for name in hermetic(machine, home)} == hermetic(machine, home)
     assert Path.home() == Path(environment["HOME"])
 
 

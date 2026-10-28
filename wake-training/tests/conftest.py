@@ -38,10 +38,12 @@ def entered(monkeypatch: pytest.MonkeyPatch, names: Mapping[str, str]) -> None:
 _run = pytest.StashKey[tuple[pytest.MonkeyPatch, Path, dict[str, str]]]()
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     """The run's environment from before the first test module is imported, since importing onnxruntime, which the
     suite's modules do, writes under HOME. [LAW:no-ambient-temporal-coupling] made here, not in a fixture, so no import
-    runs before it."""
+    runs before it; and last of the run's configuring, so pytest's own reporter, which is the developer's and not the
+    tests', has read their terminal's names (PY_COLORS, NO_COLOR, TERM) before they go."""
     machine = dict(os.environ)
     home = Path(tempfile.mkdtemp(prefix="wake-training-home-", dir="/tmp"))
     monkeypatch = pytest.MonkeyPatch()

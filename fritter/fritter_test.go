@@ -190,10 +190,8 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() []string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "reads")
-	t.Setenv("FRITTER_RECORD", log)
-	t.Setenv("FRITTER_RECORD_READS", strconv.Itoa(reads))
 	t.Setenv(program, "recorder")
-	wrapped, ask, exited := wrap(t, os.Args[0])
+	wrapped, ask, exited := wrap(t, os.Args[0], log, strconv.Itoa(reads))
 	defer func() {
 		if t.Failed() {
 			_ = wrapped.cmd.Process.Kill()
@@ -237,17 +235,17 @@ func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() 
 	return wrapped, ask, read
 }
 
-// recorder is the child recorded runs: it reads FRITTER_RECORD_READS times and writes each
-// read to FRITTER_RECORD.
-func recorder() int {
+// recorder is the child recorded runs, as `recorder log reads`: it reads `reads` times and
+// writes each read to `log`.
+func recorder(args []string) int {
 	if _, err := term.MakeRaw(0); err != nil {
 		return 20
 	}
 	if _, err := os.Stdout.Write(pasteOn); err != nil {
 		return 21
 	}
-	reads, _ := strconv.Atoi(os.Getenv("FRITTER_RECORD_READS"))
-	out, err := os.Create(os.Getenv("FRITTER_RECORD"))
+	reads, _ := strconv.Atoi(args[1])
+	out, err := os.Create(args[0])
 	if err != nil {
 		return 22
 	}
@@ -394,11 +392,7 @@ func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	// actually exit for that to show: a harness that keeps running keeps the copier
 	// running too, and the copier finishes either way.
 	dir := shortTempDir(t)
-	fritter := exec.Command(os.Args[0])
-	fritter.Env = append(os.Environ(),
-		program+"=fritter",
-		"FRITTER_TEST_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1fecho done; exit 3",
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--", "sh", "-c", "echo done; exit 3")
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
@@ -473,12 +467,8 @@ func TestClosingTheTerminalEndsTheSessionAndTakesItsSocketWithIt(t *testing.T) {
 	// is the only reader that output has; if fritter stops reading, the child never exits
 	// and neither does fritter, and both are left running with nobody able to see them.
 	dir := shortTempDir(t)
-	fritter := exec.Command(os.Args[0])
-	fritter.Env = append(os.Environ(),
-		program+"=fritter",
-		"FRITTER_TEST_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1f"+
-			`trap 'head -c 1048576 /dev/zero; exit 0' HUP; echo "ready $$"; read line`,
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--", "sh", "-c",
+		`trap 'head -c 1048576 /dev/zero; exit 0' HUP; echo "ready $$"; read line`)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
