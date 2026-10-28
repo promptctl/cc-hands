@@ -10,13 +10,14 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from pathlib import Path
 
-from conftest import spoken
+import pytest
+from conftest import quiet, patiently, spoken
 
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
 from hands.voice.cues import ENGAGED, OFF, WAKE_WORD, Cue
-from hands.voice.hold import CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
+from hands.voice.hold import HOLD_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
 from hands.voice.tools import listening_tools
@@ -26,10 +27,6 @@ from hands.voice.wakeword import Pretrained
 
 # Twenty milliseconds of the desk's microphone, as it hands audio over.
 BUFFER = 640
-
-
-def quiet(seconds: float) -> bytes:
-    return bytes(round(SAMPLE_RATE * seconds) * 2)
 
 
 class Speaker:
@@ -94,12 +91,6 @@ class Keyboard:
             self.press(*((CommandPressed(time.monotonic()), CommandReleased()) if command else (Pressed(time.monotonic()), Released())))
 
 
-async def until(done: Callable[[], bool], seconds: float = 30.0) -> None:
-    async with asyncio.timeout(seconds):
-        while not done():
-            await asyncio.sleep(0.01)
-
-
 async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_hears_each_level(models: Path, tmp_path: Path) -> None:
     events: list[WideEvent] = []
     entries: list[Entry] = []
@@ -110,23 +101,42 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     async def took(move: Move) -> None:
         taken.append(move)
 
+    # Rendered before the desk runs, so macOS's `say` never holds the loop the desk, the tap, and its timers run on.
+    off, wake, engaged, deaf = (spoken(said, tmp_path / f"{name}.wav") for name, said in [("off", "create a ticket to read session history."), ("wake", "Hey Jarvis. What is the status of the build?"), ("engaged", "create a ticket to read session history."), ("deaf", "create a ticket to read session history.")])
+
     level, choose = listening_tools(levels, Pretrained())
     serving = asyncio.create_task(serve_desk(key, levels, keyboard.tapped, microphone, lambda: speaker, models, Pretrained(), took, partial(beats.append, None), events.append))
+
+    async def until(done: Callable[[], bool]) -> None:
+        # A desk that ended is the failure itself, raised, never a wait that runs out on it.
+        await patiently(lambda: serving.done() or done(), lambda: (len(taken), len(speaker.cues), microphone.audio.qsize(), len(events)))
+        if serving.done():
+            serving.result()
+
+    async def settled() -> None:
+        # The buffers taken from the queue are stepped by the desk's loop after; half a second lets it step them all.
+        await until(lambda: microphone.audio.empty())
+        await asyncio.sleep(0.5)
+
     await until(lambda: keyboard._heard is not None)  # pyright: ignore[reportPrivateUsage]
 
     # Off: the room opens nothing, and Right Shift held alone talks, opened once it is held long enough.
-    microphone.say(spoken("create a ticket to read session history.", tmp_path / "off.wav") + quiet(3.0))
+    microphone.say(off + quiet(3.0))
     keyboard.press(Pressed(time.monotonic()))
     await until(lambda: "start" in taken)
     keyboard.press(Released())
     await until(lambda: taken[-1] == "stop")
     assert taken == ["arm", "start", "stop"]
-    await until(lambda: microphone.audio.empty())
+    await settled()
     assert taken == ["arm", "start", "stop"] and key.gate.key == "up"
 
     # Right Shift typing a capital opens nothing.
-    keyboard.press(Pressed(time.monotonic()), Typed(), Released())
-    await until(lambda: taken[-1] == "disarm")
+    keyboard.press(Pressed(time.monotonic()), Typed())
+    await asyncio.sleep(HOLD_SECONDS * 2)
+    assert taken[3:] == ["arm", "disarm"]
+    keyboard.press(Released())
+    await asyncio.sleep(0.1)
+    assert taken[3:] == ["arm", "disarm"]
 
     # Right Command's triple tap: the wake word, cued, the level its owner and the tool say, and the desk listening.
     keyboard.triple_tap(command=True)
@@ -136,7 +146,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     del taken[:]
 
     # Said, the wake word opens a turn, and Smart Turn's verdict on what was asked sends it.
-    microphone.say(quiet(0.5) + spoken("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav") + quiet(4.0))
+    microphone.say(quiet(0.5) + wake + quiet(4.0))
     await until(lambda: "stop" in taken)
     assert taken[:3] == ["arm", "start", "stop"]
 
@@ -148,7 +158,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     del taken[:]
 
     # Engaged, speech alone opens a turn, and its end sends it.
-    microphone.say(quiet(0.5) + spoken("create a ticket to read session history.", tmp_path / "engaged.wav") + quiet(4.0))
+    microphone.say(quiet(0.5) + engaged + quiet(4.0))
     await until(lambda: "stop" in taken)
     assert "start" in taken and taken.index("start") < taken.index("stop")
 
@@ -158,18 +168,14 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     await until(lambda: levels.level == "off")
     assert speaker.cues == [WAKE_WORD, ENGAGED, OFF] and key.gate.key == "up"
     del taken[:]
-    microphone.say(spoken("create a ticket to read session history.", tmp_path / "deaf.wav") + quiet(3.0))
-    await until(lambda: microphone.audio.empty())
-    for _ in range(50):
-        await asyncio.sleep(0.01)
+    microphone.say(deaf + quiet(3.0))
+    await settled()
     assert taken == []
 
     serving.cancel()
-    try:
+    with pytest.raises(asyncio.CancelledError):
         await serving
-    except asyncio.CancelledError:
-        pass
-    assert beats, "each change of level is beaten, so the indicator reads it at once"
+    assert len(beats) == 3, "each change of level is beaten, so the indicator reads it at once"
     fetched = [event for event in events if event.event == "desk.fetched"]
     assert [(event.outcome, event.facts["fetched"]) for event in fetched] == [("ok", "")]
     leveled = [(event.facts["was"], event.facts["now"], event.facts["by"]) for event in events if event.event == "desk.leveled"]

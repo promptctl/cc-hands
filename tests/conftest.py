@@ -85,6 +85,11 @@ def model_facts(load: WideEvent) -> dict[str, Fact]:
     return facts
 
 
+def quiet(seconds: float) -> bytes:
+    """Silence as the desk's microphone hands it over: 16 kHz, 16-bit mono."""
+    return bytes(round(16_000 * seconds) * 2)
+
+
 def spoken(text: str, at: Path) -> bytes:
     """`text` spoken by macOS's own voice, as 16 kHz mono 16-bit audio, the way the desk's microphone is heard."""
     subprocess.run(["say", "-v", "Samantha", "-o", str(at), "--data-format=LEI16@16000", text], check=True)
