@@ -98,27 +98,9 @@ jobs:
           "$GOBIN/lit" version
           echo "$GOBIN" >> "$GITHUB_PATH"
       # [LAW:one-source-of-truth] the suite is the Makefile's: pytest, pyright and fritter's go tests.
-      - name: DIAGNOSTIC (temporary) Smart Turn on this runner
+      - name: DIAGNOSTIC (temporary) the runner's Samantha saying the wake word test's clip
         run: |
-          sw_vers -productVersion
           say -v Samantha -o /tmp/stop.wav --data-format=LEI16@16000 "Hey Jarvis stop" && shasum /tmp/stop.wav
-          cat > /tmp/margin.py <<'PY'
-          import subprocess, wave, numpy as np
-          import mlx.core as mx
-          from mlx_audio.vad import load
-          from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-          print("device", mx.default_device(), mx.metal.is_available(), mx.device_info() if hasattr(mx, "device_info") else "")
-          m = load("mlx-community/smart-turn-v3", revision="74af1538ebace37b0fcc667a6a8a3d902d73eee0", strict=True)
-          cpu = LocalSmartTurnAnalyzerV3(sample_rate=16000)
-          for t in ["Hey Jarvis stop", "Hey Jarvis what is the status of the build", "create a ticket to read session history.", "can you tell me about the"]:
-              subprocess.run(["say", "-v", "Samantha", "-o", "/tmp/c.wav", "--data-format=LEI16@16000", t], check=True)
-              with wave.open("/tmp/c.wav") as w: a = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
-              a = np.concatenate([np.zeros(3200, np.float32), a, np.zeros(12800, np.float32)])
-              mx.set_default_device(mx.gpu); g = m.predict_endpoint(a, sample_rate=16000).probability
-              mx.set_default_device(mx.cpu); c = m.predict_endpoint(a, sample_rate=16000).probability
-              o = cpu._predict_endpoint(a)["probability"]
-              print(f"{t!r:50} mlx-gpu {g:.3f} mlx-cpu {c:.3f} onnx-int8 {o:.3f}")
-          PY
-          uv run python -I /tmp/margin.py
+          echo "BEGIN64"; base64 -i /tmp/stop.wav; echo "END64"
       - name: make check
         run: make check
