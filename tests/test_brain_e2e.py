@@ -1,15 +1,18 @@
 """The brain end to end: hands' stage, its proxy, and the pinned Claude Code in a terminal of hands' own, with the
 model's replies scripted by the mock of Anthropic's API. No login, no subscription, and no network while a test runs: the
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
-login is one the mock accepts. The pinned Claude Code and the mock are fetched once, into pytest's cache. What each test
-proves is what hands does with the replies it scripts, the same on every run."""
+login is one the mock accepts. The OS holds the brain to it: everything the brain starts runs in a sandbox that reaches
+loopback alone. A machine's Claude Code policy reaches every Claude Code, so the tests run on a machine with none, as CI's
+is. The pinned Claude Code and the mock are fetched once, into pytest's cache. What each test proves is what hands does
+with the replies it scripts, the same on every run."""
 
 import asyncio
+import getpass
 import json
 import os
 import subprocess
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,13 +23,14 @@ from conftest import running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent
-from hands.brain import pinned
+from hands.brain import pinned, process
 from hands.brain.process import starting_settings, workdir
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
+from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.registry import Sessions
 from hands.voice import voices
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -120,6 +124,38 @@ async def claude_code(pytestconfig: pytest.Config) -> Path:
     return cache / "pinned-claude"
 
 
+# What the brain's process tree may connect to, as macOS's sandbox holds every process it starts: loopback, where hands'
+# proxy, its server and the mock listen, and local sockets. A proxy setting reaches only the clients that honour it, and
+# ssh, among others, does not.
+OFFLINE = '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket))'
+
+# Where Claude Code reads a machine's policy on macOS, which outranks every setting of the brain's own and which no
+# process may opt out of: a file, its drop-in directory, and an MDM profile, the user's or the machine's.
+POLICY = (
+    Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
+    Path("/Library/Application Support/ClaudeCode/managed-settings.d"),
+    Path(f"/Library/Managed Preferences/{getpass.getuser()}/com.anthropic.claudecode.plist"),
+    Path("/Library/Managed Preferences/com.anthropic.claudecode.plist"),
+)
+
+
+@pytest.fixture(scope="session")
+def hermetic() -> None:
+    """A machine with no Claude Code policy, as CI's runner is: what a policy sets, the brain runs on, and this Mac's names
+    plugin marketplaces on GitHub, which the brain clones at its start, and puts it in auto mode with the person's hooks."""
+    # [LAW:no-silent-failure] said, never run around: a brain on the machine's policy is not the brain these tests prove.
+    if held := [str(path) for path in POLICY if path.exists()]:
+        pytest.skip(f"this machine's Claude Code policy reaches every Claude Code, the brain under test among them: {', '.join(held)}")
+
+
+async def offline(argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
+    """hands' terminal, on which what runs is in the OFFLINE sandbox: sandbox-exec execs `argv` in its own pid, so the
+    terminal is held by the process hands started, as without it."""
+    # [LAW:single-enforcer] the one checkpoint for "no network while a test runs": a connection that goes around the mock
+    # fails here, at the OS, and one that goes through its proxy is named in the mock's log.
+    return await on_terminal(["/usr/bin/sandbox-exec", "-p", OFFLINE, *argv], cwd, environment)
+
+
 def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
     its pinned Claude Code the cached one."""
@@ -132,7 +168,7 @@ def logged_in(brain: Path, claude_code: Path, mock_binary: Path) -> None:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)"]
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
@@ -180,9 +216,10 @@ async def connected(hands: Hands) -> None:
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path) -> AsyncGenerator[Hands]:
+async def hands(hermetic: None, tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
     logged_in(brain, claude_code, mock_binary)
+    monkeypatch.setattr(process, "on_terminal", offline)
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
@@ -248,3 +285,16 @@ async def test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_
     await hands.until(lambda: hands.stage.work() == Idle())
     await hands.say("say hello")
     await hands.until(lambda: "Hello." in "".join(hands.out.said()))
+
+
+async def test_a_connection_the_brain_makes_past_loopback_is_refused_by_the_os(mock_api: MockApi, hands: Hands) -> None:
+    """The brain hands started is the one in the sandbox: a command it runs that connects past loopback is refused before a
+    packet leaves, so a way around the mock fails a test and never reaches the machine's network."""
+    # 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox the attempt times out, inside it is refused.
+    mock_api.script("1-tried", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Tried."})
+    mock_api.script("2-reach", {"lastUserContains": ["reach past loopback"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": "nc -zv -w 5 192.0.2.1 443"}}, stop="tool_use")
+    await connected(hands)
+    await hands.say("reach past loopback")
+    await hands.until(lambda: "Tried." in "".join(hands.out.said()))
+    [result] = [body for body in (json.dumps(request.body) for request in hands.sent) if "tool_result" in body and "192.0.2.1" in body]
+    assert "Operation not permitted" in result, result
