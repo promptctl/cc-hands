@@ -1,15 +1,15 @@
 """The brain end to end: hands' stage, its proxy, and the pinned Claude Code in a terminal of hands' own, with the
 model's replies scripted by the mock of Anthropic's API. No login, no subscription, and no network while a test runs: the
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
-login is one the mock accepts. The OS holds the brain to it: everything the brain starts runs in a sandbox that reaches
-loopback alone. A machine's Claude Code policy reaches every Claude Code, so the tests run on a machine with none, as CI's
+login is one the mock accepts. The OS holds the brain to it: everything the brain starts runs in a sandbox whose only
+connections are to loopback. A machine's Claude Code policy reaches every Claude Code, so the tests run on a machine with none, as CI's
 is. The pinned Claude Code and the mock are fetched once, into pytest's cache. What each test proves is what hands does
 with the replies it scripts, the same on every run."""
 
 import asyncio
-import getpass
 import json
 import os
+import pwd
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
@@ -125,16 +125,18 @@ async def claude_code(pytestconfig: pytest.Config) -> Path:
 
 
 # What the brain's process tree may connect to, as macOS's sandbox holds every process it starts: loopback, where hands'
-# proxy, its server and the mock listen, and local sockets. A proxy setting reaches only the clients that honour it, and
-# ssh, among others, does not.
+# proxy, its server and the mock listen, and local sockets, the system's resolver among them, so a name still resolves
+# though nothing can connect to it. A proxy setting reaches only the clients that honour it, and ssh, among others, does
+# not.
 OFFLINE = '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket))'
 
-# Where Claude Code reads a machine's policy on macOS, which outranks every setting of the brain's own and which no
-# process may opt out of: a file, its drop-in directory, and an MDM profile, the user's or the machine's.
+# Where the pinned Claude Code (2.1.308 when this was read from it) reads a machine's policy on macOS, which outranks
+# every setting of the brain's own and which no process may opt out of: a file, its drop-in directory, and an MDM
+# profile, the account's or the machine's. A release that reads another is read here when the pin moves.
 POLICY = (
     Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
     Path("/Library/Application Support/ClaudeCode/managed-settings.d"),
-    Path(f"/Library/Managed Preferences/{getpass.getuser()}/com.anthropic.claudecode.plist"),
+    Path(f"/Library/Managed Preferences/{pwd.getpwuid(os.getuid()).pw_name}/com.anthropic.claudecode.plist"),
     Path("/Library/Managed Preferences/com.anthropic.claudecode.plist"),
 )
 
@@ -288,8 +290,8 @@ async def test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_
 
 
 async def test_a_connection_the_brain_makes_past_loopback_is_refused_by_the_os(mock_api: MockApi, hands: Hands) -> None:
-    """The brain hands started is the one in the sandbox: a command it runs that connects past loopback is refused before a
-    packet leaves, so a way around the mock fails a test and never reaches the machine's network."""
+    """The brain hands started is the one in the sandbox: a command it runs that connects past loopback is refused by the
+    OS before a packet leaves, so a way around the mock never reaches the machine's network."""
     # 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox the attempt times out, inside it is refused.
     mock_api.script("1-tried", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Tried."})
     mock_api.script("2-reach", {"lastUserContains": ["reach past loopback"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": "nc -zv -w 5 192.0.2.1 443"}}, stop="tool_use")
