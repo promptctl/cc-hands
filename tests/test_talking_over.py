@@ -23,10 +23,9 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame, InterimTranscriptio
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import PAIRS, hearing_with, patiently, running
+from conftest import PAIRS, events, hearing_with, running
 from test_streaming import NOT_SPEECH, READER, fixture_holds, hearings, pcm
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
 from hands.voice import engaged, streaming
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears
@@ -47,6 +46,8 @@ FRAME = 320
 SOUNDS = [*fixture_holds(READER)[:4], *NOT_SPEECH]
 GAP = np.zeros(4 * RATE, np.float32)
 TIMELINE = np.concatenate([*(part for sound in SOUNDS for part in (GAP, sound)), GAP])
+# The frames the desk hears it in, the last one short.
+FRAMES = -(-len(TIMELINE) // FRAME)
 # Where each sound's first sample is on the timeline.
 FIRST = [len(GAP) * (n + 1) + sum(map(len, SOUNDS[:n])) for n in range(len(SOUNDS))]
 FIRST_NOT_SPEECH = FIRST[4]
@@ -96,6 +97,28 @@ class Counted:
     def _counted(self, hearings: Hearings) -> Hearings:
         self.returned += [self.captured()] * len(hearings)
         return hearings
+
+
+class Recorded:
+    """Every entry the run records, from whichever thread records it, each one waking what waits on them.
+
+    [LAW:single-enforcer] a wait that never ends, loading or decoding on the recognizer's thread, which moves nothing
+    the loop can see until it does, is ended by the suite's timeout."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.entries: list[Entry] = []
+        self._loop = loop
+        self._added = asyncio.Event()
+
+    def __call__(self, entry: Entry) -> None:
+        self.entries.append(entry)
+        self._loop.call_soon_threadsafe(self._added.set)
+
+    async def until(self, done: Callable[[], bool]) -> None:
+        """Once `done` holds of what has been recorded."""
+        while not done():
+            self._added.clear()
+            await self._added.wait()
 
 
 class Downstream(FrameProcessor):
@@ -182,75 +205,66 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     clock = Heard()
     monkeypatch.setattr(silero, "time", clock)
     monkeypatch.setattr(base_smart_turn, "time", clock)
-    recorded: list[Entry] = []
-    gate = PushToTalk(recorded.append)
+    record = Recorded(asyncio.get_running_loop())
+    gate = PushToTalk(record)
     captured = 0
     moves: list[tuple[int, Move]] = []
-    loop = asyncio.get_running_loop()
-    loaded: asyncio.Future[WideEvent] = loop.create_future()
+    recognizer = streaming.StreamingRecognizer(lambda: PAIRS.loaded(nemotron), record)
+    listener = Counted(recognizer, lambda: captured * FRAME)
+    downstream = Downstream()
+    async with running([HoldOwner(Unheard(), (listener,), record), downstream]) as run, engaged.loaded(RATE, record) as models:
+        # The pair loads on the recognizer's thread; the first frame waits for nothing it does.
+        await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
+        [load] = events(record.entries, "streaming.loaded")
+        assert load.outcome == "ok", load.error
 
-    def told(entry: Entry) -> None:
-        """The recognizer's record, its load handed to the loop from the thread the pair loads on."""
-        recorded.append(entry)
-        match entry:
-            case WideEvent(event="streaming.loaded"):
-                loop.call_soon_threadsafe(loaded.set_result, entry)
-            case _:
-                pass
+        async def capture(audio: bytes) -> None:
+            nonlocal captured
+            captured += 1
+            await run.worker.queue_frame(gate.gate.framed(audio, audio, RATE, 1, "desk"))
+            # The owner tells its listeners of a frame before it passes it on, so once the frame has passed, every
+            # hearing it returned is counted.
+            await downstream.reached(captured)
+            await record.until(lambda: len(hearings(record.entries)) == len(listener.returned))
 
-    with PAIRS.alone():
-        recognizer = streaming.StreamingRecognizer(lambda: PAIRS.loaded(nemotron), told)
-        listener = Counted(recognizer, lambda: captured * FRAME)
-        downstream = Downstream()
-        async with running([HoldOwner(Unheard(), (listener,), recorded.append), downstream]) as run, engaged.loaded(RATE, recorded.append) as models:
-            # The pair loads on the recognizer's thread, as long as the machine takes, which shows nothing moving until it
-            # ends; the first frame waits for nothing it does.
-            load = await loaded
-            assert load.outcome == "ok", load.error
+        frames = pcm(TIMELINE)
+        chosen: asyncio.Queue[Choice] = asyncio.Queue()
+        engaging: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        chosen.put_nowait(Choice("engaged", engaging))
 
-            async def capture(audio: bytes) -> None:
-                nonlocal captured
-                captured += 1
-                await run.worker.queue_frame(gate.gate.framed(audio, audio, RATE, 1, "desk"))
-                # The owner tells its listeners of a frame before it passes it on, so once the frame has passed, every
-                # hearing it returned is counted.
-                await downstream.reached(captured)
-                await patiently(lambda: len(hearings(recorded)) == len(listener.returned), lambda: len(hearings(recorded)))
+        @asynccontextmanager
+        async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
+            async def buffers() -> AsyncIterator[bytes]:
+                # Engaged before the first frame is overheard, so the desk hears all of it: the choice is answered once
+                # the desk has stepped it.
+                await engaging
+                for at in range(0, len(frames), 2 * FRAME):
+                    yield frames[at : at + 2 * FRAME]
+                await asyncio.Event().wait()
 
-            frames = pcm(TIMELINE)
-            chosen: asyncio.Queue[Choice] = asyncio.Queue()
-            engaging: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-            chosen.put_nowait(Choice("engaged", engaging))
+            yield buffers()
 
-            @asynccontextmanager
-            async def overheard() -> AsyncGenerator[AsyncIterator[bytes]]:
-                async def buffers() -> AsyncIterator[bytes]:
-                    # Engaged before the first frame is overheard, so the desk hears all of it: the choice is answered once
-                    # the desk has stepped it.
-                    await engaging
-                    for at in range(0, len(frames), 2 * FRAME):
-                        yield frames[at : at + 2 * FRAME]
-                    await asyncio.Event().wait()
+        async def on_move(made: Made) -> None:
+            moves.append((captured, made.move))
+            gate.move(made.move, made.by)
 
-                yield buffers()
+        async def on_level(leveled: Leveled) -> None:
+            pass
 
-            async def on_move(made: Made) -> None:
-                moves.append((captured, made.move))
-                gate.move(made.move, made.by)
-
-            async def on_level(leveled: Leveled) -> None:
-                pass
-
-            driving = asyncio.create_task(
-                engaged.drive(untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), chosen, on_move, on_level, recorded.append)
-            )
-            # Heard to its last frame, or the drive failed on the way, which is said.
-            await patiently(lambda: captured * 2 * FRAME >= len(frames) or driving.done(), lambda: captured)
-            assert not driving.done(), driving.exception()
-            driving.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await driving
-    heard = hearings(recorded)
+        driving = asyncio.create_task(
+            engaged.drive(untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), chosen, on_move, on_level, record)
+        )
+        # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
+        # owner was given has its event.
+        through = asyncio.ensure_future(downstream.reached(FRAMES))
+        await asyncio.wait({driving, through}, return_when=asyncio.FIRST_COMPLETED)
+        through.cancel()
+        assert not driving.done(), driving.exception()
+        await record.until(lambda: len(hearings(record.entries)) == len(listener.returned))
+        driving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await driving
+    heard = hearings(record.entries)
     # Every hearing heard its hold: a failed one says why here, not as a fact it lacks below.
     assert [event.error for event in heard if event.outcome != "ok"] == []
     # Each utterance opens one hold, where the desk's own detector opened it.

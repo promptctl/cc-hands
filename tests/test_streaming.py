@@ -7,7 +7,6 @@ import contextlib
 import dataclasses
 import re
 import threading
-from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -331,16 +330,16 @@ def test_a_speaker_is_the_number_the_session_gave_them() -> None:
 
 
 # The real pair, on real sound: the weights are fetched into the Hugging Face cache the first time, and CI keeps that
-# cache. It runs on MLX's CPU device, as on CI's VMs (conftest's `Pairs`). Each test starts the session afresh, as a run
-# starts one. The fixtures are holds separated by half a second of exact zeros, which speech never holds for that long.
+# cache. It runs on MLX's default device, and is the only pair loaded while it is held (conftest's `Pairs`). Each test
+# starts the session afresh, as a run starts one. The fixtures are holds separated by half a second of exact zeros, which
+# speech never holds for that long.
 GAP = streaming.RATE // 2
 
 
 @pytest.fixture(scope="module")
-def pair() -> Generator[Any]:
+def pair() -> Any:
     """The real pair, loaded once, as a run loads it, and the only one the suite holds while this module runs."""
-    with PAIRS.alone():
-        yield PAIRS.loaded(nemotron)
+    return PAIRS.loaded(nemotron)
 
 
 @pytest.fixture
@@ -486,8 +485,8 @@ def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any) -> N
     # The run hears each woman alone first, FEE013 in hold 1 and FEE016 in hold 4, so FEE013 is speaker 0 and FEE016
     # speaker 1; then FEE013's hold 3 joined to FEE016's hold 12. A voice heard in only one hold before can be given the
     # other's number in a hold they share (promptctl-voice-i15t.qg8.2d2): after the same two, 12 then 3 gives most of
-    # FEE016's words to speaker 0, and comes out right only once FEE016 is heard alone in four holds, more than CI's CPU
-    # decodes inside the test timeout. Decided on when each word starts, not on its text, which is about 20% wrong on
+    # FEE016's words to speaker 0, and comes out right only once FEE016 is heard alone in four holds, more than CI's VMs
+    # decode inside the test timeout. Decided on when each word starts, not on its text, which is about 20% wrong on
     # AMI; the close's words are GATING's to settle (promptctl-voice-i15t.qg8.23w).
     timed = Timed(paired.session)
     live = Live(dataclasses.replace(paired, session=timed))

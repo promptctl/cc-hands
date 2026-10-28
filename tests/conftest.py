@@ -13,7 +13,7 @@ import traceback
 import wave
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from importlib.metadata import metadata
@@ -195,17 +195,16 @@ def chained(error: BaseException | None) -> Iterator[BaseException]:
 @dataclass
 class Pairs:
     """The one owner of every real pair of streaming models the suite loads: it holds 2.7 GB, and a second beside it
-    outgrows CI's VMs, whose GPU then times out loading the next. Each module that loads one holds `alone` open for as
-    long as it uses it, and loads it through `loaded`, on whichever thread its models are to run on."""
+    outgrows CI's VMs, whose GPU then times out loading the next. Each module loads its pair through `loaded`, on
+    whichever thread its models are to run on."""
 
     _loaded: list[weakref.ref[streaming.Session]] = field(default_factory=list[weakref.ref[streaming.Session]])
 
-    @contextmanager
-    def alone(self) -> Generator[None]:
-        """No pair loaded before is held any more, and every pair loaded inside runs on MLX's CPU device, as on CI's VMs,
-        which have no Metal, so what a test pins of the models is CI's on every machine."""
+    def loaded(self, load: Callable[[], streaming.Session]) -> streaming.Session:
+        """The pair `load` gives, once no pair loaded before is held any more."""
         # pytest keeps a failed test's exception, and with it the frames that held its pair, until the next test's call,
-        # which comes after this, the next test's setup: its own frames, and those of every exception it chains or groups.
+        # which a pair loaded in that test's setup comes before: its own frames, and those of every exception it chains
+        # or groups.
         for error in chained(getattr(sys, "last_exc", None)):
             traceback.clear_frames(error.__traceback__)
         gc.collect()
@@ -213,16 +212,6 @@ class Pairs:
         held = sum(pair() is not None for pair in self._loaded)
         assert held == 0, f"{held} pair(s) of streaming models still held as another is loaded"
         mx.clear_cache()
-        # Process-wide: the thread a recognizer loads its pair on reads it too.
-        device = mx.default_device()
-        mx.set_default_device(mx.cpu)  # pyright: ignore[reportUnknownMemberType]
-        try:
-            yield
-        finally:
-            mx.set_default_device(device)  # pyright: ignore[reportUnknownMemberType]
-
-    def loaded(self, load: Callable[[], streaming.Session]) -> streaming.Session:
-        """The pair `load` gives, which the next `alone` checks is no longer held."""
         pair = load()
         self._loaded.append(weakref.ref(pair))
         return pair
