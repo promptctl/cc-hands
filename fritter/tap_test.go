@@ -262,14 +262,9 @@ func TestATapIsAllItsPartsOrNone(t *testing.T) {
 
 func TestTheChildIsGivenTheTapAsItsProxyAndCanPutBackWhatItReplaced(t *testing.T) {
 	dir := shortTempDir(t)
-	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
-	fritter.Env = append(os.Environ(),
-		"FRITTER_HELPER=1",
-		"HTTPS_PROXY=http://outer.example:3128",
-		"NO_PROXY=.example.com",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1fhttps://example.com\x1f--tap-ca\x1fEXTRA_CA\x1f--tap-to\x1f"+filepath.Join(dir, "wire.sock")+"\x1f--\x1fsh\x1f-c\x1f"+
-			`echo "https=$HTTPS_PROXY http=$http_proxy tap=$FRITTER_TAP outer=$FRITTER_OUTER_HTTPS_PROXY ca=$EXTRA_CA outer_ca=${FRITTER_OUTER_EXTRA_CA-unset} no=${NO_PROXY-unset}/${no_proxy-unset} outer_no=$FRITTER_OUTER_NO_PROXY"`,
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--tap", "https://example.com", "--tap-ca", "EXTRA_CA", "--tap-to", filepath.Join(dir, "wire.sock"), "--", "sh", "-c",
+		`echo "https=$HTTPS_PROXY http=$http_proxy tap=$FRITTER_TAP outer=$FRITTER_OUTER_HTTPS_PROXY ca=$EXTRA_CA outer_ca=${FRITTER_OUTER_EXTRA_CA-unset} no=${NO_PROXY-unset}/${no_proxy-unset} outer_no=$FRITTER_OUTER_NO_PROXY"`)
+	fritter.Env = append(fritter.Env, "HTTPS_PROXY=http://outer.example:3128", "NO_PROXY=.example.com")
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
@@ -287,11 +282,7 @@ func TestTheChildIsGivenTheTapAsItsProxyAndCanPutBackWhatItReplaced(t *testing.T
 // and returns once the process has ended.
 func fritterAround(t *testing.T, dir string, upstream string, to string, script string) []byte {
 	t.Helper()
-	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
-	fritter.Env = append(os.Environ(),
-		"FRITTER_HELPER=1",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--tap\x1f"+upstream+"\x1f--tap-ca\x1fEXTRA_CA\x1f--tap-to\x1f"+to+"\x1f--\x1fsh\x1f-c\x1f"+script,
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--tap", upstream, "--tap-ca", "EXTRA_CA", "--tap-to", to, "--", "sh", "-c", script)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)

@@ -101,10 +101,12 @@ func TestTheModeIsReadFromCommandsAndNotFromWhatTheChildPrints(t *testing.T) {
 // wrap runs argv under fritter on a pty of its own and returns a way to ask it things.
 func wrap(t *testing.T, argv ...string) (*Wrapped, func(string) response, chan int) {
 	t.Helper()
-	return wrapOnto(t, io.Discard, argv...)
+	return wrapOnto(t, io.Discard, nil, argv...)
 }
 
-func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(string) response, chan int) {
+// wrapOnto wraps argv as wrap does, its output copied to stdout, with env set on the
+// child's environment and nowhere else.
+func wrapOnto(t *testing.T, stdout io.Writer, env []string, argv ...string) (*Wrapped, func(string) response, chan int) {
 	t.Helper()
 	socket, err := listen(shortTempDir(t))
 	if err != nil {
@@ -112,7 +114,7 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 	}
 	t.Cleanup(socket.close)
 
-	wrapped, err := start(argv, []string{"FRITTER_SOCKET=" + socket.address})
+	wrapped, err := start(argv, append(env, "FRITTER_SOCKET="+socket.address))
 	if err != nil {
 		t.Fatalf("cannot start %v: %v", argv, err)
 	}
@@ -182,17 +184,15 @@ func wrapOnto(t *testing.T, stdout io.Writer, argv ...string) (*Wrapped, func(st
 	return wrapped, ask, exited
 }
 
-// recorded runs the test binary itself as the wrapped child, in the part of it that is
-// TestHelperRecorder, and hands back what the child read, one entry per read.
+// recorded runs the test binary itself as the wrapped child, as its recorder, and hands
+// back what the child read, one entry per read.
 //
 // The child is Claude Code's shape as far as input goes: its terminal is raw and it has
 // asked for bracketing.
 func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() []string) {
 	t.Helper()
 	log := filepath.Join(t.TempDir(), "reads")
-	t.Setenv("FRITTER_RECORD", log)
-	t.Setenv("FRITTER_RECORD_READS", strconv.Itoa(reads))
-	wrapped, ask, exited := wrap(t, os.Args[0], "-test.run=^TestHelperRecorder$")
+	wrapped, ask, exited := wrapOnto(t, io.Discard, []string{program + "=recorder"}, os.Args[0], log, strconv.Itoa(reads))
 	defer func() {
 		if t.Failed() {
 			_ = wrapped.cmd.Process.Kill()
@@ -236,33 +236,31 @@ func recorded(t *testing.T, reads int) (*Wrapped, func(string) response, func() 
 	return wrapped, ask, read
 }
 
-func TestHelperRecorder(t *testing.T) {
-	log := os.Getenv("FRITTER_RECORD")
-	if log == "" {
-		t.Skip("not a test: run as the wrapped child by recorded")
-	}
+// recorder is the child recorded runs, as `recorder log reads`: it reads `reads` times and
+// writes each read to `log`.
+func recorder(args []string) int {
 	if _, err := term.MakeRaw(0); err != nil {
-		os.Exit(20)
+		return 20
 	}
 	if _, err := os.Stdout.Write(pasteOn); err != nil {
-		os.Exit(21)
+		return 21
 	}
-	reads, _ := strconv.Atoi(os.Getenv("FRITTER_RECORD_READS"))
-	out, err := os.Create(log)
+	reads, _ := strconv.Atoi(args[1])
+	out, err := os.Create(args[0])
 	if err != nil {
-		os.Exit(22)
+		return 22
 	}
 	buf := make([]byte, 64*1024)
 	for i := 0; i < reads; i++ {
 		time.Sleep(50 * time.Millisecond)
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
-			os.Exit(23)
+			return 23
 		}
 		fmt.Fprintf(out, "%q\n", buf[:n])
 	}
 	out.Close()
-	os.Exit(3)
+	return 3
 }
 
 func TestTextIsPastedAndSentAsOneWrite(t *testing.T) {
@@ -377,7 +375,7 @@ func TestRunReturnsOnlyOnceTheChildsOutputHasBeenWritten(t *testing.T) {
 	// still in flight behind it. Returning there hands the caller a finished session
 	// whose last words have not been written yet - and the caller's next move is to exit.
 	slow := &unhurried{}
-	_, _, exited := wrapOnto(t, slow, "sh", "-c", "echo done")
+	_, _, exited := wrapOnto(t, slow, nil, "sh", "-c", "echo done")
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):
@@ -388,17 +386,6 @@ func TestRunReturnsOnlyOnceTheChildsOutputHasBeenWritten(t *testing.T) {
 	}
 }
 
-// TestHelperFritter is not a test. It is fritter's own main, run as a subprocess by the
-// test below, because the two things that test asserts - that the last of the child's
-// output is written, and that the socket goes with the process - are properties of the
-// program ending, and nothing that keeps running can demonstrate them.
-func TestHelperFritter(t *testing.T) {
-	if os.Getenv("FRITTER_HELPER") != "1" {
-		t.Skip("not a test: run as a subprocess by TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt")
-	}
-	os.Exit(run(strings.Split(os.Getenv("FRITTER_HELPER_ARGS"), "\x1f"), os.Stdin, os.Stdout))
-}
-
 func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	// cmd.Wait returns when the child is reaped, which is before the last of what it
 	// printed has come back through the pty, so without the drain the shortest possible
@@ -406,11 +393,7 @@ func TestTheProgramPrintsTheLastWordAndTakesItsSocketWithIt(t *testing.T) {
 	// actually exit for that to show: a harness that keeps running keeps the copier
 	// running too, and the copier finishes either way.
 	dir := shortTempDir(t)
-	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
-	fritter.Env = append(os.Environ(),
-		"FRITTER_HELPER=1",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1fecho done; exit 3",
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--", "sh", "-c", "echo done; exit 3")
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
@@ -485,12 +468,8 @@ func TestClosingTheTerminalEndsTheSessionAndTakesItsSocketWithIt(t *testing.T) {
 	// is the only reader that output has; if fritter stops reading, the child never exits
 	// and neither does fritter, and both are left running with nobody able to see them.
 	dir := shortTempDir(t)
-	fritter := exec.Command(os.Args[0], "-test.run=TestHelperFritter")
-	fritter.Env = append(os.Environ(),
-		"FRITTER_HELPER=1",
-		"FRITTER_HELPER_ARGS=--socket-dir\x1f"+dir+"\x1f--\x1fsh\x1f-c\x1f"+
-			`trap 'head -c 1048576 /dev/zero; exit 0' HUP; echo "ready $$"; read line`,
-	)
+	fritter := as("fritter", "--socket-dir", dir, "--", "sh", "-c",
+		`trap 'head -c 1048576 /dev/zero; exit 0' HUP; echo "ready $$"; read line`)
 	terminal, err := pty.Start(fritter)
 	if err != nil {
 		t.Fatalf("cannot start fritter on a terminal: %v", err)
