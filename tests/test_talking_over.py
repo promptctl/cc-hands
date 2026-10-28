@@ -210,14 +210,14 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     captured = 0
     moves: list[tuple[int, Move]] = []
     recognizer = streaming.StreamingRecognizer(lambda: PAIRS.loaded(nemotron), record)
+    # The pair loads on the recognizer's thread before the pipeline starts, whose start a load holding the loop would
+    # hold past its bound on CI's VMs; the first frame then waits for nothing it does.
+    await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
+    [load] = events(record.entries, "streaming.loaded")
+    assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
     async with running([HoldOwner(Unheard(), (listener,), record), downstream]) as run, engaged.loaded(RATE, record) as models:
-        # The pair loads on the recognizer's thread; the first frame waits for nothing it does.
-        await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
-        [load] = events(record.entries, "streaming.loaded")
-        assert load.outcome == "ok", load.error
-
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
