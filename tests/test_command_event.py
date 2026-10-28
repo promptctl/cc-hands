@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
+from conftest import SYSTEM_PATH
 from loguru import logger
 
 from hands.daemon import cli
@@ -105,7 +106,7 @@ def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Pat
 
 def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("PATH", SYSTEM_PATH)
     code = main(["--home", str(home.root), "check", "-v"])
     # A finding's indented lines continue the one above them: its mark and step, then what is said of it in full.
     printed = [block.split("\n") for block in re.split(r"\n(?! )", capsys.readouterr().out.rstrip("\n"))]

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -257,9 +258,14 @@ def plugin(tmp_path: Path) -> Path:
     return render(Home(tmp_path / "rendering"), sys.executable).plugin
 
 
-# Where the plugin's hooks and skills run: a PATH with no Python new enough for hands, since /usr/bin's python3 on macOS
-# is 3.9, so the launcher can only be running the interpreter it names.
-NO_PYTHON = "/usr/bin:/bin"
+# The system's own directories: the PATH of a child that must find nothing of the developer's. It holds no Python new
+# enough for hands, since /usr/bin's python3 on macOS is 3.9, so the plugin's launcher can only be running the
+# interpreter it names; and no Claude Code, so a child that looks for claude runs none, not the developer's logged-in one.
+SYSTEM_PATH = "/usr/bin:/bin"
+# [LAW:single-enforcer] proven here, once, so a machine whose system directories hold a claude stops the suite naming it
+# instead of running it in each test that gives a child this PATH.
+if claude := shutil.which("claude", path=SYSTEM_PATH):
+    raise pytest.UsageError(f"{claude} is on SYSTEM_PATH, which the tests give children as a PATH with no Claude Code")
 
 
 async def unread() -> InFront:

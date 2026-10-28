@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import NO_PYTHON
+from conftest import SYSTEM_PATH
 
 # Run in a fresh interpreter, since this one has Pipecat loaded by other tests: any import that reaches it, at the
 # CLI's top or inside the command, fails here, whichever module it runs through. The modules are written to a file,
@@ -16,7 +16,7 @@ from conftest import NO_PYTHON
 # name and the machine for its LAN addresses; `login` runs Claude Code's own login at the terminal.
 # The child's environment is the test's own, not the developer's: a PATH of the system's directories alone, which
 # hold no Claude Code, and a home of its own, so `check` neither runs the developer's logged-in claude nor reads their
-# ~/.claude, and takes the same path on their machine as on CI.
+# ~/.claude.
 CHILD = """
 import json, sys, types
 from hands.daemon import cli
@@ -54,7 +54,7 @@ with open(out, "w") as file:
 def test_the_command_answers_without_loading_pipecat(command: str, code: int, tmp_path: Path) -> None:
     out = tmp_path / "modules.json"
     child = subprocess.run(
-        [sys.executable, "-c", CHILD, str(tmp_path / "home"), command, str(out)], env={"PATH": NO_PYTHON, "HOME": str(tmp_path)}, capture_output=True, text=True
+        [sys.executable, "-c", CHILD, str(tmp_path / "home"), command, str(out)], env={"PATH": SYSTEM_PATH, "HOME": str(tmp_path)}, capture_output=True, text=True
     )
     assert child.returncode == 0, child.stderr
     assert json.loads(out.read_text()) == {"code": code, "pipecat": []}, child.stderr

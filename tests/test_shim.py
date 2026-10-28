@@ -31,7 +31,7 @@ from hands.sessions.names import NameGiven, NameUnread, NameWithheld, Names
 from hands.sessions.server import serve_hooks
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Fact, WideEvent
-from conftest import NO_PYTHON
+from conftest import SYSTEM_PATH
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
@@ -167,7 +167,7 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
 
 def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
     """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd), **environment}
+    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd), **environment}
     return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from loguru import logger
 
-from conftest import NO_PYTHON, unedited
+from conftest import SYSTEM_PATH, unedited
 from hands.core.session import Membership, SessionId
 from hands.daemon import cli
 from hands.daemon.cli import launch, retire
@@ -48,7 +48,7 @@ def ran(recorded: list[audit.Entry]) -> list[tuple[str, object, object]]:
 
 def restart(plugin: Path, home: Home, cwd: Path) -> subprocess.CompletedProcess[str]:
     """`/hands:restart` as the skill runs it: the plugin's launcher, in the session's directory."""
-    environment = {"HANDS_HOME": str(home.root), "PATH": NO_PYTHON, "HOME": str(cwd)}
+    environment = {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, "HOME": str(cwd)}
     return subprocess.run([plugin / LAUNCHER, "-m", "hands.daemon", "restart"], env=environment, cwd=cwd, capture_output=True, text=True, timeout=60)
 
 
