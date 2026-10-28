@@ -54,9 +54,10 @@ AHEAD = 1 * SUBSAMPLING
 # GATING - 1 after it are their log-mel frames masked to zero, which the model does not hear as silence, so it decides
 # how a hold's last words come out. It does not decide whether they stay in the hold: the hold's end closes every
 # stream (`Session.closed`). 1 steps a stream only where its speaker is heard. Measured by scripts/measure-gating.py on
-# 592 AMI turns with known words that end in silence, held and in engaged conversation, against 2 and 4: 1 invents the
-# fewest words past a turn's last and gives the fewest to another speaker, in both shapes, and ends as many turns on
-# their last word as either, within one.
+# 578 AMI turns with known words that end in silence, held and in engaged conversation, against 2 and 4: 1 ends the most
+# turns on their last word and invents the fewest words past it, in both shapes, and gives as few to another speaker as
+# 2, within one. What it costs: a chunk the diarizer misses its speaker in is one their stream never hears, and one
+# LibriVox reader came out 37 words short of the 12851 heard at 4 (docs/features.md).
 GATING = 1
 
 
@@ -71,7 +72,8 @@ def steps(samples: int) -> int:
 def through(samples: int) -> int:
     """How far the run is fed, silence after a hold that ended at `samples`: until the diarizer has committed the chunk
     holding the hold's last sample, which the step committing it waits for, so the session decodes it before the hold
-    closes. Silence fed past it steps no stream, the diarizer hearing nobody in it, and only puts the close off."""
+    closes. Silence fed past it is heard as nobody: it reaches a stream only as the GATING - 1 masked chunks after its
+    speaker's last, and otherwise only puts the close off."""
     last = (samples - 1 + N_FFT // 2) // MEL_HOP
     committed = (last // CHUNK + 1) * CHUNK
     step = -(-committed // STEP)

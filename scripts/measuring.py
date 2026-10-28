@@ -66,8 +66,9 @@ def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before:
             merged.append(stretch)
 
     def heard_over(turn: Stretch, sound: Stretch) -> bool:
-        # The turn's own person, heard again from inside it, is the turn; anyone heard around it, or them before or after it, is not.
-        inside = sound.person == turn.person and turn.start <= sound.start <= turn.end
+        # The turn's own person, heard within it, is the turn; anyone heard around it, or them before or after it, a laugh
+        # that runs on past its last word included, is not.
+        inside = sound.person == turn.person and turn.start <= sound.start and sound.end <= turn.end
         return sound.start < turn.end + after and sound.end > turn.start - before and not inside
 
     # A transcript says nothing outside the recording, so a turn at either end of it is not known to be set in silence.

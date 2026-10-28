@@ -18,6 +18,7 @@ import re
 import sys
 import zipfile
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -30,6 +31,9 @@ AMI_WORDS = "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_man
 MEETINGS = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
 PEOPLE = "ABCD"
 BEFORE = 0.3
+# What the transcript times that is heard. Not its disfluency markers: each marks where someone broke off, and over the 70
+# turns one ran on past, the stretch it is timed over is as quiet as the silence after it, a median 1.7 dB above it.
+SOUNDS = ("w", "vocalsound", "gap")
 
 
 def transcribed(archive: zipfile.ZipFile, meeting: str) -> tuple[list[Stretch], list[Stretch]]:
@@ -37,7 +41,7 @@ def transcribed(archive: zipfile.ZipFile, meeting: str) -> tuple[list[Stretch], 
     words, sounds = list[Stretch](), list[Stretch]()
     for person in PEOPLE:
         for element in ElementTree.fromstring(archive.read(f"words/{meeting}.{person}.words.xml")):
-            if element.get("starttime") is None or element.get("endtime") is None or element.get("punc") == "true":
+            if element.tag not in SOUNDS or element.get("starttime") is None or element.get("endtime") is None or element.get("punc") == "true":
                 continue
             stretch = Stretch(float(element.attrib["starttime"]), float(element.attrib["endtime"]), person)
             sounds.append(stretch)
@@ -46,16 +50,18 @@ def transcribed(archive: zipfile.ZipFile, meeting: str) -> tuple[list[Stretch], 
     return words, sounds
 
 
-def normal(word: str) -> str:
-    return re.sub(r"[^\w']", "", word.lower())
+def normal(words: Iterable[str]) -> list[str]:
+    """Words as they are scored, known and heard alike: lowercase, only their letters, digits and apostrophes, and none left
+    with nothing."""
+    return [word for word in (re.sub(r"[^\w']", "", word.lower()) for word in words) if word]
 
 
 def scored(known: tuple[str, ...], ended: streaming.Ended) -> Counter[str]:
     """A hold's end against the words said in it: the hold's own person is the speaker who said most of its words."""
     by = Counter({said.speaker: len(said.text.split()) for said in ended.words})
     own = by.most_common(1)[0][0] if by else None
-    heard = [word for said in ended.words if said.speaker == own for word in map(normal, said.text.split()) if word]
-    truth = [normal(word) for word in known]
+    heard = normal(word for said in ended.words if said.speaker == own for word in said.text.split())
+    truth = normal(known)
     edits = difflib.SequenceMatcher(None, truth, heard, autojunk=False).get_opcodes()
     tag, i1, i2, j1, j2 = edits[-1]
     return Counter(
@@ -74,18 +80,23 @@ def main() -> None:
     directory.mkdir(parents=True, exist_ok=True)
     gatings = [int(gating) for gating in sys.argv[2:]] or [1, 2, 4]
     archive = zipfile.ZipFile(fetched(directory, AMI_WORDS))
-    meetings = list[tuple[np.ndarray, list[Stretch]]]()
+    # Each meeting's holds in each shape, and the words said in them, copied out so its whole audio, a few hundred MB, is let
+    # go.
+    meetings = list[list[tuple[tuple[str, ...], dict[str, np.ndarray]]]]()
     for name in MEETINGS:
         audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-        meetings.append((audio, turns(*transcribed(archive, name), len(audio) / RATE, before=BEFORE, after=engaged.STOP_SECS)))
+        alone = turns(*transcribed(archive, name), len(audio) / RATE, before=BEFORE, after=engaged.STOP_SECS)
+        meetings.append([(said.words, {shape: turn(audio, said.start, said.end, after).copy() for shape, after in SHAPES.items()}) for said in alone])
     for gating in gatings:
-        for shape, after in SHAPES.items():
+        pair = streaming.load(gating)
+        for shape in SHAPES:
             total = Counter[str]()
-            for audio, alone in meetings:
-                # A run per meeting, as hands has one: its own session, nobody heard yet.
-                run = Live(streaming.load(gating))
-                for said in alone:
-                    total += scored(said.words, run.spoken(turn(audio, said.start, said.end, after))[1])
+            for holds in meetings:
+                # A run per meeting, as hands has one: its session afresh, nobody heard yet, as the real-pair tests reset it.
+                pair.session.reset()
+                run = Live(pair)
+                for words, hold in holds:
+                    total += scored(words, run.spoken(hold[shape])[1])
             print(
                 f"{shape} GATING {gating}: {total['holds']} holds; last word right {total['last']}; words invented past the last {total['invented']}, "
                 f"cut from the end {total['cut']}, given to anyone else {total['others']}; WER {total['errors'] / total['words']:.3f}",
