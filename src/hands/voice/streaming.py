@@ -14,6 +14,7 @@ Its words are never sent: the model is weak on conversational speech (about 20% 
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each hold held.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -55,10 +56,6 @@ AHEAD = 1 * SUBSAMPLING
 # stream (`Session.closed`). 4 invents endings after engaged conversation's stop, 2 a third speaker's word, 1 cuts
 # words short; setting it needs recordings with known words that end in silence (promptctl-voice-i15t.qg8.23w).
 GATING = 4
-# A chunk of the log-mel floor, mlx-audio's own value for silence: the one frame of right context a speaker's stream
-# needs past their last chunk, given it as silence when the hold closes. More invents words: on AMI's fifth hold, two
-# chunks gave its second speaker "Wall.", four "Walk.", where one gives them none.
-FLOOR = -16.6355
 
 
 def steps(samples: int) -> int:
@@ -97,8 +94,8 @@ type Spoken = tuple[Said, ...]
 
 @dataclass(frozen=True)
 class Closed:
-    """A hold's close: the speakers whose streams it closed, and the last words they decoded. A speaker the diarizer
-    marked only for a moment is closed with no word."""
+    """A hold's close: the speakers whose streams it closed, and the last words they decoded. A speaker can be closed
+    with no word, as one the diarizer marked only for a moment is."""
 
     speakers: frozenset[int]
     words: Spoken
@@ -360,8 +357,12 @@ class _Paired:
         import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
         session, last = self.session, list[Said]()
-        speakers = frozenset[int](session._encoders)
-        floor = mx.full((1, session.chunk_mel, session.model.preprocessor_config.features), FLOOR)
+        speakers, config = frozenset[int](session._encoders), session.model.preprocessor_config
+        # [LAW:one-source-of-truth] silence as the model's frontend hears it, the log of zero power plus its guard (the
+        # chunked frontend takes only unnormalized models): one chunk, the one frame of right context a stream needs past
+        # its speaker's last chunk. More invents words: on AMI's fifth hold, two chunks gave its second speaker "Wall.",
+        # four "Walk.", where one gives them none.
+        floor = mx.full((1, session.chunk_mel, config.features), math.log(config.log_zero_guard_value))
         for number in sorted(speakers):
             encoder, decoder, start, text = session._encoders.pop(number), session._decoders.pop(number), session._mel_offset // session.factor, ""
             for encoded in encoder.push(floor, final=True):
