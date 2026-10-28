@@ -1544,6 +1544,13 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
     assert Pushed("fix") in (await deltas.taken(SID)).changes
 
 
+async def test_a_pull_request_opened_as_the_turn_ended_is_the_turns_on_a_forge_whose_clock_runs_ahead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = published(tmp_path)
+    forge(tmp_path, monkeypatch, f'[{{"number": 7, "url": "https://x/7", "createdAt": "{stamp(datetime.now(UTC) + timedelta(seconds=1))}"}}]')
+    delta = await turn(root, lambda: (git(root, "checkout", "-q", "-b", "fix"), git(root, "push", "-q", "-u", "origin", "fix")))
+    assert PullRequested(7, "https://x/7", "created") in delta.changes
+
+
 async def test_a_pull_request_opened_after_the_turn_ended_is_not_the_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The forge is asked once the reading gets to it, by which time the next turn may have opened one from the same branch."""
     root = published(tmp_path)

@@ -19,7 +19,7 @@ from collections import deque
 from collections.abc import Awaitable, Collection, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import dropwhile
 from pathlib import Path
 from typing import Literal, Protocol, cast, overload
@@ -55,8 +55,12 @@ HELD = 8
 MOST = 40_000
 
 # The most changed lines a turn can have and still have its patch read. Counted from the numstat, which is
-# one line a file, before the diff itself is ever asked for: see _between.
+# one line a file, before the diff itself is ever asked for.
 MOST_LINES = 20_000
+
+# How far the forge's clock may run ahead of this machine's and a pull request opened as a turn ended still be that
+# turn's. Nothing of the next turn's is opened that soon after the end was captured: its prompt is held until then.
+SKEW = timedelta(seconds=2)
 
 # How long before the narrator stops waiting the forge must have answered: what is left of the reading once it
 # has is parsing its answer. The narrator waits PATIENCE from no earlier than the reading began, and the forge is
@@ -103,7 +107,7 @@ class Mark:
 class Standing:
     """Where a repository stands: the commit it is on and its refs, and when that was read. A mark is this and a tree."""
 
-    # None only where the repository has no commit to be on, never where git could not say: see _standing.
+    # None only where the repository has no commit to be on: a HEAD git could not read is no Standing at all.
     head: str | None
     # None where git would not list them, as in Mark.
     refs: Refs | None
@@ -162,8 +166,8 @@ class Held:
 @dataclass(frozen=True)
 class Unread:
     """The places in the order of `turns` turns in a row whose readings were dropped or had no mark to read against: their
-    tellings take no delta. One place for the run of them, so the order holds at most one more place than the readings
-    in it, however many turns stop with no narrator to take them."""
+    tellings take no delta. One place for the run of them, so the order holds at most one run more than the readings in
+    it, however many turns stop with no narrator to take them."""
 
     turns: int
 
@@ -632,9 +636,10 @@ class Deltas:
             # Not a GitHub remote, not signed in, no default repository: gh says which.
             logger.info(f"gh would not list the pull requests of {branch} in {mark.root}: {ran.err.decode(errors='replace').strip()}")
             return (), Asked("refused", took)
-        # The forge stamps to the second, so a pull request opened in the second the mark was taken is still since it, and
-        # one opened in the second the end was captured is still before it.
+        # The forge stamps to the second, so a pull request opened in the second the mark was taken is still since it; and
+        # on its own clock, so one opened as the turn ended is still before its end on a forge's clock SKEW ahead.
         since = mark.at.replace(microsecond=0)
+        until += SKEW
         try:
             listed: object = json.loads(ran.out)
         except ValueError as error:
