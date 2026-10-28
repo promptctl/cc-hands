@@ -8,12 +8,13 @@ from typing import cast
 import pytest
 from aiohttp import web
 
-from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, Unanswered
+from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
 from hands.core.session import SessionId
 from hands.core.wire import CLASS_HEADER, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
+from hands.core.trace import Span
 from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("b1")
@@ -39,7 +40,11 @@ def reply(*content: Text | Thinking | ToolUse, stop: str = "end_turn") -> Messag
 
 def forked(turn: Turn, question: str) -> tuple[dict[str, str], dict[str, object]]:
     headers, sent = fork(turn, question)
-    return dict(headers), cast(dict[str, object], json.loads(sent))
+    return dict(headers), sent
+
+
+def as_sent(history: dict[str, object]) -> bytes:
+    return json.dumps(history).encode()
 
 
 ASKED = [text(REMINDER), text("what now?")]
@@ -47,7 +52,7 @@ ASKED = [text(REMINDER), text("what now?")]
 
 def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_marker_moves_one_message_earlier() -> None:
     history = body(user(text("hi", cache_control=MARK)), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)))
-    headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, history, None), "what now?")
+    headers, sent = forked(Turn("x1", "/v1/messages?beta=true", HEADERS, as_sent(history), None), "what now?")
     assert sent["messages"] == [
         user(text("hi", cache_control=MARK)),
         {"role": "assistant", "content": [text("hello", cache_control=MARK)]},
@@ -61,7 +66,7 @@ def test_a_question_before_any_reply_joins_the_last_user_message_and_the_newest_
 
 def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> None:
     history = body(user(text("hi", cache_control=MARK)))
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, history, reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Thinking("hm", "sig"), Text("Done."))), "what now?")
     assert sent["messages"] == [
         user(text("hi")),
         {"role": "assistant", "content": [{"type": "thinking", "thinking": "hm", "signature": "sig"}, text("Done.", cache_control=MARK)]},
@@ -72,7 +77,7 @@ def test_a_question_after_a_finished_reply_follows_it_with_no_placeholder() -> N
 def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placeholder() -> None:
     history = body(user(text("hi", cache_control=MARK)))
     calls = reply(Text("Looking."), ToolUse("t1", "list", {}), ToolUse("t2", "read", {"id": 2}), stop="tool_use")
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, history, calls), "what now?")
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), calls), "what now?")
     [*_, (asking)] = cast(list[dict[str, object]], sent["messages"])
     assert asking == user(
         {"type": "tool_result", "tool_use_id": "t1", "content": RUNNING}, {"type": "tool_result", "tool_use_id": "t2", "content": RUNNING}, *ASKED
@@ -82,10 +87,10 @@ def test_each_call_of_a_reply_still_running_stands_in_with_claude_codes_placehol
 
 def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_none_moved() -> None:
     history = body(user(text("one", cache_control=MARK)), {"role": "assistant", "content": [text("two")]}, user(text("three", cache_control=MARK)))
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, history, reply(Text("four."))), "q")
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("four."))), "q")
     messages = cast(list[dict[str, list[dict[str, object]]]], sent["messages"])
     assert [[block.get("cache_control") for block in message["content"]] for message in messages] == [[MARK], [None], [None], [MARK], [None, None]]
-    _, alone = forked(Turn("x1", "/v1/messages", HEADERS, body(user(text("hi", cache_control=MARK))), None), "q")
+    _, alone = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(user(text("hi", cache_control=MARK)))), None), "q")
     assert alone["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
 
 
@@ -109,7 +114,7 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     assert not waiting.done()
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
     newest.hear(Forwarded("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
-    assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, {"messages": [1]}, None)
+    assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
     newest.hear(exchanged("o1", SessionId("other")))
     newest.hear(exchanged("x1", BRAIN))
     assert (await newest.turn()).reply == message
@@ -130,14 +135,43 @@ def stream(said: str, stop: str = "end_turn") -> list[bytes]:
     ]
 
 
+Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+Answer = web.StreamResponse | list[bytes] | Handler
+
+
+def held(gate: asyncio.Event, said: str) -> Handler:
+    async def answer(request: web.Request) -> web.StreamResponse:
+        await gate.wait()
+        return await written(request, stream(said))
+
+    return answer
+
+
+async def broken(request: web.Request) -> web.StreamResponse:
+    response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+    await response.prepare(request)
+    await response.write(stream("Half")[0])
+    cast(asyncio.Transport, request.transport).abort()
+    return response
+
+
+async def written(request: web.Request, chunks: list[bytes]) -> web.StreamResponse:
+    response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "request-id": "req_1"})
+    await response.prepare(request)
+    for chunk in chunks:
+        await response.write(chunk)
+    return response
+
+
 class Brain:
     """hands' proxy before a stand-in for the API, with Asides listening on its wire, and the brain's main turn sent through it."""
 
-    def __init__(self, proxy_url: str, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[web.StreamResponse | list[bytes]]) -> None:
+    def __init__(self, proxy_url: str, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[Answer], routed: list[Span]) -> None:
         self.url = proxy_url
         self.asides = asides
         self.asked = asked
         self.answers = answers
+        self.routed = routed
 
     async def main_turn(self) -> None:
         async with self.asides._client.post(self.url + "/v1/messages", headers=list(HEADERS), data=json.dumps(body(user(text("hi", cache_control=MARK))))) as response:  # pyright: ignore[reportPrivateUsage]
@@ -151,18 +185,19 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
 
     async def start(recorded: list[Entry]) -> Brain:
         asked: list[tuple[dict[str, str], dict[str, object]]] = []
-        answers: list[web.StreamResponse | list[bytes]] = []
+        answers: list[Answer] = []
+        routed: list[Span] = []
 
         async def api(request: web.Request) -> web.StreamResponse:
             asked.append((dict(request.headers), await request.json()))
             answer = answers.pop(0) if answers else stream("Hello.")
-            if isinstance(answer, web.StreamResponse):
-                return answer
-            response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "request-id": "req_1"})
-            await response.prepare(request)
-            for chunk in answer:
-                await response.write(chunk)
-            return response
+            match answer:
+                case web.StreamResponse():
+                    return answer
+                case list():
+                    return await written(request, answer)
+                case _:
+                    return await answer(request)
 
         upstream = web.AppRunner(web.Application())
         upstream.app.router.add_route("*", "/{path:.*}", api)
@@ -174,7 +209,9 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
 
         class Listening:
             def route(self, sent: Sent) -> Route:
-                return Send(span=root())
+                adopted = asides.adopted(sent, Send(span=root()))
+                routed.append(adopted.span)
+                return adopted
 
             def hear(self, observed: Observed) -> None:
                 asides.hear(observed)
@@ -186,7 +223,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
             joined.__exit__(None, None, None)
 
         cleanups.extend([asides.close, proxy.close, upstream.cleanup, leave])
-        return Brain(proxy.url, asides, asked, answers)
+        return Brain(proxy.url, asides, asked, answers, routed)
 
     yield start
     for cleanup in cleanups:
@@ -234,3 +271,63 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     assert [(event.facts["question"], event.facts.get("unanswered")) for event in events(recorded)] == [
         ("early", Unanswered.UNFORKED), ("silent", Unanswered.WORDLESS), ("refused", Unanswered.REFUSED),
     ]
+
+
+def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
+    history = body(user(text("hi", cache_control=MARK)))
+    _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
+    assert empty["messages"] == [user(text("hi"), text(REMINDER), text("q"))]
+    _, thought = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply(Text("So."), Thinking("hm", "sig"))), "q")
+    assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
+
+
+async def test_a_reply_that_breaks_off_fails_the_question_and_nothing_else(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    rig.answers.append(broken)
+    with pytest.raises(AsideFailed) as failed:
+        await rig.asides.ask(AsideKind.LINE, "cut", Deadline(10))
+    assert failed.value.why == Unanswered.BROKEN
+    assert await rig.asides.ask(AsideKind.LINE, "again", Deadline(10)) == "Hello."
+
+
+async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs_from_its_turn(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    loop = asyncio.get_running_loop()
+    # Both wait for the brain's first main turn at once: neither holds the other back while there is nothing to fork.
+    started = loop.time()
+    early = [asyncio.create_task(rig.asides.ask(AsideKind.NAME, question, Deadline(0.3))) for question in ("one", "two")]
+    for task in early:
+        with pytest.raises(AsideFailed, match="no main turn"):
+            await task
+    assert loop.time() - started < 0.55
+    await rig.main_turn()
+    gate = asyncio.Event()
+    rig.answers.extend([held(gate, "Slow."), stream("Patient.")])
+    slow = asyncio.create_task(rig.asides.ask(AsideKind.SUMMARY, "slow", Deadline(10)))
+    await asyncio.sleep(0.05)
+    # Queued behind the slow one for longer than its own seconds: they start at its turn, so it is still answered.
+    patient = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "patient", TimeLimit(0.3)))
+    left = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "left", Deadline(10)))
+    await asyncio.sleep(0.4)
+    left.cancel()
+    gate.set()
+    assert await slow == "Slow."
+    assert await patient == "Patient."
+    with pytest.raises(asyncio.CancelledError):
+        await left
+    by = {event.facts["question"]: event for event in events(recorded)}
+    assert cast(float, by["patient"].facts["queued_ms"]) >= 350
+    assert by["left"].outcome == "cancelled" and "queued_ms" not in by["left"].facts
+
+
+async def test_a_questions_own_request_is_part_of_its_unit_of_work(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    await rig.asides.ask(AsideKind.SUMMARY, "what?", Deadline(10))
+    [event] = events(recorded)
+    # The brain's main turn is routed as the stage routes it; the question's request inside the question.
+    assert [span.parent_id for span in rig.routed] == [None, event.span_id]

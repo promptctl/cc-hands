@@ -10,18 +10,20 @@ Each question is one request through hands' proxy, built as the brain's Claude C
 
 import asyncio
 import contextlib
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 import aiohttp
 
 from hands.brain.fork import Newest, fork
-from hands.core.wire import Fork, Observed, Written
+from hands.core.trace import Span
+from hands.core.wire import Fork, Observed, Route, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
-from hands.sessions.wide import annotate, since, unit
+from hands.sessions.wide import annotate, here, since, unit, within
 
 
 # What a question's reply cost, as its usage names it: what it read of the brain's cached prefix, and what it wrote.
@@ -42,6 +44,7 @@ class Unanswered(StrEnum):
 
     UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
     REFUSED = "refused"  # its request was answered with something other than a reply
+    BROKEN = "broken"  # its request or its reply broke off on the way
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
 
@@ -81,6 +84,8 @@ class Asides:
         self._record = record
         # One at a time: nothing asked here is waited on by the user, and the brain's account answers the user's turns first.
         self._one = asyncio.Lock()
+        # The question being sent now, by its unit of work's span and the body it is sent as: one at a time, under `_one`.
+        self._sending: tuple[Span, object] | None = None
         # As the proxy's own client: the reply read as sent, and no header added that the brain's Claude Code left out.
         self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None), auto_decompress=False, skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"))
 
@@ -89,6 +94,12 @@ class Asides:
 
     def hear(self, observed: Observed) -> None:
         self._newest.hear(observed)
+
+    def adopted(self, sent: Sent, routed: Route) -> Route:
+        """`routed` as the question being sent now has it: its own request, inside the question's unit of work."""
+        sending = self._sending
+        # [LAW:one-source-of-truth] its request is told by the very body it was sent as; a fork's kind narrows the compare.
+        return replace(routed, span=within(sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else routed
 
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, asked beside the brain's conversation; raises AsideFailed when it has none,
@@ -113,6 +124,11 @@ class Asides:
             try:
                 # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
                 async with asyncio.timeout(within.seconds if isinstance(within, Deadline) else None) as clock:
+                    # Waited for before its turn: nothing is asked of a brain that has sent nothing, so no asker holds the
+                    # others back on that.
+                    waiting = Unanswered.UNFORKED
+                    await self._newest.turn()
+                    waiting = Unanswered.TIMED_OUT
                     await self._one.acquire()
                     taken.callback(self._one.release)
                     # queued_ms only once it has its turn: the rest of its duration_ms is its request answered.
@@ -122,22 +138,26 @@ class Asides:
                             clock.reschedule(asyncio.get_running_loop().time() + seconds)
                         case Deadline():
                             pass
-                    waiting = Unanswered.UNFORKED
                     turn = await self._newest.turn()
-                    waiting = Unanswered.TIMED_OUT
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
                 seen = {Unanswered.UNFORKED: f"the brain sent no main turn to fork within {within}"}.get(waiting, f"no answer within {within}")
                 raise AsideFailed(waiting, seen) from error
 
-    async def _answered(self, headers: tuple[tuple[str, str], ...], body: bytes, path: str, forked: str) -> str:
+    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
         annotate(forked=forked)
-        async with self._client.post(self._proxy_url + path, headers=list(headers), data=body) as response:
-            # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
-            reader = reply_reader(Fork(), response.headers, lambda _event: None)
-            async for chunk in response.content.iter_any():
-                reader.feed(chunk)
-            read = reader.finish(None)
+        self._sending = (here(), body)
+        try:
+            async with self._client.post(self._proxy_url + path, headers=list(headers), data=json.dumps(body).encode()) as response:
+                # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
+                reader = reply_reader(Fork(), response.headers, lambda _event: None)
+                async for chunk in response.content.iter_any():
+                    reader.feed(chunk)
+                read = reader.finish(None)
+        except aiohttp.ClientError as error:
+            raise AsideFailed(Unanswered.BROKEN, f"its request broke off: {error!r}") from error
+        finally:
+            self._sending = None
         request_id = response.headers.get("request-id")
         annotate(status=response.status, request_id=request_id)
         match read:

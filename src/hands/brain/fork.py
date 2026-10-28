@@ -16,6 +16,7 @@ from typing import cast
 from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
+    cache_marked,
     Block,
     Exchanged,
     Forwarded,
@@ -55,6 +56,8 @@ Simply answer the question with the information you have.</system-reminder>
 RUNNING = "[No result yet — this call is still in progress in the main conversation (running, awaiting approval, or queued)]"
 # The class Claude Code names a side question in (es() of querySource "side_question").
 SIDE_QUESTION_CLASS = "auxiliary"
+# The blocks the API refuses a cache marker on.
+UNMARKABLE = frozenset({"thinking", "redacted_thinking"})
 
 
 @dataclass(frozen=True)
@@ -64,20 +67,23 @@ class Turn:
     exchange: str
     path: str
     headers: tuple[tuple[str, str], ...]
-    body: Mapping[str, object]
+    # The bytes as forwarded, parsed only when a question is forked from them: never on the way upstream.
+    body: bytes
     reply: Message | None
 
 
-def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], bytes]:
+def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[str, object]]:
     """The headers and body of a side question asked of `turn`, as Claude Code's /btw builds them."""
-    messages = [dict(cast(Mapping[str, object], message)) for message in cast(Sequence[object], turn.body["messages"])]
-    replied = [] if turn.reply is None else [{"role": "assistant", "content": [_block(block) for block in turn.reply.content]}]
+    sent = cast(dict[str, object], json.loads(turn.body))
+    messages = [dict(cast(Mapping[str, object], message)) for message in cast(Sequence[object], sent["messages"])]
+    # An empty reply is no message the API takes: Claude Code's history has none for it.
+    replied = [] if turn.reply is None or not turn.reply.content else [{"role": "assistant", "content": [_block(block) for block in turn.reply.content]}]
     running = [] if turn.reply is None else [{"type": "tool_result", "tool_use_id": block.id, "content": RUNNING} for block in turn.reply.content if isinstance(block, ToolUse)]
     asked = [*running, {"type": "text", "text": REMINDER}, {"type": "text", "text": question}]
     # [LAW:one-source-of-truth] the loop's own newest marker is the one moved: same cache_control, on the last message the
     # fork shares with the loop. Markers it put on earlier messages stay where they are.
-    newest = next((index for index in reversed(range(len(messages))) if _marks(messages[index])), None)
-    marker = None if newest is None else _marks(messages[newest])[-1]
+    newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
+    marker = None if newest is None else [cast(Mapping[str, object], block)["cache_control"] for block in _blocks(messages[newest]["content"]) if isinstance(block, Mapping) and "cache_control" in block][-1]
     history = [_unmarked(message) if index == newest else message for index, message in enumerate((*messages, *replied))]
     # Claude Code's normalisation merges adjacent user messages: the question joins a last message that is the user's.
     match history[-1]:
@@ -89,7 +95,7 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], bytes]
     if marker is not None and len(history) > 1:
         history[-2] = _marked(history[-2], marker)
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
-    return headers, json.dumps({**turn.body, "messages": history}).encode()
+    return headers, {**sent, "messages": history}
 
 
 class Newest:
@@ -114,7 +120,7 @@ class Newest:
                 self._main.add(exchange)
             case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
                 self._main.discard(exchange)
-                self._turn = Turn(exchange, path, headers, cast(Mapping[str, object], json.loads(body)), None)
+                self._turn = Turn(exchange, path, headers, body, None)
                 self._first.set()
             case Exchanged(exchange=exchange, reply=Reached(body=Written(message=message))) if self._turn is not None and exchange == self._turn.exchange:
                 self._turn = replace(self._turn, reply=message)
@@ -141,15 +147,13 @@ def _blocks(content: object) -> list[object]:
     return [{"type": "text", "text": content}] if isinstance(content, str) else list(cast(Sequence[object], content))
 
 
-def _marks(message: Mapping[str, object]) -> list[object]:
-    return [mark for block in _blocks(message["content"]) if isinstance(block, Mapping) and (mark := cast(Mapping[str, object], block).get("cache_control")) is not None]
-
-
 def _unmarked(message: Mapping[str, object]) -> dict[str, object]:
     blocks = [{key: value for key, value in cast(Mapping[str, object], block).items() if key != "cache_control"} if isinstance(block, Mapping) else block for block in _blocks(message["content"])]
     return {**message, "content": blocks}
 
 
 def _marked(message: Mapping[str, object], marker: object) -> dict[str, object]:
+    # The API takes no marker on a thinking block: it goes on the message's last block that is not one.
     blocks = _blocks(message["content"])
-    return {**message, "content": [*blocks[:-1], {**cast(Mapping[str, object], blocks[-1]), "cache_control": marker}]}
+    at = next((index for index in reversed(range(len(blocks))) if cast(Mapping[str, object], blocks[index]).get("type") not in UNMARKABLE), None)
+    return {**message, "content": [{**cast(Mapping[str, object], block), "cache_control": marker} if index == at else block for index, block in enumerate(blocks)]}

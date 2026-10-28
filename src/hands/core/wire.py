@@ -167,7 +167,7 @@ def _by_body(request: Mapping[str, object], model: str, billing: Mapping[str, st
         return Fork()
     # By the newest marker, whatever tools the request carries or leaves out: a working session also marks an earlier
     # message of a long history, and offers no tools in the body.
-    newest = next((index for index in reversed(range(len(messages))) if _cache_marked(messages[index])), None)
+    newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
     last = len(messages) - 1
     if newest == last and billing.get("cc_is_subagent") == "true":
         # A subagent's requests carry its parent's session header and shape; only this line tells them apart.
@@ -240,7 +240,8 @@ def _blocks(message: object) -> list[object]:
     return _list(_content(message))
 
 
-def _cache_marked(message: object) -> bool:
+def cache_marked(message: object) -> bool:
+    """Whether a message carries a cache marker on any of its blocks."""
     return any(isinstance(block, Mapping) and "cache_control" in block for block in _blocks(message))
 
 
