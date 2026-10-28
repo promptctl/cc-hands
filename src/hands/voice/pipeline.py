@@ -81,10 +81,8 @@ def build_voice(
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
-    # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
-    # who said it: nothing the owner does waits on it, its models' load included.
-    stt = HoldOwner(Whisper(prompt=prompt, record=record), (streaming.StreamingRecognizer(streaming.load, record),), record)
-    # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is.
+    # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is, and made before
+    # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading("tts.loaded", record):
         annotate(voice=config.voice)
         # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
@@ -96,6 +94,9 @@ def build_voice(
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
+    # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
+    # who said it: nothing the owner does waits on it, its models' load included.
+    stt = HoldOwner(Whisper(prompt=prompt, record=record), (streaming.StreamingRecognizer(streaming.load, record),), record)
 
     start = EdgeTurnStart(record)
     turns = UserTurnStrategies(
