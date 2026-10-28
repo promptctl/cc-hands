@@ -20,6 +20,8 @@ def numpy_array(size: int) -> object:
 
 def mlx_array(size: int) -> object:
     # Written by MLX's default device: on Metal, memory the resident set size never counts.
+    # A buffer an earlier test let go of is not taken back from MLX's cache: it is grown anew, as a model's load grows it.
+    mx.clear_cache()
     held = mx.ones((size,), dtype=mx.uint8)
     mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
     return held
