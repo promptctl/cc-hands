@@ -401,7 +401,7 @@ class Sessions:
     async def _perform(self, effect: Effect) -> None:
         match effect:
             case Audit(record=record):
-                logger.log(*_audited(record))
+                logger.log(*audit_line(record))
             case Reply(session=session, request=request, reply=reply):
                 self._reply(session, request, reply)
             case Narrate() | Progress() | Tell():
@@ -480,7 +480,8 @@ def _taken(taken: Unqueuing) -> str:
             return f"{content[:80]!r}"
 
 
-def _audited(record: AuditRecord) -> tuple[str, str]:
+def audit_line(record: AuditRecord) -> tuple[str, str]:
+    """The level and line an audit record of the model is logged at: [LAW:single-enforcer] whichever registry decided it."""
     match record:
         case Unregistered(event=ToolFinished() as event):
             # Every tool call of a session with no membership file lands here, as its prompts and stops do, which already warn.

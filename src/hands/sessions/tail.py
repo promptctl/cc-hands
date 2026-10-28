@@ -26,6 +26,11 @@ from hands.sessions.transcript import Printed, launched_of, notified_of, prompt_
 from hands.sessions.turning import Turning
 
 
+# How late a record Claude Code has written becomes a step of the turn it belongs to. A Stop reads the rest of
+# its own transcript before telling the turn, so this is what a turn narrated while it runs waits on, not a Stop.
+TAIL_SECONDS = 0.1
+
+
 @dataclass(frozen=True)
 class StoodIn:
     """A reply told from the Stop hook's copy before its own record was read: that record, when it lands, was heard."""

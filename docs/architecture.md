@@ -1113,7 +1113,7 @@ each line hands said in it, the acknowledgement and its answers alike (`asides`)
 for it began it was handed to the speaker, as the turn's own words are told: a line the user spoke over before it came
 to be said is not told. A cut over one of these lines is not a barge-in, since none is the brain's.
 
-The brain's own process is four kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
+The brain's own process is five kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), on which
 claude (`claude`: hands' copy of the release `hands.brain.pinned` names, refused when it is missing or does not hash to
 the checksum beside that version, in words naming `hands install-brain`, whose event is `brain.install`), and in which
@@ -1121,16 +1121,20 @@ conversation (`conversation`: `resumed`, or `fresh` with the one held before it 
 with what failed it: a hands built without its fritter is refused in the words `hands install-fritter` refuses it with. Its run
 (`brain.run`), a part of the launch, runs from then until its process ends, with its exit code and the last of what it
 showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its
-end, with the prompt ids Claude Code took it as (`prompts`), how many times it was typed (`typings`), the tools its
-latest request offered the model (`offered`), and the prompt ids that were not its own that Claude Code took while the
-turn waited to be taken, or that its typing or its stop stopped (`others`), or with the error that failed it. A turn
-is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it: out of the tags a
-long paste comes in, trailing whitespace trimmed. A turn that ended untaken and was taken later is never the next
-turn's, unless the two typed the same words. A prompt Claude Code takes that is no turn's runs ahead of what was typed
-behind it, for an ask that already failed or one nobody made, so a turn stops it with Escape and Ctrl-C: before it is
-typed, and again, typed once more with its whole time, when one ran through its wait. One taken late cannot make the
-turns after it untaken, however long it would run. A turn typed twice is taken by either typing and over at the Stop of
-either: the Escape may have stopped the first as it was taken, and a stopped prompt posts no Stop. A turn whose asker stopped waiting is still heard to its end. Each dialog
+end, with the prompt id Claude Code took it under (`taken`), whether that id was of a turn Claude Code already had, so
+it queued the words behind or into that turn (`queued`), the id it was told under (`told`), the tools its latest request
+offered the model (`offered`), and the ids of the turns told while it was in flight that did not answer it (`others`),
+or with the error that failed it. The brain keeps no account of Claude Code's turns: its session is a session of the
+one model of a turn (`core/reducer.py`), in a registry of its own (`brain/turns.py`), fed its hooks, its transcript and
+the status Claude Code keeps for it as a working session's are, each hook once the status and transcript are read
+through the moment it was heard; each event that model applies is a `brain.applied`, as a working session's is an
+`applied`. A turn is taken only by a `UserPromptSubmit` whose `prompt` is the text it typed, as Claude Code keeps it:
+out of the tags a long paste comes in, trailing whitespace trimmed. It is over at the first turn the model tells, once
+it was taken, at which its words no longer wait in Claude Code's queue: the turn they opened, the one they were taken
+into, or the one they ran as after the turn they were typed behind. Anything the model holds untold, or waiting in
+Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
+turn stops it with Escape and Ctrl-C before it is typed, once. A turn whose asker stopped waiting is still heard to its
+end. One that is stopped ends as the model tells the turn its Escape stopped, or at once when none of it ran. Each dialog
 it posts to hands' listener is one event: a `brain.permission`, with the tool, the decision, and how long it was held,
 and a `brain.elicitation`, which is always declined. A dialog posted for the turn in flight is a part of that `brain.turn`; any other is a part of the
 launch. A body hands cannot read is answered as its hook asks, and its event fails saying so. Whatever else fails in

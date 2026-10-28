@@ -326,6 +326,16 @@ def delegating(session: Session) -> bool:
             return False
 
 
+def all_told(session: Session) -> bool:
+    """Whether every turn Claude Code ran is told and nothing waits in its queue to run after them: a prompt typed now
+    is a turn of its own, behind nothing. [LAW:one-source-of-truth] read off the turn, never held beside it."""
+    match session.turn:
+        case Told(waiting=()):
+            return True
+        case Opened() | Untold() | Told():
+            return False
+
+
 @dataclass(frozen=True)
 class Gone:
     """A session that ended. [LAW:types-are-the-program] it has no status, turn, or dialog: its last turn was told and its

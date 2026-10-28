@@ -45,8 +45,8 @@ from hands.sessions.audit import Record
 from hands.sessions.hookconfig import DISPLAY_HOST, DISPLAY_PATH, DISPLAY_PORT
 from hands.sessions.front import read_front
 from hands.sessions.liveness import keep_sweeping, sweep
-from hands.sessions.statusfile import keep_reading_statuses
-from hands.sessions.tail import Tails, keep_tailing
+from hands.sessions.statusfile import STATUS_SECONDS, keep_reading_statuses
+from hands.sessions.tail import TAIL_SECONDS, Tails, keep_tailing
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.sentences import Sentences
@@ -110,11 +110,6 @@ from hands.core.session import SessionId
 TICK_SECONDS = 1.0
 # How late a session whose process died, or one that started unheard, is noticed.
 SWEEP_SECONDS = 2.0
-# How late a record Claude Code has written becomes a step of the turn it belongs to. A Stop reads the rest of
-# its own transcript before telling the turn, so this is what a turn narrated while it runs waits on, not a Stop.
-TAIL_SECONDS = 0.1
-# How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
-STATUS_SECONDS = 0.1
 
 
 @dataclass(frozen=True)

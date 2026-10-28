@@ -63,6 +63,8 @@ def _status(record: Payload, name: str) -> Status:
             return Unknown(other)
 
 
+# How late Claude Code setting a session's status is heard: the file it rewrites is a few hundred bytes a session.
+STATUS_SECONDS = 0.1
 # How long a session's status may go unread before that is said. Claude Code sets a status within a second of writing the
 # file (91 ms in the latest measurement, 793 ms in an earlier one), and runs the end hook 330 to 640 ms after removing
 # it as its process exits: a status unread for longer is a status hands does not have.
