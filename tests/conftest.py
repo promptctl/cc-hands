@@ -12,12 +12,13 @@ import sys
 import traceback
 import wave
 import weakref
-from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from importlib.metadata import metadata
 from pathlib import Path
+from typing import cast
 
 import mlx.core as mx
 import mlx_whisper
@@ -177,6 +178,20 @@ class Unspoken:
         return streaming.Closed(frozenset(), ())
 
 
+def chained(error: BaseException | None) -> Iterator[BaseException]:
+    """`error`, and every exception it was raised from, raised while handling, or groups, each once."""
+    seen: set[int] = set()
+    pending = [error]
+    while pending:
+        match pending.pop():
+            case BaseException() as each if id(each) not in seen:
+                seen.add(id(each))
+                yield each
+                pending += [each.__cause__, each.__context__, *(cast(BaseExceptionGroup[BaseException], each).exceptions if isinstance(each, BaseExceptionGroup) else ())]
+            case _:
+                pass
+
+
 @dataclass
 class Pairs:
     """The one owner of every real pair of streaming models the suite loads: it holds 2.7 GB, and a second beside it
@@ -190,10 +205,9 @@ class Pairs:
         """No pair loaded before is held any more, and every pair loaded inside runs on MLX's CPU device, as on CI's VMs,
         which have no Metal, so what a test pins of the models is CI's on every machine."""
         # pytest keeps a failed test's exception, and with it the frames that held its pair, until the next test's call,
-        # which comes after this, the next test's setup.
-        last: BaseException | None = getattr(sys, "last_exc", None)
-        if last is not None:
-            traceback.clear_frames(last.__traceback__)
+        # which comes after this, the next test's setup: its own frames, and those of every exception it chains or groups.
+        for error in chained(getattr(sys, "last_exc", None)):
+            traceback.clear_frames(error.__traceback__)
         gc.collect()
         # [LAW:no-ambient-temporal-coupling] a pair is let go of where the next is loaded, whichever module runs first.
         held = sum(pair() is not None for pair in self._loaded)

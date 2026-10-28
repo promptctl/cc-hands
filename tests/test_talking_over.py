@@ -23,8 +23,8 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame, InterimTranscriptio
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import PAIRS, events, hearing_with, patiently, running
-from test_streaming import NOT_SPEECH, READER, fixture_holds, pcm
+from conftest import PAIRS, hearing_with, patiently, running
+from test_streaming import NOT_SPEECH, READER, fixture_holds, hearings, pcm
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice import engaged, streaming
@@ -105,12 +105,20 @@ class Downstream(FrameProcessor):
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self.frames = 0
         self.cuts = 0
+        self._passed = asyncio.Event()
+
+    async def reached(self, frames: int) -> None:
+        """Once `frames` frames of audio have passed, woken by each as it passes."""
+        while self.frames < frames:
+            self._passed.clear()
+            await self._passed.wait()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
             case InputAudioRawFrame():
                 self.frames += 1
+                self._passed.set()
             case InterimTranscriptionFrame():
                 self.cuts += 1
             case _:
@@ -165,10 +173,6 @@ async def untapped(into: Callable[[KeyEvent], None]) -> AsyncGenerator[None]:
     yield
 
 
-def streaming_hearings(recorded: list[Entry]) -> list[WideEvent]:
-    return [event for event in events(recorded, "hearing") if event.facts["listener"] == "streaming"]
-
-
 def sound_at(sample: int) -> int:
     """Which sound of the timeline a sample is in, or after: the last whose first sample it is at or past."""
     return max(n for n, first in enumerate(FIRST) if first <= sample)
@@ -182,24 +186,36 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     gate = PushToTalk(recorded.append)
     captured = 0
     moves: list[tuple[int, Move]] = []
+    loop = asyncio.get_running_loop()
+    loaded: asyncio.Future[WideEvent] = loop.create_future()
+
+    def told(entry: Entry) -> None:
+        """The recognizer's record, its load handed to the loop from the thread the pair loads on."""
+        recorded.append(entry)
+        match entry:
+            case WideEvent(event="streaming.loaded"):
+                loop.call_soon_threadsafe(loaded.set_result, entry)
+            case _:
+                pass
+
     with PAIRS.alone():
-        recognizer = streaming.StreamingRecognizer(lambda: PAIRS.loaded(nemotron), recorded.append)
+        recognizer = streaming.StreamingRecognizer(lambda: PAIRS.loaded(nemotron), told)
         listener = Counted(recognizer, lambda: captured * FRAME)
         downstream = Downstream()
         async with running([HoldOwner(Unheard(), (listener,), recorded.append), downstream]) as run, engaged.loaded(RATE, recorded.append) as models:
-            # The pair loads on the recognizer's thread; the first frame waits for nothing it does.
-            await patiently(lambda: bool(events(recorded, "streaming.loaded")), lambda: None)
-            [load] = events(recorded, "streaming.loaded")
+            # The pair loads on the recognizer's thread, as long as the machine takes, which shows nothing moving until it
+            # ends; the first frame waits for nothing it does.
+            load = await loaded
             assert load.outcome == "ok", load.error
 
             async def capture(audio: bytes) -> None:
                 nonlocal captured
                 captured += 1
                 await run.worker.queue_frame(gate.gate.framed(audio, audio, RATE, 1, "desk"))
-                await patiently(
-                    lambda: downstream.frames == captured and len(streaming_hearings(recorded)) == len(listener.returned),
-                    lambda: (downstream.frames, len(streaming_hearings(recorded))),
-                )
+                # The owner tells its listeners of a frame before it passes it on, so once the frame has passed, every
+                # hearing it returned is counted.
+                await downstream.reached(captured)
+                await patiently(lambda: len(hearings(recorded)) == len(listener.returned), lambda: len(hearings(recorded)))
 
             frames = pcm(TIMELINE)
             chosen: asyncio.Queue[Choice] = asyncio.Queue()
@@ -234,14 +250,16 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             driving.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await driving
-    hearings = streaming_hearings(recorded)
+    heard = hearings(recorded)
+    # Every hearing heard its hold: a failed one says why here, not as a fact it lacks below.
+    assert [event.error for event in heard if event.outcome != "ok"] == []
     # Each utterance opens one hold, where the desk's own detector opened it.
     opened = [sound_at(frame * FRAME) for frame, move in moves if move == "start"]
     assert opened[:4] == [0, 1, 2, 3], moves
     # Each hold's words cut while it was open, at this sample of the audio, in ms from its utterance's first sample: the
     # first `hearing` of the hold with `cut: true`, as the hold owner said it.
     cuts: dict[int, int] = {}
-    for at, event in zip(listener.returned, hearings, strict=True):
+    for at, event in zip(listener.returned, heard, strict=True):
         match event.facts:
             case {"cut": True, "hold": int() as hold}:
                 cuts.setdefault(hold, at)
@@ -249,6 +267,6 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
                 pass
     assert {hold: (at - FIRST[sound_at(at)]) * 1000 // RATE for hold, at in cuts.items()} == {1: 940, 2: 810, 3: 910, 4: 890}, moves
     # Every cut the owner said reached the frame after it.
-    assert downstream.cuts == sum(bool(event.facts["cut"]) for event in hearings)
+    assert downstream.cuts == sum(bool(event.facts["cut"]) for event in heard)
     # Nothing cut from the cough's first sample to the timeline's end.
-    assert [at for at, event in zip(listener.returned, hearings, strict=True) if event.facts["cut"] and at >= FIRST_NOT_SPEECH] == []
+    assert [at for at, event in zip(listener.returned, heard, strict=True) if event.facts["cut"] and at >= FIRST_NOT_SPEECH] == []
