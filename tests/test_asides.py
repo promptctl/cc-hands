@@ -273,6 +273,24 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     ]
 
 
+# The refusals on record: a login at its limit told to wait days, and a login expired. Neither waits out the deadline.
+@pytest.mark.parametrize(("status", "error", "headers"), [
+    (429, "rate_limit_error", {"retry-after": "240711", "anthropic-ratelimit-unified-status": "rejected"}),
+    (401, "authentication_error", {}),
+])
+async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brain: Callable[[list[Entry]], Awaitable[Brain]], status: int, error: str, headers: dict[str, str]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    said = f'{{"type":"error","error":{{"type":"{error}","message":"no"}}}}'
+    rig.answers.append(web.Response(status=status, text=said, headers={"request-id": "req_9", "Content-Type": "application/json", **headers}))
+    with pytest.raises(AsideFailed, match=rf"answered {status} \(request-id req_9\).*{error}"):
+        await rig.asides.ask(AsideKind.NAME, "refused", Deadline(5))
+    [event] = events(recorded)
+    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, status)
+    assert len(rig.asked) == 2
+
+
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
     history = body(user(text("hi", cache_control=MARK)))
     _, empty = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(history), reply()), "q")
