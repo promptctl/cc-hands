@@ -1,6 +1,7 @@
 """What a turn changed in the repository it ran in, read from git without disturbing it."""
 
 import asyncio
+import gc
 import os
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
-from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Asked, Capture, Deltas, Mark, Standing
+from hands.sessions.delta import HELD, MOST_COMMITS, MOST_LINES, Asked, Capture, Deltas, Mark, Standing, Unread
 from conftest import patient
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
@@ -1478,12 +1479,12 @@ async def test_a_turn_no_prompt_marked_takes_its_own_place_between_the_turns_bes
     assert [[file.path for file in delta.files] for delta in told] == [["first.py"], [], ["second.py"]]
 
 
-async def test_a_dropped_turn_is_told_without_a_delta_and_the_turn_after_it_with_its_own(tmp_path: Path) -> None:
-    """The narrator tells one turn, which makes room, before the dropped turn is told: the dropped turn still has its
-    place, so the turn after it is not told as it."""
+async def test_dropped_turns_are_told_without_a_delta_and_the_turn_after_them_with_its_own(tmp_path: Path) -> None:
+    """The narrator tells one turn, which makes room, before the two dropped turns are told: each dropped turn still has
+    its place, so the turn after them is not told as either."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
-    for n in range(HELD + 1):
+    for n in range(HELD + 2):
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
         await deltas.compare(SID, again=False)
@@ -1492,8 +1493,26 @@ async def test_a_dropped_turn_is_told_without_a_delta_and_the_turn_after_it_with
     (root / "later.py").write_text("a later turn\n")
     await deltas.compare(SID, again=False)
 
-    told = [first, *[await deltas.taken(SID) for _ in range(HELD + 1)]]
-    assert [[file.path for file in delta.files] for delta in told] == [[f"turn{n}.py"] for n in range(HELD)] + [[], ["later.py"]]
+    told = [first, *[await deltas.taken(SID) for _ in range(HELD + 2)]]
+    assert [[file.path for file in delta.files] for delta in told] == [[f"turn{n}.py"] for n in range(HELD)] + [[], [], ["later.py"]]
+
+
+async def test_a_daemon_no_narrator_takes_from_holds_no_more_places_however_many_turns_stop(tmp_path: Path) -> None:
+    """A daemon whose voice never loaded has no narrator, so no turn is ever taken: turns outside a repository, each
+    unmarked, take no more room for it than one does."""
+    deltas = patient(Deltas, lambda _entry: None)
+    before = unread_places()
+    for _ in range(100):
+        await deltas.snapshot(SID, tmp_path)
+        await deltas.compare(SID, again=False)
+
+    assert unread_places() - before == 1
+
+
+def unread_places() -> int:
+    """The places in any order, now, that hold no reading."""
+    gc.collect()
+    return sum(isinstance(place, Unread) for place in gc.get_objects())
 
 
 async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_not_this_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1582,6 +1601,30 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
     assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["start overtaken", "tree overtaken"]
     [going_on] = [read for read in readings(record) if read.facts["reading"] == "start overtaken"]
     assert (going_on.outcome, going_on.counts, going_on.facts["changes"]) == ("ok", {"commits": 0, "files": 0, "git_unanswered": 0}, ())
+
+
+async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_its_start_is_read_against_nothing(tmp_path: Path) -> None:
+    """The first part's tree is still being read when another Stop hook blocks its Stop and the part going on stops, and
+    that part's reading is already waiting on the first's capture as its start when the next turn's mark overtakes it.
+    The start was read inside the next turn, so the part going on is told nothing of it, never the next turn's files."""
+    root = repo(tmp_path)
+    record: list[Entry] = []
+    deltas = patient(Stalled, record.append)
+    await deltas.snapshot(SID, root)
+    (root / "first.py").write_text("the first part\n")
+    tree = deltas.hold("tree")
+    await deltas.compare(SID, again=False)
+    await tree.reached.wait()
+    (root / "after.py").write_text("the part going on\n")
+    await deltas.compare(SID, again=True)
+    await deltas.snapshot(SID, root)
+    (root / "next.py").write_text("the next turn\n")
+    tree.released.set()
+
+    assert await deltas.taken(SID) == Delta()
+    assert await deltas.taken(SID) == Delta()
+    assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["start overtaken", "tree overtaken"]
+    assert waits(record) == [(0, 0), (2, 1)]
 
 
 async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path: Path) -> None:

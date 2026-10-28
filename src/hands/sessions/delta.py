@@ -16,7 +16,8 @@ import shutil
 import tempfile
 import time
 from collections import deque
-from collections.abc import Awaitable, Collection, Mapping
+from collections.abc import Awaitable, Collection, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import dropwhile
@@ -160,7 +161,11 @@ class Held:
 
 @dataclass(frozen=True)
 class Unread:
-    """A turn's place in the order whose reading was dropped or had no mark to read against: its telling takes no delta."""
+    """The places in the order of `turns` turns in a row whose readings were dropped or had no mark to read against: their
+    tellings take no delta. One place for the run of them, so the order holds at most one more place than the readings
+    in it, however many turns stop with no narrator to take them."""
+
+    turns: int
 
 
 class Capture:
@@ -199,7 +204,10 @@ class Capture:
 
     async def start(self) -> Mark | Unmarked:
         """The mark this capture's end makes, once it is over: where the part going on after a blocked Stop starts from."""
-        match (self._overtaken, await self.standing, await self.tree):
+        # Over before whether it was overtaken is read: a start overtakes only a capture still under way, so once the tree
+        # is in the record is final, and one read before it could miss an overtaking made while it waited.
+        standing, tree = await self.standing, await self.tree
+        match (self._overtaken, standing, tree):
             case (None, Standing() as standing, str() as tree):
                 return Mark(self.root, standing.head, tree, standing.refs, standing.at)
             case (None, _, _):
@@ -349,7 +357,9 @@ class Deltas:
         if not held:
             return Delta()
         match held.popleft():
-            case Unread():
+            case Unread(turns=turns):
+                if turns > 1:
+                    held.appendleft(Unread(turns - 1))
                 return Delta()
             case Held(reading=reading):
                 try:
@@ -360,25 +370,26 @@ class Deltas:
 
     def _unread(self, session: SessionId, held: deque[Held | Unread], reading: Literal["dropped", "unmarked"]) -> None:
         """A turn's place in the order with no reading in it, and the event of the reading it did not have."""
-        held.append(Unread())
-        with unit("delta.read", self._record, _READ_COUNTS):
-            self._told(session, reading)
+        match held[-1] if held else None:
+            case Unread(turns=turns):
+                held[-1] = Unread(turns + 1)
+            case _:
+                held.append(Unread(1))
+        with self._event(session):
+            self._told(reading)
 
     async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Mark | Capture, capture: Capture) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         began = time.monotonic()
         delta = Delta()
         try:
-            # [LAW:nothing-unseen] one event for every reading however it ended, so a turn told without its delta can be
-            # told apart from one that changed nothing, and a slow forge from a slow repository.
-            with unit("delta.read", self._record, _READ_COUNTS):
-                annotate(session=session)
+            with self._event(session):
                 # [LAW:single-enforcer] the capture is one of the reading's parts, run and waited out with the rest, so
                 # nothing it reads lands on the reading's event after it has ended.
                 _, (reading, delta, asked) = await _settled(
                     self._captured(capture, began + self._reading), self._between(start, capture, began + self._reading, began + self._patience - SPARE)
                 )
-                self._told(session, reading)
+                self._told(reading)
                 annotate(changes=delta.changes, forge=asked.forge, forge_seconds=asked.seconds)
                 count(commits=len(delta.commits), files=len(delta.files))
         except Exception as error:
@@ -388,10 +399,19 @@ class Deltas:
         if not pending.done():
             pending.set_result(delta)
 
+    @contextmanager
+    def _event(self, session: SessionId) -> Generator[None]:
+        """[LAW:nothing-unseen] one event for every reading however it ended, so a turn told without its delta can be told
+        apart from one that changed nothing, and a slow forge from a slow repository: whose it is, from its start, so one
+        that raised still says so."""
+        with unit("delta.read", self._record, _READ_COUNTS):
+            annotate(session=session)
+            yield
+
     @staticmethod
-    def _told(session: SessionId, reading: Reading) -> None:
-        """[LAW:types-are-the-program] what every reading's event says of itself, in one place, whichever way it went."""
-        annotate(session=session, reading=reading)
+    def _told(reading: Reading) -> None:
+        """[LAW:types-are-the-program] how every reading went, in one place, whichever way it went."""
+        annotate(reading=reading)
 
     async def _captured(self, capture: Capture, deadline: float) -> None:
         """Where the repository stands and then its tree, each answered on the capture as it is in.
