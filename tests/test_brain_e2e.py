@@ -23,7 +23,7 @@ from pipecat.frames.frames import ErrorFrame
 from conftest import running, unread
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
-from hands.core.wire import Sent
+from hands.core.wire import Sent, tool_answers
 from hands.brain import pinned
 from hands.brain.process import starting_settings, workdir
 from hands.daemon.run import mind
@@ -125,10 +125,10 @@ async def claude_code(pytestconfig: pytest.Config) -> Path:
 
 
 # What a Claude Code hands starts may connect to, as macOS's sandbox holds it and every process it starts: loopback,
-# where hands' proxy, its server and the mock listen, and local sockets, the system's resolver among them, so a name still
-# resolves though nothing can connect to it. A proxy setting reaches only the clients that honour it, and ssh, among
-# others, does not.
-OFFLINE = '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket))'
+# where hands' proxy, its server and the mock listen, and local sockets, but not the system's resolver, which would ask
+# the network for a name; `localhost` resolves without it, from /etc/hosts. A proxy setting reaches only the clients that
+# honour it, and ssh, among others, does not.
+OFFLINE = '(version 1) (allow default) (deny network-outbound) (allow network-outbound (remote ip "localhost:*")) (allow network-outbound (remote unix-socket)) (deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))'
 
 
 def drop_ins(directory: Path) -> list[Path]:
@@ -170,9 +170,9 @@ def offline(verified: Callable[[Path], Path], brain: Path) -> Callable[[Path], P
     script.chmod(0o755)
 
     def sandboxed(config_dir: Path) -> Path:
+        assert config_dir == brain, f"only {brain}'s Claude Code runs in the sandbox, and {config_dir}'s was started"
         verified(config_dir)
-        # A brain of any other directory has no script there, and its start fails on that, loudly.
-        return config_dir / script.name
+        return script
 
     return sandboxed
 
@@ -241,8 +241,8 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     brain = tmp_path / "brain"
     logged_in(brain, claude_code, mock_binary)
     # [LAW:single-enforcer] the one checkpoint for "no network while a test runs" is the Claude Code hands runs, which every
-    # start of one, the brain's, an aside's, a login's, takes from pinned.verified: a connection that goes around the mock
-    # fails here, at the OS, and one that goes through its proxy is named in the mock's log.
+    # start of one, the brain's, an aside's, a login's, takes from pinned.verified: a connection it or anything it starts
+    # makes around the mock fails here, at the OS, and one that goes through its proxy is named in the mock's log.
     monkeypatch.setattr(pinned, "verified", offline(pinned.verified, brain))
     recorded: list[Entry] = []
     sent: list[Sent] = []
@@ -320,6 +320,6 @@ async def test_a_connection_the_brain_makes_past_loopback_is_refused_by_the_os(m
     await connected(hands)
     await hands.say("reach past loopback")
     await hands.until(lambda: "Tried." in "".join(hands.out.said()))
-    # The first request to carry the result is the one that answered the call; any after it carry the transcript again.
-    result = next(body for body in (json.dumps(request.body) for request in hands.sent) if "tool_result" in body and "192.0.2.1" in body)
-    assert "Operation not permitted" in result, result
+    # nc's own words, in the result of its call: Claude Code's prompt says "Operation not permitted" too.
+    results = [answer.text for request in hands.sent for answer in tool_answers(request.body)]
+    assert any("192.0.2.1" in result and "Operation not permitted" in result for result in results), results
