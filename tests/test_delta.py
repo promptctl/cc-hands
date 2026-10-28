@@ -1356,6 +1356,8 @@ async def overtaking(deltas: Stalled, clock: ManualClock, root: Path, *finishing
     for gate in finishing:
         gate.released.set()
         await gate.over.wait()
+    # The start's own wait on the capture still held is the one pause left at its deadline once its mark is in.
+    await clock.paused(MARKING)
     clock.advance(MARKING)
     await snapshot
 

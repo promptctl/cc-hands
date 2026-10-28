@@ -71,12 +71,12 @@ async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subp
     assert any(f"killed sleep ({started[0].pid})" in line and "ran past 5.0s" in line for line in logged)
 
 
-
 async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure_leaves(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     with pytest.raises(RuntimeError, match="no timer"):
         await run("sleep", "30", timeout=5, clock=BrokenClock())
     assert reaped(started[0])
     assert any(f"killed sleep ({started[0].pid})" in line and "its wait failed" in line for line in logged)
+
 
 async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
