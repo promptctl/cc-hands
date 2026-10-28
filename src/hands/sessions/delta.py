@@ -14,7 +14,6 @@ import json
 import os
 import shutil
 import tempfile
-import time
 from collections import deque
 from collections.abc import Awaitable, Collection, Generator, Mapping
 from contextlib import contextmanager
@@ -30,6 +29,7 @@ from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pu
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
 from hands.sessions.child import run
+from hands.sessions.clock import SYSTEM, Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, count, unit
 
@@ -245,13 +245,23 @@ class NoChanges:
 class Deltas:
     """Where each session's repository stood when its turn began, so what the turn changed can be read at its end."""
 
-    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float = MARKING, reading: float = READING, patience: float = PATIENCE) -> None:
+    def __init__(
+        self,
+        record: Record,
+        inherited: Mapping[str, str],
+        marking: float = MARKING,
+        reading: float = READING,
+        patience: float = PATIENCE,
+        clock: Clock = SYSTEM,
+    ) -> None:
         self._record = record
         # The daemon's environment, which git and gh are found and run in: its PATH, and whatever the user set their own variables to.
         self._inherited = inherited
         self._marking = marking
         self._reading = reading
         self._patience = patience
+        # [LAW:effects-at-boundaries] the one clock every budget here is read off and waited out on, git's and gh's too.
+        self._clock = clock
         # The mark each session's last snapshot took, None where it took none, until a reading spends it. The registry
         # performs a session's Snapshot before any Compare decided after it, so a compare finds the mark already in
         # [LAW:no-ambient-temporal-coupling]. Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
@@ -279,7 +289,7 @@ class Deltas:
         never after them; whatever stage of one is not in by then is read after this turn began, and is recorded as
         overtaken, never to be told as the turn before's [LAW:no-ambient-temporal-coupling].
         """
-        deadline = time.monotonic() + self._marking
+        deadline = self._clock.now() + self._marking
         # A start not spent is no start of this turn's: spent here as this turn begins, whatever becomes of its mark.
         self._marks.pop(session, None)
         capturing = self._capturing.setdefault(session, set())
@@ -288,7 +298,7 @@ class Deltas:
             annotate(session=session)
             count(captures_waited=len(under_way))
             try:
-                mark, waited = await _settled(self._mark(cwd, deadline), _waited(under_way, deadline))
+                mark, waited = await _settled(self._mark(cwd, deadline), self._waited(under_way, deadline))
             finally:
                 # However the mark ended, a hook that gave up included: the turn has begun either way, so nothing still
                 # being read can be ordered before it, and nothing waits on such a capture again.
@@ -366,11 +376,11 @@ class Deltas:
                     held.appendleft(Unread(turns - 1))
                 return Delta()
             case Held(reading=reading):
-                try:
-                    return await asyncio.wait_for(asyncio.shield(reading), self._patience)
-                except TimeoutError:
-                    logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
-                    return Delta()
+                await wait(self._clock, (reading,), self._patience)
+                if reading.done():
+                    return reading.result()
+                logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
+                return Delta()
 
     def _unread(self, session: SessionId, held: deque[Held | Unread], reading: Literal["dropped", "unmarked"]) -> None:
         """A turn's place in the order with no reading in it, and the event of the reading it did not have."""
@@ -384,7 +394,7 @@ class Deltas:
 
     async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Mark | Capture, capture: Capture) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
-        began = time.monotonic()
+        began = self._clock.now()
         delta = Delta()
         try:
             with self._event(session):
@@ -621,17 +631,17 @@ class Deltas:
         if gh is None:
             # A machine with no gh has no forge to ask, which is how it is set up and not something that went wrong.
             return (), Asked("absent", 0.0)
-        began = time.monotonic()
+        began = self._clock.now()
         if deadline <= began:
             return (), Asked("unanswered", 0.0)
         try:
             ran = await run(
                 gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root,
-                env=self._inherited,
+                env=self._inherited, clock=self._clock,
             )
         except TimeoutError:
-            return (), Asked("unanswered", round(time.monotonic() - began, 3))
-        took = round(time.monotonic() - began, 3)
+            return (), Asked("unanswered", round(self._clock.now() - began, 3))
+        took = round(self._clock.now() - began, 3)
         if ran.returncode != 0:
             # Not a GitHub remote, not signed in, no default repository: gh says which.
             logger.info(f"gh would not list the pull requests of {branch} in {mark.root}: {ran.err.decode(errors='replace').strip()}")
@@ -690,14 +700,15 @@ class Deltas:
         deadline is the whole reading's, not this command's: five commands that each take a second are as
         late as one that takes five, and it is the total a hook or a listener is waiting through.
         """
-        left = deadline - time.monotonic()
+        left = deadline - self._clock.now()
         if left <= 0:
             count(git_unanswered=1)
             logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
         try:
             ran = await run(
-                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})}
+                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
+                clock=self._clock,
             )
         except TimeoutError:
             count(git_unanswered=1)
@@ -711,6 +722,19 @@ class Deltas:
             logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
             return None
         return ran.out.decode(errors="replace").strip()
+
+    async def _waited(self, captures: Collection[Capture], deadline: float) -> float:
+        """How long a turn's start waited on the captures under way as it began: until every one was over, or the deadline.
+
+        Waited on and never ended: past the deadline the captures still under way run on, and only their record says the
+        turn's start overtook them.
+        """
+        if not captures:
+            # No capture under way is no wait, where timing one would time the asking.
+            return 0.0
+        began = self._clock.now()
+        await wait(self._clock, [capture.tree for capture in captures], max(0.0, deadline - began))
+        return round(self._clock.now() - began, 3)
 
 
 @overload
@@ -735,20 +759,6 @@ async def _settled(*sides: Awaitable[object]) -> tuple[object, ...]:
     if raised:
         raise BaseExceptionGroup("what a turn changed could not be read", raised)
     return tuple(gave)
-
-
-async def _waited(captures: Collection[Capture], deadline: float) -> float:
-    """How long a turn's start waited on the captures under way as it began: until every one was over, or the deadline.
-
-    Waited on and never ended: past the deadline the captures still under way run on, and only their record says the
-    turn's start overtook them.
-    """
-    if not captures:
-        # No capture under way is no wait, where timing one would time the asking.
-        return 0.0
-    began = time.monotonic()
-    await asyncio.wait([capture.tree for capture in captures], timeout=max(0.0, deadline - began))
-    return round(time.monotonic() - began, 3)
 
 
 def _request(entry: object, since: datetime, until: datetime) -> PullRequested | None:

@@ -44,7 +44,7 @@ from hands.brain import pinned
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
-from hands.sessions.delta import MARKING, READING, Deltas
+from hands.sessions.delta import MARKING, PATIENCE, Deltas
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
@@ -104,12 +104,6 @@ def spoken(text: str, at: Path) -> bytes:
         return clip.readframes(clip.getnframes())
 
 
-def patient[D: Deltas](kind: type[D], record: Record, marking: float = MARKING) -> D:
-    """A `kind` of Deltas whose readings are taken with as much patience as each is given to run: a test asserts what a
-    reading found, never whether a loaded machine found it inside the narrator's few seconds of PATIENCE."""
-    return kind(record=record, inherited=os.environ, marking=marking, patience=READING)
-
-
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
 # How long a test's wait may look and see nothing move before it fails on a stall.
@@ -125,21 +119,66 @@ class ManualClock:
     def __init__(self) -> None:
         self.at = 0.0
         self._pauses: list[tuple[float, asyncio.Future[None]]] = []
+        self._watched: list[tuple[float, asyncio.Future[None]]] = []
 
     def now(self) -> float:
         return self.at
 
-    async def pause(self, seconds: float) -> None:
+    def pause(self, seconds: float) -> asyncio.Future[None]:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
-        await woken
+        self._seen()
+        # A pause already due wakes at once, as `asyncio.sleep(0)` does.
+        self._wake()
+        return woken
 
     def advance(self, seconds: float) -> None:
         self.at += seconds
+        self._wake()
+
+    async def paused(self, until: float) -> None:
+        """Once a pause that wakes at `until` is waiting on this clock, however long the unit takes to come to it: a test
+        moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling], and a
+        unit that never comes to it is ended by the suite's timeout."""
+        seen = asyncio.get_running_loop().create_future()
+        self._watched.append((until, seen))
+        self._seen()
+        await seen
+
+    @property
+    def waking(self) -> tuple[float, ...]:
+        """When each pause still waiting wakes, on this clock."""
+        return tuple(until for until, woken in self._pauses if not woken.done())
+
+    def _wake(self) -> None:
         for until, woken in self._pauses:
             if until <= self.at and not woken.done():
                 woken.set_result(None)
         self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+
+    def _seen(self) -> None:
+        waking = self.waking
+        for until, seen in self._watched:
+            if until in waking and not seen.done():
+                seen.set_result(None)
+        self._watched = [(until, seen) for until, seen in self._watched if not seen.done()]
+
+
+class BrokenClock:
+    """A clock whose pause fails."""
+
+    def now(self) -> float:
+        return 0.0
+
+    async def pause(self, seconds: float) -> None:
+        raise RuntimeError("no timer")
+
+
+def patient[D: Deltas](kind: type[D], record: Record, clock: ManualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:
+    """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a mark or a reading found,
+    never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
+    spends it; a git that never ends is ended by the suite's timeout."""
+    return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or ManualClock())
 
 
 async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:

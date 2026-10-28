@@ -5,7 +5,6 @@ import os
 import signal
 import subprocess
 import tempfile
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +12,7 @@ from typing import IO
 
 from loguru import logger
 
+from hands.sessions.clock import SYSTEM, Clock, wait
 from hands.threads import settles_off_loop
 
 
@@ -74,10 +74,10 @@ class Ran:
     err: bytes
 
 
-async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None) -> Ran:
-    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout`, and OSError when it cannot start.
+async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock = SYSTEM) -> Ran:
+    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, and OSError when it cannot start.
 
-    The one place hands runs a child to completion: timed out or its caller cancelled, the child and every process
+    The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process
     it started are killed, and the child reaped, before the error leaves. Each caller says what a timeout means for
     it. Its output goes to files, which the child's own thread reads once it has reaped it.
     """
@@ -94,18 +94,20 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
     # under the read.
     child = reaped(argv[0], process, lambda: _ended(process, out, err))
-    started = time.monotonic()
+    started = clock.now()
     try:
         # Waited on, not awaited: what the child's thread raised is the child's outcome, told below as its own.
-        await asyncio.wait((child.ended,), timeout=timeout)
-    except asyncio.CancelledError:
-        await child.killed("its caller stopped waiting")
+        await wait(clock, (child.ended,), timeout)
+    except (asyncio.CancelledError, Exception) as stopped:
+        # Cancelled, or its clock failed: whatever ends the wait early, the child does not outlive it. A coroutine closed
+        # or an interpreter exiting is not waited in.
+        await child.killed("its caller stopped waiting" if isinstance(stopped, asyncio.CancelledError) else f"its wait failed: {stopped!r}")
         raise
     if not child.ended.done():
         await child.killed(f"it ran past {timeout:.1f}s")
         raise TimeoutError(f"{argv[0]} ran past {timeout:.1f}s")
     ran = child.ended.result()
-    logger.debug(f"{argv[0]} ({process.pid}) exited {ran.returncode} in {time.monotonic() - started:.3f}s")
+    logger.debug(f"{argv[0]} ({process.pid}) exited {ran.returncode} in {clock.now() - started:.3f}s")
     return ran
 
 
