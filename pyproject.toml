@@ -21,6 +21,7 @@ dependencies = [
     "openwakeword>=0.6,<0.7",
     "tomlkit>=0.15.1",  # hands.daemon.config sets the model chosen by voice in config.toml, every other line kept
     "mlx-audio>=0.6.2,<0.7",  # hands.voice.streaming runs Nemotron Speech Streaming paired with Nemotron 3 Diarization in its speaker streaming session, and hands.voice.engaged judges each stop with its Smart Turn port's predict_endpoint, whose settings and verdicts hands measured, so the minor is pinned
+    "httpx>=0.28,<1",  # the Hugging Face hub's client: hands.voice.engaged refuses a switch it cannot fetch Smart Turn over
 ]
 
 [project.scripts]

@@ -5,7 +5,6 @@ import huggingface_hub
 import pytest
 
 from hands.voice import engaged
-
 from hands.voice.tools import trigger_tools
 from hands.voice.trigger import Trigger, Triggers
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained
@@ -100,15 +99,28 @@ async def test_a_switch_to_the_wake_word_whose_models_cannot_be_fetched_is_refus
     assert triggers.in_use == "held key"
 
 
-async def test_a_switch_to_engaged_conversation_whose_smart_turn_cannot_be_fetched_is_refused_and_the_trigger_stays(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Off the network, at a revision the hub's cache does not hold: as a first switch with the hub out of reach.
-    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+@pytest.mark.parametrize("trigger", ["engaged conversation", "wake word"])
+@pytest.mark.parametrize(
+    "hub",
+    [
+        # Offline, as the hub's own setting puts it.
+        {"HF_HUB_OFFLINE": True},
+        # Out of reach: nothing listens at the endpoint, and the hub's client fails with its own error, not an OSError.
+        {"ENDPOINT": "http://127.0.0.1:9", "HUGGINGFACE_CO_URL_TEMPLATE": "http://127.0.0.1:9/{repo_id}/resolve/{revision}/{filename}"},
+    ],
+)
+async def test_a_switch_whose_smart_turn_cannot_be_fetched_is_refused_naming_it_and_the_trigger_stays(
+    trigger: Trigger, hub: dict[str, object], models: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # At a revision the hub's cache does not hold: as a first switch with the hub out of reach.
+    for name, value in hub.items():
+        monkeypatch.setattr(huggingface_hub.constants, name, value)
     monkeypatch.setattr(engaged, "SMART_TURN_REVISION", "0" * 40)
     triggers = Triggers()
-    _, switch = trigger_tools(triggers, tmp_path, Pretrained())
-    refused = await switch.body(trigger="engaged conversation")
-    assert (refused["trigger"], refused["readback"]) == ("held key", "The engaged conversation could not be set up, so the trigger stays as it was.")
-    assert str(refused["error"]).startswith("engaged conversation could not be readied: ")
+    _, switch = trigger_tools(triggers, models, Pretrained())
+    refused = await switch.body(trigger=trigger)
+    assert (refused["trigger"], refused["readback"]) == ("held key", f"The {trigger} could not be set up, so the trigger stays as it was.")
+    assert str(refused["error"]).startswith(f"{trigger} could not be readied: Smart Turn, {engaged.SMART_TURN} at {'0' * 40}: ")
     assert triggers.in_use == "held key"
 
 

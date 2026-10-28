@@ -24,6 +24,7 @@ from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanag
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast, get_args
 
+import httpx
 import numpy as np
 from huggingface_hub import try_to_load_from_cache
 from pipecat.audio.turn.base_turn_analyzer import EndOfTurnState
@@ -245,14 +246,23 @@ SMART_TURN_REVISION = "74af1538ebace37b0fcc667a6a8a3d902d73eee0"
 SMART_TURN_WEIGHTS = "model.safetensors"
 
 
+class Unported(Exception):
+    """Smart Turn's port could not be fetched or loaded, and why."""
+
+
 def ported() -> Any:
     """Smart Turn's MLX port, fetched into the hub's cache unless it is there already, with every weight loaded."""
     # mlx-audio ships no types.
     from mlx_audio.vad import load  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
-    # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be left
-    # at random and every verdict after it noise.
-    return cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True))
+    try:
+        # [LAW:no-silent-failure] strict: a weight the port's loader no longer maps fails the load, where it would be
+        # left at random and every verdict after it noise.
+        return cast(Any, load(SMART_TURN, revision=SMART_TURN_REVISION, strict=True))
+    except (OSError, httpx.HTTPError, ValueError) as error:
+        # [LAW:single-enforcer] every way the port is not got, the hub's errors, its client's, and a strict load's, is
+        # one error, naming the port, which a switch is refused with.
+        raise Unported(f"Smart Turn, {SMART_TURN} at {SMART_TURN_REVISION}: {error}") from error
 
 
 def readied() -> tuple[str, ...]:
