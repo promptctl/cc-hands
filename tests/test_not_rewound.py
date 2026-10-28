@@ -19,12 +19,8 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def git_env() -> dict[str, str]:
-    """git with no config but the repository's own, so a signing or hook setting on the machine cannot reach a scratch
-    commit, and no GIT_ variable from outside can point it at another repository."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-    return env | {
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
+    """git committing as a test, in the environment conftest gives every test: no config but the repository's own."""
+    return os.environ | {
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "t@example.com",
         "GIT_COMMITTER_NAME": "Test",

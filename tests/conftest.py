@@ -9,13 +9,14 @@ import stat
 import subprocess
 import sys
 import wave
-from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from importlib.metadata import metadata
 from pathlib import Path
 
+import huggingface_hub.constants
 import mlx_whisper
 import pytest
 from packaging.specifiers import SpecifierSet
@@ -275,6 +276,63 @@ def pytest_configure() -> None:
         version = subprocess.run([python, "-c", "import platform; print(platform.python_version())"], capture_output=True, text=True, check=True).stdout.strip()
         if version in SpecifierSet(metadata("hands")["Requires-Python"]):
             raise pytest.UsageError(f"{python} is Python {version}, new enough for hands, on SYSTEM_PATH, which the tests give children as a PATH with no such Python")
+
+
+# The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
+# is in CI, which in_ci reads as each report is made. pytest's own PYTEST_ names are its to set and clear.
+PASSED = ("TMPDIR", "CI")
+
+
+def without_claude(path: str, links: Path) -> str:
+    """`path` with each directory that holds a `claude` in place of one in `links` that holds a link to everything else
+    in it: the developer's tools, lit and go among them, and not their logged-in Claude Code beside them."""
+
+    def kept(index: int, directory: str) -> str:
+        if shutil.which("claude", path=directory) is None:
+            return directory
+        copy = links / str(index)
+        copy.mkdir()
+        for entry in Path(directory).iterdir():
+            if entry.name != "claude":
+                (copy / entry.name).symlink_to(entry)
+        return str(copy)
+
+    return os.pathsep.join(kept(index, directory) for index, directory in enumerate(path.split(os.pathsep)))
+
+
+def hermetic(machine: Mapping[str, str], path: str, sockets: Path, hub: str) -> dict[str, str]:
+    """The environment every test runs in, from the `machine`'s: the names PASSED, a `path` of its tools, the Hugging Face
+    `hub` cache the weights are already in, no git config but a repository's own, and a tmux socket directory with no
+    server in it. Every other name the machine has, a credential, a Claude Code session's, hands', git's, tmux's or a
+    proxy, which hands reads as a session's own, is absent, as it is on CI; HOME is each test's own (`environment`)."""
+    return {name: machine[name] for name in PASSED if name in machine} | {
+        "PATH": path,
+        "HF_HUB_CACHE": hub,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "TMUX_TMPDIR": str(sockets),
+    }
+
+
+@pytest.fixture(scope="session")
+def hermetic_environment(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """The hermetic environment of this run, its PATH's copies and its tmux directory made once. [LAW:effects-at-boundaries]
+    the directories are made here; `hermetic` is handed them."""
+    path = without_claude(os.environ["PATH"], tmp_path_factory.mktemp("path"))
+    # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
+    # there too, and not the hub's token beside them.
+    return hermetic(os.environ, path, tmp_path_factory.mktemp("tmux"), huggingface_hub.constants.HF_HUB_CACHE)
+
+
+@pytest.fixture(autouse=True)
+def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory, hermetic_environment: dict[str, str]) -> None:
+    """Each test runs in the hermetic environment, with a HOME of its own that holds nothing, as pytest's own pytester
+    gives each of its runs, so ~/.claude, ~/.hands, ~/.gitconfig and ~/.config are all empty. [LAW:single-enforcer] the
+    one owner of the environment a test runs in: a test that needs a name sets it on top, and builds no environment of
+    its own to keep the developer's out. Session fixtures, which fetch and build tools and weights, run before it."""
+    for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
+        monkeypatch.delenv(name)
+    for name, value in (hermetic_environment | {"HOME": str(tmp_path_factory.mktemp("home"))}).items():
+        monkeypatch.setenv(name, value)
 
 
 async def unread() -> InFront:
