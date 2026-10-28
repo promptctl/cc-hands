@@ -259,8 +259,10 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
         through = asyncio.ensure_future(downstream.reached(FRAMES))
         await asyncio.wait({driving, through}, return_when=asyncio.FIRST_COMPLETED)
         through.cancel()
-        assert not driving.done(), driving.exception()
+        assert not driving.done(), driving
         await record.until(lambda: len(hearings(record.entries)) == len(listener.returned))
+        # Nothing in the pipeline raised on the way, which a frame that still passed would not show.
+        assert run.errors == [], run.errors
         driving.cancel()
         with pytest.raises(asyncio.CancelledError):
             await driving
