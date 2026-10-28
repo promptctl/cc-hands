@@ -14,9 +14,9 @@ from conftest import SYSTEM_PATH
 # so whatever the command prints is the command's own. Each command's reach past this machine has a stand-in: `log`
 # follows until Ctrl-C, which its first wait for a new line stands in for; `phone` asks Tailscale for the tailnet's
 # name and the machine for its LAN addresses; `login` runs Claude Code's own login at the terminal.
-# The child's environment is the test's own, not the developer's: a PATH of the system's directories alone, which
-# hold no Claude Code, and a home of its own, so `check` neither runs the developer's logged-in claude nor reads their
-# ~/.claude.
+# The child's environment is the test's own, not the developer's: a PATH of the system's directories alone, which hold
+# no Claude Code, so `check` runs none and reads no Claude Code config; and a home of its own, so nothing it reads under
+# ~ is the developer's.
 CHILD = """
 import json, sys, types
 from hands.daemon import cli
