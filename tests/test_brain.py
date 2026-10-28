@@ -597,17 +597,23 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["prompts"]) == ("ok", True, ("p1",))
 
 
-async def test_a_stop_claude_code_does_not_record_is_pressed_again_and_is_a_stop_only_once_recorded(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The first Escape is read and let go, as a loaded Claude Code may: the stop is pressed again, and reported as a stop only
-    # once Claude Code has recorded its interrupt.
+async def test_a_stop_claude_code_does_not_record_is_a_failed_turn_and_the_escape_is_not_pressed_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The one Escape is read and let go: no record comes, which is a bug, so the turn fails at once with what its Claude Code
+    # showed, and no second Escape is pressed to paper over it.
+    from hands.brain.process import StopUnrecorded
+
     monkeypatch.setenv("DROP_ESCAPES", "1")
+    monkeypatch.setattr("hands.brain.process.STOP_SECONDS", 0.5, raising=False)
     brain = await start(launch(tmp_path), list[Entry]().append)
     try:
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt() is True
-        assert await asyncio.wait_for(asking, 20) == BrainStopped()
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape"])
+        with pytest.raises(StopUnrecorded, match="did not record the Escape that stopped its turn"):
+            await asyncio.wait_for(asking, 30)
+        await asyncio.sleep(1)
+        # The one Escape, then the Ctrl-C that empties the input it left behind: no second Escape.
+        assert [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"]
     finally:
         await brain.stop()
 
@@ -624,7 +630,7 @@ async def test_a_stop_claude_code_never_records_fails_the_turn_saying_what_it_sh
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt() is True
-        with pytest.raises(StopUnrecorded, match="did not record the Escape that stopped its turn, after 3 presses"):
+        with pytest.raises(StopUnrecorded, match="did not record the Escape that stopped its turn, within 0.5s of one press"):
             await asyncio.wait_for(asking, 30)
     finally:
         await brain.stop()

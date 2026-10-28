@@ -118,9 +118,8 @@ TYPINGS = 2
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
-# How long Claude Code has to record an Escape that stopped a turn, and how many Escapes are pressed for it at most.
+# How long Claude Code has to record the Escape that stopped a turn. Escape is pressed once; no record in this long is a bug.
 STOP_SECONDS = 5.0
-STOP_PRESSES = 3
 # What Claude Code writes to its transcript when an Escape interrupts a turn: its own word that the Escape took. Escape posts
 # no hook, so this record is the only thing that confirms a stop from Claude Code's side.
 INTERRUPTED = "[Request interrupted by user"
@@ -813,8 +812,8 @@ class Brain:
                 # Counted before the Escape goes, which Claude Code may record before `_clear` returns.
                 before = self._interrupts()
                 await self._clear(turn)
-                # [LAW:no-silent-failure] a stop is reported as one only once Claude Code has recorded it: an Escape it did not
-                # record is pressed again, and one it never records fails the turn, saying what it showed.
+                # [LAW:no-silent-failure] a stop is reported as one only once Claude Code has recorded it. Escape is pressed once: a
+                # record that does not come is a bug (the Escape went to the wrong place or at the wrong time), so the turn fails.
                 recorded = turn.answered.done() or await self._recorded(before)
         except BrainGone as error:
             self._over(turn, error)
@@ -823,24 +822,20 @@ class Brain:
             # Its Stop came while the Escape was pressed: the turn ended by itself, and says so once.
             return
         if not recorded:
-            self._over(turn, StopUnrecorded(f"the brain's Claude Code did not record the Escape that stopped its turn, after {STOP_PRESSES} presses; it showed:\n{self._claude.shown()}"))
+            self._over(turn, StopUnrecorded(f"the brain's Claude Code did not record the Escape that stopped its turn, within {STOP_SECONDS:g}s of one press; it showed:\n{self._claude.shown()}"))
             return
         self._over(turn, BrainStopped())
 
     async def _recorded(self, before: int) -> bool:
-        """Says whether Claude Code recorded the Escape that stopped the turn, in its transcript: more interrupts than `before`
-        counted the moment the Escape went. Each press waits STOP_SECONDS for the record; one not recorded is pressed again,
-        STOP_PRESSES times at most. The input is held by the caller."""
+        """Says whether Claude Code recorded the Escape that was pressed, in its transcript: more interrupts than `before`
+        counted the moment the Escape went. The record is waited for STOP_SECONDS, once; the Escape is not pressed again.
+        The input is held by the caller."""
         loop = asyncio.get_running_loop()
-        for press in range(STOP_PRESSES):
-            if press:
-                logger.warning(f"the brain's Claude Code did not record the Escape that stopped its turn: pressing it again ({press + 1} of {STOP_PRESSES})")
-                await self._type(lambda typist: typist.press("escape"))
-            deadline = loop.time() + STOP_SECONDS
-            while loop.time() < deadline:
-                if self._interrupts() > before:
-                    return True
-                await asyncio.sleep(0.1)
+        deadline = loop.time() + STOP_SECONDS
+        while loop.time() < deadline:
+            if self._interrupts() > before:
+                return True
+            await asyncio.sleep(0.1)
         return False
 
     def _interrupts(self) -> int:
