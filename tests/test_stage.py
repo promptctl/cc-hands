@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from datetime import UTC, datetime
@@ -43,6 +43,7 @@ from hands.core.playback import Bookmark
 from hands.core.events import Ending, Joined, PermissionRequested
 from hands.core.session import DenyAndInterrupt, Membership, Permission, RequestId
 from hands.sessions.registry import Sessions
+from hands.brain import stage
 from hands.brain.mcp import CallSpans
 from hands.brain.process import TYPED, ClaudeTurn
 from hands.core.attention import Attention
@@ -2493,3 +2494,41 @@ async def test_words_said_in_a_turn_withheld_while_hands_is_quiet_are_answered(r
     assert aside in ANSWERS
     rig.brain.end()
     await rig.turned(2)
+
+
+async def test_a_barge_in_over_a_turn_withheld_while_hands_is_quiet_cuts_nothing_and_its_answer_to_hands_words_is_said(rig: Rig) -> None:
+    rig.attention.append(replace(rig.attention[-1], quiet="on"))
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    # A text block still streams, withheld: nothing of it is the user's to hear, so the user speaking cuts none of it.
+    rig.stream(told, "The build")
+    await rig.interrupt()
+    await rig.stop()
+    await rig.say("and the tests?")
+    notified.awaited = True
+    rig.brain.running = rig.brain.answers = notified
+    answering, _ = rig.request()
+    rig.stream(answering, " The tests passed.")
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    rig.brain.end()
+    await rig.turned(2)
+    assert "The tests passed." in "".join(rig.out.said())
+
+
+async def test_a_turn_nobody_waited_on_reads_whether_hands_is_quiet_once(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    reads: list[None] = []
+    real = stage.set_to
+
+    async def counted(aloud: Any) -> Any:
+        reads.append(None)
+        return await real(aloud)
+
+    monkeypatch.setattr(stage, "set_to", counted)
+    rig.attention.append(replace(rig.attention[-1], quiet="on"))
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    for word in ("The ", "build ", "finished ", "at ", "last."):
+        rig.stream(told, word)
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    await rig.turned()
+    assert len(reads) == 1

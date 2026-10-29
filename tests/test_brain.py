@@ -509,6 +509,7 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
 async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -729,6 +730,7 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
 
 async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
@@ -747,6 +749,7 @@ async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -1039,7 +1042,7 @@ def _modelled(brain: Brain) -> None:
     brain._sessions = model(lambda _entry: None, brain._told, brain._took)  # pyright: ignore[reportPrivateUsage]
     brain._reader = Reader(brain._sessions, Tails(brain._sessions), brain._apply)  # pyright: ignore[reportPrivateUsage]
     brain._moved = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
-    brain._claude_turns = ClaudeTurns()  # pyright: ignore[reportPrivateUsage]
+    brain._claude_turns = ClaudeTurns(brain._settle)  # pyright: ignore[reportPrivateUsage]
     brain.__dict__.setdefault("_launched", root())
 
 
@@ -1060,6 +1063,7 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
     # [LAW:one-source-of-truth] which turn answers them is the model's to say, from Claude Code's queue records: the turn
     # they were typed into, when a remove took them out of the queue before its Stop, or the turn they ran as after it.
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1093,6 +1097,7 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
     transcript = tmp_path / "projects" / "-brain-cwd" / "b1.jsonl"
     transcript.parent.mkdir(parents=True)
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     recorded: list[Entry] = []
@@ -1150,6 +1155,8 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
         raise OSError("the transcript went")
 
     brain = object.__new__(Brain)
+
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain._claude = Ended()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     brain._exit = asyncio.ensure_future(exited())  # pyright: ignore[reportPrivateUsage]
     brain._reading = asyncio.ensure_future(reading())  # pyright: ignore[reportPrivateUsage]
@@ -1174,6 +1181,8 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
         recorded.append(entry)
 
     brain = object.__new__(Brain)
+
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = record  # pyright: ignore[reportPrivateUsage]
@@ -1212,6 +1221,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
 
 async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_runs() -> None:
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1235,6 +1245,7 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
 async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -1702,6 +1713,7 @@ def _permission_hook(prompt: str, path: str = "/tmp/x") -> bytes:
 async def _in_turn(recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, _Turn]:  # pyright: ignore[reportPrivateUsage]
     """A brain built bare, with a turn in flight that Claude Code took as p1, which the model holds running."""
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -1951,6 +1963,7 @@ def _owning() -> Brain:
     """A brain built bare, its model and its `ClaudeTurns` as `Brain` builds them, heard only through what the model hands
     over: the words each prompt hook filed (`_took`), and each telling (`_told`)."""
     brain = object.__new__(Brain)
+    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -2258,3 +2271,59 @@ async def test_a_brain_stop_released_by_shutdown_loses_no_order() -> None:
     stop = Stopped(SessionId("b1"), "done", mode=None, prompt=PromptId("n1"), again=False, heard=Stamp(0), request=RequestId("r"))
     brain._ordered(SimpleNamespace(happened=stop), "released", 0.0)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
     assert len(brain._claude_turns.open) == 1  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_stopping_a_notification_turn_stops_the_turn_typed_behind_it_before_it_was_taken() -> None:
+    recorded: list[Entry] = []
+    brain = _owning()
+    keys = _keyed(brain, recorded)
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    # Typed behind the notification, and not yet taken, as the user stops the notification's work shown.
+    await brain._input.acquire()  # pyright: ignore[reportPrivateUsage]
+    turn = _typed_turn(brain, "and now?")
+    assert brain.interrupt(notified) is True
+    _took(brain, "n1", "and now?", queued=True)
+    brain._input.release()  # pyright: ignore[reportPrivateUsage]
+    # Its words waited behind the turn stopped, and Ctrl-C cleared them: the turn ends stopped, never left waiting.
+    await until(lambda: turn.answered.done())
+    assert (turn.answered.result(), "escape" in keys.pressed, brain._claude_turns.open) == (BrainStopped(), True, ())  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_telling_of_a_turn_already_over_ends_no_turn_behind() -> None:
+    brain = _owning()
+    turn = _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    _told(brain, "p1", ["p1"], waiting=(NOTICE,))
+    (behind,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    # Told again, as another Stop hook's block re-tells it: the turn is over, and the result waiting is not named by it.
+    _told(brain, "p1", ["p1"])
+    assert (turn.answered.result(), behind.ended.done(), behind.ids) == (BrainAnswered(PromptId("p1"), None), False, frozenset())
+
+
+async def test_words_queued_while_which_turn_runs_is_unknown_take_no_turn_for_the_one_running() -> None:
+    brain = _owning()
+    _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    brain._lost("a test")  # pyright: ignore[reportPrivateUsage]
+    # Claude Code may still run p1: a task result queued now runs behind it, never as the turn its requests are of.
+    _took(brain, "p1", NOTICE, queued=True)
+    assert brain.current() is None
+    _took(brain, "p2", "next")
+    assert brain.current() is not None and brain.current().ids == {"p2"}  # pyright: ignore[reportOptionalMemberAccess]
+
+
+async def test_a_turn_is_typed_only_once_every_dialog_the_brain_posted_is_answered() -> None:
+    recorded: list[Entry] = []
+    brain = _owning()
+    keys = _keyed(brain, recorded)
+    dialog: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    brain._dialogs.add(dialog)  # pyright: ignore[reportPrivateUsage]
+    asking = asyncio.ensure_future(brain.ask("and now?", unasked))
+    await asyncio.sleep(0.05)
+    # Its keys would answer the dialog still open on the brain's screen.
+    assert keys.pressed == []
+    brain._dialogs.discard(dialog)  # pyright: ignore[reportPrivateUsage]
+    dialog.set_result(None)
+    await until(lambda: keys.pressed == [" and now?"])
+    asking.cancel()

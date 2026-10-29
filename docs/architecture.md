@@ -1133,7 +1133,7 @@ end, with the prompt id Claude Code took it under (`taken`), whether that id was
 it queued the words behind or into that turn (`queued`), the id it was told under (`told`), the tools its latest request
 offered the model (`offered`), the ids of the turn of Claude Code's that answered it (`ids`), how its telling was found
 to be that turn's (`matched`: `id`, or `behind` for words run as the turn behind the one told), and why the order of
-the brain's turns was lost while it was in flight (`order_lost`), or with the error that failed it. The brain keeps no account of Claude Code's turns: its session is a session of the
+the brain's turns was lost while it was in flight (`order_lost`), or with the error that failed it. What Claude Code's turns are is the model's to read: its session is a session of the
 one model of a turn (`core/reducer.py`), in a `Sessions` of its own (`brain.process.model`), fed as a working session's
 is: its hooks, each applied by the same `Reader.hooked` as a working session's, answered once it is applied, and its
 Stop held as a working session's is, and its status and transcript by the same `Reader`, on its period and through now
@@ -1161,7 +1161,11 @@ anyone waited on it (`origin`), what opened it (`opener`), and how its end was m
 even while a turn Claude Code opened itself runs: Claude Code queues the words behind it, and they run in it or as the
 turn behind it, so the typed turn's take is bounded from its typing. hands' words filed into a turn nobody waited on
 are spoken while hands is quiet (`ClaudeTurn.awaited`), and so is that turn's failure; otherwise quiet holds both. A
-stop that clears Claude Code's queue ends every turn of `ClaudeTurns` still open as `Unran`, since no telling will. This order rests on Claude Code waiting on the
+stop that clears Claude Code's queue ends every turn of `ClaudeTurns` still open as `Unran`, since no telling will. A typed
+turn rides the turn of `ClaudeTurns` that answers it (`Brain._ride`), and whatever ends that one ends the typed turn with it; stopping a turn
+Claude Code opened itself stops the typed turn queued in it. A telling of a turn already over ends nothing, and the turn
+behind runs only once the turn ahead of it ends. Before a turn is typed, every dialog the brain holds is refused, and the
+turn waits, within its take, for each dialog's hook to be answered, so no key answers one. This order rests on Claude Code waiting on the
 brain's hooks, so the brain bounds its prompt hook and its Stop's hold by `TAKE_SECONDS`, and declares each hook's
 timeout past that bound (`hookconfig.brain_declared`). The hold ends the moment the Stop is decided: only a Stop still
 undecided waits it out, and letting it go sooner would fail every open turn rather than answer any. A prompt hook or Stop answered past `TAKE_SECONDS`, a Stop let go undecided, or

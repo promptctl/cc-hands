@@ -321,6 +321,10 @@ class _Turn:
     # time, so at most one is: here where it last started, the request and its index in that request's reply, so only its
     # own stop ends it, never a thinking block's of a retry opening ahead of the text it goes on with. None while none is.
     voicing: tuple[str, int] | None = None
+    # Whether what the turn says is withheld now: then nothing of it is to be heard, however it streams.
+    withholding: bool = False
+    # Whether hands was quiet as the turn first said something, read once for a turn nobody asked.
+    quiet: bool | None = None
     # How many points the turn has put to the user, and how many of them the speaker has played: its cursor through
     # what the brain said and asked.
     marked: int = 0
@@ -336,7 +340,7 @@ class _Turn:
     def to_hear(self) -> bool:
         """Something the brain said or asked is still to be heard: a text block still streaming, or a point the speaker
         has not played. It plays them in order, so once the last has played, every one before it has."""
-        return self.voicing is not None or self.reached < self.marked
+        return not self.withholding and (self.voicing is not None or self.reached < self.marked)
 
     def point(self, point: _Point) -> None:
         """Puts what the brain said or asked to the user, counted until its Mark has played."""
@@ -837,6 +841,7 @@ class BrainStage(FrameProcessor):
         # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none is handed to the speaker until the
         # turn is heard: asked as each comes, so hands' words filed into a turn nobody waited on are answered aloud.
         while not await self._heard(turn):
+            turn.withholding = True
             match words:
                 case None:
                     return
@@ -851,6 +856,7 @@ class BrainStage(FrameProcessor):
                     await self._floor.wait()
                     await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
             words = await turn.said.get()
+        turn.withholding = False
         # [LAW:no-ambient-temporal-coupling] the reply starts with the first thing the turn says, not with the turn: a turn
         # typed behind one Claude Code opened itself says nothing until that one has ended, so no two replies interleave.
         await self._floor.wait()
@@ -881,7 +887,12 @@ class BrainStage(FrameProcessor):
             case UserAsked() | HandsAsked():
                 return True
             case Unawaited():
-                return (turn.running is not None and turn.running.awaited) or (await set_to(self._aloud)).quiet == "off"
+                if turn.running is not None and turn.running.awaited:
+                    return True
+                # Read once a turn: the setting as the turn began to speak holds for all it says.
+                if turn.quiet is None:
+                    turn.quiet = (await set_to(self._aloud)).quiet != "off"
+                return not turn.quiet
 
     async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
         """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""
