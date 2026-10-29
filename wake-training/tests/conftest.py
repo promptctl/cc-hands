@@ -55,6 +55,8 @@ def entered(monkeypatch: pytest.MonkeyPatch, names: Mapping[str, str]) -> None:
 
 
 _machine = pytest.StashKey[dict[str, str]]()
+# How the run is held offline, as the hold says.
+_held = pytest.StashKey[str]()
 
 
 @pytest.hookimpl(trylast=True)
@@ -77,11 +79,11 @@ def pytest_configure(config: pytest.Config) -> None:
     # The suite fetches nothing while it runs, so it is held from before its first test to its last, and so is every
     # process a test starts.
     offline.sandboxable(platform.mac_ver()[0])
-    offline.hold()
+    config.stash[_held] = offline.hold()
 
 
-def pytest_report_header() -> str:
-    return f"offline: nothing past loopback ({offline.OFFLINE})"
+def pytest_report_header(config: pytest.Config) -> str:
+    return f"offline: nothing past loopback ({config.stash[_held]})"
 
 
 @pytest.fixture(scope="session")

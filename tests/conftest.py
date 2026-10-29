@@ -535,8 +535,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
-    offline.hold()
-    write(f"offline: nothing past loopback from here ({offline.OFFLINE})\n")
+    write(f"offline: nothing past loopback from here ({offline.hold()})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 

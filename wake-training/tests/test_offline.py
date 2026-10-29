@@ -1,16 +1,15 @@
-"""The suite is held offline from its start (conftest): nothing a test does connects past loopback. 192.0.2.1 is
-TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox a connection to it times out, inside it the OS refuses it at
-once."""
+"""The suite is held offline from its start (conftest): nothing a test does connects past loopback."""
 
 import errno
 import socket
 
 import pytest
+from conftest import offline
 
 
 def test_a_connection_a_test_makes_past_loopback_is_refused_by_the_os() -> None:
     with pytest.raises(PermissionError) as refused:
-        socket.create_connection(("192.0.2.1", 443), timeout=5)
+        socket.create_connection(offline.UNROUTED, timeout=5)
     assert refused.value.errno == errno.EPERM
 
 
