@@ -60,6 +60,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "HF_HUB_OFFLINE": "0",
         "HF_ENDPOINT": "https://hub.example.com",
         "HF_TOKEN": "hf_developer",
+        "NLTK_DATA": "/Users/developer/nltk_data",
         "GIT_AUTHOR_NAME": "Developer",
         "HOME": "/Users/developer",
         "ANTHROPIC_API_KEY": "sk-ant-developer",
@@ -74,7 +75,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "TMUX": "/private/tmp/tmux-501/default,1,0",
     }
 
-    tested = hermetic(machine, "/links/0:/usr/bin", "/Users/developer/.cache/huggingface/hub", Path("/tmp/home"), Path("/tmp/sockets"))
+    tested = hermetic(machine, "/links/0:/usr/bin", "/Users/developer/.cache/huggingface/hub", Path("/run/sentences"), Path("/tmp/home"), Path("/tmp/sockets"))
 
     assert tested == {
         "PATH": "/links/0:/usr/bin",
@@ -82,6 +83,7 @@ def test_the_hermetic_environment_keeps_nothing_else_of_the_machine_s() -> None:
         "CI": "true",
         "HF_HUB_OFFLINE": "1",
         "HF_HUB_CACHE": "/Users/developer/.cache/huggingface/hub",
+        "NLTK_DATA": "/run/sentences",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.com",

@@ -37,6 +37,12 @@ jobs:
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
+      # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache; kept
+      # the same way, for the same reason. NLTK's data has no revision to key on, so it is kept until the key is moved.
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/sentences
+          key: sentences-punkt_tab
       # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, and the engaged tests run
       # Smart Turn on MLX, on real sound, fetched into the Hugging Face cache at the revisions streaming.py and engaged.py
       # pin; kept the same way, for the same reason. The whole hub: a model's directory holds only links into the hub's

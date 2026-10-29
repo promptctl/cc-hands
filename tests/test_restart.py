@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -290,11 +291,15 @@ def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() ->
 
 
 def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
-    exited = spawned("false")
-    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it. A zombie in a
-    # terminal's foreground group says Z+.
-    while not subprocess.run(["ps", "-o", "stat=", "-p", str(exited)], capture_output=True, text=True).stdout.startswith("Z"):
-        time.sleep(0.01)
+    go, held = os.pipe()
+    exited = os.posix_spawnp("sh", ["sh", "-c", "read _; exit 1"], os.environ, file_actions=[(os.POSIX_SPAWN_DUP2, go, 0)], setsid=True)
+    os.close(go)
+    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it. The kernel's
+    # NOTE_EXIT, asked for while the child still waits on its stdin, comes once the child is a zombie.
+    with closing(select.kqueue()) as kernel:
+        kernel.control([select.kevent(exited, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT)], 0)
+        os.close(held)
+        assert kernel.control(None, 1, 30)
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
     try:
