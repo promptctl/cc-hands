@@ -449,18 +449,9 @@ class Timed:
 WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
 
 
-# Each woman heard alone first, then one hold of a turn of each, joined (docs/features.md, "Who said each word"): after
-# holds 1 and 4, 12 then 3 gives most of FEE016's words to FEE013's speaker; one more hold of FEE013 before FEE016's
-# first gives each her own.
-@pytest.mark.parametrize(
-    ("alone", "joined"),
-    [
-        ((1, 4), (3, 12)),
-        pytest.param((1, 4), (12, 3), marks=pytest.mark.xfail(raises=AssertionError, strict=True, reason="the voice the run knows is heard in one hold")),
-        ((1, 2, 4), (12, 3)),
-    ],
-    ids=["known-once", "known-once-newcomer-first", "known-twice"],
-)
+# Each woman heard alone first, then one hold of a turn of each, joined. One more hold of FEE013 before FEE016's first
+# is what gives each her own in 12 then 3 (the next test).
+@pytest.mark.parametrize(("alone", "joined"), [((1, 4), (3, 12)), ((1, 2, 4), (12, 3))], ids=["known-once", "known-twice"])
 def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
     # Decided on when each word starts, not on its text, which is about 20% wrong on AMI.
     timed = Timed(paired.session)
@@ -485,6 +476,18 @@ def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any, alon
     late = seconds(CHUNK * MEL_HOP)
     assert {speaker for speaker, _ in words} == set(speakers), words
     assert [(speaker, start) for speaker, start in words if not (start < boundary + late if speaker == speakers[0] else boundary <= start)] == [], (boundary, words)
+
+
+def test_a_newcomer_first_in_a_hold_after_one_of_the_voice_the_run_knows_is_given_that_voice_s_speaker(paired: Session) -> None:
+    # The miss docs/features.md states ("Who said each word"), pinned so that a change to it fails here and the claim is
+    # measured again: after FEE013's hold 1 and FEE016's hold 4, 12 then 3 gives FEE016's words, heard first, FEE013's
+    # speaker. What becomes of FEE013's few words after them differs between Metal and MLX's CPU.
+    live = Live(paired)
+    holds = fixture_holds("two_speakers_ami.flac")
+    for number in (1, 4):
+        live.spoken(np.concatenate([holds[number - 1], STOP]))
+    _, whole = live.spoken(np.concatenate([holds[12 - 1], holds[3 - 1], STOP]))
+    assert whole.words[0].speaker == 0, whole.words
 
 
 def test_a_hold_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(paired: Session) -> None:

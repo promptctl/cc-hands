@@ -6,16 +6,16 @@ each the run heard alone first, on hands' diarizer (hands.voice.streaming.diariz
 The voices: AMI Meeting Corpus's sixteen test meetings (Mix-Headset, CC BY 4.0), cut into each turn one person says
 alone (`measuring.turns`) that nobody sounds in, laughs and coughs included, for LEAD ahead of it or for
 engaged.STOP_SECS past it, per pyannote's AMI-diarization-setup references, and that is no longer than LONGEST, as a hold
-is. Each ordered pair of people in a
-meeting is a user, the voice the run knows, and a newcomer. A run hears the user alone in each of USERS of their turns,
-then the newcomer alone in each of NEWCOMERS of theirs, then one hold of the next turn of each, joined, both orders: the
-same joined hold for every amount heard. Each hold is followed by the silence `through` says, as the listener follows it.
+is. Each ordered pair of people in a meeting is a user, the voice the run knows, and a newcomer. A run hears the user
+alone in each of USERS of their turns, then the newcomer alone in each of NEWCOMERS of theirs, then one hold of the next
+turn of each, joined, both orders: the same joined hold for every amount heard. Each hold is followed by the silence
+`through` says, as the listener follows it.
 
 Scored on the diarizer's decisions, not on words: the session masks each speaker's stream by them, so they decide whose
 every word is, and the recognizer's own misses (about 20% of AMI's words, and all of a quiet person's) are not counted
 as attribution. A stretch's speaker is the one the session hears in most of its encoder frames. The joined hold is right
-where the user's stretch is the speaker the user's holds alone were, and the newcomer's is the speaker theirs were,
-another.
+where the user's stretch is the speaker every one of the user's holds alone was, and the newcomer's is the speaker every
+one of theirs was, another.
 """
 
 import itertools
@@ -66,6 +66,24 @@ def speaker(heard: np.ndarray) -> int | None:
     return int(most[0]) if counts.max() and len(most) == 1 else None
 
 
+def judged(mine: set[int | None], theirs: set[int | None], got_user: int | None, got_new: int | None) -> str:
+    """How a joined hold came out, from the speakers the user's holds alone and the newcomer's were each heard as, and
+    each one's stretch of the joined hold."""
+    if None in mine | theirs:
+        return "nobody heard alone"
+    if len(mine) > 1 or len(theirs) > 1:
+        return "heard as two alone"
+    (known,), (new,) = mine, theirs
+    return (
+        "newcomer as the user alone" if new == known
+        else "right" if (got_user, got_new) == (known, new)
+        else "newcomer as the user" if got_new == known
+        else "nobody heard together" if None in (got_user, got_new)
+        else "user as another" if got_user != known
+        else "newcomer as another"
+    )  # fmt: skip
+
+
 def main() -> None:
     directory = Path(sys.argv[1])
     directory.mkdir(parents=True, exist_ok=True)
@@ -88,16 +106,8 @@ def main() -> None:
                 joined = (turn(audio, first.start, first.end, 0.0), turn(audio, second.start, second.end, engaged.STOP_SECS))
                 held = [(turn(audio, t.start, t.end, engaged.STOP_SECS),) for t in (*mine[:users], *theirs[:newcomers])]
                 *each, together = decided(session, [*held, joined])
-                known, new = speaker(np.concatenate([e for e, in each[:users]])), speaker(np.concatenate([e for e, in each[users:]]))
                 got_new, got_user = map(speaker, together if order == "newcomer first" else together[::-1])
-                outcome = (
-                    "nobody heard alone" if known is None or new is None
-                    else "newcomer as the user alone" if new == known
-                    else "right" if (got_user, got_new) == (known, new)
-                    else "newcomer as the user" if got_new == known
-                    else "user as another" if got_user != known
-                    else "newcomer as another"
-                )  # fmt: skip
+                outcome = judged({speaker(e) for e, in each[:users]}, {speaker(e) for e, in each[users:]}, got_user, got_new)
                 tally.setdefault((users, newcomers, order), Counter())[outcome] += 1
                 missed[(name, user, newcomer)] += outcome != "right"
         print(f"{name}: done", file=sys.stderr, flush=True)
