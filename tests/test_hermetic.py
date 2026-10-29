@@ -16,7 +16,7 @@ from huggingface_hub.errors import OfflineModeIsEnabled
 
 import conftest
 from conftest import executable, hermetic, without_claude
-from fetches import Fetches, fetching
+from fetches import CANNOT_FETCH, Fetches, failed, fetching
 from hands.voice.engaged import SMART_TURN
 
 
@@ -177,6 +177,19 @@ def test_what_the_fetches_need_reaches_their_process_as_it_was_given() -> None:
     fetches = Fetches(Path("/cache/nltk-data"), Path("/cache/wake-word"), Path("/cache/claude-code"), Path("/cache/mock-anthropic"), {"PATH": "/usr/bin", "GOPATH": "/go"})
 
     assert Fetches.read(fetches.written()) == fetches
+
+
+@pytest.mark.parametrize(
+    ("returncode", "said"),
+    [
+        (CANNOT_FETCH, "the run cannot fetch what it needs: why is above"),
+        (-9, "the run's fetches were ended by SIGKILL"),
+        (1, "the run's fetches failed with a defect (exit 1): its stack is above"),
+        (2, "the run's fetches failed with a defect (exit 2): its stack is above"),
+    ],
+)
+def test_a_fetch_process_that_fails_is_said_to_have_failed_as_it_did(returncode: int, said: str) -> None:
+    assert failed(returncode) == said
 
 
 def test_a_run_with_pytest_s_cache_off_stops_saying_it_fetches_into_it(pytester: pytest.Pytester) -> None:

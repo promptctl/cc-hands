@@ -468,12 +468,15 @@ def offline() -> None:
     sandbox, which every process it starts inherits and none can leave, so a connection a test, or any child of one,
     makes past loopback is refused by the OS before a packet leaves. It is macOS's sandbox_init, the call sandbox-exec
     makes, on the run's own process, as Bazel's macOS sandbox holds a test with the network denied. [LAW:no-silent-failure]
-    a profile the OS does not apply stops the run before any test, with the OS's reason."""
+    a profile the OS does not apply stops the run before any test, with the OS's reason, and whether the run was in a
+    sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, inside which macOS applies no other."""
     sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
     sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
+    sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     error = ctypes.c_char_p()
     if sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error)):
-        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}")
+        held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
+        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}")
 
 
 # Around the session start's other hooks, the terminal's among them, so what the run fetches is written below its header.

@@ -125,12 +125,18 @@ def fetched_apart(fetches: Fetches) -> None:
         text=True,
         env={**os.environ, "HF_HUB_OFFLINE": "0", "HF_XET_CACHE": huggingface_hub.constants.HF_XET_CACHE},
     )
-    if done.returncode == CANNOT_FETCH:
-        raise pytest.UsageError("the run cannot fetch what it needs: why is above")
-    if done.returncode < 0:
-        raise pytest.UsageError(f"the run's fetches were ended by {signal.Signals(-done.returncode).name}")
     if done.returncode:
-        raise pytest.UsageError(f"the run's fetches failed with a defect (exit {done.returncode}): its stack is above")
+        raise pytest.UsageError(failed(done.returncode))
+
+
+def failed(returncode: int) -> str:
+    """What a fetch process that exited `returncode`, not 0, did: could not fetch, was ended by a signal, or died of a
+    defect, whose stack it wrote."""
+    if returncode == CANNOT_FETCH:
+        return "the run cannot fetch what it needs: why is above"
+    if returncode < 0:
+        return f"the run's fetches were ended by {signal.Signals(-returncode).name}"
+    return f"the run's fetches failed with a defect (exit {returncode}): its stack is above"
 
 
 if __name__ == "__main__":
