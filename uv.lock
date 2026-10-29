@@ -455,6 +455,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "soundfile" },
 ]
 
 [package.metadata]
@@ -484,6 +485,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-timeout", specifier = ">=2.3,<3" },
+    { name = "soundfile", specifier = ">=0.13" },
 ]
 
 [[package]]

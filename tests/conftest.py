@@ -12,7 +12,6 @@ import sys
 import tempfile
 import time
 import traceback
-import wave
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
@@ -91,18 +90,6 @@ def model_facts(load: WideEvent) -> dict[str, Fact]:
     facts = dict(load.facts)
     assert isinstance(facts.pop("footprint_mb"), float) and isinstance(facts.pop("process_grew_mb"), float), load.facts
     return facts
-
-
-def quiet(seconds: float) -> bytes:
-    """Silence as the desk's microphone hands it over: 16 kHz, 16-bit mono."""
-    return bytes(round(16_000 * seconds) * 2)
-
-
-def spoken(text: str, at: Path) -> bytes:
-    """`text` spoken by macOS's own voice, as 16 kHz mono 16-bit audio, the way the desk's microphone is heard."""
-    subprocess.run(["say", "-v", "Samantha", "-o", str(at), "--data-format=LEI16@16000", text], check=True)
-    with wave.open(str(at)) as clip:
-        return clip.readframes(clip.getnframes())
 
 
 # How long a pipeline may take to start before a test fails on it.
