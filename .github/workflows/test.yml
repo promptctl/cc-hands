@@ -1,7 +1,7 @@
 # Every PR into master runs `make check` on the macOS a release builds on, and is refused if it is built on the line
-# master was rewound away from on 2026-10-15; the check named `test` is required on master, on the PR and again in
-# master's merge queue on master as it will be with the PR merged, so a red one cannot merge, and release.yml publishes
-# only commits on master, so this is its gate.
+# master was rewound away from on 2026-10-15. The check named `test` is required twice: on the PR, then in master's
+# merge queue on the commit master will be with the PR merged. A red one cannot merge, and release.yml publishes only
+# commits on master, so this is its gate.
 name: test
 
 on:
