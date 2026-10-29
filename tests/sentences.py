@@ -62,6 +62,11 @@ async def install(pin: Pin, cache: Path, fetch: Callable[[str, pinned.Write], Aw
     with tempfile.TemporaryDirectory(dir=cache, prefix=".partial-") as staging:
         unzipped = Path(staging) / "data"
         zipfile.ZipFile(archive).extractall(unzipped / pin.subdir)
-        # A directory under the pin's name is the whole package: an unzip that was interrupted is left in staging.
-        unzipped.rename(data)
+        # A directory under the pin's name is the whole package: an unzip that was interrupted is left in staging. Two
+        # runs that install at once each rename a whole package there, and the first one's stands.
+        try:
+            unzipped.rename(data)
+        except OSError:
+            if not data.is_dir():
+                raise
     return data

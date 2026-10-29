@@ -45,8 +45,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import engaged, streaming
-from hands.voice.wakeword import Pretrained
+from hands.voice import streaming
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import timeouts
@@ -415,18 +414,6 @@ def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, h
         "HOME": str(home),
         "TMUX_TMPDIR": str(sockets),
     }
-
-
-# The canonical mock of Anthropic's API the brain's end-to-end tests run against, at the release they were written
-# against. Moving it is one commit, and CI's cache of it is keyed on it.
-MOCK_MODULE = "github.com/promptctl/mock-anthropic"
-MOCK_RELEASE = "v0.1.0"
-
-# Every speech weight a test loads, each at the revision hands pins it to.
-WEIGHTS = ((streaming.MODEL, streaming.REVISION), (streaming.DIARIZATION, streaming.DIARIZATION_REVISION), (engaged.SMART_TURN, engaged.SMART_TURN_REVISION))
-
-# The wake words whose models a switch to the wake word loads.
-WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
 
 
 @dataclass(frozen=True)

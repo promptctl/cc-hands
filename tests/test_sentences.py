@@ -54,3 +54,15 @@ async def test_a_package_that_does_not_hash_to_its_pin_leaves_nothing(tmp_path: 
         await install(pin, tmp_path, serving(package(), []))
 
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_package_another_run_installed_while_this_one_fetched_stands(tmp_path: Path) -> None:
+    body = package()
+    pin = Pin(URL, hashlib.sha256(body).hexdigest(), "tokenizers")
+
+    async def racing(url: str, write: pinned.Write) -> None:
+        (pin.data(tmp_path) / "tokenizers" / "punkt_tab").mkdir(parents=True)
+        write(body)
+
+    assert await install(pin, tmp_path, racing) == pin.data(tmp_path)
+    assert [path.name for path in tmp_path.iterdir()] == [pin.sha256]
