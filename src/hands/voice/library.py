@@ -6,14 +6,12 @@ hands.
 """
 
 import asyncio
-import os
 import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
-from loguru import logger
 
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
@@ -65,20 +63,15 @@ class Library:
             return Found(matches, listed_at, from_cache)
 
 
-def keep_hub_token(environment: Mapping[str, str]) -> None:
-    """Makes the Hugging Face token the process holds: the environment's where it has one, else the keychain's.
+def hub_token(environment: Mapping[str, str]) -> str | None:
+    """The Hugging Face token the cloning weights are fetched with: the environment's where it has one, else the keychain's,
+    else None. A voice whose weights need a token and get none fails at its choice, naming the cloning model.
 
-    [LAW:single-enforcer] the one owner of the process's token. pocket_tts fetches the cloning weights with no token argument,
-    so the environment is the only channel it reads; this is the one write to it, made once, before the configuration that
-    may fetch a voice is read. The token is never logged or written to a file.
+    [LAW:single-enforcer] the one reader of the token. pocket_tts fetches the cloning weights with no token argument, so the
+    environment is the only channel it reads; cli.main writes the token there, once, where a process starts. The token is
+    never logged or written to a file.
     """
-    if environment.get("HF_TOKEN"):
-        return
-    token = _keychain_token()
-    if token is None:
-        logger.warning("no Hugging Face token in the environment or the keychain: the cloning weights may not be fetched, and then no voice in Kyutai's library can be spoken in")
-        return
-    os.environ["HF_TOKEN"] = token
+    return environment.get("HF_TOKEN") or _keychain_token()
 
 
 def _keychain_token() -> str | None:

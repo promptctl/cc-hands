@@ -3,20 +3,19 @@ search once an hour, and given the Hugging Face token from the environment or th
 real library: each takes its listing, its download, and its keychain from a fake."""
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from huggingface_hub.errors import EntryNotFoundError
-from loguru import logger
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from hands.daemon import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import library, voices
-from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library, keep_hub_token
+from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library
 from hands.voice.tools import audited, voice_tools
 from hands.voice.voices import DEFAULT, LibraryVoice, Voices, chosen, parse_voice, source
 from hands.daemon.run import CannotStart
@@ -172,32 +171,31 @@ async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tm
 
 # --- the token: the environment's, else the keychain's, once, and never logged ------------------------------------------
 
-def test_the_environments_token_is_kept_and_the_keychain_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_environments_token_is_used_and_the_keychain_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "_keychain_token", lambda: pytest.fail("the keychain was read though the environment has a token"))
-    monkeypatch.setenv("HF_TOKEN", "from-the-environment")
-    keep_hub_token({"HF_TOKEN": "from-the-environment"})
-    assert os.environ["HF_TOKEN"] == "from-the-environment"
+    assert library.hub_token({"HF_TOKEN": "from-the-environment"}) == "from-the-environment"
 
 
-def test_with_no_environment_token_the_keychain_supplies_it_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HF_TOKEN", raising=False)
+def test_with_no_environment_token_the_keychain_supplies_it(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
-    keep_hub_token({})
-    assert os.environ["HF_TOKEN"] == "from-the-keychain"
-    monkeypatch.delenv("HF_TOKEN")
+    assert library.hub_token({}) == "from-the-keychain"
 
 
-def test_with_neither_token_a_warning_is_logged_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_with_neither_token_there_is_none_and_the_environment_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.setattr(library, "_keychain_token", lambda: None)
-    said: list[str] = []
-    sink = logger.add(lambda message: said.append(str(message)), level="WARNING")
-    try:
-        keep_hub_token({})
-    finally:
-        logger.remove(sink)
+    assert library.hub_token({}) is None
     assert "HF_TOKEN" not in os.environ
-    assert any("no Hugging Face token" in line for line in said)
+
+
+def test_a_command_puts_the_keychains_token_in_the_environment_the_fetch_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hands.daemon import cli
+
+    # An empty token is no token: the keychain is asked, and the environment is restored by monkeypatch at the end.
+    monkeypatch.setenv("HF_TOKEN", "")
+    monkeypatch.setattr(library, "_keychain_token", lambda: "from-the-keychain")
+    cli.main(["--home", str(tmp_path / "home"), "status"])
+    assert os.environ["HF_TOKEN"] == "from-the-keychain"
 
 
 def test_the_keychain_is_asked_for_the_item_on_stdout_and_its_token_is_never_logged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,10 +218,11 @@ def test_help_reads_no_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
 
     reads: list[int] = []
 
-    def record(_environment: Mapping[str, str]) -> None:
+    def record() -> str | None:
         reads.append(1)
+        return None
 
-    monkeypatch.setattr(library, "keep_hub_token", record)
+    monkeypatch.setattr(library, "_keychain_token", record)
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert reads == []

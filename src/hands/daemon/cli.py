@@ -209,9 +209,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
     # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
-    from hands.voice.library import keep_hub_token
+    from hands.voice.library import hub_token
 
-    keep_hub_token(os.environ)
+    token = hub_token(os.environ)
+    if token is not None:
+        os.environ["HF_TOKEN"] = token
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
         # A relative --home is this directory's, made absolute here, since the home is written into the shim.
