@@ -21,7 +21,7 @@ from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelUnanswered, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move
 
 
@@ -77,7 +77,7 @@ def system_text(fact: SystemFact) -> str:
         case ModelReplyEmpty():
             return "The language model sent back nothing."
         case ModelUnanswered():
-            return "Hands heard no answer to that turn."
+            return "The language model gave no answer to that turn."
         case ModelActedUntold():
             return "The language model did not say how that went."
         case UsageLimitReached() as limit:

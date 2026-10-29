@@ -78,7 +78,7 @@ from hands.core.wire import (
     unstreamed,
 )
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelUnanswered, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
