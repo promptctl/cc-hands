@@ -6,6 +6,9 @@ name: test
 on:
   pull_request:
     branches: [master]
+  # master merges through a merge queue, and the `test` it waits on is this run on master as it will be with the PR
+  # merged: two PRs each green on an older master cannot turn it red together.
+  merge_group:
   # A cache a PR saves is that PR's alone; the runs on master save the ones every PR restores.
   push:
     branches: [master]
