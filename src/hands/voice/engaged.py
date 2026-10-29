@@ -91,6 +91,12 @@ class SmartTurn(BaseSmartTurn):
     def __init__(self, sample_rate: int) -> None:
         super().__init__(sample_rate=sample_rate)
         self._model = ported()
+        # [LAW:no-ambient-temporal-coupling] a warm-up: the port builds its Metal kernels on its first verdict, so one is
+        # given on silence as it loads, and a person's first turn is judged at every turn's latency. The port pads or
+        # trims every segment to the same frames, so silence builds exactly the kernels every verdict runs.
+        started = time.perf_counter()
+        self._model.predict_endpoint(np.zeros(sample_rate, dtype=np.float32), sample_rate=sample_rate)
+        self.warmup_secs = time.perf_counter() - started
 
     def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
         verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
@@ -111,6 +117,10 @@ class Models:
     @property
     def vad_stop_secs(self) -> float:
         return self._vad.params.stop_secs
+
+    @property
+    def smart_turn_warmup_secs(self) -> float:
+        return self._turn.warmup_secs
 
     async def detect(self, audio: bytes) -> VADState:
         return await self._vad.analyze_audio(audio)
@@ -144,14 +154,15 @@ async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGe
     async with AsyncExitStack() as held:
         with loads.loading("desk.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
-            # pause the detector ends speech at, as it was loaded with it.
+            # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
             # On a thread of its own the process does not join at exit (hands.threads), as every model's load is; started
             # inside the unit, so the load's time and growth are all on it.
             loading = settles_off_loop(lambda: Models(sample_rate), "Models")
             held.push_async_callback(_let_go, loading)
-            annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
-        yield loading.result()
+            models = await asyncio.shield(loading)
+            annotate(vad_stop_secs=models.vad_stop_secs, smart_turn_warmup_secs=models.smart_turn_warmup_secs)
+        yield models
 
 
 async def _let_go(loading: asyncio.Future[Models]) -> None:
