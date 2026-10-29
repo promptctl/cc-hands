@@ -17,10 +17,12 @@ import (
 )
 
 // The repository's one owner of the hold a test run is kept off the network by, and the
-// profile it holds runs to. go test runs a package's tests in its own directory.
+// profile it holds runs to, each a link to the repository's tests/: go test runs a
+// package's tests in its own directory, and rechecks no file outside the module before it
+// reports a pass it cached.
 const (
-	holds   = "../tests/offline.py"
-	profile = "../tests/offline.sb"
+	holds   = "testdata/offline.py"
+	profile = "testdata/offline.sb"
 )
 
 // floor is the first macOS whose sandbox holds a run to the profile without refusing
@@ -47,32 +49,46 @@ func sandboxable(release string, floor int) error {
 	return nil
 }
 
-// held puts the test binary in the profile before the first test: fritter's tests fetch
-// nothing, so the run is held from its start, and so is every child a test starts.
-func held() error {
+// hold is the profile the run is held to, once this macOS is known to apply it faithfully.
+func hold() ([]byte, error) {
 	said, err := os.ReadFile(holds)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	lowest, err := floor(string(said))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	release, err := syscall.Sysctl("kern.osproductversion")
 	if err != nil {
-		return fmt.Errorf("cannot read macOS's release: %v", err)
+		return nil, fmt.Errorf("cannot read macOS's release: %v", err)
 	}
 	if err := sandboxable(release, lowest); err != nil {
-		return err
+		return nil, err
 	}
-	held, err := os.ReadFile(profile)
+	return os.ReadFile(profile)
+}
+
+// held puts the test binary in the profile before the first test: fritter's tests fetch
+// nothing, so the run is held from its start, and so is every child a test starts.
+func held() error {
+	rules, err := hold()
 	if err != nil {
 		return err
 	}
-	if err := offline.Hold(held); err != nil {
+	if err := offline.Hold(rules); err != nil {
 		return fmt.Errorf("the run cannot hold itself to %s: %v", profile, err)
 	}
 	return nil
+}
+
+// go test keeps a passing result until a file its tests opened changes, and TestMain reads
+// the hold before go test records what is opened: read again here, so an edit to the
+// profile or the floor runs the suite again, never a pass it cached.
+func TestAnEditToTheHoldIsNeverACachedPass(t *testing.T) {
+	if _, err := hold(); err != nil {
+		t.Error(err)
+	}
 }
 
 // 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox a connection to
