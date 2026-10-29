@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
@@ -21,6 +22,7 @@ from datetime import timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
+from types import AsyncGeneratorType, CoroutineType, FrameType, GeneratorType
 from typing import cast
 
 import huggingface_hub.constants
@@ -179,12 +181,58 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
     while not done():
         if still == patience:
             # The clock beside the looking tells a loop held by other work from one that sat free.
-            raise TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, {loop.time() - since:.1f}s on the clock, at {seen!r}, while waiting on {done!r}")
+            stall = TimeoutError(f"nothing moved through {PATIENCE_SECS}s of looking, {loop.time() - since:.1f}s on the clock, at {seen!r}, while waiting on {done!r}")
+            # [LAW:nothing-unseen] a stall seen only on CI can be read only from its failure: where everything was.
+            stall.add_note(stalled())
+            raise stall
         await asyncio.sleep(LOOK_SECS)
         if (now := moved()) != seen:
             seen, still, since = now, 0, loop.time()
         else:
             still += 1
+
+
+def stalled() -> str:
+    """Where everything was as a wait stalled: each other thread's stack, by the thread's name, and each pending task's
+    whole await chain, from its coroutine down to the one waiting. The loop's own thread is the stalled wait itself, which
+    its task's chain shows. Task.print_stack stops at the task's own coroutine on 3.12, above the wait
+    (asyncio.format_call_graph walks the chain from 3.14)."""
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    threads = [f"thread {names.get(ident, ident)}:\n{''.join(traceback.format_stack(frame))}" for ident, frame in sys._current_frames().items() if ident != threading.get_ident()]  # pyright: ignore[reportPrivateUsage]  (sys documents it, the one view of every thread's frame)
+    tasks = [f"{task!r}:\n{''.join(traceback.StackSummary.extract((frame, frame.f_lineno) for frame in awaits(task.get_coro())).format())}" for task in asyncio.all_tasks()]
+    return "\n".join(threads + tasks)
+
+
+async def _held() -> AsyncGenerator[None]:
+    yield
+
+
+# The steps `async for`, anext() and an asynccontextmanager await on an async generator, typed by a generator never
+# started: 3.12 names neither type, and neither has an attribute leading to its generator.
+_never_started = _held()
+ASend, AThrow = type(_never_started.asend(None)), type(_never_started.athrow(GeneratorExit))
+del _never_started
+
+
+def awaits(awaited: object) -> Iterator[FrameType]:
+    """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first."""
+    while True:
+        match awaited:
+            case CoroutineType(cr_frame=FrameType() as frame):
+                yield frame
+                awaited = awaited.cr_await
+            case GeneratorType(gi_frame=FrameType() as frame):
+                yield frame
+                awaited = cast(object, awaited.gi_yieldfrom)
+            case AsyncGeneratorType(ag_frame=FrameType() as frame):
+                yield frame
+                awaited = awaited.ag_await
+            case ASend() | AThrow():
+                # Only the garbage collector's view reaches the step's generator on 3.12, beside any async generator it
+                # sends: its own is the one running the step.
+                [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType) and held.ag_running]
+            case _:
+                return
 
 
 @pytest.fixture(autouse=True)
