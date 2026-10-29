@@ -78,7 +78,7 @@ from hands.core.wire import (
     unstreamed,
 )
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelNotAsked, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
@@ -1283,9 +1283,20 @@ async def test_a_users_turn_that_ends_with_no_request_of_its_own_is_said_to_fail
     # No request is sent for the turn, so nothing answers it: the brain ends it all the same.
     rig.brain.end()
     await rig.until(lambda: len(rig.errors) == 1)
-    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelReplyEmpty()
+    # The model was never asked, so it is not said to have answered with nothing.
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelNotAsked()
     [turn] = turns(rig.recorded)
-    assert turn.facts["failed"] == ModelReplyEmpty()
+    assert turn.facts["failed"] == ModelNotAsked()
+
+
+async def test_a_users_turn_spoken_over_before_it_heard_anything_and_with_no_request_is_not_said_to_fail(rig: Rig) -> None:
+    await rig.say("first")
+    # The user spoke over the turn while it had nothing to say: their words are answered by the turn that follows it.
+    await rig.cut_in("second")
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.errors == []
+    assert turns(rig.recorded)[0].facts["failed"] is None
 
 
 async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
