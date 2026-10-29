@@ -1,13 +1,13 @@
 # Every PR into master runs `make check` on the macOS a release builds on, and is refused if it is built on the line
-# master was rewound away from on 2026-10-15; the check named `test` is required on master, so a red one cannot merge,
-# and release.yml publishes only commits on master, so this is its gate.
+# master was rewound away from on 2026-10-15; the check named `test` is required on master, on the PR and again in
+# master's merge queue on master as it will be with the PR merged, so a red one cannot merge, and release.yml publishes
+# only commits on master, so this is its gate.
 name: test
 
 on:
   pull_request:
     branches: [master]
-  # master merges through a merge queue, and the `test` it waits on is this run on master as it will be with the PR
-  # merged: two PRs each green on an older master cannot turn it red together.
+  # The queue's run: two PRs each green on an older master cannot turn it red together.
   merge_group:
   # A cache a PR saves is that PR's alone; the runs on master save the ones every PR restores.
   push:
