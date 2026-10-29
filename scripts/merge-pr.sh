@@ -2,8 +2,8 @@
 # merge-pr.sh PR [INTERVAL]: merge PR into master through its merge queue, and return only once it has merged or will
 # not. `gh pr merge` alone returns as soon as the PR is queued (or set to merge once its checks pass), and the queue can
 # still drop it when `test` fails on master with it merged; so this asks GitHub every INTERVAL seconds, 30 unless given,
-# which only the tests do. Exits 0 when PR merged, 1 when it did not, saying why, and 2 when gh fails, in gh's words, or
-# answers what this cannot read.
+# which only the tests do. Exits 0 when PR merged; 1 when it did not, saying why, or gh saying why it would not merge
+# it; and 2 when where the PR is cannot be known: gh cannot ask, or answers what this cannot read.
 # Waits with no deadline of its own: the queue's check timeout drops an entry whose `test` never reports.
 # Run again on a PR already queued or set to merge, it waits on that PR's merge, so a wait that exits 2 is re-run.
 set -eu
@@ -48,7 +48,8 @@ ask() { gh api graphql -F owner='{owner}' -F name='{repo}' -F number="$pr" -f qu
 
 # Only a PR nothing is merging is merged; one already queued or set to merge is waited on as it is.
 now=$(ask) || exit 2
-case $now in NOT\ QUEUED*) gh pr merge "$pr" || exit 2; now=$(ask) || exit 2 ;; esac
+# A merge gh refuses, for any reason, is a merge never requested: the PR did not merge, and gh has said why.
+case $now in NOT\ QUEUED*) gh pr merge "$pr" || exit 1; now=$(ask) || exit 2 ;; esac
 last=
 while :; do
   [ "$now" = "$last" ] || echo "merge-pr: #$pr $now" >&2

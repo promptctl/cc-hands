@@ -175,9 +175,10 @@ def test_a_pr_nothing_will_merge_exits_1_saying_why(tmp_path: Path, answer: dict
     assert f"pr merge --disable-auto {PR}" not in ran.calls
 
 
-def test_a_pr_gh_cannot_merge_fails_without_waiting(tmp_path: Path) -> None:
-    ran = merge(tmp_path, pull(), merge_exit=1)
-    assert ran.code == 2
+def test_a_pr_gh_will_not_merge_exits_1_without_waiting(tmp_path: Path) -> None:
+    """A draft, a conflict, a refusal: gh says why on stderr, and running this again would only be refused again."""
+    ran = merge(tmp_path, pull(mergeable="CONFLICTING"), merge_exit=1)
+    assert ran.code == 1
     assert ran.calls == [f"api graphql number={PR}", f"pr merge {PR}"]
 
 
