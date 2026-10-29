@@ -1192,6 +1192,13 @@ class Brain:
             self._unawaited.remove(unawaited)
             unawaited.told.set_result(BrainAnswered(told.turn, told.failure))
             return
+        # Claude Code runs one turn at a time, so an end bound to no turn nobody waits on is the end of what it runs, the
+        # oldest such turn whose prompt hook was matched elsewhere or never heard among them: none is left waiting on an
+        # end that will not come.
+        unbound = next((waiting for waiting in self._unawaited if waiting.prompt is None), None)
+        if unbound is not None:
+            self._unawaited.remove(unbound)
+            unbound.told.set_result(BrainAnswered(told.turn, told.failure))
         turn = self._turn
         if turn is None or turn.answered.done():
             logger.info(f"the brain's Claude Code ended turn {told.turn}, which no turn in flight was waiting on")

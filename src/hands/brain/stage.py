@@ -44,6 +44,8 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, BrainEnded, BrainStopped, kept
+from hands.core.attention import Attention
+from hands.voice.narrator import set_to
 from hands.core.brainwork import AlreadyEnded, BrainWork, Epoch, Idle, NotWorking, Running, StopOutcome, Stopping, Working
 from hands.core.effects import Deny
 from hands.core.beside import beside
@@ -308,6 +310,8 @@ class _Turn:
     working: asyncio.Event = field(default_factory=asyncio.Event)
     # Each line hands said in the turn, and how long after its `since` it was handed to the speaker, in milliseconds.
     asides: list[tuple[str, float]] = field(default_factory=list[tuple[str, float]])
+    # What the brain said in a turn nobody waited on while hands was quiet: kept on its event, never spoken.
+    withheld: list[str] = field(default_factory=list[str])
     # [LAW:one-source-of-truth] a text block of the turn's is streaming. The turn's, not the reply's: a reply broken in
     # the middle of one is asked again, and the text the retry goes on with is the same block. Blocks stream one at a
     # time, so at most one is: here where it last started, the request and its index in that request's reply, so only its
@@ -409,6 +413,7 @@ class BrainStage(FrameProcessor):
         record: Record,
         spans: CallSpans,
         cut_off: Callable[[], asyncio.Future[Bookmark]],
+        aloud: Callable[[], Attention],
         clock: Callable[[], Seconds] = time.monotonic,
         pause: Callable[[Seconds], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -430,6 +435,8 @@ class BrainStage(FrameProcessor):
         # [LAW:one-source-of-truth] what the speaker was cut off in by the barge-in it is next to reach: the player's to
         # say, which alone sees what played.
         self._cut_off = cut_off
+        # [LAW:one-source-of-truth] what the user set hands to say unprompted, read as the narrator reads it (`set_to`).
+        self._aloud = aloud
         self._now = clock
         # Waits out a call's time before the turn is acknowledged.
         self._pause = pause
@@ -764,6 +771,7 @@ class BrainStage(FrameProcessor):
             # Each line hands said in the turn, its acknowledgement and its answers to words said behind it, and how long
             # the user had waited for it.
             asides=tuple(turn.asides),
+            withheld="".join(turn.withheld),
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
@@ -806,6 +814,12 @@ class BrainStage(FrameProcessor):
         await self.push_frame(LLMFullResponseStartFrame() if under_way else LLMFullResponseEndFrame())
 
     async def _speak(self, turn: _Turn) -> None:
+        if not await self._heard(turn.asker):
+            # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none of them is handed to the speaker.
+            while (words := await turn.said.get()) is not None:
+                if isinstance(words, str):
+                    turn.withheld.append(words)
+            return
         await self._reply(turn, True)
         while (words := await self._handed(turn)) is not None:
             match words:
@@ -824,6 +838,15 @@ class BrainStage(FrameProcessor):
                     await self._point(turn, point)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
+
+    async def _heard(self, asker: Asker) -> bool:
+        """Whether what a turn says is spoken: always for a turn someone asked; for one nobody waits on, unless hands is
+        quiet, which holds everything it would say unprompted."""
+        match asker:
+            case UserAsked() | HandsAsked():
+                return True
+            case Unawaited():
+                return (await set_to(self._aloud)).quiet == "off"
 
     async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
         """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""
@@ -1092,6 +1115,10 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failu
     if turn.empty():
         # An empty reply is a whole one, kept in the brain's history: there is nothing broken off to tell it of.
         return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
+    if not turn.exchanges and isinstance(turn.asker, UserAsked):
+        # [LAW:no-silent-failure] the user's turn ended with no request of its own heard: whatever answered it was spoken,
+        # if at all, as a turn nobody waited on, so the user hears that their turn failed rather than silence.
+        return _Failure("the brain ended the user's turn without a request of its own", ModelReplyEmpty(), "")
     if turn.owes_word(tools):
         # [LAW:no-silent-failure] a turn that acted and closed on nothing, by an empty reply or a stay_silent it was already
         # refused once, ends heard as failed rather than as silence the user takes for nothing done.

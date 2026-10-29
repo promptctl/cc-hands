@@ -7,6 +7,7 @@ the tests run on a machine with none, as CI's is. The pinned Claude Code, from n
 before the run, into pytest's cache (conftest). What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
+from hands.core.attention import Attention
 import json
 import os
 import pwd
@@ -264,7 +265,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     out = Spoken()
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     try:
-        async with mind(config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off) as minded:
+        async with mind(config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:

@@ -45,6 +45,7 @@ from hands.core.session import DenyAndInterrupt, Membership, Permission, Request
 from hands.sessions.registry import Sessions
 from hands.brain.mcp import CallSpans
 from hands.brain.stage import ACTED_UNTOLD, ANSWERS, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
+from hands.core.attention import Attention
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -288,6 +289,8 @@ class Rig:
     call_spans: CallSpans
     # Each pause the stage is waiting out, with the task waiting it out: its time runs only when the test says.
     pauses: list[tuple[asyncio.Future[None], asyncio.Task[object]]]
+    # What the user set hands to say unprompted, the last of these, read as each turn nobody waits on starts.
+    attention: list[Attention] = field(default_factory=lambda: [Attention()])
     exchanges: int = 0
     # The span each request sent on carries, in the order they left.
     spans: list[Span] = field(default_factory=list[Span])
@@ -431,13 +434,14 @@ async def rig() -> AsyncGenerator[Rig, None]:
         pauses.append((paused, waiting))
         await paused
 
+    settings = [Attention()]  # the rig's `attention`
     out = Spoken()
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, clock=lambda: now[0], pause=pause)
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, lambda: settings[-1], clock=lambda: now[0], pause=pause)
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges, call_spans, pauses)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges, call_spans, pauses, settings)
         finally:
             asking.cancel()
 
@@ -2409,3 +2413,30 @@ async def test_a_users_turn_failed_untaken_behind_a_long_notified_turn_is_said_t
         ("unawaited", "notified", "ok"),
     ]
     assert rig.errors and "did not take" in rig.errors[0].error
+
+
+async def test_a_turn_nobody_waits_on_is_held_while_hands_is_quiet_and_kept_on_its_event(rig: Rig) -> None:
+    rig.attention[-1] = Attention(quiet="on")
+    exchange, _ = rig.request(notified())
+    rig.stream(exchange, "The ticket is filed.")
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.turned()
+    assert rig.out.said() == []
+    (event,) = turns(rig.recorded)
+    assert (event.facts["origin"], event.facts["text"], event.facts["withheld"]) == ("unawaited", "", "The ticket is filed.")
+
+
+async def test_a_users_turn_whose_opening_does_not_match_fails_aloud_and_the_turn_after_it_is_still_asked(rig: Rig) -> None:
+    await rig.say("what's next?")
+    # Claude Code opened with words that do not match what hands typed: spoken as a turn nobody waits on.
+    other, _ = rig.request({"messages": [{"role": "user", "content": "something else"}]})
+    rig.stream(other, "The backlog is next.")
+    await rig.until(lambda: rig.out.said() == ["The backlog is next."])
+    # One end of Claude Code's: the brain ends the user's turn, and the turn nobody waits on with it (`Brain._told`).
+    rig.brain.end()
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.turned(2)
+    assert sorted((event.facts["origin"], event.outcome) for event in turns(rig.recorded)) == [("awaited", "failed"), ("unawaited", "ok")]
+    assert rig.errors
+    await rig.say("and after that?")
+    assert rig.brain.asked[-1] == heard("and after that?")
