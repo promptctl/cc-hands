@@ -2401,6 +2401,36 @@ async def test_a_turn_nobody_waited_on_is_withheld_while_hands_is_quiet_and_kept
     assert (event.facts["withheld"], rig.out.said()) == ("The build finished.", [])
 
 
+async def test_hands_words_filed_into_a_turn_withheld_while_hands_is_quiet_are_answered_aloud_by_it(rig: Rig) -> None:
+    rig.attention.append(replace(rig.attention[-1], quiet="on"))
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The build finished.")
+    await rig.say("and the tests?")
+    # Filed into the notification's turn, which answers them now (`ClaudeTurn.awaited`): quiet holds none of its answer.
+    notified.awaited = True
+    rig.brain.running = rig.brain.answers = notified
+    answering, _ = rig.request()
+    rig.stream(answering, " The tests passed too.")
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    rig.brain.end()
+    await rig.turned(2)
+    notice = next(event for event in turns(rig.recorded) if event.facts["origin"] == "unawaited")
+    assert notice.facts["withheld"] == "The build finished."
+    assert "The tests passed too." in "".join(rig.out.said()) and "The build finished." not in "".join(rig.out.said())
+
+
+async def test_a_turn_nobody_waited_on_that_fails_while_hands_is_quiet_is_failed_on_its_event_and_never_spoken(rig: Rig) -> None:
+    rig.attention.append(replace(rig.attention[-1], quiet="on"))
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "Half a")
+    notified.ended.set_exception(RuntimeError("the brain exited"))
+    await rig.turned()
+    (event,) = turns(rig.recorded)
+    assert (event.outcome, rig.errors) == ("failed", [])
+
+
 async def test_hands_words_filed_into_a_turn_claude_code_opened_itself_and_left_waiting_are_answered_in_their_own_turn(rig: Rig) -> None:
     notified = rig.brain.opens()
     told, _ = rig.request()

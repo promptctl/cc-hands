@@ -728,7 +728,10 @@ class BrainStage(FrameProcessor):
             # [LAW:one-source-of-truth] what the user heard of a turn they spoke over is the speaker's to say, not the words it was handed.
             self._leave(asker, _notes(over, FAILED_AFTER) if over else (_broken_off("".join(spoken)) if spoken else note))
             await self._unsaid(unsaid)
-            await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            # [LAW:single-enforcer] a failure is spoken as the turn's words are (`_heard`): never for a turn nobody asked
+            # while hands is quiet. It is the turn's event's either way.
+            if await self._heard(turn):
+                await self.push_error(failed)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failed
         elif failure is not None:
             # [LAW:no-silent-failure] said as an error from the model's stage, which the system channel words. No category:
@@ -736,7 +739,8 @@ class BrainStage(FrameProcessor):
             self._leave(asker, _notes(over, FAILED_AFTER) if over else failure.note)
             fail(failure.error)
             await self._unsaid(unsaid)
-            await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            if await self._heard(turn):
+                await self.push_error(failure.error, exception=ModelFault(failure.fact))  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
             return failure.error
         match stopped and not turn.held_reply:
             case True:
@@ -829,24 +833,27 @@ class BrainStage(FrameProcessor):
         await self.push_frame(LLMFullResponseStartFrame() if under_way else LLMFullResponseEndFrame())
 
     async def _speak(self, turn: _Turn) -> None:
-        if not await self._heard(turn.asker):
-            # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none of them is handed to the speaker.
-            while (words := await turn.said.get()) is not None:
-                match words:
-                    case str():
-                        turn.withheld.append(words)
-                    case _Close() | Asked() as point:
-                        # Nothing of it is played, so it is reached as it is taken: no barge-in finds it still to hear.
-                        turn.reach(point)
-                    case _Aside(line=line, since=since):
-                        # Hands' answer to the user's own words, which quiet holds nothing of: said, alone.
-                        turn.asides.append((line, _ms(self._now() - since)))
-                        await self._floor.wait()
-                        await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
-            return
+        words = await turn.said.get()
+        # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none is handed to the speaker until the
+        # turn is heard: asked as each comes, so hands' words filed into a turn nobody waited on are answered aloud.
+        while not await self._heard(turn):
+            match words:
+                case None:
+                    return
+                case str():
+                    turn.withheld.append(words)
+                case _Close() | Asked() as point:
+                    # Nothing of it is played, so it is reached as it is taken: no barge-in finds it still to hear.
+                    turn.reach(point)
+                case _Aside(line=line, since=since):
+                    # Hands' answer to the user's own words, which quiet holds nothing of: said, alone.
+                    turn.asides.append((line, _ms(self._now() - since)))
+                    await self._floor.wait()
+                    await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
+            words = await turn.said.get()
         # [LAW:no-ambient-temporal-coupling] the reply starts with the first thing the turn says, not with the turn: a turn
         # typed behind one Claude Code opened itself says nothing until that one has ended, so no two replies interleave.
-        words = await self._handed(turn)
+        await self._floor.wait()
         await self._reply(turn, True)
         while words is not None:
             match words:
@@ -867,14 +874,14 @@ class BrainStage(FrameProcessor):
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
 
-    async def _heard(self, asker: Asker) -> bool:
-        """Whether what a turn says is spoken: always for a turn someone asked; for one nobody waits on, unless hands is
-        quiet, which holds everything it would say unprompted."""
-        match asker:
+    async def _heard(self, turn: _Turn) -> bool:
+        """Whether what a turn says is spoken: always for a turn someone asked, and for one nobody asked once hands' words
+        are filed into it (`ClaudeTurn.awaited`); else unless hands is quiet, which holds everything it would say unprompted."""
+        match turn.asker:
             case UserAsked() | HandsAsked():
                 return True
             case Unawaited():
-                return (await set_to(self._aloud)).quiet == "off"
+                return (turn.running is not None and turn.running.awaited) or (await set_to(self._aloud)).quiet == "off"
 
     async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
         """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""

@@ -727,7 +727,8 @@ class ClaudeTurns:
         if running is not None:
             running.matched = "id"
         else:
-            running = next((running for running in self._open if not running.ids), None)
+            # A telling that goes by no id is of no turn: it names none, the turn behind included.
+            running = next((running for running in self._open if not running.ids), None) if told.ids else None
             if running is None:
                 return None
             running.ids, running.matched = told.ids, "behind"
@@ -837,8 +838,7 @@ class Brain:
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
-        # [LAW:no-ambient-temporal-coupling] typed only once no turn Claude Code opened itself runs: it is spoken to its
-        # end, and never stopped for this one's typing (`_taking`).
+        # [LAW:no-ambient-temporal-coupling] one turn in flight at a time: the next is asked once the one before is answered.
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
         if self._exit.done():
@@ -919,17 +919,8 @@ class Brain:
                 # sends nothing: what was typed 10ms behind a turn joined the turn's prompt, or was left in the input with
                 # it.
                 try:
-                    # [LAW:no-ambient-temporal-coupling] typed only once no turn Claude Code opened itself runs, read with
-                    # the input held, so none opens between the look and the typing: each is spoken to its end, and never
-                    # stopped for this one's typing (`_taking`). The input is let go while it runs, so it can be stopped.
-                    while True:
-                        async with self._input:
-                            if not (itself := self._claude_turns.opened_itself):
-                                taken = await self._taking(turn)
-                                break
-                        await asyncio.wait({running.ended for running in itself} | {self._exit}, return_when=asyncio.FIRST_COMPLETED)
-                        if self._exit.done():
-                            raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
+                    async with self._input:
+                        taken = await self._taking(turn)
                 finally:
                     turn.tried.set_result(None)
                 if not taken:
@@ -958,7 +949,10 @@ class Brain:
         end: says whether it was. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
         turn is typed, so the turn is Claude Code's next and runs alone."""
-        if not self._all_told():
+        # [LAW:no-ambient-temporal-coupling] typed at once, never held behind a turn Claude Code opened itself: Claude Code
+        # queues the words behind it, and runs them in it or as the turn behind it (`_took`, `_told`), so the turn's take
+        # is bounded from now. Only what is no turn's, and none of Claude Code's own, is stopped.
+        if not self._claude_turns.opened_itself and not self._all_told():
             await self._clear(turn)
         await self._type(lambda typist: typist.type(turn.typed))
         await self._waited(turn.take, turn.taken, turn.answered)
@@ -1014,6 +1008,9 @@ class Brain:
             await asyncio.wait({waiting})
         if not waiting.cancelled():
             waiting.result()
+            # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no telling
+            # will end: words Ctrl-C cleared from its queue before they ran. Each ends here, where they were cleared.
+            self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
             return
         if self._exit.done():
             raise BrainGone("the brain exited while hands stopped what it ran")
@@ -1175,8 +1172,8 @@ class Brain:
         """[LAW:no-silent-failure] whether Claude Code waited on the hook as the order of the brain's turns needs
         (`ClaudeTurns`): a prompt's answered within its declared timeout, a Stop's decided within its hold."""
         match hook.happened:
-            case Prompted(prompt=prompt) if took > TAKE_SECONDS:
-                self._lost(f"the prompt hook of {prompt} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s Claude Code waits on it")
+            case Prompted(prompt=prompt) | Stopped(prompt=prompt) if took > TAKE_SECONDS:
+                self._lost(f"the {hook.name} hook of {prompt} was answered in {took:.1f}s, past the {TAKE_SECONDS:g}s hands has to answer it in")
             case Stopped(prompt=prompt) if held == "let go":
                 self._lost(f"the Stop of {prompt} was let go before it was decided")
             case _:
@@ -1201,6 +1198,11 @@ class Brain:
                 with unit("brain.permission", self._record):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
+            case "UserPromptSubmit" | "Stop":
+                # [LAW:no-silent-failure] a turn's opening or its Stop the model never heard: which turn a telling ends is
+                # no longer known (`ClaudeTurns`), and is not guessed.
+                self._lost(f"the brain's {event} hook does not parse: {error}")
+                return {}
             case _:
                 logger.warning(f"the brain posted a hook that does not parse: {error}")
                 return {}
