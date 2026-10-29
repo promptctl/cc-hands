@@ -22,7 +22,7 @@ from datetime import timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
-from types import CoroutineType, FrameType, GeneratorType
+from types import AsyncGeneratorType, CoroutineType, FrameType, GeneratorType
 from typing import cast
 
 import huggingface_hub.constants
@@ -202,9 +202,19 @@ def stalled() -> str:
     return "\n".join(threads + tasks)
 
 
+async def _held() -> AsyncGenerator[None]:
+    yield
+
+
+# The steps `async for`, anext() and an asynccontextmanager await on an async generator, typed by a generator never
+# started: 3.12 names neither type, and neither has an attribute leading to its generator.
+_never_started = _held()
+ASend, AThrow = type(_never_started.asend(None)), type(_never_started.athrow(GeneratorExit))
+del _never_started
+
+
 def awaits(awaited: object) -> Iterator[FrameType]:
-    """The frame of `awaited` and of each coroutine or generator it awaits through, outermost first. An async generator
-    ends it: 3.12 shows nothing of what one awaits."""
+    """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first."""
     while True:
         match awaited:
             case CoroutineType(cr_frame=FrameType() as frame):
@@ -213,6 +223,12 @@ def awaits(awaited: object) -> Iterator[FrameType]:
             case GeneratorType(gi_frame=FrameType() as frame):
                 yield frame
                 awaited = cast(object, awaited.gi_yieldfrom)
+            case AsyncGeneratorType(ag_frame=FrameType() as frame):
+                yield frame
+                awaited = awaited.ag_await
+            case ASend() | AThrow():
+                # The step's one referent is its generator; only the garbage collector's view reaches it on 3.12.
+                [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType)]
             case _:
                 return
 
