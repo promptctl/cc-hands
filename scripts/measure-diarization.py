@@ -22,10 +22,9 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from hands.voice import streaming
-from measuring import AMI_AUDIO, RATE, Live, Stretch, fetched, mono, turns
+from measuring import AMI_AUDIO, RATE, Live, fetched, mono, referenced, turns
 
 LIBRIVOX = "https://archive.org/download/invisibleman_1209_librivox_cb/invisibleman_{:02d}_wells_64kb.mp3"
-AMI_TURNS = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/{}.rttm"
 MEETINGS = ("ES2004a", "IS1009a")
 
 
@@ -69,8 +68,7 @@ def one_person(directory: Path) -> None:
 
 def meeting(directory: Path, name: str) -> None:
     audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-    # pyannote's segments are what each person said and every sound its references mark, so they are both.
-    segments = [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in fetched(directory, AMI_TURNS.format(name)).read_text().splitlines())]
+    segments = referenced(directory, name)
     alone = turns(segments, segments, len(audio) / RATE)
     run, heard = Live(streaming.load(streaming.GATING)), list[tuple[str, int | None, float]]()
     for turn in alone:

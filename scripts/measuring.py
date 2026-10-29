@@ -18,10 +18,14 @@ from hands.voice import streaming
 
 # Last on the path, so nothing in tests/ stands in for a module of the same name installed.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "tests"))
-from listening import SHAPES, Live, turn  # noqa: E402
+from listening import LEAD, SHAPES, Live, turn  # noqa: E402
 
 RATE = streaming.RATE
 AMI_AUDIO = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/{0}/audio/{0}.Mix-Headset.wav"
+# Who speaks when in each AMI meeting, per pyannote's AMI-diarization-setup references, the words alone.
+AMI_TURNS = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/{}.rttm"
+# AMI's sixteen test meetings, which the models were not trained on.
+AMI_TEST = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
 # A turn: one person's speech with no gap of GAP or more inside it, at least SHORTEST long.
 GAP = 0.5
 SHORTEST = 0.8
@@ -52,6 +56,12 @@ class Stretch:
     end: float
     person: str
     words: tuple[str, ...] = ()
+
+
+def referenced(directory: Path, name: str) -> list[Stretch]:
+    """Who speaks when in AMI meeting `name`, fetched into `directory` once: pyannote's segments, which are what each
+    person said and every sound its references mark, so they are both."""
+    return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in fetched(directory, AMI_TURNS.format(name)).read_text().splitlines())]
 
 
 def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:

@@ -445,32 +445,38 @@ class Timed:
         return getattr(self.session, name)
 
 
-def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any) -> None:
-    # The run hears each woman alone first, FEE013 in hold 1 and FEE016 in hold 4, so FEE013 is speaker 0 and FEE016
-    # speaker 1; then FEE013's hold 3 joined to FEE016's hold 12. A voice heard in only one hold before can be given the
-    # other's number in a hold they share (promptctl-voice-i15t.qg8.2d2): after the same two, 12 then 3 gives most of
-    # FEE016's words to speaker 0, and comes out right only once FEE016 is heard alone in four holds, more than CI's VMs
-    # decode inside the test timeout. Decided on when each word starts, not on its text, which is about 20% wrong on
-    # AMI.
+# Who says each hold of two_speakers_ami.flac that these cases hear.
+WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
+
+
+# Each woman heard alone first, then one hold of a turn of each, joined. The second case is where attribution starts to
+# hold for the voice the run knows (docs/features.md, "Who said each word"): after holds 1 and 4, 12 then 3 gives most
+# of FEE016's words to FEE013's speaker; one more hold of FEE013 before FEE016's first gives each her own.
+@pytest.mark.parametrize(("alone", "joined"), [((1, 4), (3, 12)), ((1, 2, 4), (12, 3))], ids=["known-once", "known-twice"])
+def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
+    # Decided on when each word starts, not on its text, which is about 20% wrong on AMI.
     timed = Timed(paired.session)
     live = Live(dataclasses.replace(paired, session=timed))
     holds = fixture_holds("two_speakers_ami.flac")
-    for number in (1, 4):
+    for number in alone:
         live.spoken(np.concatenate([holds[number - 1], STOP]))
-    first, second = holds[3 - 1], holds[12 - 1]
+    first, second = holds[joined[0] - 1], holds[joined[1] - 1]
     opened, heard = live.session.fed, len(timed.tokens)
     _, whole = live.spoken(np.concatenate([first, second, STOP]))
-    # hands gives each person's words as theirs, FEE013's first: in the order each was first heard in the hold.
-    assert [said.speaker for said in whole.words] == [0, 1], whole.words
+    # hands gives each person's words as theirs, each the speaker numbered by when the run first heard her, in the order
+    # each was first heard in the hold.
+    arrived = list(dict.fromkeys(WOMAN[number] for number in alone))
+    speakers = [arrived.index(WOMAN[number]) for number in joined]
+    assert [said.speaker for said in whole.words] == speakers, whole.words
     boundary = seconds(opened + len(first))
     words = [(speaker, start) for speaker, start, text in timed.tokens[heard:] if any(map(str.isalnum, text))]
     # Each person's words start in their own stretch of the hold, and nobody else's do. mlx-audio dates a word from the
     # chunk the encoder was pushed, and the encoder may still hold up to a chunk of the feed before it, so a word's start
-    # is late by as much as a chunk, never early: FEE013's last word, said at the end of her stretch, can be dated past
-    # it, and FEE016's first cannot be dated before it.
+    # is late by as much as a chunk, never early: the first person's last word, said at the end of her stretch, can be
+    # dated past it, and the second's first cannot be dated before it.
     late = seconds(CHUNK * MEL_HOP)
-    assert {speaker for speaker, _ in words} == {0, 1}, words
-    assert [(speaker, start) for speaker, start in words if not (start < boundary + late if speaker == 0 else boundary <= start)] == [], (boundary, words)
+    assert {speaker for speaker, _ in words} == set(speakers), words
+    assert [(speaker, start) for speaker, start in words if not (start < boundary + late if speaker == speakers[0] else boundary <= start)] == [], (boundary, words)
 
 
 def test_a_hold_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(paired: Session) -> None:
