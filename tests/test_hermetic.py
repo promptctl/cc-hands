@@ -15,7 +15,8 @@ import pytest
 from huggingface_hub.errors import OfflineModeIsEnabled
 
 import conftest
-from conftest import executable, fetching, hermetic, without_claude
+from conftest import executable, hermetic, without_claude
+from fetches import Fetches, fetching
 from hands.voice.engaged import SMART_TURN
 
 
@@ -170,6 +171,12 @@ def test_a_defect_in_a_fetch_is_raised_as_itself() -> None:
     with pytest.raises(TypeError, match="a defect"):
         fetching(written.append, "the models", (OSError,), broken)
     assert written == ["fetching the models: "]
+
+
+def test_what_the_fetches_need_reaches_their_process_as_it_was_given() -> None:
+    fetches = Fetches(Path("/cache/nltk-data"), Path("/cache/wake-word"), Path("/cache/claude-code"), Path("/cache/mock-anthropic"), {"PATH": "/usr/bin", "GOPATH": "/go"})
+
+    assert Fetches.read(fetches.written()) == fetches
 
 
 def test_a_run_with_pytest_s_cache_off_stops_saying_it_fetches_into_it(pytester: pytest.Pytester) -> None:

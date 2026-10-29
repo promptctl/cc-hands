@@ -11,7 +11,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import traceback
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
@@ -23,15 +22,11 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast
 
-import httpx
 import huggingface_hub.constants
-from huggingface_hub.errors import RevisionResolutionError
-from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
 import mlx.core as mx
 import mlx_whisper
 import nltk
 import pytest
-from mlx_audio.utils import get_model_path
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -51,9 +46,9 @@ from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import engaged, streaming
-from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
-from npm_registry import REGISTRY
+from sentences import PUNKT_TAB
+from fetches import Fetches, fetched_apart
 import timeouts
 
 
@@ -402,9 +397,8 @@ def without_claude(path: str, links: Path) -> str:
 
 def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, home: Path, sockets: Path) -> dict[str, str]:
     """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
-    Hugging Face `hub` cache the run fetched the weights into and the hub offline, NLTK's data in `sentences` alone, no
-    git config but a repository's own
-    and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
+    Hugging Face `hub` cache the run fetched the weights into and the hub offline, NLTK's data looked for first in
+    `sentences`, no git config but a repository's own and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
     `home` and a tmux socket directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
     tmux's or a proxy, which hands reads as a session's own, is absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
@@ -451,42 +445,6 @@ class Run:
 RUN = pytest.StashKey[Run]()
 
 
-def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
-    """What `fetch` gave, `what` it is written as it starts and how long it took once it is done, so a fetch that hangs
-    is the one named last. [LAW:no-silent-failure] one that fails as a fetch does, in one of its `failures`, stops the
-    run before any test, naming what it could not fetch and why, never a test timed out on it; anything else is a
-    defect, raised as itself with its stack."""
-    write(f"fetching {what}: ")
-    started = time.monotonic()
-    try:
-        fetched = fetch()
-    except failures as error:
-        write("failed\n")
-        raise pytest.UsageError(f"the run cannot fetch {what}: {type(error).__name__}: {error}") from error
-    write(f"{time.monotonic() - started:.2f} s\n")
-    return fetched
-
-
-def sentence_tokenizer(directory: Path) -> None:
-    """NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, in `directory` unless it is there already:
-    unfound, pipecat downloads it into the HOME of whichever test first splits a sentence. NLTK's data has no revision
-    to pin, and its download asks NLTK's index every time, so a warm run looks only at what it has."""
-    try:
-        nltk.data.find("tokenizers/punkt_tab", paths=[str(directory)])  # pyright: ignore[reportUnknownMemberType]  (untyped in NLTK)
-    except LookupError:
-        nltk.download("punkt_tab", download_dir=str(directory), quiet=True, raise_on_error=True)  # pyright: ignore[reportUnknownMemberType]  (untyped in NLTK)
-
-
-def installed_mock(binary: Path, machine: Mapping[str, str]) -> Path:
-    """The mock at MOCK_RELEASE, built by `go install` into its release's own directory unless it is there already, so
-    the build of one release is never taken for another. Built with the machine's own environment, its toolchain and
-    caches, the one fetch that is."""
-    if not binary.is_file():
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env={**machine, "GOBIN": str(binary.parent)})
-    return binary
-
-
 def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, sentences: Path, home: Path) -> Generator[dict[str, str]]:
     """[LAW:single-enforcer] the hermetic environment, and nothing else but pytest's own names, as the process's own while
     the generator is held, with `home` and a tmux socket directory that hold nothing. The sockets sit under /tmp, not
@@ -523,14 +481,15 @@ def offline() -> None:
 # Around the session start's other hooks, the terminal's among them, so what the run fetches is written below its header.
 @pytest.hookimpl(wrapper=True)
 def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
-    """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test: so no test's timeout
-    counts a download. Then the run goes offline, so no test, nor anything one starts, reaches past loopback.
+    """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test and in a process of
+    its own (fetches.py): so no test's timeout counts a download. Then the run goes offline, so no test, nor anything one
+    starts, reaches past loopback.
 
     The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
-    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Warm,
-    each fetch is a look at what is already there. Then the hub in this process goes offline for the rest of the run, as
-    a child's is by its environment, so a weight the run did not fetch fails the test that loads it and never downloads
-    inside it. Undone by the config's cleanup, which runs however the session ends."""
+    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Then
+    the hub in this process goes offline for the rest of the run, as a child's is by its environment, so a weight the run
+    did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
+    from no process, so this interpreter stays offline after the session, and a second session in it fetches nothing."""
     yield
     config = session.config
     terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
@@ -544,41 +503,22 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     tools = without_claude(machine["PATH"], links)
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
     monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
-    sentences = config.cache.mkdir("sentences")
-    # NLTK read its data's path, the developer's ~/nltk_data among it, as it was imported; a child reads NLTK_DATA.
+    nltk_data = config.cache.mkdir("nltk-data")
+    sentences = PUNKT_TAB.data(nltk_data)
+    # NLTK read its data's path, the developer's ~/nltk_data among it, as it was imported; a child reads NLTK_DATA before
+    # its defaults.
     monkeypatch.setattr(nltk.data, "path", [str(sentences)])
     stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, sentences, home))
-    # The line each fetch writes says what the run is fetching; the hub's bars would break it, so they are off while it
-    # fetches, and only then.
-    disable_progress_bars()
-    try:
-        for repo, revision in WEIGHTS:
-            # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures
-            # are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
-            fetching(
-                write,
-                f"{repo} at {revision} from the Hugging Face hub",
-                (httpx.HTTPError, OSError, RevisionResolutionError),
-                partial(get_model_path, repo, revision=revision),
-            )
-    finally:
-        enable_progress_bars()
-    fetching(write, "NLTK's punkt_tab sentence tokenizer", (ValueError, OSError), partial(sentence_tokenizer, sentences))
     wake_word = config.cache.mkdir("wake-word")
-    for word in WAKE_WORDS:
-        fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(wake_word, word)))
     claude_code = config.cache.mkdir("claude-code")
-    installed = fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(claude_code, REGISTRY)))
-    mock = fetching(
-        write,
-        f"{MOCK_MODULE}@{MOCK_RELEASE}",
-        (subprocess.CalledProcessError, OSError),
-        partial(installed_mock, config.cache.mkdir("mock-anthropic") / MOCK_RELEASE / "mock-anthropic", machine),
-    )
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine)
+    # The fetches' lines go to the terminal below what this process has written to it.
+    terminal.flush()
+    fetched_apart(fetches)
     offline()
-    write(f"offline: nothing past loopback from here ({OFFLINE.relative_to(config.rootpath)})\n")
+    write(f"offline: nothing past loopback from here ({OFFLINE})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
-    config.stash[RUN] = Run(machine, tools, sentences, wake_word, installed.path, mock)
+    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 
 
 @pytest.fixture(scope="session")
