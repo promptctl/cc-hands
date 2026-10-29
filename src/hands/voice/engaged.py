@@ -90,7 +90,15 @@ class SmartTurn(BaseSmartTurn):
 
     def __init__(self, sample_rate: int) -> None:
         super().__init__(sample_rate=sample_rate)
+        self.set_sample_rate(sample_rate)
         self._model = ported()
+        # [LAW:no-ambient-temporal-coupling] a warm-up: the port builds its Metal kernels, and MLX its stream for the
+        # thread, on the first verdict there, so one is given on silence as it loads, on the thread every verdict runs on,
+        # and a person's first turn is judged at every turn's latency. The port pads or trims every segment to the same
+        # frames, so silence builds exactly the kernels every verdict runs.
+        started = time.perf_counter()
+        self._model_executor.submit(self._predict_endpoint, np.zeros(sample_rate, dtype=np.float32)).result()
+        self.warmup_secs = time.perf_counter() - started
 
     def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
         verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
@@ -104,13 +112,16 @@ class Models:
         self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
         self._turn = SmartTurn(sample_rate)
-        self._turn.set_sample_rate(sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
 
     @property
     def vad_stop_secs(self) -> float:
         return self._vad.params.stop_secs
+
+    @property
+    def smart_turn_warmup_secs(self) -> float:
+        return self._turn.warmup_secs
 
     async def detect(self, audio: bytes) -> VADState:
         return await self._vad.analyze_audio(audio)
@@ -140,18 +151,20 @@ class Models:
 
 @asynccontextmanager
 async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
-    """Both models, loaded off the loop as their own unit of work, for as long as the desk hears with them."""
+    """Both models, loaded off the loop as their own unit of work, Smart Turn judging at a turn's latency from the first
+    verdict, for as long as the desk hears with them."""
     async with AsyncExitStack() as held:
         with loads.loading("desk.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
-            # pause the detector ends speech at, as it was loaded with it.
+            # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
             # On a thread of its own the process does not join at exit (hands.threads), as every model's load is; started
             # inside the unit, so the load's time and growth are all on it.
             loading = settles_off_loop(lambda: Models(sample_rate), "Models")
             held.push_async_callback(_let_go, loading)
-            annotate(vad_stop_secs=(await asyncio.shield(loading)).vad_stop_secs)
-        yield loading.result()
+            models = await asyncio.shield(loading)
+            annotate(vad_stop_secs=models.vad_stop_secs, smart_turn_warmup_secs=models.smart_turn_warmup_secs)
+        yield models
 
 
 async def _let_go(loading: asyncio.Future[Models]) -> None:

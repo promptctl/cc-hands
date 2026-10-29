@@ -286,9 +286,16 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
     async with loaded(16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
-    assert [(event.event, event.outcome, model_facts(event)) for event in events] == [
-        ("desk.loaded", "ok", {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS})
-    ]
+    [loaded_event] = events
+    facts = model_facts(loaded_event)
+    # Smart Turn's warm-up took some time, and how much is on the load.
+    warmup = facts.pop("smart_turn_warmup_secs")
+    assert isinstance(warmup, float) and warmup > 0
+    assert (loaded_event.event, loaded_event.outcome, facts) == (
+        "desk.loaded",
+        "ok",
+        {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS},
+    )
 
 
 @pytest.mark.parametrize(("said", "complete"), [("create a ticket to read session history.", True), ("can you tell me about the", False)])
