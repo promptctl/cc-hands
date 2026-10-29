@@ -328,16 +328,18 @@ So that in conversation hands can tell the owner from another person, and from i
   1 hold with no words and the miss one person's only hold given to another's speaker. On the
   two-speaker AMI fixture, at GATING 4, every word's speaker matched what the transformers path
   on the CPU decided for the same audio, 663 of 663 over five phases of the grid. In a hold a
-  newcomer shares with a voice the run knows, each is given their own speaker about nine times in
-  ten once the run has heard that voice alone in two holds, and three times in four when it has
-  heard it in one, where the newcomer's own first hold is often taken as the known voice. Measured
-  2026-10-28 by `scripts/measure-newcomers.py` on the session's speaker decisions, which decide
-  whose every word is: 52 pairs of people in AMI's sixteen test meetings, turns of at most 6 s, one
-  turn of each joined into a hold in both orders. With the known voice heard alone in two turns
-  193 of 208 joined holds give each their own speaker, in five 189 of 208, in one 159 of 208; with
-  the newcomer heard alone in three turns 291 of 312, in one 250 of 312. On the two-speaker AMI
-  fixture, after one hold of FEE013 and one of FEE016, a hold of FEE016's then FEE013's gives most
-  of FEE016's words to FEE013's speaker, and one more hold of FEE013 first gives each her own.
+  newcomer shares with a voice the run knows, each is given their own speaker about nine times
+  in ten however many holds the run has heard that voice alone in, and the newcomer's words are
+  almost never taken as the known voice's. Measured 2026-10-28 on Metal by
+  `scripts/measure-newcomers.py` on the session's speaker decisions, which decide whose every
+  word is: 36 pairs of a meeting's people, 25 pairs of people, in AMI's sixteen test meetings,
+  turns of at most 6 s with no word or other sound of anyone else's near them, one turn of each
+  joined into a hold in both orders. With the known voice heard alone in one turn 127 of 144
+  joined holds give each their own speaker, in two 134 of 144, in five 135 of 144; with the
+  newcomer heard alone in one turn 194 of 216, in three 202 of 216; in 2 of the 432 the newcomer
+  is given the known voice's speaker. On the two-speaker AMI fixture, after one hold of FEE013
+  and one of FEE016, a hold of FEE016's then FEE013's gives most of FEE016's words to FEE013's
+  speaker, and one more hold of FEE013 first gives each her own.
   Built: tests/test_streaming.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)

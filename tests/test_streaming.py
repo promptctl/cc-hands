@@ -449,10 +449,18 @@ class Timed:
 WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
 
 
-# Each woman heard alone first, then one hold of a turn of each, joined. The second case is where attribution starts to
-# hold for the voice the run knows (docs/features.md, "Who said each word"): after holds 1 and 4, 12 then 3 gives most
-# of FEE016's words to FEE013's speaker; one more hold of FEE013 before FEE016's first gives each her own.
-@pytest.mark.parametrize(("alone", "joined"), [((1, 4), (3, 12)), ((1, 2, 4), (12, 3))], ids=["known-once", "known-twice"])
+# Each woman heard alone first, then one hold of a turn of each, joined (docs/features.md, "Who said each word"): after
+# holds 1 and 4, 12 then 3 gives most of FEE016's words to FEE013's speaker; one more hold of FEE013 before FEE016's
+# first gives each her own.
+@pytest.mark.parametrize(
+    ("alone", "joined"),
+    [
+        ((1, 4), (3, 12)),
+        pytest.param((1, 4), (12, 3), marks=pytest.mark.xfail(raises=AssertionError, strict=True, reason="the voice the run knows is heard in one hold")),
+        ((1, 2, 4), (12, 3)),
+    ],
+    ids=["known-once", "known-once-newcomer-first", "known-twice"],
+)
 def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
     # Decided on when each word starts, not on its text, which is about 20% wrong on AMI.
     timed = Timed(paired.session)

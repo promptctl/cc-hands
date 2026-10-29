@@ -68,7 +68,8 @@ def one_person(directory: Path) -> None:
 
 def meeting(directory: Path, name: str) -> None:
     audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-    segments = referenced(directory, name)
+    # Their words alone, as both what each person said and every sound heard.
+    segments = referenced(directory, name, "only_words")
     alone = turns(segments, segments, len(audio) / RATE)
     run, heard = Live(streaming.load(streaming.GATING)), list[tuple[str, int | None, float]]()
     for turn in alone:

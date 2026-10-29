@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import soundfile
@@ -22,8 +23,10 @@ from listening import LEAD, SHAPES, Live, turn  # noqa: E402
 
 RATE = streaming.RATE
 AMI_AUDIO = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/{0}/audio/{0}.Mix-Headset.wav"
-# Who speaks when in each AMI meeting, per pyannote's AMI-diarization-setup references, the words alone.
-AMI_TURNS = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/only_words/rttms/test/{}.rttm"
+# Who sounds when in each AMI meeting, per pyannote's AMI-diarization-setup references, marking each person's words alone
+# or their words and every laugh, cough and other sound they make.
+AMI_REFERENCES = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/{0}/rttms/test/{1}.rttm"
+type Marked = Literal["only_words", "word_and_vocalsounds"]
 # AMI's sixteen test meetings, which the models were not trained on.
 AMI_TEST = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
 # A turn: one person's speech with no gap of GAP or more inside it, at least SHORTEST long.
@@ -58,10 +61,11 @@ class Stretch:
     words: tuple[str, ...] = ()
 
 
-def referenced(directory: Path, name: str) -> list[Stretch]:
-    """Who speaks when in AMI meeting `name`, fetched into `directory` once: pyannote's segments, which are what each
-    person said and every sound its references mark, so they are both."""
-    return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in fetched(directory, AMI_TURNS.format(name)).read_text().splitlines())]
+def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
+    """Who sounds when in AMI meeting `name`, as pyannote's references mark it, fetched into `directory` once."""
+    (directory / marked).mkdir(exist_ok=True)
+    path = fetched(directory / marked, AMI_REFERENCES.format(marked, name))
+    return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in path.read_text().splitlines())]
 
 
 def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
