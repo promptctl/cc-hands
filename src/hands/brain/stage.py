@@ -80,7 +80,7 @@ from hands.core.wire import (
     tool_input,
 )
 from hands.core.stopfailure import StopFailed
-from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelNotAsked, ModelReplyEmpty, ModelUnreachable
+from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelUnanswered, ModelReplyEmpty, ModelUnreachable
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
@@ -1178,7 +1178,7 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failu
         # [LAW:no-silent-failure] the user's turn had no request sent to the model, and was not joined to a turn Claude Code
         # opened, which answers it and is judged on its own; nor one they spoke in, whose words are answered by the next
         # turn. Nothing answered it, so the user hears that it failed, not that the model answered with nothing.
-        return _Failure("the brain ended the user's turn without a request of its own", ModelNotAsked(), "")
+        return _Failure("the brain ended the user's turn without a request of its own", ModelUnanswered(), "")
     if turn.owes_word(tools):
         # [LAW:no-silent-failure] a turn that acted and closed on nothing, by an empty reply or a stay_silent it was already
         # refused once, ends heard as failed rather than as silence the user takes for nothing done.
