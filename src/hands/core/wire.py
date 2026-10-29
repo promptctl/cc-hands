@@ -280,6 +280,36 @@ def tool_answers(body: object) -> tuple[ToolAnswer, ...]:
     return tuple(answers)
 
 
+# A turn Claude Code opens itself for a background task's result: its prompt is the notification, alone or inside the
+# system reminder Claude Code wraps it in.
+NOTIFICATION = re.compile(r"\s*(<system-reminder>\s*)?<task-notification>")
+
+
+@dataclass(frozen=True)
+class Opening:
+    """The prompt a messages request opens its session's turn with: `by` whom it was asked, the user's input or a
+    background task's notification (`NOTIFICATION`), and its text, each block as Claude Code sent it."""
+
+    by: Literal["asked", "notified"]
+    texts: tuple[str, ...]
+
+
+def opening(body: object) -> Opening | None:
+    """The turn a messages request opens, or None for one that goes on with the turn it is in.
+
+    [LAW:one-source-of-truth] a request opens a turn exactly when its last message is a prompt: a message from the user
+    that answers no call (`_turned`). One that ends on a call's results goes on with its turn, whatever is queued into
+    it beside them, a notification included: that is the running turn's own, under its prompt id."""
+    turned = _turned(body)
+    if not turned:
+        return None
+    _, last = turned[-1]
+    if _role(last) != "user" or any(item.get("type") == "tool_result" for item in _mappings(_blocks(last))):
+        return None
+    texts = tuple(_texts(last))
+    return Opening("notified" if any(NOTIFICATION.match(text) for text in texts) else "asked", texts)
+
+
 def turns(body: object) -> int:
     """How many turns a messages request's history holds, the one in flight included."""
     return max((turn + 1 for turn, _ in _turned(body)), default=0)

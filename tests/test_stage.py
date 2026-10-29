@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Literal, cast
 
 import pytest
 from datetime import UTC, datetime
@@ -44,7 +44,7 @@ from hands.core.events import Ending, Joined, PermissionRequested
 from hands.core.session import DenyAndInterrupt, Membership, Permission, RequestId
 from hands.sessions.registry import Sessions
 from hands.brain.mcp import CallSpans
-from hands.brain.stage import ACTED_UNTOLD, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
+from hands.brain.stage import ACTED_UNTOLD, ANSWERS, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
 from hands.core.trace import Span
@@ -165,6 +165,14 @@ class FakeBrain:
         permission = Permission(tool, input)
         asked = PermissionRequested(self.session, at=0.0, request=RequestId(f"r{self.held}"), on=permission, mode=None)
         return Asked(permission, asked.request, self.sessions.hold(asked), self.sessions, self.session)
+
+    # Each turn Claude Code opened that nobody waits on, as the stage heard its opening request.
+    unawaiting: list[asyncio.Future[BrainEnded]] = field(default_factory=list[asyncio.Future[BrainEnded]])
+
+    def unawaited(self) -> asyncio.Future[BrainEnded]:
+        told: asyncio.Future[BrainEnded] = asyncio.get_running_loop().create_future()
+        self.unawaiting.append(told)
+        return told
 
     def interrupt(self) -> bool:
         """Asked to stop the turn in flight, as the real brain is: whether there was one. The test ends it, as Escape would."""
@@ -318,7 +326,8 @@ class Rig:
         and decides where it goes."""
         self.exchanges += 1
         exchange = f"x{self.exchanges}"
-        sent = Sent(exchange, session, kind, None, {"stream": True, **(body or {"messages": [{"role": "user", "content": "hi"}]})})
+        # By default the prompt the brain was last typed, as Claude Code opens the turn with what it took.
+        sent = Sent(exchange, session, kind, None, {"stream": True, **(body or {"messages": [{"role": "user", "content": self.brain.asked[-1] if self.brain.asked else "hi"}]})})
         self.stage.hear(sent)
         route = self.stage.route(sent)
         # The span apart: where the request goes is what each test asserts, and what trace it is in is a few tests' own.
@@ -866,9 +875,13 @@ async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
 async def test_a_main_turn_no_turn_asked_of_is_final_so_a_spent_limit_is_never_continued(rig: Rig) -> None:
     # Asked again at the reset, it would run the brain's tools with nobody there (hands-wire-zi2).
     _, route = rig.request()
-    assert route == Send(refusal="final", span=APART)
-    # Made for no turn: the root of a trace of its own.
-    assert rig.spans[0].parent_id is None
+    assert isinstance(route, Send) and route.refusal == "final"
+    # It opens a turn nobody waits on, the root of a trace of its own, and its request is a part of it.
+    assert len(rig.brain.unawaiting) == 1
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.turned()
+    (event,) = turns(rig.recorded)
+    assert event.parent_id is None and rig.spans[0].parent_id == event.span_id
 
 
 async def test_each_turn_the_brain_is_asked_that_turn_s_words_and_nothing_said_before_them(rig: Rig) -> None:
@@ -2295,3 +2308,104 @@ async def test_a_stop_of_a_turn_that_has_ended_or_of_no_turn_stops_nothing(rig: 
     # The turn shown has ended, and the brain is on another: that one goes on.
     assert rig.stage.stop(shown) == AlreadyEnded() and rig.brain.interrupts == 0
     rig.brain.end()
+
+
+# A turn Claude Code opens for a background task's result, as its opening request carries it (backgrounded_then_notified.jsonl, p2).
+NOTICE = "<task-notification>\n<task-id>b74jw7b5h</task-id>\n<status>completed</status>\n</task-notification>"
+
+
+def notified() -> dict[str, object]:
+    return {"messages": [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "Filing it."}, {"role": "user", "content": NOTICE}]}
+
+
+async def test_a_turns_requests_after_its_opening_and_a_notification_queued_into_it_are_all_its_own(rig: Rig) -> None:
+    await rig.say("run it")
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "Bash"))
+    # The notification queued beside the call's result is the running turn's, under its id (notified_mid_turn.jsonl, p1).
+    queued = answering("Bash", {"output": ""})
+    queued["messages"][-1]["content"].append({"type": "text", "text": NOTICE})  # pyright: ignore[reportIndexIssue, reportUnknownMemberType, reportAttributeAccessIssue]
+    after, _ = rig.request(queued)
+    rig.stream(after, "Both done.")
+    rig.brain.end()
+    await rig.turned()
+    assert rig.brain.unawaiting == []
+    (event,) = turns(rig.recorded)
+    assert (event.facts["origin"], event.facts["opened_by"], event.facts["text"]) == ("awaited", "asked", "Both done.")
+
+
+async def test_a_turn_claude_code_opens_for_a_notification_is_spoken_and_ends_on_its_own_end(rig: Rig) -> None:
+    exchange, _ = rig.request(notified())
+    rig.stream(exchange, "The ticket is filed.")
+    await rig.until(lambda: rig.out.said() == ["The ticket is filed."])
+    (told,) = rig.brain.unawaiting
+    told.set_result(ANSWERED)
+    await rig.turned()
+    (event,) = turns(rig.recorded)
+    assert (event.facts["origin"], event.facts["opened_by"], event.facts["text"], event.outcome) == ("unawaited", "notified", "The ticket is filed.", "ok")
+    # Nobody waited on it, so nothing acknowledged it.
+    assert event.facts["asides"] == ()
+
+
+async def test_the_users_turn_spoken_while_a_notified_turn_runs_waits_behind_it_and_each_says_only_its_own(rig: Rig) -> None:
+    exchange, _ = rig.request(notified())
+    rig.stream(exchange, "The ticket is filed.")
+    await rig.until(lambda: rig.out.said() == ["The ticket is filed."])
+    await rig.worker.queue_frame(UserWords("and the other one?"))
+    # Heard, and told it is next, but not typed while the notified turn runs.
+    await asyncio.sleep(0.05)
+    assert rig.brain.asked == []
+    rig.now[0] += 4.0
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.until(lambda: rig.brain.asked == [heard("and the other one?")])
+    mine, _ = rig.request()
+    rig.stream(mine, "Filing that too.")
+    rig.brain.end()
+    await rig.turned(2)
+    notice, asked = turns(rig.recorded)
+    assert (notice.facts["origin"], notice.facts["text"]) == ("unawaited", "The ticket is filed.")
+    # Told, in the notified turn's voice, that what they said is next.
+    assert [aside[0] for aside in cast(tuple[tuple[str, float], ...], notice.facts["asides"])] == [ANSWERS[0]]
+    assert (asked.facts["origin"], asked.facts["text"]) == ("awaited", "Filing that too.")
+    # It waited the notified turn out, and nothing was stopped.
+    assert asked.facts["queued_ms"] == 4000.0 and rig.brain.interrupts == 0
+
+
+async def test_a_notified_turn_opened_as_the_users_turn_is_typed_goes_first_and_each_ends_on_its_own(rig: Rig) -> None:
+    await rig.say("what's next?")
+    # Claude Code opened its own turn as hands typed: the user's waits in its queue behind it.
+    first, _ = rig.request(notified())
+    rig.stream(first, "The ticket is filed.")
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.turned()
+    mine, _ = rig.request()
+    rig.stream(mine, "The backlog is next.")
+    rig.brain.end()
+    await rig.turned(2)
+    notice, asked = turns(rig.recorded)
+    assert (notice.facts["origin"], notice.facts["text"]) == ("unawaited", "The ticket is filed.")
+    assert (asked.facts["origin"], asked.facts["text"], asked.facts["failed"]) == ("awaited", "The backlog is next.", None)
+
+
+
+async def test_a_users_turn_failed_untaken_behind_a_long_notified_turn_is_said_to_fail_and_its_late_answer_is_still_spoken(rig: Rig) -> None:
+    await rig.say("what's next?")
+    first, _ = rig.request(notified())
+    rig.stream(first, "The ticket is filed.")
+    # The notified turn outlasts the user's turn's time to be taken: that turn fails, aloud.
+    rig.brain.turns[0].set_exception(Untaken("the brain did not take the turn typed into it in 30s"))
+    rig.brain.unawaiting[0].set_result(ANSWERED)
+    await rig.turned(2)
+    # What was typed for it then runs in Claude Code's queue, a turn nobody waits on, and its answer is spoken.
+    late, _ = rig.request()
+    rig.stream(late, "The backlog is next.")
+    await rig.until(lambda: "The backlog is next." in rig.out.said())
+    rig.brain.unawaiting[1].set_result(ANSWERED)
+    await rig.turned(3)
+    events = turns(rig.recorded)
+    assert sorted((event.facts["origin"], event.facts["opened_by"], event.outcome) for event in events) == [
+        ("awaited", "asked", "failed"),
+        ("unawaited", "asked", "ok"),
+        ("unawaited", "notified", "ok"),
+    ]
+    assert rig.errors and "did not take" in rig.errors[0].error

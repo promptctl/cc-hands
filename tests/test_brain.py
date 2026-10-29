@@ -2,6 +2,7 @@
 side questions hands asks of a Claude Code of their own."""
 
 import asyncio
+from collections import deque
 import json
 import os
 import pickle
@@ -30,7 +31,7 @@ from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
 from hands.brain.process import BROKEN, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
-from hands.core.effects import Allow, Deny, Effect, HookReply, Summarise
+from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Held, Permission
@@ -301,8 +302,10 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert env == {"PATH": "/bin", "HOME": "/home/u", "FIRECRAWL_API_KEY": "fc", "HTTPS_PROXY": "http://corp:3128", **SLIM, **wrapper.EVERY_RUN, "CLAUDE_CONFIG_DIR": str(tmp_path / "brain"), "ANTHROPIC_BASE_URL": "http://127.0.0.1:1"}
     # The account's claude.ai connectors stay out of every request, whatever the brain's own setup names.
     assert env["ENABLE_CLAUDEAI_MCP_SERVERS"] == "false"
-    # No turn opens but the ones hands types: no background task and no scheduled prompt opens one of its own.
-    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == env["CLAUDE_CODE_DISABLE_CRON"] == "1"
+    # A background task runs in the background, so a turn that starts one ends without waiting on it; no scheduled prompt
+    # opens a turn of its own (promptctl-latency-3fui.h2r).
+    assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in env
+    assert env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
@@ -512,6 +515,7 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
         launched = here()
     brain._launched = launched  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
     listener, url = await _serving(brain)
@@ -727,6 +731,7 @@ async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_
     brain = object.__new__(Brain)
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
     warned: list[str] = []
@@ -746,6 +751,7 @@ def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     errors, sink = failures()
     try:
         body = {"messages": [{"role": "user", "content": "hi"}], "tools": [{"name": "Read"}]}
@@ -1059,6 +1065,7 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
     loop = asyncio.get_running_loop()
     turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" and add 3?"))  # pyright: ignore[reportPrivateUsage]
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     await brain.posted("UserPromptSubmit", _hooked("UserPromptSubmit", "p1", prompt="count to ten"))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(StatusReported(SessionId("b1"), Report(Busy(), Stamp(2000)), 2.0))  # pyright: ignore[reportPrivateUsage]
     # Typed while p1 runs: Claude Code files the words under its id.
@@ -1169,6 +1176,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"))  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     # Claude Code's turn p1 in flight, as the model holds it: the turn taken.
     _modelled(brain)
     await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path("/brain/projects/-brain-cwd/b1.jsonl"))))  # pyright: ignore[reportPrivateUsage]
@@ -1201,6 +1209,7 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
     brain._turn, brain._typing = None, set()  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path("/brain/projects/-brain-cwd/b1.jsonl"))))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Prompted(SessionId("b1"), 0.0, "default", PromptId("p2"), "next"))  # pyright: ignore[reportPrivateUsage]
     loop = asyncio.get_running_loop()
@@ -1697,6 +1706,7 @@ async def _in_turn(recorded: list[Entry], asks: Callable[[Asked], None]) -> tupl
     turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, PromptText(" write"))  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
     await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Prompted(SessionId("b1"), 0.0, "default", PromptId("p1"), "write"))  # pyright: ignore[reportPrivateUsage]
@@ -1926,3 +1936,58 @@ async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unre
             await asyncio.wait_for(asking, 10)
     finally:
         await brain.stop()
+
+
+def _unwaited() -> Brain:
+    """A brain with no turn of hands' in flight, to bind the turns Claude Code opens itself."""
+    brain = object.__new__(Brain)
+    brain.session = SessionId("b1")
+    brain._turn = None  # pyright: ignore[reportPrivateUsage]
+    brain._unawaited, brain._unbound = deque(), deque()  # pyright: ignore[reportPrivateUsage]
+    return brain
+
+
+def _opened_itself(brain: Brain, prompt: str, words: str, queued: bool = False) -> None:
+    brain._took(Submitted(SessionId("b1"), PromptId(prompt), words, queued))  # pyright: ignore[reportPrivateUsage]
+
+
+def _ended(brain: Brain, prompt: str) -> None:
+    brain._told(Summarise(SessionId("b1"), PromptId(prompt), None))  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("hook_first", [True, False], ids=["hook before request", "request before hook"])
+async def test_a_turn_claude_code_opens_itself_ends_on_the_end_its_prompt_hook_names_whichever_came_first(hook_first: bool) -> None:
+    brain = _unwaited()
+    if hook_first:
+        _opened_itself(brain, "p2", "<task-notification>")
+        told = brain.unawaited()
+    else:
+        told = brain.unawaited()
+        _opened_itself(brain, "p2", "<task-notification>")
+    _ended(brain, "p1")
+    assert not told.done()
+    _ended(brain, "p2")
+    assert told.result() == BrainAnswered(PromptId("p2"), None)
+
+
+async def test_a_notification_queued_into_a_turn_nobody_waits_on_binds_no_turn_after_it() -> None:
+    brain = _unwaited()
+    first = brain.unawaited()
+    _opened_itself(brain, "p2", "<task-notification>")
+    # A second notification Claude Code queued into p2, under p2's id: it opens nothing.
+    _opened_itself(brain, "p2", "<task-notification>", queued=True)
+    second = brain.unawaited()
+    _opened_itself(brain, "p3", "<task-notification>")
+    _ended(brain, "p2")
+    assert first.result() == BrainAnswered(PromptId("p2"), None) and not second.done()
+    _ended(brain, "p3")
+    assert second.result() == BrainAnswered(PromptId("p3"), None)
+
+
+async def test_words_typed_for_a_turn_that_failed_untaken_run_as_a_turn_nobody_waits_on() -> None:
+    # The user's turn failed untaken behind a notified one, so no turn of hands' waits on what was typed for it.
+    brain = _unwaited()
+    late = brain.unawaited()
+    _opened_itself(brain, "p3", " what's next?")
+    _ended(brain, "p3")
+    assert late.result() == BrainAnswered(PromptId("p3"), None)

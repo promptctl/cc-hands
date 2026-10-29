@@ -7,6 +7,8 @@ from typing import cast
 
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import (
+    Opening,
+    opening,
     BlockStopped,
     JsonDelta,
     MessageDelta,
@@ -591,3 +593,29 @@ def test_a_change_with_nothing_to_change_is_refused() -> None:
     with pytest.raises(ValueError, match="compaction prompt to steer"):
         edited(request(said("hi", marked=True)), (Steer("summarise"),))
 
+
+
+NOTICE = "<task-notification>\n<task-id>b74jw7b5h</task-id>\n<status>completed</status>\n</task-notification>"
+RESULT = {"type": "tool_result", "tool_use_id": "toolu_1", "content": "EARLY"}
+
+
+@pytest.mark.parametrize(
+    ("last", "opened"),
+    [
+        ({"role": "user", "content": "file a ticket"}, Opening("asked", ("file a ticket",))),
+        ({"role": "user", "content": NOTICE}, Opening("notified", (NOTICE,))),
+        ({"role": "user", "content": [{"type": "text", "text": f"<system-reminder>\n{NOTICE}\n</system-reminder>"}]}, Opening("notified", (f"<system-reminder>\n{NOTICE}\n</system-reminder>",))),
+        ({"role": "user", "content": [RESULT, {"type": "text", "text": NOTICE}]}, None),
+        ({"role": "user", "content": [RESULT]}, None),
+        ({"role": "assistant", "content": [{"type": "text", "text": "Sure."}]}, None),
+    ],
+    ids=["plain", "notification", "wrapped notification", "notification queued beside results", "results", "assistant"],
+)
+def test_a_request_opens_a_turn_only_on_a_prompt_and_says_whether_a_notification_asked_it(last: dict[str, object], opened: Opening | None) -> None:
+    # The recorded shapes: a turn Claude Code opens for a background task (backgrounded_then_notified.jsonl, p2), and one
+    # queued into the turn it ran, under that turn's id (notified_mid_turn.jsonl, p1), which opens nothing.
+    assert opening({"messages": [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "ok"}, last]}) == opened
+
+
+def test_a_request_with_no_messages_opens_no_turn() -> None:
+    assert opening({"messages": []}) is None
