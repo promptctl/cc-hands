@@ -55,6 +55,7 @@ from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
 from hands.sessions.tap import moves, serve_tap
 from hands.sessions.overlays import Overlays
+from hands.core.attention import Attention
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
@@ -171,7 +172,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 @asynccontextmanager
 async def mind(
     config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
-    log: Path, hands: str, record: Record, environment: Mapping[str, str], cut_off: Callable[[], asyncio.Future[Bookmark]],
+    log: Path, hands: str, record: Record, environment: Mapping[str, str], cut_off: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
     speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is given
@@ -194,7 +195,7 @@ async def mind(
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
         asides = Asides(proxy_url, Newest(brain.session), record)
         try:
-            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, cut_off)
+            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, cut_off, aloud)
             keeper = Keeper(brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -288,7 +289,7 @@ async def run(
                 audited(cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off) as minded:
+            async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)

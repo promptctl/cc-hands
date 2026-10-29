@@ -727,7 +727,7 @@ async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_dec
     applying = asyncio.ensure_future(sessions.apply(second))
     slow.answer.set()
     await asyncio.wait_for(applying, 1.0)
-    assert handed == [Submitted(member().id, PromptId("p1"), "first", queued=False), Summarise(member().id, PromptId("p1"), None), Submitted(member().id, PromptId("p2"), "second", queued=False)]
+    assert handed == [Submitted(member().id, PromptId("p1"), "first", queued=False), Summarise(member().id, PromptId("p1"), None, ids=frozenset({PromptId("p1")})), Submitted(member().id, PromptId("p2"), "second", queued=False)]
 
 
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
@@ -748,7 +748,7 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
     taken = Submitted(member().id, PromptId("p1"), "", queued=False)
     assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled"), (taken, "not performed")])
     # The second prompt ends the first's turn: its telling and its own mark wait behind the mark cut short, and never begin.
-    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None), Snapshot(member().id, member().cwd), Submitted(member().id, PromptId("p2"), "", queued=False)]
+    told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None, ids=frozenset({PromptId("p1")})), Snapshot(member().id, member().cwd), Submitted(member().id, PromptId("p2"), "", queued=False)]
     assert (second.outcome, performed(second)) == ("cancelled", [(effect, "not performed") for effect in told])
     assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True, True, True]
 
@@ -852,7 +852,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
     let_go = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p4"), again=False, heard=Stamp(STOP_HEARD + 2000), request=RequestId("let-go"))))
     await asyncio.sleep(0)
     sessions.release_waiting()
-    assert await asyncio.wait_for(let_go, 1.0) == "let go"
+    assert await asyncio.wait_for(let_go, 1.0) == "released"
 
 
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:

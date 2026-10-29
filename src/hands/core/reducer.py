@@ -620,7 +620,7 @@ def _alone(was: Session, prompt: PromptId, closing: str | None, failure: StopFai
 def _telling(session: SessionId, told: Told, prompt: PromptId | None, closing: str | None, failure: StopFailed | None, again: bool) -> tuple[Turn, list[Effect]]:
     """The turn told: compared before it is handed over to be summarised, never after (see Compare), and said with what
     still waits behind it as it is told. [LAW:single-enforcer] every telling is made here."""
-    return told, [Compare(session, again), Summarise(session, prompt, closing, told.waiting, failure)]
+    return told, [Compare(session, again), Summarise(session, prompt, closing, told.waiting, failure, ids(told))]
 
 
 def _stopping(was: Session, stop: Unnamed) -> tuple[Turn, list[Effect]] | None:

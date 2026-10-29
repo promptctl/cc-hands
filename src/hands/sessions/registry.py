@@ -32,8 +32,9 @@ from hands.sessions.transcript import Titles
 from hands.sessions.typing import Untyped, type_into
 
 
-# How a Stop's hook ended: decided inside the hold, or let go at it with Claude Code going on undecided.
-StopHeld = Literal["decided", "let go"]
+# How a Stop's hook ended: decided inside the hold, let go at it with Claude Code going on undecided, or released
+# undecided by shutdown, with nothing left to go on to.
+StopHeld = Literal["decided", "let go", "released"]
 
 # Every kind of effect the core decides, each counted on the event of what called for it, 0 for one it did not.
 EFFECT_KINDS = tuple(kind.__name__ for kind in get_args(Effect))
@@ -227,7 +228,7 @@ class Sessions:
             await asyncio.wait_for(asyncio.shield(waiting), self._stop_hold)
             # [LAW:no-ambient-temporal-coupling] which resolved this hold is read off the hold, not off whether
             # shutdown has begun by the time this resumes.
-            return "let go" if event.request in self._let_go else "decided"
+            return "released" if event.request in self._let_go else "decided"
         except TimeoutError:
             # Claude Code goes on before the Stop is decided.
             await self.apply(Abandoned(event.session, event.request, self._clock()))

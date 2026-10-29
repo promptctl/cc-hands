@@ -751,7 +751,7 @@ async def test_an_escape_in_the_turn_a_queued_prompt_went_on_as_leaves_the_sessi
         more.write(lines(CUT_OFF_MID_TOOL.replace('"p1"', '"p2"')))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None)
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None, ids=frozenset({PromptId("p1"), PromptId("p2")}))
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle)
 
@@ -812,7 +812,7 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
         await sessions.apply(said_idle(at=2.0))
         with transcript.open("a") as more:
             more.write(lines(CUT_OFF))
-        assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p1"), None)
+        assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
     finally:
         tailing.cancel()
     live = sessions.live_session(SID)
@@ -992,12 +992,12 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p2"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
 
     ended = await asyncio.wait_for(sessions.story(), 2.0)
-    assert ended == Summarise(SID, PromptId("p1"), None)
+    assert ended == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
     first = await tails.tell(SID, PromptId("p1"), None)
     assert first is not None and first.turn == RIVERS
     await tails.spoken(first)
     stopped = await asyncio.wait_for(sessions.story(), 2.0)
-    assert stopped == Summarise(SID, PromptId("p2"), "Done.")
+    assert stopped == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p1"), PromptId("p2")}))
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     live = sessions.live_session(SID)
@@ -1030,11 +1030,11 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     # Both readings are taken before anything is asserted, so a failure leaves no git command running.
     changed = [[file.path for file in (await deltas.taken(SID)).files] for _ in range(2)]
 
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None)
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
     first = await tails.tell(SID, PromptId("p1"), None)
     assert first is not None and first.turn == RIVERS
     await tails.spoken(first)
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p1"), PromptId("p2")}))
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     assert changed == [["rivers.md"], ["shorter.md"]]
@@ -1182,7 +1182,7 @@ async def test_a_session_followed_from_mid_turn_works_under_its_own_prompt_and_i
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Opened(PromptId("p4"))
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p4"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p4"), "Done.", ids=frozenset({PromptId("p4")}))
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p4"))
 
@@ -1439,7 +1439,7 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Opened(PromptId("p3")) and not delegating(live)
     await sessions.apply(Stopped(SID, "Done.", mode=None, prompt=PromptId("p3"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p3"), "Done.")
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p3"), "Done.", ids=frozenset({PromptId("p3")}))
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p3"))
 
@@ -1574,6 +1574,6 @@ async def test_a_command_run_while_a_subagent_works_in_the_background_returns_th
         more.write(lines(MODEL, MODEL_PRINTED))
     for transcribed in await tails.catch_up():
         await sessions.apply(transcribed)
-    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None)
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p2"), None, ids=frozenset({PromptId("p2")}))
     live = sessions.live_session(SID)
     assert live is not None and live.turn == Told(PromptId("p2")) and delegating(live)

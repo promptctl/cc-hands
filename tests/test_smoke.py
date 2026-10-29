@@ -73,7 +73,7 @@ def test_a_hold_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
 
 
 def utterance(session: SessionId, fate: str, outcome: Outcome = "ok", error: str | None = None) -> Line:
-    heard = Summarise(session, PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c"), "falcon.txt")
+    heard = Summarise(session, PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c"), "falcon.txt", ids=frozenset({PromptId("8dc206d5-ceb8-4cf1-887e-e00c5c57a55c")}))
     return event("utterance", outcome=outcome, error=error, session=session, heard=heard, fate=fate)
 
 
