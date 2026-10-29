@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import RUN, pin, running, unread
+from conftest import RUN, located, running, unread
+from hands.brain import pinned
 from hands.brain.fork import REMINDER
 from hands.brain.stage import OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
@@ -227,10 +228,10 @@ async def connected(hands: Hands) -> None:
 async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
     logged_in(brain, mock_binary)
-    # Every start of a claude, the brain's, an aside's, a login's, runs the cached Claude Code, held offline as the run is
-    # (conftest): a connection it or anything it starts makes around the mock is refused by the OS, and one through its
-    # proxy is in the mock's log.
-    pin(monkeypatch, claude_code)
+    # Every start of a claude, the brain's, an aside's, a login's, runs the cached Claude Code, the pin itself, held
+    # offline as the run is (conftest): a connection it or anything it starts makes around the mock is refused by the OS,
+    # and one through its proxy is in the mock's log.
+    monkeypatch.setattr(pinned, "claude", located(claude_code))
     recorded: list[Entry] = []
     sent: list[Sent] = []
     wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)

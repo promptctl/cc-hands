@@ -18,6 +18,7 @@ from functools import partial
 from pathlib import Path
 
 import httpx
+import huggingface_hub.constants
 import pytest
 from huggingface_hub.errors import RevisionResolutionError
 from huggingface_hub.utils.tqdm import disable_progress_bars
@@ -107,25 +108,22 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     fetching(write, f"{MOCK_MODULE}@{MOCK_RELEASE}", (subprocess.CalledProcessError, OSError), partial(installed_mock, fetches.mock_binary(), fetches.machine))
 
 
-# The exit of a fetch process that could not fetch something, having said what and why; any other failure is a defect,
-# whose stack the process wrote as it died.
-CANNOT_FETCH = 2
+# The exit of a fetch process that could not fetch something, having said what and why: sysexits' "service unavailable",
+# which Python never exits with of its own. Any other failure is a defect, whose stack the process wrote as it died.
+CANNOT_FETCH = os.EX_UNAVAILABLE
 
 
 def fetched_apart(fetches: Fetches) -> None:
-    """[LAW:single-enforcer] every fetch the run makes, in a process of this module's own, its lines on the terminal as it
-    writes them. One that fails stops the run, and what the process said of it, the fetch's reason or a defect's stack,
-    is written whole. The process takes this one's environment, the hub's online: the run's own environment holds the
-    hub offline for the tests."""
+    """[LAW:single-enforcer] every fetch the run makes, in a process of this module's own, all it writes on the terminal
+    as it writes it, a fetch's reason or a defect's stack among it. One that fails stops the run. The process takes this
+    one's environment, the hub's online, the run's own environment holding the hub offline for the tests, and the
+    developer's Xet cache, which a fetch from the hub dedupes its chunks against."""
     done = subprocess.run(
         [sys.executable, __file__],
         input=fetches.written(),
-        stderr=subprocess.PIPE,
         text=True,
-        env={**os.environ, "HF_HUB_OFFLINE": "0"},
+        env={**os.environ, "HF_HUB_OFFLINE": "0", "HF_XET_CACHE": huggingface_hub.constants.HF_XET_CACHE},
     )
-    # What it said besides its lines, the hub's warnings and go's among them, and, failed, why: last.
-    sys.stderr.write(done.stderr)
     if done.returncode == CANNOT_FETCH:
         raise pytest.UsageError("the run cannot fetch what it needs: why is above")
     if done.returncode:

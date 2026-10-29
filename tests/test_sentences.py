@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from hands.brain import pinned
-from sentences import Pin, Unpinned, install
+from sentences import ChecksumMismatch, Pin, install
 
 URL = "https://nltk.example/packages/tokenizers/punkt_tab.zip"
 
@@ -50,7 +50,7 @@ async def test_a_package_that_hashes_to_its_pin_is_unzipped_under_the_pin_s_name
 async def test_a_package_that_does_not_hash_to_its_pin_leaves_nothing(tmp_path: Path) -> None:
     pin = Pin(URL, "0" * 64, "tokenizers")
 
-    with pytest.raises(Unpinned, match=f"{URL} hashes to "):
+    with pytest.raises(ChecksumMismatch, match=f"{URL} hashes to "):
         await install(pin, tmp_path, serving(package(), []))
 
     assert list(tmp_path.iterdir()) == []

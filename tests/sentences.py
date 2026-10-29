@@ -12,7 +12,7 @@ from pathlib import Path
 from hands.brain import pinned
 
 
-class Unpinned(Exception):
+class ChecksumMismatch(Exception):
     """A package's fetched bytes did not hash to its pin: nothing is put in its place."""
 
 
@@ -39,7 +39,7 @@ PUNKT_TAB = Pin(
 )
 
 # What install raises when the package cannot be put in place: a fetch that failed, bytes not the pin's, or the disk's.
-INSTALL_FAILURES = (*pinned.DOWNLOAD_FAILURES, Unpinned, OSError)
+INSTALL_FAILURES = (*pinned.DOWNLOAD_FAILURES, ChecksumMismatch, OSError)
 
 
 async def install(pin: Pin, cache: Path, fetch: Callable[[str, pinned.Write], Awaitable[None]]) -> Path:
@@ -58,7 +58,7 @@ async def install(pin: Pin, cache: Path, fetch: Callable[[str, pinned.Write], Aw
     await fetch(pin.url, write)
     # [LAW:single-enforcer] the bytes are the pin's before anything of them is unzipped.
     if digest.hexdigest() != pin.sha256:
-        raise Unpinned(f"{pin.url} hashes to {digest.hexdigest()}, not the {pin.sha256} it is pinned to")
+        raise ChecksumMismatch(f"{pin.url} hashes to {digest.hexdigest()}, not the {pin.sha256} it is pinned to")
     with tempfile.TemporaryDirectory(dir=cache, prefix=".partial-") as staging:
         unzipped = Path(staging) / "data"
         zipfile.ZipFile(archive).extractall(unzipped / pin.subdir)
