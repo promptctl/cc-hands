@@ -10,7 +10,7 @@ the same change.
 import json
 from dataclasses import dataclass
 from importlib import resources
-from typing import Protocol, cast, get_args
+from typing import Protocol, TypeVar, cast, get_args
 
 from aiohttp import web
 
@@ -27,6 +27,8 @@ from hands.voice.wakeword import Word
 
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
 MODALITIES: tuple[Modality, ...] = get_args(Modality)
+
+T = TypeVar("T", bound=str)
 
 
 class Voicing(Protocol):
@@ -86,17 +88,19 @@ def parse_field(body: bytes, field: str) -> str:
 
 
 def parse_level(text: str) -> Level:
-    for level in LEVELS:
-        if text == level:
-            return level
-    raise Rejected(f"hands listens at {', '.join(LEVELS)}, not {text!r}")
+    return _one_of(text, LEVELS, "hands listens at")
 
 
 def parse_modality(text: str) -> Modality:
-    for modality in MODALITIES:
-        if text == modality:
-            return modality
-    raise Rejected(f"hands takes you as {', '.join(MODALITIES)}, not {text!r}")
+    return _one_of(text, MODALITIES, "hands takes you as")
+
+
+def _one_of(text: str, names: tuple[T, ...], offered: str) -> T:
+    """The one name in `names` that `text` is, or a refusal naming what is offered."""
+    for name in names:
+        if text == name:
+            return name
+    raise Rejected(f"{offered} {', '.join(names)}, not {text!r}")
 
 
 def _refusal(error: Exception) -> web.Response:
@@ -175,15 +179,12 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
     async def choose_model(request: web.Request) -> web.Response:
         try:
             model = parse_field(await request.read(), "model")
-        except Rejected as error:
+            annotate(model=model, switching=False)
+            # [LAW:one-source-of-truth] the same switch the voice tool makes: its order, its line, and its refusals.
+            result = await switch_model(gallery.own, gallery.speaker, model)
+        except (Rejected, OSError) as error:
             return _refusal(error)
-        # [LAW:one-source-of-truth] the same switch the voice tool makes: its order, its line, and its refusals.
-        result = await switch_model(gallery.own, gallery.speaker, model)
-        annotate(model=model, switching="error" not in result)
-        if "error" in result:
-            text = str(result["error"])
-            fail(text)
-            return web.Response(status=400, text=text)
+        annotate(switching=True)
         return web.json_response(result)
 
     return [

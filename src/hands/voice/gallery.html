@@ -99,14 +99,20 @@ function setBusy(value) {
 async function act(path, body, readback, restarts = false) {
   if (busy) return;
   setBusy(true);
+  let restarting = false;
   try {
     const result = await call("POST", path, body);
     say(readback(result));
-    if (!restarts) await refresh();
+    // Once hands restarts, its controls stay off: the page is loaded again when it is back.
+    if (restarts) {
+      restarting = true;
+      return;
+    }
+    await refresh();
   } catch (error) {
     say(error.message, true);
   } finally {
-    setBusy(false);
+    if (!restarting) setBusy(false);
   }
 }
 
@@ -157,7 +163,7 @@ async function refresh() {
 document.getElementById("model-form").addEventListener("submit", event => {
   event.preventDefault();
   const model = document.getElementById("model").value;
-  act("/gallery/model", { model }, result => result.said, true);
+  act("/gallery/model", { model }, result => `${result.said} Reload this page when hands is back.`, true);
 });
 
 if (!key) {

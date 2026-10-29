@@ -17,7 +17,7 @@ from typing import Literal, TypedDict
 
 from loguru import logger
 
-from hands.voice.modelswitch import OwnModel, switch_model
+from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -978,11 +978,13 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
         Args:
             model: the model's id, such as claude-opus-5-5.
         """
-        result = await switch_model(own, player, model)
-        # The brain is told to ask again: the page shows the same refusal, without the instruction written for the brain.
-        if result.get("spoken_over"):
-            return {"error": f"{result['error']} Ask whether they still want it."}
-        return {key: value for key, value in result.items() if key != "spoken_over"}
+        try:
+            return await switch_model(own, player, model)
+        except SpokenOver as error:
+            # The brain is told to ask again; the page shows the same refusal without this instruction.
+            return {"error": f"{error} Ask whether they still want it."}
+        except (Rejected, OSError) as error:
+            return {"error": str(error)}
 
     # A barge-in over the line is what `heard` reports, and the model is told the switch did not happen.
     return [tool(model_in_use), tool(use_model, then="silence")]

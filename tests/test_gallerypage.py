@@ -274,6 +274,16 @@ async def test_a_model_the_weighing_refuses_is_a_400_and_nothing_is_said(page: P
     assert page.own.kept == []
 
 
+async def test_a_model_the_machine_cannot_keep_is_a_503_and_says_why(page: Page) -> None:
+    page.own.refused = OSError("config.toml is not writable")
+    response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"})
+    assert response.status == 503
+    assert "not writable" in await response.text()
+    assert page.speaker.said == []
+    [switch] = page.events("gallery.model")
+    assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
+
+
 def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS)
