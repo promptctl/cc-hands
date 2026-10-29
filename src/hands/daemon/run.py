@@ -334,7 +334,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
-        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=config.voice,
+        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=str(config.voice),
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
     )
     return config

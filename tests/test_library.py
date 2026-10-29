@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from huggingface_hub.errors import EntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from hands.daemon import run
@@ -88,6 +88,19 @@ def test_a_library_voice_that_cannot_be_reached_is_an_os_error_not_a_refusal(mon
     download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), OSError("offline"))
     with pytest.raises(OSError, match="offline"):
         voices.fetched(LibraryVoice("vctk/p225_023_enhanced"))
+
+
+def test_a_library_voice_not_in_the_cache_while_offline_is_unreachable_not_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # huggingface_hub's offline miss is an EntryNotFoundError too; it must not read as the library lacking the voice.
+    download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), LocalEntryNotFoundError("not cached"))
+    with pytest.raises(LocalEntryNotFoundError):
+        voices.fetched(LibraryVoice("vctk/p225_023_enhanced"))
+
+
+async def test_a_library_voice_named_as_a_built_in_is_not_offered_by_search(tmp_path: Path) -> None:
+    files = ["Charles.wav", "vctk/p225_023_enhanced.wav"]
+    found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(files))).search("", 10)
+    assert found.names == ("vctk/p225_023_enhanced",)
 
 
 async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

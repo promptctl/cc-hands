@@ -84,9 +84,10 @@ PLUGIN_SKILLS = tuple(
 # What Claude Code prefers to its own login: credentials, and the switches that send it to a provider other than
 # Anthropic's API. The brain's login is its config directory's, whichever Claude Code takes, a key in its
 # settings.json among them; inherited from hands' environment, any of these would put the brain on another account or
-# provider without a word, so none is passed on.
+# provider without a word, so none is passed on. hands' Hugging Face token is none of the brain's either: a command the
+# brain runs could print it.
 FOREIGN_LOGINS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "HF_TOKEN",
     *(f"CLAUDE_CODE_USE_{provider}" for provider in ("BEDROCK", "VERTEX", "FOUNDRY", "ANTHROPIC_AWS", "ANTHROPIC_GOOGLE_CLOUD", "MANTLE", "GATEWAY")),
 )
 

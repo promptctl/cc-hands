@@ -16,6 +16,14 @@ from huggingface_hub import list_repo_files
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
 
+# The most names one search returns, to the voice tool and the gallery alike: a model's context is the tighter of the two.
+MOST_FOUND = 50
+
+
+def address(path: str) -> str:
+    """Where a library voice's audio prompt is fetched from, by its path there without ".wav"."""
+    return f"{LIBRARY_URL_PREFIX}{path}.wav"
+
 # How long a listing is kept before the library is listed again: a voice added to the library since is found once it is.
 LISTING_SECONDS = 60 * 60.0
 
@@ -48,7 +56,9 @@ class Library:
         self._names: tuple[str, ...] = ()
         self._listed_at: float | None = None
 
-    async def search(self, query: str, limit: int) -> Found:
+    async def search(self, query: str, limit: int, reserved: frozenset[str] = frozenset()) -> Found:
+        """The names containing `query`, none of them in `reserved` (lowercase): a name that is a built-in's is never offered,
+        since a choice of it speaks in the built-in."""
         async with self._lock:
             now = self._clock()
             if self._listed_at is not None and now - self._listed_at < LISTING_SECONDS:
@@ -59,7 +69,7 @@ class Library:
                 self._listed_at = listed_at = now
                 from_cache = False
             needle = query.lower()
-            matches = tuple(name for name in self._names if needle in name.lower())[:limit]
+            matches = tuple(name for name in self._names if needle in name.lower() and name.lower() not in reserved)[:limit]
             return Found(matches, listed_at, from_cache)
 
 

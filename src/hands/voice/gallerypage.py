@@ -22,7 +22,7 @@ from hands.voice.desk import LEVELS, Level
 from hands.voice.keyed import keyed
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
-from hands.voice.library import Found
+from hands.voice.library import MOST_FOUND, Found
 from hands.voice.voices import VOICES, Chosen, parse_voice
 from hands.voice.wakeword import Word
 
@@ -162,7 +162,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
     async def find_voices(request: web.Request) -> web.Response:
         query = request.query.get("q", "")
         try:
-            limit = max(1, min(int(request.query.get("limit", "25")), 100))
+            limit = max(1, min(int(request.query.get("limit", "25")), MOST_FOUND))
         except ValueError as error:
             return _refusal(Rejected(f"the limit is a number, not {request.query.get('limit')!r}: {error}"))
         try:

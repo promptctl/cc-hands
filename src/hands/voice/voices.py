@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NewType
 
-from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.frames.frames import TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSSettings, language_to_pocket_tts_language
@@ -24,7 +24,7 @@ from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice.library import LIBRARY_URL_PREFIX, Found, Library
+from hands.voice.library import Found, Library, address
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
 Voice = NewType("Voice", str)
@@ -105,7 +105,7 @@ def source(voice: Chosen) -> str:
     """What pipecat is handed: a built-in name it resolves itself, or a library voice's audio prompt as an hf:// path."""
     match voice:
         case LibraryVoice(path=path):
-            return f"{LIBRARY_URL_PREFIX}{path}.wav"
+            return address(path)
         case _:
             return voice
 
@@ -129,9 +129,12 @@ def fetched(voice: Chosen) -> None:
         case LibraryVoice(path=path):
             cloning_available()
             try:
-                download_if_necessary(f"{LIBRARY_URL_PREFIX}{path}.wav")
+                download_if_necessary(address(path))
+            except LocalEntryNotFoundError:
+                # Offline, not absent: the library may well have the voice, so it is an OSError the caller reports as unreachable.
+                raise
             except (EntryNotFoundError, RepositoryNotFoundError) as error:
-                raise Rejected(f"Kyutai's voice library has no voice called {path!r}") from error
+                raise Rejected(f"Kyutai's voice library has no voice called {path!r}; hands also speaks in {', '.join(VOICES)}") from error
         case _:
             download_if_necessary(get_predefined_voice(language=language_to_pocket_tts_language(LANGUAGE), name=voice))
 
@@ -166,7 +169,7 @@ class Voices:
 
     async def search(self, query: str, limit: int) -> Found:
         """The library voices whose paths contain `query`, and when the listing searched was made."""
-        return await self._library.search(query, limit)
+        return await self._library.search(query, limit, frozenset(name.lower() for name in VOICES))
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
         """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns.
@@ -184,8 +187,9 @@ class Voices:
             return now
 
     async def use(self, voice: Chosen) -> None:
-        """From the next thing hands says on, and across restarts, it speaks in `voice`; a voice that cannot be fetched
-        is refused before it is kept, so hands is never left in one it cannot speak."""
+        """From the next thing hands says on, and across restarts, it speaks in `voice`; a voice whose prompt cannot be
+        fetched is refused before it is kept. Whether the prompt decodes is not checked here: a file that downloads but
+        does not encode fails the start, not the choice."""
         async with self._changing:
             await asyncio.to_thread(self._fetch, voice)
             await asyncio.to_thread(keep, self._home, voice)

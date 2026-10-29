@@ -17,6 +17,7 @@ from typing import Literal, TypedDict
 
 from loguru import logger
 
+from hands.voice.library import MOST_FOUND
 from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
@@ -966,7 +967,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
             limit: the most names to return.
         """
         try:
-            found = await voices.search(query, max(1, min(limit, 50)))
+            found = await voices.search(query, max(1, min(limit, MOST_FOUND)))
         except OSError as error:
             return {"error": str(error)}
         return {"voices": list(found.names), "listed_at": found.listed_at, "from_cache": found.from_cache}
