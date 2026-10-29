@@ -77,6 +77,8 @@
 <!-- The whole conversation, tools and all, with a box to type in: the address carries the key on as this one does. A
      page of its own, so a call on this one goes on while it is read. -->
 <a id="conversation" href="/conversation" target="_blank" rel="noopener">Conversation</a>
+<!-- The voices hands speaks in, each heard and chosen, and hands' own options, on a page of its own under the same key. -->
+<a id="gallery" href="/gallery" target="_blank" rel="noopener">Voices and options</a>
 <!-- Every line is written here whether it is shown or not: showing it is only taking the hidden off. -->
 <section id="transcript" aria-label="Transcript" hidden></section>
 <!-- What the brain is doing now, as hands hears it on the wire: idle, thinking, or the calls it is running, each with
@@ -118,6 +120,7 @@ const brainSaid = document.getElementById("brain-said");
 // says how the brain stands from then on.
 const READ_MS = 40000, STOP_MS = 10000, REREAD_MS = 3000, SAID_MS = 30000;
 document.getElementById("conversation").href = `/conversation${location.hash}`;
+document.getElementById("gallery").href = `/gallery${location.hash}`;
 
 // Every render quantum of the microphone goes to the page as it is captured; whatever is sent in comes back out after
 // every block captured before it, which is how a release is sent only once the words said before it have been.
