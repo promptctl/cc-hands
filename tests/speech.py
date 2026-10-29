@@ -53,7 +53,8 @@ def spoken(text: str) -> bytes:
 
 def record(text: str) -> Path:
     """Records `text` in Samantha's voice, and never over a recording of it already made: said on another macOS, it is
-    another voice. A `say` that fails or hangs raises, naming `say` and the text."""
+    another voice. A `say` that fails or hangs raises, naming `say` and the text, and a recording the tests could not hear
+    fails here, read back as they read it."""
     path = recording(text)
     RECORDINGS.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory() as scratch:
@@ -63,6 +64,7 @@ def record(text: str) -> Path:
     with soundfile.SoundFile(path, "x", samplerate=rate, channels=1, subtype="PCM_16", format="FLAC") as flac:
         flac.comment = f"say -v Samantha, macOS {platform.mac_ver()[0]}"
         flac.write(samples)  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
+    spoken(text)
     return path
 
 
