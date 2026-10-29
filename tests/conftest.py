@@ -374,6 +374,8 @@ def pytest_configure(config: pytest.Config) -> None:
     """[LAW:single-enforcer] SYSTEM_PATH holds what it is said to, proven once before any test gives it to a child: a
     machine whose system directories break it stops the suite, naming what they hold. And pytest's cache is there for
     the run to fetch into, and a fixture shared by many tests counts against none of their timeouts (tests/timeouts.py)."""
+    if not config.pluginmanager.has_plugin("timeout"):
+        raise pytest.UsageError("pytest-timeout bounds every test the suite runs, and it is off: --timeout=0 lifts the bound")
     config.pluginmanager.register(timeouts, "timeouts")
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")

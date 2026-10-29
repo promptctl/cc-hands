@@ -2,7 +2,9 @@
 against none of them, and each test's own work stays bounded by its own. In another process, as pytest-timeout's timer
 and its signal are the whole process's, and its thread method ends the process it fires in."""
 
+import ast
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 
@@ -18,8 +20,10 @@ import pytest
 @pytest.fixture(scope="module")
 def shared():
     time.sleep(1.3)
+    yield
+    time.sleep(1.3)
 
-def test_after_a_shared_setup(shared):
+def test_between_a_shared_setup_and_teardown(shared):
     time.sleep(1.3)
 """
 
@@ -69,14 +73,21 @@ def test_overruns_with_its_own_setup(first):
     time.sleep(1.3)
 """
 
-HANGS = """
+# The test's own bound is shorter than the suite's, so the bound that ends the setup says which one it ran under: the
+# marker is written past the test's bound and short of the suite's.
+SUITE_MARKER = "past the test's own bound"
+HANGS = f"""
+import sys
 import time
 import pytest
 
 @pytest.fixture(scope="module")
 def shared_never_returns():
+    time.sleep(1.5)
+    print({SUITE_MARKER!r}, file=sys.stderr, flush=True)
     time.sleep(60)
 
+@pytest.mark.timeout(1)
 def test_after_a_shared_setup_that_hangs(shared_never_returns):
     pass
 """
@@ -141,14 +152,27 @@ def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_b
     )
 
 
-def test_under_the_thread_method_a_shared_setup_counts_against_no_test(suite: pytest.Pytester) -> None:
+def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
+    run(suite, "signal", "--junitxml=report.xml", "test_shared.py").assert_outcomes(passed=1)
+    properties = ElementTree.parse(suite.path / "report.xml").iterfind(".//property")
+    rescoped = [ast.literal_eval(p.attrib["value"]) for p in properties if p.attrib["name"] == timeouts.RESCOPED]
+    # pytest-asyncio's session-scoped fixtures are rescoped too.
+    recorded = [r for r in rescoped if r["fixture"] == "shared"]
+    assert [(r["phase"], r["bound"]) for r in recorded] == [("setup", 2.0), ("teardown", 2.0)]
+    # Each took its 1.3 s outside the test's bound, which at teardown had what setup left it less the call's own 1.3 s.
+    assert all(r["seconds"] >= 1.3 for r in recorded)
+    setup, teardown = recorded
+    assert setup["left"] <= 2.0 and teardown["left"] <= setup["left"] - 1.3
+
+
+def test_under_the_thread_method_a_shared_setup_and_teardown_count_against_no_test(suite: pytest.Pytester) -> None:
     run(suite, "thread", "test_shared.py").assert_outcomes(passed=1)
 
 
 def test_under_the_thread_method_a_shared_setup_that_hangs_ends_the_run_in_its_own_bound(suite: pytest.Pytester) -> None:
     ran = run(suite, "thread", "test_hangs.py")
     assert ran.ret == 1
-    ran.stdout.fnmatch_lines_random(["*+ Timeout +*", "*in shared_never_returns*"])
+    ran.stdout.fnmatch_lines_random(["*+ Timeout +*", "*in shared_never_returns*", SUITE_MARKER])
 
 
 def test_under_the_thread_method_a_test_is_bounded_by_its_own_work_after_a_shared_setup(suite: pytest.Pytester) -> None:
