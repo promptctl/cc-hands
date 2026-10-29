@@ -193,11 +193,12 @@ async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> No
 
 
 def stalled() -> str:
-    """Where everything was as a wait stalled: each thread's stack, by the thread's name, and each pending task's whole
-    await chain, from its coroutine down to the one waiting. Task.print_stack stops at the task's own coroutine on 3.12,
-    above the wait (asyncio.format_call_graph walks the chain from 3.14)."""
+    """Where everything was as a wait stalled: each other thread's stack, by the thread's name, and each pending task's
+    whole await chain, from its coroutine down to the one waiting. The loop's own thread is the stalled wait itself, which
+    its task's chain shows. Task.print_stack stops at the task's own coroutine on 3.12, above the wait
+    (asyncio.format_call_graph walks the chain from 3.14)."""
     names = {thread.ident: thread.name for thread in threading.enumerate()}
-    threads = [f"thread {names.get(ident, ident)}:\n{''.join(traceback.format_stack(frame))}" for ident, frame in sys._current_frames().items()]  # pyright: ignore[reportPrivateUsage]  (sys documents it, the one view of every thread's frame)
+    threads = [f"thread {names.get(ident, ident)}:\n{''.join(traceback.format_stack(frame))}" for ident, frame in sys._current_frames().items() if ident != threading.get_ident()]  # pyright: ignore[reportPrivateUsage]  (sys documents it, the one view of every thread's frame)
     tasks = [f"{task!r}:\n{''.join(traceback.StackSummary.extract((frame, frame.f_lineno) for frame in awaits(task.get_coro())).format())}" for task in asyncio.all_tasks()]
     return "\n".join(threads + tasks)
 
@@ -227,8 +228,9 @@ def awaits(awaited: object) -> Iterator[FrameType]:
                 yield frame
                 awaited = awaited.ag_await
             case ASend() | AThrow():
-                # The step's one referent is its generator; only the garbage collector's view reaches it on 3.12.
-                [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType)]
+                # Only the garbage collector's view reaches the step's generator on 3.12, beside any async generator it
+                # sends: its own is the one running the step.
+                [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType) and held.ag_running]
             case _:
                 return
 

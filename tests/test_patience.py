@@ -70,4 +70,5 @@ async def test_a_stall_says_where_each_thread_was_and_where_in_its_await_chain_e
         await asyncio.gather(task, return_exceptions=True)
     [where] = stall.value.__notes__
     assert "thread the held thread:" in where and "in held_on_its_thread" in where
-    assert "in between" in where and "in deepest" in where
+    chain = where[where.index("outermost() running at") :]
+    assert chain.index("in outermost") < chain.index("in between") < chain.index("in deepest")
