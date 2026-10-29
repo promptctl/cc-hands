@@ -34,19 +34,20 @@ def hold() -> str:
     is held. It is macOS's sandbox_init, the call sandbox-exec makes, on the run's own process, as Bazel's macOS sandbox
     holds a test with the network denied.
 
-    [LAW:single-enforcer] what is proven is what the hold promises, a connection past loopback refused, not that this
-    call applied it: a run started inside a held one, as wake-training's test of its own conftest starts one, is held by
-    its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process held already. [LAW:no-silent-failure] a
-    run whose connection past loopback is not refused stops before any test, with the OS's reason, and whether the run
-    was in a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them."""
+    [LAW:single-enforcer] what is proven is what the profile promises, a connection past loopback refused and loopback
+    open, not that this call applied it: a run started inside a held one, as wake-training's test of its own conftest
+    starts one, is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process held already.
+    [LAW:no-silent-failure] a run that is not so held stops before any test, with the OS's reason, whether the run was in
+    a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, and which half of the promise failed."""
     sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
     sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
     sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     error = ctypes.c_char_p()
     sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error))
-    if not _refused():
+    refused, looped = _refused(), _looped()
+    if not (refused and looped):
         held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; a connection to {UNROUTED} was not refused")
+        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; past loopback refused: {refused}; loopback open: {looped}")
     return f"{OFFLINE}" if error.value is None else f"{OFFLINE}, by the sandbox the run started in: sandbox_init said {error.value.decode()!r}"
 
 
@@ -57,3 +58,13 @@ def _refused() -> bool:
     except OSError as failed:
         return failed.errno == errno.EPERM
     return False
+
+
+def _looped() -> bool:
+    """Whether this process can listen on loopback and connect to what listens there."""
+    try:
+        with socket.create_server(("127.0.0.1", 0)) as server:
+            socket.create_connection(server.getsockname(), timeout=1).close()
+    except OSError:
+        return False
+    return True
