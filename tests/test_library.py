@@ -3,6 +3,7 @@ search once an hour, and given the Hugging Face token from the environment or th
 real library: each takes its listing, its download, and its keychain from a fake."""
 
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ def test_a_library_path_is_a_library_voice_with_its_case_kept() -> None:
     assert parse_voice("voice-donations/Selfie") == LibraryVoice("voice-donations/Selfie")
 
 
-@pytest.mark.parametrize("malformed", ["../secrets", "a/../b", "/absolute", "trailing/", "Zed!", "a//b", "a?b"])
+@pytest.mark.parametrize("malformed", ["../secrets", "a/../b", "/absolute", "trailing/", "Zed!", "a//b", "a?b", "zed", "Charles2"])
 def test_a_name_that_is_not_a_repo_path_is_refused_by_the_parser(malformed: str) -> None:
     with pytest.raises(Rejected, match="no voice called"):
         parse_voice(malformed)
@@ -97,10 +98,32 @@ def test_a_library_voice_not_in_the_cache_while_offline_is_unreachable_not_missi
         voices.fetched(LibraryVoice("vctk/p225_023_enhanced"))
 
 
-async def test_a_library_voice_named_as_a_built_in_is_not_offered_by_search(tmp_path: Path) -> None:
+async def test_a_bare_name_in_the_library_is_not_offered_by_search_since_no_choice_can_make_it(tmp_path: Path) -> None:
     files = ["Charles.wav", "vctk/p225_023_enhanced.wav"]
     found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(files))).search("", 10)
     assert found.names == ("vctk/p225_023_enhanced",)
+
+
+async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_asked() -> None:
+    files = [f"vctk/voice{number}.wav" for number in range(library.MOST_FOUND + 10)]
+    found = await Library(listing(files)).search("", 10_000)
+    assert len(found.names) == library.MOST_FOUND
+
+
+async def test_a_listing_that_stalls_is_an_os_error_and_releases_the_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 0.01)
+
+    def stalled() -> list[str]:
+        time.sleep(0.5)
+        return []
+
+    stuck = Library(stalled)
+    with pytest.raises(OSError):
+        await stuck.search("", 10)
+    # The lock is released: a second search tries the listing again rather than waiting behind the first.
+    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 60.0)
+    stuck._list_files = listing(["vctk/p225_023_enhanced.wav"])  # pyright: ignore[reportPrivateUsage]
+    assert (await stuck.search("", 10)).names == ("vctk/p225_023_enhanced",)
 
 
 async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

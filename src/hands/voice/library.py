@@ -19,6 +19,9 @@ LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
 # The most names one search returns, to the voice tool and the gallery alike: a model's context is the tighter of the two.
 MOST_FOUND = 50
 
+# How long a listing may take before it is an OSError: a stalled connection must not hold the search's lock forever.
+LISTING_TIMEOUT_SECONDS = 60.0
+
 
 def address(path: str) -> str:
     """Where a library voice's audio prompt is fetched from, by its path there without ".wav"."""
@@ -56,20 +59,20 @@ class Library:
         self._names: tuple[str, ...] = ()
         self._listed_at: float | None = None
 
-    async def search(self, query: str, limit: int, reserved: frozenset[str] = frozenset()) -> Found:
-        """The names containing `query`, none of them in `reserved` (lowercase): a name that is a built-in's is never offered,
-        since a choice of it speaks in the built-in."""
+    async def search(self, query: str, limit: int) -> Found:
+        """The names containing `query`, at most MOST_FOUND of them. Only names with a folder are offered: a bare name is not a
+        voice a choice can make (see voices.LIBRARY_PATH), so offering it would be a lie."""
         async with self._lock:
             now = self._clock()
             if self._listed_at is not None and now - self._listed_at < LISTING_SECONDS:
                 listed_at, from_cache = self._listed_at, True
             else:
-                files = await asyncio.to_thread(self._list_files)
-                self._names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav"))
+                files = await asyncio.wait_for(asyncio.to_thread(self._list_files), LISTING_TIMEOUT_SECONDS)
+                self._names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav") and "/" in name)
                 self._listed_at = listed_at = now
                 from_cache = False
             needle = query.lower()
-            matches = tuple(name for name in self._names if needle in name.lower() and name.lower() not in reserved)[:limit]
+            matches = tuple(name for name in self._names if needle in name.lower())[: max(1, min(limit, MOST_FOUND))]
             return Found(matches, listed_at, from_cache)
 
 

@@ -66,8 +66,10 @@ def unlisted() -> Library:
 def test_a_voice_is_named_as_a_person_says_it_and_one_hands_does_not_have_is_refused() -> None:
     assert parse_voice("Bill Boerst") == "bill_boerst"
     assert parse_voice("charles") == DEFAULT
-    # A well-formed name that is no built-in is a library path: the parser accepts it, and its fetch refuses it.
-    assert parse_voice("Zed") == LibraryVoice("Zed")
+    # A library voice is a folder and a file, so a bare name that is no built-in is refused at the parser, not sent to the hub.
+    assert parse_voice("kyutai/Zed") == LibraryVoice("kyutai/Zed")
+    with pytest.raises(Rejected, match="no voice called 'Zed'"):
+        parse_voice("Zed")
     with pytest.raises(Rejected, match="no voice called 'Zed!'"):
         parse_voice("Zed!")
 

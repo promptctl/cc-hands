@@ -54,8 +54,9 @@ DEFAULT = Voice("charles")
 # The language the TTS service speaks, which picks the set of embeddings a voice's name resolves to.
 LANGUAGE = Language.EN
 
-# A library path: repo folders joined by single slashes, each a letter or digit followed by letters, digits, `_`, `.`, or `-`.
-LIBRARY_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9][A-Za-z0-9_.\-]*)*")
+# A library path: at least one repo folder and a file, joined by single slashes, each part a letter or digit followed by
+# letters, digits, `_`, `.`, or `-`. A bare name is never a library voice, so a mistyped built-in name is refused here.
+LIBRARY_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9][A-Za-z0-9_.\-]*)+")
 
 # Whatever a voice needs before it can be spoken in, made ready, or the reason it cannot be.
 Fetch = Callable[[Chosen], None]
@@ -169,7 +170,7 @@ class Voices:
 
     async def search(self, query: str, limit: int) -> Found:
         """The library voices whose paths contain `query`, and when the listing searched was made."""
-        return await self._library.search(query, limit, frozenset(name.lower() for name in VOICES))
+        return await self._library.search(query, limit)
 
     async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
         """Each voice says its sample, in order, and then hands goes back to the voice it speaks in, which it returns.

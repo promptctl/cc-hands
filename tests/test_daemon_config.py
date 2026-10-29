@@ -660,8 +660,8 @@ def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_res
     voices.keep(home, voices.parse_voice("Bill Boerst"))
     assert run.configured_from(home, config.load(home), logged_in).voice.voice == "bill_boerst"
     # A kept name the installed pocket_tts no longer has stops the start, naming the file to fix.
-    home.voice.write_text("../zed\n")
-    with pytest.raises(CannotStart, match=f"{home.voice} says '../zed'"):
+    home.voice.write_text("zed\n")
+    with pytest.raises(CannotStart, match=f"{home.voice} says 'zed'"):
         run.configured_from(home, config.load(home), logged_in)
     # One it cannot read stops it the same way, naming the file.
     home.voice.unlink()
