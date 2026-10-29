@@ -29,7 +29,7 @@ hands = "hands.daemon.cli:entry"
 [dependency-groups]
 # [LAW:locality-or-seam] exception: tests/timeouts.py reads the suite's settings through pytest-timeout's
 # `get_env_settings`, outside its `__all__`, so a major version that moves it is taken on purpose.
-dev = ["pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-timeout>=2.3,<3", "soundfile>=0.13"]
+dev = ["nltk>=3.10", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-timeout>=2.3,<3", "soundfile>=0.13"]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

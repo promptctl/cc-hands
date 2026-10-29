@@ -451,6 +451,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "nltk" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -481,6 +482,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "nltk", specifier = ">=3.10" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import ctypes
 import os
 import select
 import subprocess
@@ -265,6 +266,28 @@ def spawned(*argv: str) -> int:
     return os.posix_spawnp(argv[0], list(argv), os.environ, setsid=True)
 
 
+# The kernel's process table, as ps reads it: sysctl's CTL_KERN, KERN_PROC, KERN_PROC_PID names a process's kinfo_proc,
+# whose kp_proc.p_stat is SZOMB once it has exited and is not yet reaped. Read here, not by ps: a process in a sandbox,
+# as the run is, cannot exec a setuid binary.
+KINFO_PROC_SIZE = 648
+P_STAT = 36
+SZOMB = 5
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+
+
+def zombie(pid: int) -> bool:
+    """Whether `pid` has exited and is not yet reaped. [LAW:no-silent-failure] a process the table does not hold, or a
+    kinfo_proc not the size its layout is read at, fails, never reads as a process not yet exited."""
+    info = ctypes.create_string_buffer(KINFO_PROC_SIZE)
+    size = ctypes.c_size_t(KINFO_PROC_SIZE)
+    if _libc.sysctl((ctypes.c_int * 4)(1, 14, 1, pid), 4, info, ctypes.byref(size), None, 0):
+        raise OSError(ctypes.get_errno(), f"sysctl of process {pid}")
+    if size.value != KINFO_PROC_SIZE:
+        raise OSError(f"the process table gave {size.value} bytes for process {pid}, not a kinfo_proc of {KINFO_PROC_SIZE}")
+    return info.raw[P_STAT] == SZOMB
+
+
 def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
     shown = spawned("sleep", "60")
     assert retire(shown) == "ended"
@@ -291,9 +314,8 @@ def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() ->
 
 def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
     exited = spawned("false")
-    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it. A zombie in a
-    # terminal's foreground group says Z+.
-    while not subprocess.run(["ps", "-o", "stat=", "-p", str(exited)], capture_output=True, text=True).stdout.startswith("Z"):
+    # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it.
+    while not zombie(exited):
         time.sleep(0.01)
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")

@@ -1,16 +1,17 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
+import ctypes
 import gc
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
-import time
 import traceback
 import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
@@ -22,14 +23,11 @@ from importlib.metadata import metadata
 from pathlib import Path
 from typing import cast
 
-import httpx
 import huggingface_hub.constants
-from huggingface_hub.errors import RevisionResolutionError
-from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
 import mlx.core as mx
 import mlx_whisper
+import nltk
 import pytest
-from mlx_audio.utils import get_model_path
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -48,10 +46,9 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import engaged, streaming
-from hands.voice.wake import fetched
-from hands.voice.wakeword import Pretrained
-from npm_registry import REGISTRY
+from hands.voice import streaming
+from sentences import PUNKT_TAB
+from fetches import Fetches, fetched_apart
 import timeouts
 
 
@@ -398,16 +395,17 @@ def without_claude(path: str, links: Path) -> str:
     return os.pathsep.join(kept(index, directory) for index, directory in enumerate(path.split(os.pathsep)) if os.path.isabs(directory))
 
 
-def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, sockets: Path) -> dict[str, str]:
+def hermetic(machine: Mapping[str, str], path: str, hub: str, sentences: Path, home: Path, sockets: Path) -> dict[str, str]:
     """The environment the run and each test run in, from the `machine`'s: the names PASSED, a `path` of its tools, the
-    Hugging Face `hub` cache the run fetched the weights into and the hub offline, no git config but a repository's own
-    and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
+    Hugging Face `hub` cache the run fetched the weights into and the hub offline, NLTK's data looked for first in
+    `sentences`, no git config but a repository's own and one identity to commit as, as git's own test suite gives itself, one UTF-8 locale whatever the machine's, and a
     `home` and a tmux socket directory of their own. Every other name the machine has, a credential, a Claude Code session's, hands', git's,
     tmux's or a proxy, which hands reads as a session's own, is absent."""
     return {name: machine[name] for name in PASSED if name in machine} | {
         "PATH": path,
         "HF_HUB_CACHE": hub,
         "HF_HUB_OFFLINE": "1",
+        "NLTK_DATA": str(sentences),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.com",
@@ -419,18 +417,6 @@ def hermetic(machine: Mapping[str, str], path: str, hub: str, home: Path, socket
     }
 
 
-# The canonical mock of Anthropic's API the brain's end-to-end tests run against, at the release they were written
-# against. Moving it is one commit, and CI's cache of it is keyed on it.
-MOCK_MODULE = "github.com/promptctl/mock-anthropic"
-MOCK_RELEASE = "v0.1.0"
-
-# Every speech weight a test loads, each at the revision hands pins it to.
-WEIGHTS = ((streaming.MODEL, streaming.REVISION), (streaming.DIARIZATION, streaming.DIARIZATION_REVISION), (engaged.SMART_TURN, engaged.SMART_TURN_REVISION))
-
-# The wake words whose models a switch to the wake word loads.
-WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
-
-
 @dataclass(frozen=True)
 class Run:
     """What the session start makes once for the whole run: the machine's environment as the run began, the PATH every
@@ -438,6 +424,7 @@ class Run:
 
     machine: dict[str, str]
     tools: str
+    sentences: Path
     wake_word: Path
     claude_code: Path
     mock: Path
@@ -446,33 +433,7 @@ class Run:
 RUN = pytest.StashKey[Run]()
 
 
-def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
-    """What `fetch` gave, `what` it is written as it starts and how long it took once it is done, so a fetch that hangs
-    is the one named last. [LAW:no-silent-failure] one that fails as a fetch does, in one of its `failures`, stops the
-    run before any test, naming what it could not fetch and why, never a test timed out on it; anything else is a
-    defect, raised as itself with its stack."""
-    write(f"fetching {what}: ")
-    started = time.monotonic()
-    try:
-        fetched = fetch()
-    except failures as error:
-        write("failed\n")
-        raise pytest.UsageError(f"the run cannot fetch {what}: {type(error).__name__}: {error}") from error
-    write(f"{time.monotonic() - started:.2f} s\n")
-    return fetched
-
-
-def installed_mock(binary: Path, machine: Mapping[str, str]) -> Path:
-    """The mock at MOCK_RELEASE, built by `go install` into its release's own directory unless it is there already, so
-    the build of one release is never taken for another. Built with the machine's own environment, its toolchain and
-    caches, the one fetch that is."""
-    if not binary.is_file():
-        binary.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["go", "install", f"{MOCK_MODULE}@{MOCK_RELEASE}"], check=True, env={**machine, "GOBIN": str(binary.parent)})
-    return binary
-
-
-def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, home: Path) -> Generator[dict[str, str]]:
+def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str, sentences: Path, home: Path) -> Generator[dict[str, str]]:
     """[LAW:single-enforcer] the hermetic environment, and nothing else but pytest's own names, as the process's own while
     the generator is held, with `home` and a tmux socket directory that hold nothing. The sockets sit under /tmp, not
     pytest's basetemp: a socket's path holds 104 bytes on macOS, and basetemp under macOS's TMPDIR leaves no room for
@@ -480,7 +441,7 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
     with tempfile.TemporaryDirectory(dir="/tmp") as sockets:
         # The hub resolved its cache from the developer's HOME as it was imported; a child that loads weights finds them
         # there too.
-        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, home, Path(sockets))
+        names = hermetic(machine, tools, huggingface_hub.constants.HF_HUB_CACHE, sentences, home, Path(sockets))
         for name in [name for name in os.environ if not name.startswith("PYTEST_")]:
             monkeypatch.delenv(name)
         for name, value in names.items():
@@ -488,18 +449,50 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
         yield names
 
 
+# The sandbox profile the run is held to once its fetches are done.
+OFFLINE = Path(__file__).with_name("offline.sb")
+# The first macOS whose sandbox holds the run to OFFLINE without refusing loopback: on macOS 14, CI's macos-14 refused
+# some ten tests' binds and connects on 127.0.0.1 with EPERM on every run, under this profile and under Bazel's.
+SANDBOXED_MACOS = 15
+
+
+def sandboxable(release: str) -> None:
+    """[LAW:no-silent-failure] a macOS `release` whose sandbox cannot hold the run offline stops it before any fetch,
+    saying why, never a run whose loopback connections fail at random."""
+    if int(release.split(".")[0]) < SANDBOXED_MACOS:
+        raise pytest.UsageError(f"the run holds itself offline with macOS's sandbox, which refuses loopback at random before macOS {SANDBOXED_MACOS}: this is macOS {release}")
+
+
+def offline() -> None:
+    """[LAW:single-enforcer] the one checkpoint for "no test reaches past loopback": this process in the OFFLINE
+    sandbox, which every process it starts inherits and none can leave, so a connection a test, or any child of one,
+    makes past loopback is refused by the OS before a packet leaves. It is macOS's sandbox_init, the call sandbox-exec
+    makes, on the run's own process, as Bazel's macOS sandbox holds a test with the network denied. [LAW:no-silent-failure]
+    a profile the OS does not apply stops the run before any test, with the OS's reason, and whether the run was in a
+    sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, inside which macOS applies no other."""
+    sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
+    sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
+    sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    error = ctypes.c_char_p()
+    if sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error)):
+        held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
+        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}")
+
+
 # Around the session start's other hooks, the terminal's among them, so what the run fetches is written below its header.
 @pytest.hookimpl(wrapper=True)
 def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
-    """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test: so no test's timeout
-    counts a download, and no test reaches the network for one.
+    """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test and in a process of
+    its own (fetches.py): so no test's timeout counts a download. Then the run goes offline, so no test, nor anything one
+    starts, reaches past loopback.
 
     The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
-    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Warm,
-    each fetch is a look at what is already there. Then the hub in this process goes offline for the rest of the run, as
-    a child's is by its environment, so a weight the run did not fetch fails the test that loads it and never downloads
-    inside it. Undone by the config's cleanup, which runs however the session ends."""
+    took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Then
+    the hub in this process goes offline for the rest of the run, as a child's is by its environment, so a weight the run
+    did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
+    from no process, so this interpreter stays offline after the session, and a second session in it can fetch nothing."""
     yield
+    sandboxable(platform.mac_ver()[0])
     config = session.config
     terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
     write = partial(terminal.write, flush=True)
@@ -512,35 +505,22 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     tools = without_claude(machine["PATH"], links)
     monkeypatch = stack.enter_context(pytest.MonkeyPatch.context())
     monkeypatch.setattr(huggingface_hub.constants, "HF_TOKEN_PATH", str(home / ".cache" / "huggingface" / "token"))
-    stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, home))
-    # The line each fetch writes says what the run is fetching; the hub's bars would break it, so they are off while it
-    # fetches, and only then.
-    disable_progress_bars()
-    try:
-        for repo, revision in WEIGHTS:
-            # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures
-            # are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
-            fetching(
-                write,
-                f"{repo} at {revision} from the Hugging Face hub",
-                (httpx.HTTPError, OSError, RevisionResolutionError),
-                partial(get_model_path, repo, revision=revision),
-            )
-    finally:
-        enable_progress_bars()
+    nltk_data = config.cache.mkdir("nltk-data")
+    sentences = PUNKT_TAB.data(nltk_data)
+    # NLTK read its data's path, the developer's ~/nltk_data among it, as it was imported; a child reads NLTK_DATA before
+    # its defaults.
+    monkeypatch.setattr(nltk.data, "path", [str(sentences)])
+    stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, sentences, home))
     wake_word = config.cache.mkdir("wake-word")
-    for word in WAKE_WORDS:
-        fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(wake_word, word)))
     claude_code = config.cache.mkdir("claude-code")
-    installed = fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(claude_code, REGISTRY)))
-    mock = fetching(
-        write,
-        f"{MOCK_MODULE}@{MOCK_RELEASE}",
-        (subprocess.CalledProcessError, OSError),
-        partial(installed_mock, config.cache.mkdir("mock-anthropic") / MOCK_RELEASE / "mock-anthropic", machine),
-    )
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine)
+    # The fetches' lines go to the terminal below what this process has written to it.
+    terminal.flush()
+    fetched_apart(fetches)
+    offline()
+    write(f"offline: nothing past loopback from here ({OFFLINE})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
-    config.stash[RUN] = Run(machine, tools, wake_word, installed.path, mock)
+    config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 
 
 @pytest.fixture(scope="session")
@@ -557,7 +537,7 @@ def environment(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPa
     of the environment a test runs in: a test that needs a name sets it on top, and builds no environment of its own to
     keep the developer's out."""
     run = pytestconfig.stash[RUN]
-    yield from entered(monkeypatch, run.machine, run.tools, tmp_path_factory.mktemp("home"))
+    yield from entered(monkeypatch, run.machine, run.tools, run.sentences, tmp_path_factory.mktemp("home"))
 
 
 async def unread() -> InFront:

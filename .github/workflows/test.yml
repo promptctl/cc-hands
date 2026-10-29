@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     # The suite takes ~4 minutes here; a hung test fails the check instead of holding it for GitHub's 6 hours.
     timeout-minutes: 20
     steps:
@@ -37,6 +37,12 @@ jobs:
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
+      # NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, fetched by the run into pytest's cache at the
+      # pin tests/sentences.py holds; kept the same way, for the same reason.
+      - uses: actions/cache@v4
+        with:
+          path: .pytest_cache/d/nltk-data
+          key: nltk-data-${{ hashFiles('tests/sentences.py') }}
       # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, and the engaged tests run
       # Smart Turn on MLX, on real sound, fetched into the Hugging Face cache at the revisions streaming.py and engaged.py
       # pin; kept the same way, for the same reason. The whole hub: a model's directory holds only links into the hub's
@@ -64,9 +70,9 @@ jobs:
         id: e2e
         run: |
           claude=$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' src/hands/brain/pinned.py)
-          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/conftest.py)
+          mock=$(sed -n 's/^MOCK_RELEASE = "\(.*\)"$/\1/p' tests/fetches.py)
           test -n "$claude" || { echo "src/hands/brain/pinned.py pins no VERSION this step can read" >&2; exit 1; }
-          test -n "$mock" || { echo "tests/conftest.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
+          test -n "$mock" || { echo "tests/fetches.py names no MOCK_RELEASE this step can read" >&2; exit 1; }
           echo "claude=$claude" >> "$GITHUB_OUTPUT"
           echo "mock=$mock" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
