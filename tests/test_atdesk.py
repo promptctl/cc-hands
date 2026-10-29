@@ -11,7 +11,8 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from conftest import quiet, patiently, spoken
+from conftest import quiet, patiently
+from speech import spoken
 
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
@@ -98,7 +99,7 @@ class Keyboard:
             self.press(*((CommandPressed(time.monotonic()), CommandReleased()) if command else (Pressed(time.monotonic()), Released())))
 
 
-async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_hears_each_level(models: Path, tmp_path: Path) -> None:
+async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_hears_each_level(models: Path) -> None:
     events: list[WideEvent] = []
     entries: list[Entry] = []
     key, levels, speaker, microphone, keyboard = PushToTalk(entries.append), Levels(), Speaker(), Microphone(), Keyboard()
@@ -116,8 +117,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         if LOADS <= {each.event for each in events if each.outcome == "ok"}:
             ready.set()
 
-    # Rendered before the desk runs, so macOS's `say` never holds the loop the desk, the tap, and its timers run on.
-    off, wake, engaged, deaf = (spoken(said, tmp_path / f"{name}.wav") for name, said in [("off", "create a ticket to read session history."), ("wake", "Hey Jarvis. What is the status of the build?"), ("engaged", "create a ticket to read session history."), ("deaf", "create a ticket to read session history.")])
+    off, wake, engaged, deaf = map(spoken, ["create a ticket to read session history.", "Hey Jarvis. What is the status of the build?", "create a ticket to read session history.", "create a ticket to read session history."])
 
     level, choose = listening_tools(levels, Pretrained())
     serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record))

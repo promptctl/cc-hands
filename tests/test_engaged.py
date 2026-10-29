@@ -4,10 +4,10 @@ and another triple tap disengages."""
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import pytest
-from conftest import quiet, hearing_with, model_facts, spoken
+from conftest import quiet, hearing_with, model_facts
+from speech import spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -292,9 +292,9 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
 
 
 @pytest.mark.parametrize(("said", "complete"), [("create a ticket to read session history.", True), ("can you tell me about the", False)])
-async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool, tmp_path: Path) -> None:
+async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool) -> None:
     # As the edge gives it: the speech as speech, then the silence the detector ends it at, then the question.
-    audio = spoken(said, tmp_path / "said.wav")
+    audio = spoken(said)
     async with loaded(16000, lambda event: None) as models:
         for at in range(0, len(audio), 640):
             models.heard(audio[at : at + 640], True)
@@ -302,10 +302,10 @@ async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off
         assert (await models.judge())[0] is complete
 
 
-async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models(tmp_path: Path) -> None:
+async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models() -> None:
     rig = Rig(verdicts=[])
     # Two phrases with a breath between them, then silence past Smart Turn's own stop: one turn, whatever it judges.
-    audio = spoken("create a ticket", tmp_path / "asked.wav") + quiet(0.4) + spoken("to read session history", tmp_path / "more.wav") + quiet(4.0)
+    audio = spoken("create a ticket") + quiet(0.4) + spoken("to read session history") + quiet(4.0)
     async with loaded(16000, rig.events.append) as models:
         driving = rig.start(models)
         await rig.choose("engaged")

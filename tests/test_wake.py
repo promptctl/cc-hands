@@ -3,7 +3,6 @@ detector hears silence."""
 
 import ast
 import asyncio
-import wave
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +13,8 @@ import pytest
 from aiohttp import web
 from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
 from aiohttp.streams import StreamReader
-from conftest import hearing_with, model_facts, spoken
+from conftest import hearing_with, model_facts
+from speech import spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -151,16 +151,9 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
     assert events[0].parent_id == events[1].span_id
 
 
-def said(asked: str | Path, at: Path) -> bytes:
-    """What is `asked`, with a second of silence either side: text spoken by macOS's own voice, or a clip it was recorded
-    in once."""
-    match asked:
-        case str():
-            audio = spoken(asked, at)
-        case Path():
-            with wave.open(str(asked)) as clip:
-                audio = clip.readframes(clip.getnframes())
-    return bytes(SAMPLE_RATE * 2) + audio + bytes(SAMPLE_RATE * 2)
+def said(asked: str) -> bytes:
+    """What is `asked`, with a second of silence either side."""
+    return bytes(SAMPLE_RATE * 2) + spoken(asked) + bytes(SAMPLE_RATE * 2)
 
 
 def wakes(word: WakeWord, audio: bytes) -> bool:
@@ -169,19 +162,19 @@ def wakes(word: WakeWord, audio: bytes) -> bool:
     return any(word.score(audio[start : start + 640]) >= 0.5 for start in range(0, len(audio), 640))
 
 
-async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(tmp_path: Path, models: Path) -> None:
+async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(models: Path) -> None:
     events: list[WideEvent] = []
     async with loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
-        assert wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "wake.wav"))
-        assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine.", tmp_path / "passing.wav"))
+        assert wakes(word, said("Hey Jarvis. What is the status of the build?"))
+        assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine."))
     assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("desk.wake_word_loaded", "ok", "Hey Jarvis")]
 
 
-async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(tmp_path: Path, models: Path) -> None:
+async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: Path) -> None:
     events: list[WideEvent] = []
     async with loaded(SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
-        assert wakes(word, said("Hey Mycroft. What is the status of the build?", tmp_path / "wake.wav"))
-        assert not wakes(word, said("Hey Jarvis. What is the status of the build?", tmp_path / "other.wav"))
+        assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
+        assert not wakes(word, said("Hey Jarvis. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
 
 
@@ -192,7 +185,7 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
     trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
     events: list[WideEvent] = []
     async with loaded(SAMPLE_RATE, models, Trained("Hey Computer", trained), events.append) as word:
-        assert wakes(word, said("Hey Mycroft. What is the status of the build?", tmp_path / "wake.wav"))
+        assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Computer", str(trained))]
 
 
@@ -210,16 +203,14 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
         "Hey Jarvis what is the status of the build",
         "Hey Jarvis, what is the status of the build?",
         "Hey Jarvis. [[slnc 1500]] What is the status of the build?",
-        # A one-word ask, recorded once in macOS 26's Samantha (`say -v Samantha --data-format=LEI16@16000`): each
-        # release's Samantha says one word differently enough to move the wake word, the detector, or Smart Turn's
-        # verdict, so said afresh it tests the voice and not the edge (promptctl-voice-i15t.qg8.71j).
-        pytest.param(Path(__file__).parent / "fixtures" / "hey_jarvis_stop.wav", id="Hey Jarvis stop"),
+        # A one-word ask.
+        "Hey Jarvis stop",
     ],
 )
-async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(asked: str | Path, tmp_path: Path, models: Path) -> None:
+async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(asked: str, models: Path) -> None:
     """Silero, Smart Turn, and the wake word's model, real, on macOS's own voice: Smart Turn's verdict on what was asked
     sends the turn, not the silence after it, and not the pause after the wake word."""
-    audio = said(asked, tmp_path / "asked.wav") + bytes(SAMPLE_RATE * 2 * 4)
+    audio = said(asked) + bytes(SAMPLE_RATE * 2 * 4)
     level = AtLevel()
     made: list[Move] = []
     events: list[WideEvent] = []
