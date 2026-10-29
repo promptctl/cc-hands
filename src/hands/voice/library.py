@@ -58,6 +58,7 @@ class Library:
         self._lock = asyncio.Lock()
         self._names: tuple[str, ...] = ()
         self._listed_at: float | None = None
+        self._pending: asyncio.Future[list[str]] | None = None
 
     async def search(self, query: str, limit: int) -> Found:
         """The names containing `query`, at most MOST_FOUND of them. Only names with a folder are offered: a bare name is not a
@@ -67,7 +68,15 @@ class Library:
             if self._listed_at is not None and now - self._listed_at < LISTING_SECONDS:
                 listed_at, from_cache = self._listed_at, True
             else:
-                files = await asyncio.wait_for(asyncio.to_thread(self._list_files), LISTING_TIMEOUT_SECONDS)
+                # A listing that timed out keeps running in its thread, so the next search waits for that one rather than
+                # starting another; the pending listing is forgotten once it has finished, failed or not.
+                if self._pending is None:
+                    self._pending = asyncio.ensure_future(asyncio.to_thread(self._list_files))
+                try:
+                    files = await asyncio.wait_for(asyncio.shield(self._pending), LISTING_TIMEOUT_SECONDS)
+                finally:
+                    if self._pending.done():
+                        self._pending = None
                 self._names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav") and "/" in name)
                 self._listed_at = listed_at = now
                 from_cache = False

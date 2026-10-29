@@ -2,14 +2,16 @@
 search once an hour, and given the Hugging Face token from the environment or the keychain. No test lists or fetches the
 real library: each takes its listing, its download, and its keychain from a fake."""
 
+import asyncio
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
-from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from hands.daemon import run
@@ -85,6 +87,13 @@ def test_a_library_voice_the_library_lacks_is_refused_by_name(monkeypatch: pytes
         voices.fetched(LibraryVoice("vctk/nobody"))
 
 
+def test_a_refused_token_is_named_as_such_and_not_as_a_voice_the_library_lacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    refused = RepositoryNotFoundError("401 Unauthorized", response=Mock(status_code=401, headers={}))
+    download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), refused)
+    with pytest.raises(Rejected, match="Hugging Face token was refused"):
+        voices.fetched(LibraryVoice("vctk/p225_023_enhanced"))
+
+
 def test_a_library_voice_that_cannot_be_reached_is_an_os_error_not_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), OSError("offline"))
     with pytest.raises(OSError, match="offline"):
@@ -110,20 +119,26 @@ async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_aske
     assert len(found.names) == library.MOST_FOUND
 
 
-async def test_a_listing_that_stalls_is_an_os_error_and_releases_the_search(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 0.01)
+    started: list[int] = []
 
     def stalled() -> list[str]:
+        started.append(1)
         time.sleep(0.5)
-        return []
+        return ["vctk/p225_023_enhanced.wav"]
 
     stuck = Library(stalled)
+    # Each search times out; neither starts a second listing while the first still runs in its thread.
     with pytest.raises(OSError):
         await stuck.search("", 10)
-    # The lock is released: a second search tries the listing again rather than waiting behind the first.
-    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 60.0)
-    stuck._list_files = listing(["vctk/p225_023_enhanced.wav"])  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(OSError):
+        await stuck.search("", 10)
+    assert len(started) == 1
+    # Once the stalled listing has finished, the next search has its names and forgets the listing.
+    await asyncio.sleep(0.6)
     assert (await stuck.search("", 10)).names == ("vctk/p225_023_enhanced",)
+    assert stuck._pending is None  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

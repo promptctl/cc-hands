@@ -134,7 +134,10 @@ def fetched(voice: Chosen) -> None:
             except LocalEntryNotFoundError:
                 # Offline, not absent: the library may well have the voice, so it is an OSError the caller reports as unreachable.
                 raise
-            except (EntryNotFoundError, RepositoryNotFoundError) as error:
+            except RepositoryNotFoundError as error:
+                # The hub answers a refused token with the same error as a missing repository, so both are named.
+                raise Rejected(f"hands cannot open Kyutai's voice library: it is not found, or the Hugging Face token was refused, for {path!r}") from error
+            except EntryNotFoundError as error:
                 raise Rejected(f"Kyutai's voice library has no voice called {path!r}; hands also speaks in {', '.join(VOICES)}") from error
         case _:
             download_if_necessary(get_predefined_voice(language=language_to_pocket_tts_language(LANGUAGE), name=voice))
