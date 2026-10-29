@@ -913,10 +913,10 @@ def voice_tools(voices: Voices) -> list[Tool]:
         """The voices hands can speak in, and the one it speaks in now.
 
         Call this when the user asks what voice you speak in, or which voices there are. Say a voice's name as a person
-        would: bill_boerst is Bill Boerst.
+        would: bill_boerst is Bill Boerst. Voices in Kyutai's voice library are not listed here; find_voices searches them.
         """
         try:
-            return {"speaking_in": await voices.speaking_in(), "voices": VOICES}
+            return {"speaking_in": str(await voices.speaking_in()), "voices": VOICES}
         except (Rejected, OSError) as error:
             return {"error": str(error)}
 
@@ -935,7 +935,7 @@ def voice_tools(voices: Voices) -> list[Tool]:
         """
         try:
             heard = tuple(parse_voice(name) for name in names)
-            return {"heard": heard, "speaking_in": await voices.hear(heard)}
+            return {"heard": [str(voice) for voice in heard], "speaking_in": str(await voices.hear(heard))}
         except (Rejected, OSError) as error:
             return {"error": str(error)}
 
@@ -952,9 +952,26 @@ def voice_tools(voices: Voices) -> list[Tool]:
             await voices.use(voice)
         except (Rejected, OSError) as error:
             return {"error": str(error)}
-        return {"speaking_in": voice, "readback": f"This is {spoken(voice)}, and I'll speak in this voice from now on."}
+        return {"speaking_in": str(voice), "readback": f"This is {spoken(voice)}, and I'll speak in this voice from now on."}
 
-    return [tool(voices_on_offer), tool(hear_voices), tool(use_voice)]
+    async def find_voices(query: str, limit: int = 10) -> Result:
+        """Search Kyutai's voice library for voices whose paths contain the words given. Each name it returns is a voice
+        hear_voices and use_voice take, by its path there.
+
+        Call this when the user asks for a voice that is not one of the built-in names, or asks what voices the library has.
+        Say the names the search found, and if the listing was made for this search, that it was just made.
+
+        Args:
+            query: the words to look for in a voice's path, such as vctk or p225.
+            limit: the most names to return.
+        """
+        try:
+            found = await voices.search(query, max(1, min(limit, 50)))
+        except OSError as error:
+            return {"error": str(error)}
+        return {"voices": list(found.names), "listed_at": found.listed_at, "from_cache": found.from_cache}
+
+    return [tool(voices_on_offer), tool(hear_voices), tool(use_voice), tool(find_voices)]
 
 
 def model_tools(own: OwnModel, player: Player) -> list[Tool]:

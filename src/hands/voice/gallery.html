@@ -29,6 +29,15 @@
 <p class="muted">Play hears a voice through the Mac's speaker. Use makes it the voice hands speaks in from now on.</p>
 <ul id="voices"></ul>
 
+<h2>Kyutai's library</h2>
+<p class="muted">Any voice in Kyutai's voice library, found by part of its path, such as vctk or p225. Play and Use work as they do above.</p>
+<form id="library-form" class="choices">
+  <input id="library-query" type="search" aria-label="Search the library" placeholder="vctk, p225">
+  <button type="submit">Search</button>
+</form>
+<p class="muted" id="library-note"></p>
+<ul id="library"></ul>
+
 <h2>Listening</h2>
 <div id="levels" class="choices"></div>
 
@@ -159,6 +168,33 @@ function render(state) {
 async function refresh() {
   render(await call("GET", "/gallery/state"));
 }
+
+// A library voice is named by its path there, which is what hands is told to speak in, so the path is shown whole.
+function renderLibrary(found) {
+  const when = new Date(found.listed_at * 1000).toLocaleTimeString();
+  document.getElementById("library-note").textContent = found.voices.length
+    ? `${found.voices.length} found. The library was listed at ${when}${found.from_cache ? "" : ", just now"}.`
+    : `No voice matches. The library was listed at ${when}${found.from_cache ? "" : ", just now"}.`;
+  document.getElementById("library").replaceChildren(...found.voices.map(voice => {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = voice;
+    item.append(name,
+      button("Play", () => act("/gallery/hear", { voice }, () => `Heard ${voice}.`)),
+      button("Use", () => act("/gallery/use", { voice }, () => `Speaking in ${voice} from now on.`)),
+    );
+    return item;
+  }));
+}
+
+document.getElementById("library-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const query = document.getElementById("library-query").value;
+  call("GET", `/gallery/library?q=${encodeURIComponent(query)}&limit=25`)
+    .then(renderLibrary)
+    .catch(error => say(error.message, true));
+});
 
 document.getElementById("model-form").addEventListener("submit", event => {
   event.preventDefault();

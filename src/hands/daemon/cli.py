@@ -207,6 +207,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     recalling.add_argument("words", nargs="*", help="words every moment printed holds, in any case")
     recalling.add_argument("-n", "--most", type=int, default=20, help="how many of the newest matching moments to print")
     arguments = parser.parse_args(argv)
+    # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
+    # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
+    from hands.voice.library import keep_hub_token
+
+    keep_hub_token(os.environ)
     try:
         # HANDS_HOME is read only when --home is not given, so a bad one never stands in the way of an explicit home.
         # A relative --home is this directory's, made absolute here, since the home is written into the shim.

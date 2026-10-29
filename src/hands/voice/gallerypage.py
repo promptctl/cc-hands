@@ -22,7 +22,8 @@ from hands.voice.desk import LEVELS, Level
 from hands.voice.keyed import keyed
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
-from hands.voice.voices import VOICES, Voice, parse_voice
+from hands.voice.library import Found
+from hands.voice.voices import VOICES, Chosen, parse_voice
 from hands.voice.wakeword import Word
 
 # [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
@@ -32,13 +33,15 @@ T = TypeVar("T", bound=str)
 
 
 class Voicing(Protocol):
-    """The voices as the page chooses them: the one spoken, each heard, and one kept."""
+    """The voices as the page chooses them: the one spoken, each heard, one kept, and the library searched."""
 
-    async def speaking_in(self) -> Voice: ...
+    async def speaking_in(self) -> Chosen: ...
 
-    async def hear(self, voices: tuple[Voice, ...]) -> Voice: ...
+    async def hear(self, voices: tuple[Chosen, ...]) -> Chosen: ...
 
-    async def use(self, voice: Voice) -> None: ...
+    async def use(self, voice: Chosen) -> None: ...
+
+    async def search(self, query: str, limit: int) -> Found: ...
 
 
 class Listening(Protocol):
@@ -127,9 +130,9 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
             speaking = await gallery.voices.speaking_in()
         except (Rejected, OSError) as error:
             return _refusal(error)
-        annotate(speaking_in=speaking, level=gallery.levels.level, modality=gallery.desk.modality)
+        annotate(speaking_in=str(speaking), level=gallery.levels.level, modality=gallery.desk.modality)
         return web.json_response({
-            "voices": VOICES, "speaking_in": speaking,
+            "voices": VOICES, "speaking_in": str(speaking),
             "levels": LEVELS, "level": gallery.levels.level,
             "modalities": MODALITIES, "modality": gallery.desk.modality,
             "models": gallery.models, "running_on": gallery.own.running(),
@@ -142,8 +145,8 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
             speaking = await gallery.voices.hear((heard,))
         except (Rejected, OSError) as error:
             return _refusal(error)
-        annotate(heard=heard, speaking_in=speaking)
-        return web.json_response({"heard": heard, "speaking_in": speaking})
+        annotate(heard=str(heard), speaking_in=str(speaking))
+        return web.json_response({"heard": str(heard), "speaking_in": str(speaking)})
 
     @keyed("gallery.use", record, key)
     async def use_voice(request: web.Request) -> web.Response:
@@ -152,8 +155,22 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
             await gallery.voices.use(voice)
         except (Rejected, OSError) as error:
             return _refusal(error)
-        annotate(voice=voice)
-        return web.json_response({"speaking_in": voice})
+        annotate(voice=str(voice))
+        return web.json_response({"speaking_in": str(voice)})
+
+    @keyed("gallery.library", record, key)
+    async def find_voices(request: web.Request) -> web.Response:
+        query = request.query.get("q", "")
+        try:
+            limit = max(1, min(int(request.query.get("limit", "25")), 100))
+        except ValueError as error:
+            return _refusal(Rejected(f"the limit is a number, not {request.query.get('limit')!r}: {error}"))
+        try:
+            found = await gallery.voices.search(query, limit)
+        except OSError as error:
+            return _refusal(error)
+        annotate(query=query, matches=len(found.names), listed_at=found.listed_at, from_cache=found.from_cache)
+        return web.json_response({"voices": list(found.names), "listed_at": found.listed_at, "from_cache": found.from_cache})
 
     @keyed("gallery.level", record, key)
     async def choose_level(request: web.Request) -> web.Response:
@@ -190,6 +207,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
     return [
         web.get("/gallery", shown),
         web.get("/gallery/state", read_state),
+        web.get("/gallery/library", find_voices),
         web.post("/gallery/hear", hear_voice),
         web.post("/gallery/use", use_voice),
         web.post("/gallery/level", choose_level),
