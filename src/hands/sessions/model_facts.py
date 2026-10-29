@@ -25,12 +25,18 @@ class ModelReplyEmpty:
 
 
 @dataclass(frozen=True)
+class ModelUnanswered:
+    """No request of the model was heard as the user's turn's, and no answer to it was: the turn ended with nothing of the
+    model's to say, which is not the same as the model answering with nothing."""
+
+
+@dataclass(frozen=True)
 class ModelActedUntold:
     """The model acted on the user's words and ended its turn with nothing said after it: not even once told to say how it
     went. Whether what it did worked is the model's to know, never this fact's."""
 
 
-ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelActedUntold | StopFailed
+ModelFact = ModelUnreachable | UsageLimitReached | ModelFailed | ModelReplyEmpty | ModelUnanswered | ModelActedUntold | StopFailed
 
 
 class ModelFault(Exception):

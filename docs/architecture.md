@@ -2226,7 +2226,10 @@ thing that failed `[LAW:no-silent-failure]`:
    the brain's stage off the wire across all of a turn's replies; a turn the model ends with stay_silent made a call,
    so if it did nothing else it stays silent, and a reply cancelled mid-stream was abandoned, not empty. A turn that acted and closes on nothing,
    by an empty reply or by the second stay_silent after it was sent on to say what it did, is said as "the language model
-   did not say how that went" (`ModelActedUntold`), because "sent back nothing" would tell the user nothing happened. An Anthropic request that times out, which Pipecat
+   did not say how that went" (`ModelActedUntold`), because "sent back nothing" would tell the user nothing happened. A user's
+   turn with no request of its own heard, not joined to a turn Claude Code opened and not spoken over, is said as "the language
+   model gave no answer to that turn" (`ModelUnanswered`), since the stage cannot tell a request that was never sent from one
+   sent for another turn. An Anthropic request that times out, which Pipecat
    drops with only an event, is said as unreachable. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
    it"), only logged, and so neither is a muted microphone, whose every turn comes back
