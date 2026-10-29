@@ -1,4 +1,4 @@
-"""The run is offline once its fetches are done (conftest): nothing a test does, nor anything a test starts, connects
+"""The run is offline once its fetches are done (conftest, offline.py): nothing a test does, nor anything a test starts, connects
 past loopback, and loopback is as open as it was. 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the
 sandbox a connection to it times out, inside it the OS refuses it at once."""
 
@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from conftest import sandboxable
+from offline import sandboxable
 
 UNROUTED = ("192.0.2.1", 443)
 

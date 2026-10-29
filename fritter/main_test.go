@@ -51,15 +51,21 @@ func as(named string, args ...string) *exec.Cmd {
 	return child
 }
 
-// tested runs the tests in the hermetic environment, with a HOME that holds nothing and
-// that nothing may write to: every test shares it, so a test that writes there fails at
-// the write, by its own name, rather than leaving something the next test finds.
+// tested runs the tests held offline (held) and in the hermetic environment, with a HOME
+// that holds nothing and that nothing may write to: every test shares it, so a test that
+// writes there fails at the write, by its own name, rather than leaving something the
+// next test finds.
 //
 // [LAW:single-enforcer] TestMain is the one owner of the environment a test runs in: a
 // test that needs a name sets it on top, with t.Setenv or its child's Env. It is set
 // before the first test, so http.ProxyFromEnvironment, which reads the environment once
 // and keeps what it read, reads this one.
 func tested(m *testing.M) int {
+	// Held first, so nothing the run does, making its HOME included, is unheld.
+	if err := held(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
 	home, err := os.MkdirTemp("/tmp", "fritter-home-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot make the tests a HOME: %v\n", err)

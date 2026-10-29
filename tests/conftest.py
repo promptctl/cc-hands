@@ -1,7 +1,6 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
-import ctypes
 import gc
 import hashlib
 import json
@@ -51,6 +50,7 @@ from hands.sessions.wrapper import PACKAGED
 from hands.voice import streaming
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
+import offline
 import timeouts
 
 
@@ -497,36 +497,6 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
         yield names
 
 
-# The sandbox profile the run is held to once its fetches are done.
-OFFLINE = Path(__file__).with_name("offline.sb")
-# The first macOS whose sandbox holds the run to OFFLINE without refusing loopback: on macOS 14, CI's macos-14 refused
-# some ten tests' binds and connects on 127.0.0.1 with EPERM on every run, under this profile and under Bazel's.
-SANDBOXED_MACOS = 15
-
-
-def sandboxable(release: str) -> None:
-    """[LAW:no-silent-failure] a macOS `release` whose sandbox cannot hold the run offline stops it before any fetch,
-    saying why, never a run whose loopback connections fail at random."""
-    if int(release.split(".")[0]) < SANDBOXED_MACOS:
-        raise pytest.UsageError(f"the run holds itself offline with macOS's sandbox, which refuses loopback at random before macOS {SANDBOXED_MACOS}: this is macOS {release}")
-
-
-def offline() -> None:
-    """[LAW:single-enforcer] the one checkpoint for "no test reaches past loopback": this process in the OFFLINE
-    sandbox, which every process it starts inherits and none can leave, so a connection a test, or any child of one,
-    makes past loopback is refused by the OS before a packet leaves. It is macOS's sandbox_init, the call sandbox-exec
-    makes, on the run's own process, as Bazel's macOS sandbox holds a test with the network denied. [LAW:no-silent-failure]
-    a profile the OS does not apply stops the run before any test, with the OS's reason, and whether the run was in a
-    sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, inside which macOS applies no other."""
-    sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
-    sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
-    sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
-    error = ctypes.c_char_p()
-    if sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error)):
-        held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}")
-
-
 # Around the session start's other hooks, the terminal's among them, so what the run fetches is written below its header.
 @pytest.hookimpl(wrapper=True)
 def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
@@ -540,7 +510,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
     from no process, so this interpreter stays offline after the session, and a second session in it can fetch nothing."""
     yield
-    sandboxable(platform.mac_ver()[0])
+    offline.sandboxable(platform.mac_ver()[0])
     config = session.config
     terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
     write = partial(terminal.write, flush=True)
@@ -565,8 +535,8 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
-    offline()
-    write(f"offline: nothing past loopback from here ({OFFLINE})\n")
+    offline.hold()
+    write(f"offline: nothing past loopback from here ({offline.OFFLINE})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 
