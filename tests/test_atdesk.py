@@ -117,7 +117,8 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
         if LOADS <= {each.event for each in events if each.outcome == "ok"}:
             ready.set()
 
-    off, wake, engaged, deaf = map(spoken, ["create a ticket to read session history.", "Hey Jarvis. What is the status of the build?", "create a ticket to read session history.", "create a ticket to read session history."])
+    ask = "create a ticket to read session history."
+    off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
     level, choose = listening_tools(levels, Pretrained())
     serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record))
