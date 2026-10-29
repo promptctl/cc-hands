@@ -1174,6 +1174,10 @@ def _failed(turn: _Turn, ended: BrainEnded, tools: Mapping[str, Tool]) -> _Failu
     if turn.empty():
         # An empty reply is a whole one, kept in the brain's history: there is nothing broken off to tell it of.
         return _Failure("the brain's reply was empty", ModelReplyEmpty(), "")
+    if not turn.exchanges and turn.joined is None and isinstance(turn.asker, UserAsked):
+        # [LAW:no-silent-failure] the user's turn ended with no request of its own heard, and was not joined to a turn Claude
+        # Code opened, which answers it and is judged on its own: nothing answered it, so the user hears that it failed.
+        return _Failure("the brain ended the user's turn without a request of its own", ModelReplyEmpty(), "")
     if turn.owes_word(tools):
         # [LAW:no-silent-failure] a turn that acted and closed on nothing, by an empty reply or a stay_silent it was already
         # refused once, ends heard as failed rather than as silence the user takes for nothing done.

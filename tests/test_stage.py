@@ -1277,6 +1277,17 @@ async def test_a_message_list_reaching_the_stage_is_an_error_not_a_turn(rig: Rig
     assert rig.brain.asked == []
 
 
+async def test_a_users_turn_that_ends_with_no_request_of_its_own_is_said_to_fail(rig: Rig) -> None:
+    await rig.say("what is on my desk?")
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    # No request is sent for the turn, so nothing answers it: the brain ends it all the same.
+    rig.brain.end()
+    await rig.until(lambda: len(rig.errors) == 1)
+    assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelReplyEmpty()
+    [turn] = turns(rig.recorded)
+    assert turn.facts["failed"] == ModelReplyEmpty()
+
+
 async def test_a_turn_whose_replies_carried_nothing_is_said_as_the_models_empty_reply(rig: Rig) -> None:
     unsaid = "api finished a turn, and I could not tell it."
     await rig.worker.queue_frame(Narrated("[hands] api finished a turn.", unsaid, SessionId("api"), ()))
