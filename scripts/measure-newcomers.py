@@ -19,6 +19,7 @@ another.
 """
 
 import itertools
+import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -51,8 +52,8 @@ def decided(session: Any, holds: list[tuple[np.ndarray, ...]]) -> list[list[np.n
         silence = np.zeros(through(ends[-1]) - ends[-1], np.float32)
         result, state = diarizer.feed(np.concatenate([*stretches, silence]), state)
         probs.append(np.array(result.speaker_probs))
-        # An encoder frame is the stretch's that its first mel frame is in.
-        cuts.append([-(-(sample // MEL_HOP) // SUBSAMPLING) for sample in ends])
+        # A mel frame is the stretch's its centre is in, and an encoder frame the stretch's its first mel frame is.
+        cuts.append([math.ceil(math.ceil(sample / MEL_HOP) / SUBSAMPLING) for sample in ends])
         fed = ends[-1] + len(silence)
     heard = np.array(speaker_activity(mx.array(np.concatenate(probs)), SUBSAMPLING, session.threshold))
     return [[heard[start:end] for start, end in itertools.pairwise(hold)] for hold in cuts]
@@ -90,7 +91,8 @@ def main() -> None:
                 known, new = speaker(np.concatenate([e for e, in each[:users]])), speaker(np.concatenate([e for e, in each[users:]]))
                 got_new, got_user = map(speaker, together if order == "newcomer first" else together[::-1])
                 outcome = (
-                    "unknown voices" if known is None or new in (None, known)
+                    "nobody heard alone" if known is None or new is None
+                    else "newcomer as the user alone" if new == known
                     else "right" if (got_user, got_new) == (known, new)
                     else "newcomer as the user" if got_new == known
                     else "user as another" if got_user != known

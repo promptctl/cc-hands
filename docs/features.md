@@ -336,10 +336,11 @@ So that in conversation hands can tell the owner from another person, and from i
   turns of at most 6 s with no word or other sound of anyone else's near them, one turn of each
   joined into a hold in both orders. With the known voice heard alone in one turn 127 of 144
   joined holds give each their own speaker, in two 134 of 144, in five 135 of 144; with the
-  newcomer heard alone in one turn 194 of 216, in three 202 of 216; in 2 of the 432 the newcomer
-  is given the known voice's speaker. On the two-speaker AMI fixture, after one hold of FEE013
-  and one of FEE016, a hold of FEE016's then FEE013's gives most of FEE016's words to FEE013's
-  speaker, and one more hold of FEE013 first gives each her own.
+  newcomer heard alone in one turn 194 of 216, in three 202 of 216; in 6 of the 432 the newcomer
+  is given the known voice's speaker, 2 in the hold they share and 4 in their own holds alone,
+  and in 16 the run hears nobody in one person's holds alone. On the two-speaker AMI fixture,
+  after one hold of FEE013 and one of FEE016, a hold of FEE016's then FEE013's gives most of
+  FEE016's words to FEE013's speaker, and one more hold of FEE013 first gives each her own.
   Built: tests/test_streaming.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)
