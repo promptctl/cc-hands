@@ -247,12 +247,12 @@ def test_a_prompt_heard_after_the_busy_it_set_was_read_opens_and_marks_its_turn(
 def test_a_finished_turn_is_summarised_from_the_session_transcript(before: Registry) -> None:
     """The turn it names, whether hands had it open or never heard it open. It runs until Claude Code says it is idle."""
     state = live(before).state
-    assert reduce(before, Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST)) == (holding(state, Told(TURN)), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), LET_STOP])
+    assert reduce(before, Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST)) == (holding(state, Told(TURN)), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN})), LET_STOP])
 
 
 def test_a_turn_that_stops_while_a_hook_is_held_is_told_and_the_hook_let_go_once_claude_code_says_idle() -> None:
     state, effects = reduce(in_turn(AT_DIALOG, (HELD,)), Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None), LET_STOP]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None, ids=frozenset({TURN})), LET_STOP]
     assert reduce(state, said(status.Idle()))[1] == [Reply(ONE.id, RequestId("r0"), Withdraw())]
 
 
@@ -263,7 +263,7 @@ def test_a_turn_is_compared_before_it_is_handed_over_to_be_summarised() -> None:
     than when the turn stopped, and it holds whatever the next turn has since started doing.
     """
     effects = reduce(in_turn(), Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1]
-    assert effects.index(Compare(ONE.id, again=False)) < effects.index(Summarise(ONE.id, TURN, None))
+    assert effects.index(Compare(ONE.id, again=False)) < effects.index(Summarise(ONE.id, TURN, None, ids=frozenset({TURN})))
 
 
 def test_a_prompt_marks_where_the_repository_stands_before_the_turn_can_change_it() -> None:
@@ -279,7 +279,7 @@ def test_a_turn_that_goes_on_after_another_stop_hook_blocked_its_stop_runs_until
         state, effects = reduce(state, event)
         heard += effects
         assert live(state).state == BUSY
-    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "First."), LET_STOP, Compare(ONE.id, again=True), Summarise(ONE.id, TURN, "Second."), LET_STOP]
+    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "First.", ids=frozenset({TURN})), LET_STOP, Compare(ONE.id, again=True), Summarise(ONE.id, TURN, "Second.", ids=frozenset({TURN})), LET_STOP]
     assert reduce(state, said(status.Idle())) == (holding(Idle(status.Idle(), Stamp(2000), after=TURN), Told(TURN)), [])
 
 
@@ -716,7 +716,7 @@ def test_a_prompt_taken_and_stopped_before_any_of_it_was_read_is_told_as_itself(
 
 
 def test_a_stop_is_told_as_the_turn_its_hook_names() -> None:
-    assert reduce(in_turn(), Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), LET_STOP]
+    assert reduce(in_turn(), Stopped(ONE.id, "Done.", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN})), LET_STOP]
 
 
 FAILED = StopFailed("rate_limit", "API Error: 429")
@@ -725,15 +725,15 @@ FAILED = StopFailed("rate_limit", "API Error: 429")
 def test_a_turn_the_api_failed_is_told_with_its_failure_at_once_or_once_held_for_the_record_that_names_it() -> None:
     # [LAW:one-source-of-truth] the failure is the telling's, as its closing reply is: whatever tells the turn says it.
     failed = Stopped(ONE.id, None, mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST, failure=FAILED)
-    assert reduce(in_turn(), failed)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None, failure=FAILED), LET_STOP]
+    assert reduce(in_turn(), failed)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None, failure=FAILED, ids=frozenset({TURN})), LET_STOP]
     held, _ = reduce(in_turn(), replace(failed, prompt=PromptId("q")))
-    assert [effect for effect in reduce(held, Taken(ONE.id, PromptId("q"), None, 9.0))[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, PromptId("q"), None, failure=FAILED)]
+    assert [effect for effect in reduce(held, Taken(ONE.id, PromptId("q"), None, 9.0))[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, PromptId("q"), None, failure=FAILED, ids=frozenset({PromptId("q"), TURN}))]
 
 
 def test_a_turn_is_told_with_the_words_that_still_wait_behind_it_in_claude_code_s_queue() -> None:
     # [LAW:no-ambient-temporal-coupling] as of the telling: whoever reads it later reads what waited then.
     queued, _ = reduce(in_turn(), Prompted(ONE.id, at=6.0, mode=None, prompt=TURN, text="and then?"))
-    assert [effect for effect in reduce(queued, STOP)[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, STOP.closing, waiting=("and then?",))]
+    assert [effect for effect in reduce(queued, STOP)[1] if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, STOP.closing, waiting=("and then?",), ids=frozenset({TURN}))]
 
 
 def test_the_stop_of_a_turn_over_before_the_next_prompt_ends_nothing() -> None:
@@ -756,7 +756,7 @@ def test_a_stop_with_no_turn_open_tells_the_turn_it_names(state: SessionState, t
     assert after == holding(state, Told(PromptId("q")), earlier=earlier)
     # Only the turn hands told before is read against where its last Stop's reading ended: no prompt marked where it went
     # on. One stopping again whose first Stop hands never heard is told whole, and the last reading is another turn's.
-    assert effects == [Compare(ONE.id, again=turn == PromptId("q")), Summarise(ONE.id, PromptId("q"), "Done."), LET_STOP]
+    assert effects == [Compare(ONE.id, again=turn == PromptId("q")), Summarise(ONE.id, PromptId("q"), "Done.", ids=frozenset({PromptId("q")})), LET_STOP]
 
 
 def test_the_stop_of_a_turn_already_told_ends_nothing_and_keeps_the_idle_period_it_lands_in() -> None:
@@ -776,7 +776,7 @@ def test_a_stop_naming_an_id_no_record_read_through_it_names_is_audited_and_leav
 
 def test_the_stop_of_a_turn_gone_on_under_a_flushed_id_ends_it_before_claude_answered_under_it() -> None:
     state, _ = reduce(in_turn(), Taken(ONE.id, PromptId("q"), None, 9.0))
-    assert reduce(state, Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, PromptId("q"), "Done."), LET_STOP]
+    assert reduce(state, Stopped(ONE.id, "Done.", mode=None, prompt=PromptId("q"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, PromptId("q"), "Done.", ids=frozenset({PromptId("q"), TURN})), LET_STOP]
 
 
 @pytest.mark.parametrize("before", [in_turn(), in_turn(AT_DIALOG, (HELD,))])
@@ -807,7 +807,7 @@ def test_an_escape_and_a_new_prompt_inside_one_status_read_open_two_turns() -> N
     assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd)]
     assert live(state).turn == Opened(NEXT) and isinstance(live(state).state, Running)
     _, tellings = told([Stopped(ONE.id, "three", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "three")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "three", ids=frozenset({NEXT}))]
 
 
 def test_a_message_queued_under_a_flushed_id_before_claude_answers_under_it_is_queued_into_the_turn() -> None:
@@ -914,7 +914,7 @@ def told(events: list[Event], start: Registry | None = None) -> tuple[Registry, 
     return state, tellings
 
 
-TOLD = [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None)]
+TOLD = [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, None, ids=frozenset({TURN}))]
 # Where a turn said idle at said()'s stamp waits to be told until the transcript is read through.
 WINDOW = Stamp(2000 + UNTOLD)
 STOP = Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST)
@@ -962,14 +962,14 @@ def test_an_interrupt_record_of_another_turn_leaves_the_untold_one_waiting_for_i
 
 def test_a_stop_that_fires_after_claude_code_said_idle_tells_the_turn_with_its_closing_reply() -> None:
     state, tellings = told([said(status.Idle()), Stopped(ONE.id, "done", mode="plan", prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST), Tick(20.0)])
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", ids=frozenset({TURN}))]
     assert (live(state).state, live(state).mode) == (Idle(status.Idle(), Stamp(2000), after=TURN), "plan")
 
 
 @pytest.mark.parametrize("ending", [STOP, INTERRUPT])
 def test_a_turn_its_stop_or_interrupt_ended_before_claude_code_said_idle_is_told_once(ending: Event) -> None:
     _, tellings = told([ending, said(status.Idle()), Tick(20.0)])
-    assert [telling for telling in tellings if isinstance(telling, Summarise)] == [Summarise(ONE.id, TURN, ending.closing if isinstance(ending, Stopped) else None)]
+    assert [telling for telling in tellings if isinstance(telling, Summarise)] == [Summarise(ONE.id, TURN, ending.closing if isinstance(ending, Stopped) else None, ids=frozenset({TURN}))]
 
 
 def test_a_turn_nothing_says_how_it_ended_is_told_once_its_transcript_is_read_past_its_window() -> None:
@@ -1015,14 +1015,14 @@ def test_a_double_escape_before_claude_answers_a_flushed_message_leaves_the_sess
     for event in [Taken(ONE.id, NEXT, None, 9.0), said(status.Idle(), at=10.0), Read(ONE.id, WINDOW), Tick(70.0), Continued(ONE.id, was=TURN, now=NEXT), Interrupted(ONE.id, NEXT, at=71.0)]:
         state, effects = reduce(state, event)
         heard += [effect for effect in effects if isinstance(effect, Summarise | Narrate)]
-    assert heard == [Summarise(ONE.id, TURN, None)]
+    assert heard == [Summarise(ONE.id, TURN, None, ids=frozenset({TURN, NEXT}))]
     assert live(state).state == Idle(status.Idle(), Stamp(2000), after=TURN)
 
 
 def test_a_single_escape_that_flushes_a_queued_message_leaves_the_turn_running_on_to_its_stop() -> None:
     """Measured: the flush sets busy again, not idle, and Claude answers under the flushed id."""
     state, tellings = told([Taken(ONE.id, NEXT, None, 9.0), said(Busy()), Continued(ONE.id, was=TURN, now=NEXT), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST), said(status.Idle(), 3000, at=20.0), Tick(30.0)])
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done", ids=frozenset({TURN, NEXT}))]
     assert isinstance(live(state).state, Idle)
 
 
@@ -1051,9 +1051,9 @@ def test_a_message_queued_while_a_turn_ran_is_its_own_turn_named_from_when_it_is
     Code, after the turn before is handed over to be told."""
     state, tellings = told([QUEUED, STOP, READ_STOP, DEQUEUED, taken(NEXT, Stamp(1500))], in_turn(RUNNING))
     assert state == holding(RUNNING, Opened(NEXT), earlier=frozenset({TURN}))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,)), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,), ids=frozenset({TURN})), Snapshot(ONE.id, ONE.cwd)]
     state, tellings = told([Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST), said(status.Idle(), at=14.0), Tick(20.0)], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", ids=frozenset({NEXT}))]
     assert state == holding(Idle(status.Idle(), Stamp(2000), after=NEXT), Told(NEXT), earlier=frozenset({TURN}))
 
 
@@ -1074,7 +1074,7 @@ def test_a_prompt_taken_while_running_with_no_turn_open_opens_one_only_if_writte
 
 def test_a_queued_turn_whose_stop_lands_before_its_record_is_read_is_told_once() -> None:
     state, tellings = told([QUEUED, STOP, READ_STOP, DEQUEUED, Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST), taken(NEXT, Stamp(1500)), said(status.Idle(), at=14.0), Tick(20.0)], in_turn(RUNNING))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,)), Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,), ids=frozenset({TURN})), Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", ids=frozenset({NEXT}))]
     assert live(state).turn == Told(NEXT)
 
 
@@ -1088,7 +1088,7 @@ def test_a_bang_command_is_running_from_its_status_and_claudes_answer_to_it_is_t
     state, tellings = told([taken(bang, Stamp(2900), at=24.0)], state)
     assert (live(state).turn, tellings) == (Opened(bang), [])
     state, tellings = told([Stopped(ONE.id, "It slept.", mode=None, prompt=bang, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, bang, "It slept.")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, bang, "It slept.", ids=frozenset({bang}))]
 
 
 def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_told_once_it_is_over() -> None:
@@ -1099,14 +1099,14 @@ def test_a_command_claude_code_runs_at_the_prompt_is_running_while_it_runs_and_t
     state, _ = told([said(Busy(), 3000, at=20.0), taken(compact, Stamp(3001), at=20.1), Joined(ONE, "compact")], at_prompt)
     assert state == holding(Running(Busy(), Stamp(3000), idled=Stamp(2000)), Opened(compact), earlier=frozenset({TURN}))
     state, tellings = told([said(status.Idle(), 9000, at=30.0), Read(ONE.id, Stamp(9000 + UNTOLD))], state)
-    assert (live(state).state, tellings) == (Idle(status.Idle(), Stamp(9000), after=compact), [Compare(ONE.id, again=False), Summarise(ONE.id, compact, None)])
+    assert (live(state).state, tellings) == (Idle(status.Idle(), Stamp(9000), after=compact), [Compare(ONE.id, again=False), Summarise(ONE.id, compact, None, ids=frozenset({compact}))])
 
 
 def test_a_stop_with_nothing_queued_behind_it_marks_nothing() -> None:
     """A message taken into the running turn is in that turn, and waits behind nothing: a mark taken at its Stop
     would be read, however much later, as the start of the next turn no prompt marks."""
     state, tellings = told([QUEUED, DEQUEUED, taken(NEXT, Stamp(1200)), Stopped(ONE.id, "done", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], in_turn(RUNNING))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "done", ids=frozenset({TURN, NEXT}))]
     assert live(state).turn == Told(TURN, frozenset({NEXT}))
 
 
@@ -1116,7 +1116,7 @@ NOTIFICATION = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</s
 def test_words_delivered_into_the_turn_before_its_stop_mark_nothing_and_the_stop_is_let_go_at_once() -> None:
     """joined_at_boundary: Claude Code removes the words from its queue as it delivers them at a tool boundary."""
     state, effects = reduce(told([QUEUED, ABSORBED], in_turn(RUNNING))[0], STOP)
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), LET_STOP]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", ids=frozenset({TURN})), LET_STOP]
     assert live(state).turn == Told(TURN)
 
 
@@ -1126,7 +1126,7 @@ def test_a_message_taken_out_of_the_queue_that_the_user_never_filed_is_a_line_an
     state, effects = reduce(told([QUEUED], in_turn(RUNNING))[0], other)
     assert (effects, live(state).turn.waiting) == ([Audit(Unfiled(ONE.id, other.taken))], (WORDS,))
     _, tellings = told([STOP, READ_STOP], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,)), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,), ids=frozenset({TURN})), Snapshot(ONE.id, ONE.cwd)]
 
 
 def test_a_queue_record_with_nothing_filed_moves_nothing_and_is_a_line() -> None:
@@ -1144,7 +1144,7 @@ def test_a_stop_with_words_waiting_tells_its_turn_and_holds_the_mark_until_the_t
     """notified_mid_turn, with the transcript read only after the Stop: the remove written before the Stop is read then,
     and nothing follows the turn."""
     held, effects = reduce(told([QUEUED], in_turn(RUNNING))[0], STOP)
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,)), Audit(HoldingBehind(ONE.id, TURN, 1))]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,), ids=frozenset({TURN})), Audit(HoldingBehind(ONE.id, TURN, 1))]
     # Read through a moment before it fired: what Claude Code wrote just before the Stop may not be in it yet.
     assert reduce(held, Read(ONE.id, Stamp(STOP_HEARD - 1)))[1] == []
     # Taken out of the queue: nothing waits, so the Stop is decided with no more to read, and says why it marks nothing.
@@ -1163,7 +1163,7 @@ def test_a_turn_claude_code_sets_going_again_after_a_shell_with_no_stop_is_told_
     events = {"shell first": [shell, busy, *records], "records first": [*records, shell, busy], "shell, then the records, then busy": [shell, *records, busy]}[order]
     stop = Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=Stamp(5000), request=STOP_REQUEST)
     state, tellings = told([QUEUED, *events, Read(ONE.id, Stamp(4000)), stop, Continued(ONE.id, was=TURN, now=NEXT), Read(ONE.id, Stamp(9000))], in_turn(RUNNING))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", ids=frozenset({TURN, NEXT}))]
     assert isinstance(live(state).turn, Told) and ids(live(state).turn) == {TURN, NEXT}
 
 
@@ -1198,7 +1198,7 @@ def test_a_stop_heard_after_the_turn_queued_behind_it_began_still_leaves_that_tu
     late = Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False, heard=Stamp(3000), request=STOP_REQUEST)
     second = Stopped(ONE.id, "6", mode=None, prompt=NEXT, again=False, heard=Stamp(3653), request=RequestId("second"))
     _, tellings = told([*events, late, Read(ONE.id, Stamp(3000)), second, Read(ONE.id, Stamp(9000))], in_turn(RUNNING))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done"), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "6")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", ids=frozenset({TURN})), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "6", ids=frozenset({NEXT}))]
 
 
 @pytest.mark.parametrize("end", [Ended(ONE.id, "other"), Joined(ONE, "startup")])
@@ -1212,11 +1212,11 @@ def test_words_left_waiting_at_a_stop_run_one_turn_at_a_time_and_each_turn_s_sto
     """Claude Code dequeues one message per turn, the oldest, each run with no prompt hook."""
     later = Prompted(ONE.id, at=6.0, mode=None, prompt=TURN, text="And 4+4?")
     state, tellings = told([QUEUED, later, STOP, READ_STOP, DEQUEUED, taken(NEXT, Stamp(1600))], in_turn(RUNNING))
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS, "And 4+4?")), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS, "And 4+4?"), ids=frozenset({TURN})), Snapshot(ONE.id, ONE.cwd)]
     assert live(state).turn == Opened(NEXT, waiting=("And 4+4?",))
     second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
     _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",)), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",), ids=frozenset({NEXT})), Snapshot(ONE.id, ONE.cwd)]
 
 
 def test_words_submitted_after_the_turn_is_told_behind_words_waiting_are_marked_by_the_stop_before_them() -> None:
@@ -1232,13 +1232,13 @@ def test_words_submitted_after_the_turn_is_told_behind_words_waiting_are_marked_
     assert (live(state).turn, tellings) == (Opened(NEXT, waiting=("And 4+4?",)), [])
     second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
     _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",)), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",), ids=frozenset({NEXT})), Snapshot(ONE.id, ONE.cwd)]
 
 
 def test_a_stop_with_words_waiting_in_a_session_whose_transcript_is_not_read_yet_marks_at_once() -> None:
     """No transcript is read before its session's status is, so no read would ever let the Stop go."""
     state, effects = reduce(told([QUEUED], holding(Unreported(), Opened(TURN)))[0], STOP)
-    assert (effects, live(state).stops) == ([Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,)), Audit(QueuedBehind(ONE.id, TURN, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP], ())
+    assert (effects, live(state).stops) == ([Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", (WORDS,), ids=frozenset({TURN})), Audit(QueuedBehind(ONE.id, TURN, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP], ())
 
 
 def test_a_stop_of_a_turn_hands_never_had_open_leaves_the_words_waiting_behind_the_last_turn_waiting_behind_it() -> None:
@@ -1247,7 +1247,7 @@ def test_a_stop_of_a_turn_hands_never_had_open_leaves_the_words_waiting_behind_t
     state = holding(RUNNING, Told(TURN, waiting=("And 4+4?",)))
     second = Stopped(ONE.id, "8", mode=None, prompt=NEXT, again=False, heard=Stamp(3000), request=STOP_REQUEST)
     _, tellings = told([second, Read(ONE.id, Stamp(3000))], state)
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",)), Snapshot(ONE.id, ONE.cwd)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "8", ("And 4+4?",), ids=frozenset({NEXT})), Snapshot(ONE.id, ONE.cwd)]
 
 
 def test_a_prompt_of_its_own_opening_a_turn_while_words_wait_says_they_run_after_it_unmarked() -> None:
@@ -1276,7 +1276,7 @@ def test_followed_mid_turn_it_works_under_its_own_prompt_once_its_record_is_read
     state, _ = told([said(Busy(), 3000, at=1.0), taken(TURN, Stamp(2000), at=1.1)], holding(Unreported()))
     assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(TURN))
     state, tellings = told([Stopped(ONE.id, "done", mode=None, prompt=TURN, again=False, heard=STOP_HEARD, request=STOP_REQUEST)], state)
-    assert (live(state).turn, tellings) == (Told(TURN), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")])
+    assert (live(state).turn, tellings) == (Told(TURN), [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", ids=frozenset({TURN}))])
     state, _ = told([taken(NEXT, Stamp(9000), at=20.0)], state)
     assert state == holding(Running(Busy(), Stamp(3000), idled=None), Opened(NEXT), earlier=frozenset({TURN}))
 
@@ -1304,7 +1304,7 @@ def test_a_stop_under_an_id_no_record_has_named_while_a_telling_waits_is_held_un
 def test_a_late_stop_of_a_turn_told_before_the_last_one_ends_nothing_and_is_audited() -> None:
     """p1's Stop delayed past p2's prompt, which tells p1, and past p2's own Stop: told again, p1 would be heard twice."""
     before, tellings = told([PROMPT, Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST)])
-    assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd), Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", ids=frozenset({NEXT}))]
     assert reduce(before, STOP) == (before, [Audit(Unmatched(ONE.id, STOP.prompt)), LET_STOP])
 
 
@@ -1316,14 +1316,14 @@ def test_a_turn_that_went_on_under_a_queued_message_is_told_once_under_that_mess
     """The Continued record can be read after the idle that ended the turn: the turn waiting to be told takes the new id.
     Its Stop heard before that record is held until the record names it, and tells the turn once, with its reply."""
     _, tellings = told([said(status.Idle()), *events])
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing)]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing, ids=frozenset({TURN, NEXT}))]
 
 
 def test_a_stop_heard_before_the_record_of_the_turn_after_the_waiting_one_tells_that_turn_with_its_reply() -> None:
     """A message queued behind p1 is taken once p1 stops, and its turn can stop before its record is read: the waiting
     turn is told as itself, and the Stop tells the turn the record opened, never the one waiting."""
     _, tellings = told([said(status.Idle()), Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=Stamp(2500), request=STOP_REQUEST), taken(NEXT, Stamp(2100)), Read(ONE.id, Stamp(9000))])
-    assert tellings == [*TOLD, Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two")]
+    assert tellings == [*TOLD, Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", ids=frozenset({NEXT}))]
 
 
 def test_a_stop_under_an_unnamed_id_in_a_session_with_no_status_read_is_not_held() -> None:
@@ -1340,7 +1340,7 @@ def test_a_held_stop_is_let_go_only_once_the_turn_it_tells_is_compared_and_the_o
     queued, _ = reduce(in_turn(), QUEUED)
     held, _ = reduce(queued, Stopped(ONE.id, "two", mode=None, prompt=NEXT, again=False, heard=STOP_HEARD, request=STOP_REQUEST))
     named, effects = reduce(held, Continued(ONE.id, was=TURN, now=NEXT))
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", (WORDS,)), Audit(HoldingBehind(ONE.id, NEXT, 1))]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "two", (WORDS,), ids=frozenset({TURN, NEXT})), Audit(HoldingBehind(ONE.id, NEXT, 1))]
     assert reduce(named, READ_STOP)[1] == [Audit(QueuedBehind(ONE.id, NEXT, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP]
 
 
@@ -1353,8 +1353,8 @@ def test_a_held_stop_and_the_stop_again_after_it_each_tell_their_part_once_the_r
     assert effects == []
     after, effects = reduce(state, Continued(ONE.id, was=TURN, now=NEXT))
     assert effects == [
-        Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "First."), Reply(ONE.id, first.request, Withdraw()),
-        Compare(ONE.id, again=True), Summarise(ONE.id, NEXT, "Second."), Reply(ONE.id, again.request, Withdraw()),
+        Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, "First.", ids=frozenset({TURN, NEXT})), Reply(ONE.id, first.request, Withdraw()),
+        Compare(ONE.id, again=True), Summarise(ONE.id, NEXT, "Second.", ids=frozenset({NEXT})), Reply(ONE.id, again.request, Withdraw()),
     ]
     assert live(after).stops == ()
 
@@ -1406,7 +1406,7 @@ def test_a_turn_left_untold_is_told_before_its_session_is_said_to_be_gone(end: E
 @pytest.mark.parametrize("source", ["compact", "resume"])
 def test_a_restart_while_a_telling_waits_keeps_the_turns_late_stop_ending_nothing_but_the_telling(source: StartSource) -> None:
     _, tellings = told([said(status.Idle()), Joined(ONE, source), STOP, Tick(20.0)])
-    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done")]
+    assert tellings == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "done", ids=frozenset({TURN}))]
 
 
 def test_a_compaction_between_a_turns_telling_and_its_late_stop_tells_it_once() -> None:
@@ -1423,7 +1423,7 @@ def test_a_late_stop_of_an_older_turn_leaves_the_turn_waiting_to_be_told_for_its
     state, tellings = told([PROMPT, said(Busy(), 2000, at=11.0), said(status.Idle(), 3000, at=12.0), *between, STOP])
     assert tellings == [*TOLD, Snapshot(ONE.id, ONE.cwd)]
     assert isinstance(live(state).turn, Untold)
-    assert told([own, Tick(20.0)], state)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing)]
+    assert told([own, Tick(20.0)], state)[1] == [Compare(ONE.id, again=False), Summarise(ONE.id, NEXT, closing, ids=frozenset({NEXT}))]
 
 
 @pytest.mark.parametrize("event", [INTERRUPT, taken(NEXT, Stamp(9000)), Continued(ONE.id, was=TURN, now=NEXT)])
@@ -1474,13 +1474,13 @@ def through(*events: Event) -> tuple[Registry, list[Effect]]:
 
 def test_the_reply_that_closes_a_turn_on_the_wire_tells_it_and_its_stop_then_only_lets_its_hook_go() -> None:
     state, heard = through(Closed(ONE.id, TURN, "Done."), stop("Done."))
-    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), Audit(Unmatched(ONE.id, TURN)), LET_STOP]
+    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN})), Audit(Unmatched(ONE.id, TURN)), LET_STOP]
     assert live(state).turn == Told(TURN)
 
 
 def test_a_turn_whose_stop_came_first_is_not_told_again_by_its_reply_on_the_wire() -> None:
     state, heard = through(stop("Done."), Closed(ONE.id, TURN, "Done."))
-    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), LET_STOP, Audit(Unclosed(ONE.id, TURN))]
+    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN})), LET_STOP, Audit(Unclosed(ONE.id, TURN))]
     assert live(state).turn == Told(TURN)
 
 
@@ -1493,14 +1493,14 @@ def test_a_turn_that_goes_on_after_a_blocked_stop_has_each_of_its_endings_told_o
         return heard if wire_first else heard[::-1]
 
     _, heard = through(*ending("done", again=False), *ending("BANANA", again=True))
-    assert [effect for effect in heard if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, "done"), Summarise(ONE.id, TURN, "BANANA")]
+    assert [effect for effect in heard if isinstance(effect, Summarise)] == [Summarise(ONE.id, TURN, "done", ids=frozenset({TURN})), Summarise(ONE.id, TURN, "BANANA", ids=frozenset({TURN}))]
     assert [effect for effect in heard if isinstance(effect, Compare)] == [Compare(ONE.id, again=False), Compare(ONE.id, again=True)]
 
 
 def test_an_open_turn_stopping_again_is_read_against_its_own_prompt_s_mark() -> None:
     """Its first Stop never reached hands, so no reading of it left off anywhere: where the last one did is another turn's."""
     _, heard = through(stop("Second.", again=True))
-    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Second."), LET_STOP]
+    assert heard == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Second.", ids=frozenset({TURN})), LET_STOP]
 
 
 def test_a_reply_on_the_wire_of_a_turn_told_already_ends_nothing() -> None:
@@ -1514,7 +1514,7 @@ def test_a_reply_on_the_wire_of_a_turn_told_already_ends_nothing() -> None:
 def test_a_reply_on_the_wire_tells_a_turn_claude_code_already_said_is_over() -> None:
     state = holding(IDLE, Untold(TURN, frozenset(), by=Stamp(2000)))
     after, effects = reduce(state, Closed(ONE.id, TURN, "Done."))
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.")]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN}))]
     assert live(after).turn == Told(TURN)
 
 
@@ -1522,7 +1522,7 @@ def test_a_reply_on_the_wire_tells_the_turn_and_its_stop_marks_the_words_waiting
     """The mark has one owner, the Stop, whose hook holds Claude Code until the transcript is read through its firing."""
     state = holding(BUSY, Opened(TURN, waiting=(WORDS,)))
     told_, effects = reduce(state, Closed(ONE.id, TURN, "Done."))
-    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", (WORDS,))]
+    assert effects == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", (WORDS,), ids=frozenset({TURN}))]
     held, effects = reduce(told_, STOP)
     assert (effects, live(held).turn) == ([Audit(HoldingBehind(ONE.id, TURN, 1))], Told(TURN, waiting=(WORDS,)))
     assert reduce(held, READ_STOP)[1] == [Audit(QueuedBehind(ONE.id, TURN, 1)), Snapshot(ONE.id, ONE.cwd), LET_STOP]
@@ -1541,7 +1541,7 @@ def test_a_message_queued_between_the_wire_telling_a_turn_and_its_stop_is_marked
     """Claude Code files it under the told turn's id, as it does one queued behind a running turn, and runs it once
     that turn's Stop hook returns: marked while its own prompt hook holds Claude Code."""
     state, heard = through(Closed(ONE.id, TURN, "Done."), Prompted(ONE.id, at=6.0, mode=None, prompt=TURN, text=""), stop("Done."))
-    assert [effect for effect in heard if isinstance(effect, Compare | Summarise | Snapshot)] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done."), Snapshot(ONE.id, ONE.cwd)]
+    assert [effect for effect in heard if isinstance(effect, Compare | Summarise | Snapshot)] == [Compare(ONE.id, again=False), Summarise(ONE.id, TURN, "Done.", ids=frozenset({TURN})), Snapshot(ONE.id, ONE.cwd)]
     assert live(state).turn == Told(TURN)
 
 
@@ -1638,14 +1638,14 @@ def test_a_command_run_while_a_subagent_works_in_the_background_returns_the_sess
     state, _ = told([taken(COMMAND, Stamp(1600))], out(DELEGATING, Told(TURN), AGENT))
     assert (live(state).turn, delegating(live(state))) == (Opened(COMMAND), False)
     state, tellings = told([CarriedOut(ONE.id, COMMAND, at=12.1)], state)
-    assert (live(state).turn, delegating(live(state)), tellings) == (Told(COMMAND), True, [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None)])
+    assert (live(state).turn, delegating(live(state)), tellings) == (Told(COMMAND), True, [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None, ids=frozenset({COMMAND}))])
 
 
 def test_a_command_whose_idle_was_read_first_is_told_once_it_printed() -> None:
     state, _ = told([taken(COMMAND, Stamp(1600)), said(status.Idle(), 2000)], holding(RUNNING, Told(TURN)))
     assert live(state).turn == Untold(COMMAND, frozenset(), WINDOW)
     state, tellings = told([CarriedOut(ONE.id, COMMAND, at=12.1)], state)
-    assert (live(state).turn, tellings) == (Told(COMMAND), [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None)])
+    assert (live(state).turn, tellings) == (Told(COMMAND), [Compare(ONE.id, again=False), Summarise(ONE.id, COMMAND, None, ids=frozenset({COMMAND}))])
 
 
 @pytest.mark.parametrize("before", [in_turn(RUNNING), registry(replace(live(in_turn(RUNNING)), turn=Opened(TURN, frozenset({COMMAND})))), holding(IDLE, Told(COMMAND))])

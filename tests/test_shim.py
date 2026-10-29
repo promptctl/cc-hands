@@ -200,7 +200,7 @@ async def test_a_session_running_before_the_plugin_joins_on_its_first_hook_and_i
     assert [listing.session for listing in sessions.live()] == [Session(membership, Unreported(), mode=None, turn=Opened(PromptId("p1")))]
     assert read_membership(home, SID) == membership
     assert await shim(home, STOP) == (0, "", "")
-    assert await asyncio.wait_for(sessions.story(), 1.0) == Summarise(SID, PromptId("p1"), "done")
+    assert await asyncio.wait_for(sessions.story(), 1.0) == Summarise(SID, PromptId("p1"), "done", ids=frozenset({PromptId("p1")}))
 
 
 async def test_a_stop_is_decided_on_the_status_and_transcript_claude_code_wrote_before_it_however_soon_it_came(home: Home, tmp_path: Path) -> None:
@@ -227,7 +227,7 @@ async def test_a_stop_is_decided_on_the_status_and_transcript_claude_code_wrote_
             {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}},
         )))
         assert await shim(home, {**STOP, **located, "prompt_id": "p2"}) == (0, "", "")
-        assert await asyncio.wait_for(registry.story(), 1.0) == Summarise(SID, PromptId("p2"), "done")
+        assert await asyncio.wait_for(registry.story(), 1.0) == Summarise(SID, PromptId("p2"), "done", ids=frozenset({PromptId("p1"), PromptId("p2")}))
     finally:
         await runner.cleanup()
 

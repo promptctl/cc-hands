@@ -44,6 +44,9 @@ from hands.core.events import Ending, Joined, PermissionRequested
 from hands.core.session import DenyAndInterrupt, Membership, Permission, RequestId
 from hands.sessions.registry import Sessions
 from hands.brain.mcp import CallSpans
+from hands.brain.process import TYPED, ClaudeTurn
+from hands.core.attention import Attention
+from hands.core.session import PromptId
 from hands.brain.stage import ACTED_UNTOLD, FAILED_AFTER, OWED, SILENT, BrainStage, HandsAsked, UserAsked, Broken
 from hands.core.front import FrontUnread, InFront, NoSessionInFront, SessionInFront, told
 from hands.core.session import SessionId
@@ -139,12 +142,25 @@ class FakeBrain:
     # Each turn's teller of the permissions it holds.
     tellers: list[Callable[[Asked], None]] = field(default_factory=list[Callable[[Asked], None]])
 
+    # The turn of Claude Code's the brain runs now, as its `ClaudeTurns` would say: the one each turn asked opens, until
+    # the test ends it, or one Claude Code opened itself (`opens`).
+    running: ClaudeTurn | None = None
+
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         self.asked.append(text)
         self.tellers.append(asks)
         turn = asyncio.get_running_loop().create_future()
         self.turns.append(turn)
+        self.running = ClaudeTurn(frozenset({PromptId(f"p{len(self.asked)}")}), TYPED, asyncio.get_running_loop().create_future(), awaited=True)
         return await asyncio.shield(turn)
+
+    def current(self) -> ClaudeTurn | None:
+        return self.running
+
+    def opens(self, opener: str = "notified") -> ClaudeTurn:
+        """A turn Claude Code opened itself, which it runs now: ended by the test, through its `ended`."""
+        self.running = ClaudeTurn(frozenset({PromptId(f"n{id(self)}")}), opener, asyncio.get_running_loop().create_future())
+        return self.running
 
     # The brain's session, as the brain's own model holds it: what a permission is held in, and settled through.
     sessions: Sessions = field(default_factory=lambda: model(lambda _: None, lambda _: None, lambda _: None))
@@ -173,9 +189,16 @@ class FakeBrain:
 
     def end(self, answered: BrainEnded = ANSWERED) -> None:
         self.turns[-1].set_result(answered)
+        self._over()
 
     def fail(self, error: Exception) -> None:
         self.turns[-1].set_exception(error)
+        self._over()
+
+    def _over(self) -> None:
+        # Told, Claude Code's turn is no longer the one it runs.
+        if self.running is not None and self.running.awaited:
+            self.running = None
 
 
 @dataclass
@@ -280,6 +303,8 @@ class Rig:
     call_spans: CallSpans
     # Each pause the stage is waiting out, with the task waiting it out: its time runs only when the test says.
     pauses: list[tuple[asyncio.Future[None], asyncio.Task[object]]]
+    # What the user set hands to say unprompted, the last of these, read as each turn nobody waits on starts.
+    attention: list[Attention]
     exchanges: int = 0
     # The span each request sent on carries, in the order they left.
     spans: list[Span] = field(default_factory=list[Span])
@@ -423,12 +448,13 @@ async def rig() -> AsyncGenerator[Rig, None]:
         await paused
 
     out = Spoken()
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, clock=lambda: now[0], pause=pause)
+    settings = [Attention()]
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, lambda: settings[-1], clock=lambda: now[0], pause=pause)
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges, call_spans, pauses)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, now, refocused, fronts, asking, modalities, edges, call_spans, pauses, settings)
         finally:
             asking.cancel()
 
@@ -2295,3 +2321,67 @@ async def test_a_stop_of_a_turn_that_has_ended_or_of_no_turn_stops_nothing(rig: 
     # The turn shown has ended, and the brain is on another: that one goes on.
     assert rig.stage.stop(shown) == AlreadyEnded() and rig.brain.interrupts == 0
     rig.brain.end()
+
+
+async def test_a_turn_claude_code_opened_itself_before_the_users_turn_was_told_is_spoken_as_its_own_each_ending_on_its_own(rig: Rig) -> None:
+    await rig.say("run the tests")
+    asked, _ = rig.request()
+    rig.stream(asked, "Running them in the background.")
+    # The brain's `ClaudeTurns` says Claude Code now runs a turn it opened for the task's result, before the user's
+    # turn's Stop was applied: [LAW:one-source-of-truth] the stage opens it from that, not from its own turn being over.
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The tests passed.")
+    rig.brain.end()
+    await rig.turned()
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    await rig.turned(2)
+    user, notice = turns(rig.recorded)
+    assert [(event.facts["origin"], event.facts["opener"], event.facts["exchanges"], event.facts["text"]) for event in (user, notice)] == [
+        ("awaited", "typed", (asked,), "Running them in the background."),
+        ("unawaited", "notified", (told,), "The tests passed."),
+    ]
+    assert rig.out.said() == ["Running them in the background.", "The tests passed."]
+
+
+async def test_hands_words_filed_into_a_turn_claude_code_opened_itself_are_answered_by_it_and_their_turn_says_which(rig: Rig) -> None:
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The build finished.")
+    await rig.say("and the tests?")
+    # Claude Code delivered the words into the notification's turn: its next request answers them.
+    rig.brain.running, notified.awaited = notified, True
+    answering, _ = rig.request()
+    rig.stream(answering, " The tests passed too.")
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    rig.brain.end()
+    await rig.turned(2)
+    events = {event.facts["origin"]: event for event in turns(rig.recorded)}
+    asked, notice = events["awaited"], events["unawaited"]
+    # [LAW:nothing-unseen] the user's turn says which turn said its answer; it is not failed for having no request of its own.
+    assert (asked.facts["joined"], asked.facts["failed"], asked.facts["exchanges"], asked.facts["opener"]) == (notice.span_id, None, (), "notified")
+    assert notice.facts["exchanges"] == (told, answering)
+    assert "The tests passed too." in "".join(rig.out.said())
+
+
+async def test_a_turn_nobody_waited_on_leaves_what_the_next_turn_tells_the_brain_as_it_found_it(rig: Rig) -> None:
+    rig.stage._broken_off = "[hands] what the user did not hear"  # pyright: ignore[reportPrivateUsage]
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "Half a")
+    notified.ended.set_exception(RuntimeError("the brain exited"))
+    await rig.turned()
+    assert rig.stage._broken_off == "[hands] what the user did not hear"  # pyright: ignore[reportPrivateUsage]
+    await rig.say("hello")
+    assert rig.brain.asked[-1].endswith("[hands] what the user did not hear")
+
+
+async def test_a_turn_nobody_waited_on_is_withheld_while_hands_is_quiet_and_kept_on_its_event(rig: Rig) -> None:
+    rig.attention.append(replace(rig.attention[-1], quiet="on"))
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The build finished.")
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    await rig.turned()
+    (event,) = turns(rig.recorded)
+    assert (event.facts["withheld"], rig.out.said()) == ("The build finished.", [])

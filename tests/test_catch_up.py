@@ -31,7 +31,7 @@ def applied(effect: Effect, failed: str | None = None) -> WideEvent:
 
 
 def told(session: str, prompt: str, closing: str | None) -> WideEvent:
-    return applied(Summarise(SessionId(session), PromptId(prompt), closing))
+    return applied(Summarise(SessionId(session), PromptId(prompt), closing, ids=frozenset({PromptId(prompt)})))
 
 
 def gone(session: str) -> WideEvent:
@@ -72,7 +72,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
             (LEFT + timedelta(minutes=2), told("parser", "p1", "Parser fixed, tests pass.")),
             (LEFT + timedelta(minutes=3), Announced("hands could not reach the model.", "speech")),
             # A turn whose telling could not be begun still finished.
-            (LEFT + timedelta(minutes=4), applied(Summarise(SessionId("docs"), PromptId("d2"), None), "the model is down")),
+            (LEFT + timedelta(minutes=4), applied(Summarise(SessionId("docs"), PromptId("d2"), None, ids=frozenset({PromptId("d2")})), "the model is down")),
             (LEFT + timedelta(minutes=5), Announced("hands could not reach the model.", "speech")),
             (LEFT + timedelta(minutes=6), told("deploy", "x1", "Deployed.")),
             (LEFT + timedelta(minutes=8), gone("scratch")),

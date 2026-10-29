@@ -1131,8 +1131,9 @@ with what failed it: a hands built without its fritter is refused in the words `
 showed. Each turn typed into it (`brain.turn`), a part of the `voice.turn` that asked it, runs from its typing to its
 end, with the prompt id Claude Code took it under (`taken`), whether that id was of a turn Claude Code already had, so
 it queued the words behind or into that turn (`queued`), the id it was told under (`told`), the tools its latest request
-offered the model (`offered`), and the ids of the turns told while it was in flight that did not answer it (`others`),
-or with the error that failed it. The brain keeps no account of Claude Code's turns: its session is a session of the
+offered the model (`offered`), the ids of the turn of Claude Code's that answered it (`ids`), how its telling was found
+to be that turn's (`matched`: `id`, or `behind` for words run as the turn behind the one told), and why the order of
+the brain's turns was lost while it was in flight (`order_lost`), or with the error that failed it. The brain keeps no account of Claude Code's turns: its session is a session of the
 one model of a turn (`core/reducer.py`), in a `Sessions` of its own (`brain.process.model`), fed as a working session's
 is: its hooks, each applied by the same `Reader.hooked` as a working session's, answered once it is applied, and its
 Stop held as a working session's is, and its status and transcript by the same `Reader`, on its period and through now
@@ -1141,9 +1142,23 @@ before each turn hook; each event that model applies is an
 closing reply is. A turn is taken when the model says Claude Code took the text it typed at a `UserPromptSubmit`
 (`Submitted`, which says the id it was filed under and whether that id was a turn's it already had), the text as Claude
 Code keeps it: out of the tags a long paste comes in, trailing whitespace trimmed. That is handed over in the model's
-order, with its tellings, so a turn decided before the words were taken is never their answer. It is over at the first turn the model tells, once
-it was taken, at which its words no longer wait in Claude Code's queue: the turn they opened, the one they were taken
-into, or the one they ran as after the turn they were typed behind. Anything the model holds untold, or waiting in
+order, with its tellings, so a turn decided before the words were taken is never their answer.
+
+Which of Claude Code's turns runs, and which telling ends each, has one owner, `ClaudeTurns`, which the brain and its
+stage both read. Every words a prompt hook takes that are not filed under a turn Claude Code already had open a turn of
+its own: hands' typed words, or a kind `OPENERS` knows (`notified`, a background task's result), or any other. The hook
+holds Claude Code until hands has applied it, so a turn's id is known before its first request leaves, and the stage
+opens its own turn for it from `Brain.current()`: the user's turn where hands' words opened it, else a turn nobody waits
+on, spoken unless hands is quiet, which keeps what it withheld on its event. A telling ends the open turn it shares an id
+with, by the ids it carries (`Summarise.ids`, the told turn's every id as it was decided), however it was told: under a
+flushed id, or naming none. Words still waiting in Claude Code's queue at a telling run as the turn behind it, which no
+hook opens; it is named by the first telling no open turn shares an id with. hands' words filed into a turn Claude Code
+opened itself are answered by it, and the user's `voice.turn` says which (`joined`). Each `voice.turn` says whether
+anyone waited on it (`origin`), what opened it (`opener`), and how its end was matched (`matched`). A turn is typed only
+once no turn Claude Code opened itself runs. This order rests on Claude Code waiting on the brain's hooks, so the brain
+declares its prompt hook's timeout as `TAKE_SECONDS`, holds its Stop as long, and declares the Stop's hook past that
+hold (`hookconfig.brain_declared`). A prompt hook answered past its timeout, or a Stop let go undecided, loses the
+order: every open turn fails `OrderLost`, and none is guessed. Anything the model holds untold, or waiting in
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
 turn stops it with Escape and Ctrl-C before it is typed, once, decided on the model as its period and hooks have read it. A turn whose asker stopped waiting is still heard to its end. One that is stopped ends once Claude Code holds nothing
 of it, the turn its Escape stopped told or the words it put back in the input taken out of the queue; one Claude Code still

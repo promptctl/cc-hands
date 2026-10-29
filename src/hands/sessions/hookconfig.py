@@ -28,6 +28,15 @@ POST_TIMEOUT_SECONDS = 2.0
 STOP_HOLD_SECONDS = 1.5
 STOP_POST_TIMEOUT_SECONDS = POST_TIMEOUT_SECONDS + STOP_HOLD_SECONDS
 
+# How long a turn typed into the brain has to be taken: a cold start loads the MCP server before the input is read.
+TAKE_SECONDS = 30.0
+# [LAW:one-source-of-truth] the brain's own hooks, which hands answers in-process and not through the shim. Its prompt
+# hook and its Stop's hold are what order the brain's turns (hands.brain.process.ClaudeTurns): a turn's id is heard
+# before its first request leaves only while Claude Code waits on the prompt hook, and words queued behind a turn run
+# after its telling only while the Stop is held. Each is bounded as a typed turn's take is, the Stop's hold too
+# (hands.brain.process.model), and the Stop's hook outlives its hold as the shim's does (STOP_POST_TIMEOUT_SECONDS).
+BRAIN_STOP_POST_TIMEOUT_SECONDS = TAKE_SECONDS + POST_TIMEOUT_SECONDS
+
 # [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it on the
 # installed hands' own interpreter, which `hands plugin` writes (hands.sessions.marketplace).
 SHIM_MODULE = "hands.sessions.shim"
@@ -96,6 +105,22 @@ def declared(event: str) -> dict[str, object]:
     """What a hook declares beyond what runs it: how long Claude Code waits on it, and whether it runs in the background."""
     timeout = _DECLARED_TIMEOUTS.get(event)
     return {**({} if timeout is None else {"timeout": timeout}), **({"async": True} if event in _IN_BACKGROUND else {})}
+
+
+# [LAW:dataflow-not-control-flow] what each of the brain's hooks declares, as a table, as `_DECLARED_TIMEOUTS` is the shim's.
+_BRAIN_DECLARED_TIMEOUTS: Mapping[str, float] = {
+    "PermissionRequest": PERMISSION_HOOK_TIMEOUT_SECONDS,
+    "UserPromptSubmit": TAKE_SECONDS,
+    "Stop": BRAIN_STOP_POST_TIMEOUT_SECONDS,
+    "StopFailure": BRAIN_STOP_POST_TIMEOUT_SECONDS,
+}
+
+
+def brain_declared(event: str) -> dict[str, object]:
+    """What one of the brain's hooks declares beyond its URL: how long Claude Code waits on it. None of them runs in the
+    background: hands answers each, and Claude Code goes on only once it has."""
+    timeout = _BRAIN_DECLARED_TIMEOUTS.get(event)
+    return {} if timeout is None else {"timeout": timeout}
 
 
 def main() -> None:

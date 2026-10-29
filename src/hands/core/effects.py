@@ -262,6 +262,9 @@ class Summarise:
     waiting: tuple[str, ...] = ()
     # What failed the turn, where the API did: its StopFailure's account, which ends the turn as a Stop does.
     failure: StopFailed | None = None
+    # [LAW:one-source-of-truth] every id the told turn went by as it was decided (`ids(told)`): which turn of Claude
+    # Code's this telling ends, said by the telling itself, never re-read from a model that may have moved on since.
+    ids: frozenset[PromptId] = frozenset()
 
 
 @dataclass(frozen=True)
