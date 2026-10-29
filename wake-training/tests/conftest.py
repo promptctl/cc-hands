@@ -2,15 +2,32 @@
 
 [LAW:single-enforcer] conftest is the one owner of the environment the suite runs in: a test that needs a name sets it
 on top, and builds no environment of its own to keep the developer's out. It imports nothing of wake_training, so it
-is loaded, and the run's environment made, before any test module imports what reads it."""
+is loaded, and the run's environment made and held offline, before any test module imports what reads it."""
 
+import importlib.util
 import os
+import platform
 import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
 
 import pytest
+
+
+def _loaded(path: Path) -> ModuleType:
+    """The module at `path`, loaded by its path: the repository's tests/ is not on this suite's import path, and its
+    conftest would shadow this one if it were."""
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None, f"{path} is no module Python can load"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# [LAW:one-source-of-truth] the hold hands' run is kept off the network by, its profile and the macOS it needs.
+offline = _loaded(Path(__file__).parents[2] / "tests" / "offline.py")
 
 # The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
 # is in CI, which pytest reads as each report is made, to show a failure whole.
@@ -38,6 +55,8 @@ def entered(monkeypatch: pytest.MonkeyPatch, names: Mapping[str, str]) -> None:
 
 
 _machine = pytest.StashKey[dict[str, str]]()
+# How the run is held offline, as the hold says.
+_held = pytest.StashKey[str]()
 
 
 @pytest.hookimpl(trylast=True)
@@ -57,6 +76,14 @@ def pytest_configure(config: pytest.Config) -> None:
     config.add_cleanup(left)
     entered(monkeypatch, hermetic(machine, home))
     config.stash[_machine] = machine
+    # The suite fetches nothing while it runs, so it is held from before its first test to its last, and so is every
+    # process a test starts.
+    offline.sandboxable(platform.mac_ver()[0])
+    config.stash[_held] = offline.hold()
+
+
+def pytest_report_header(config: pytest.Config) -> str:
+    return f"offline: nothing past loopback ({config.stash[_held]})"
 
 
 @pytest.fixture(scope="session")

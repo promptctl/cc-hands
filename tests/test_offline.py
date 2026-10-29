@@ -1,16 +1,16 @@
-"""The run is offline once its fetches are done (conftest): nothing a test does, nor anything a test starts, connects
-past loopback, and loopback is as open as it was. 192.0.2.1 is TEST-NET-1 (RFC 5737), routed nowhere: outside the
-sandbox a connection to it times out, inside it the OS refuses it at once."""
+"""The run is offline once its fetches are done (conftest, offline.py): nothing a test does, nor anything a test starts, connects
+past loopback, and loopback is as open as it was."""
 
 import errno
 import socket
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from conftest import sandboxable
-
-UNROUTED = ("192.0.2.1", 443)
+import offline
+from offline import UNROUTED, sandboxable
 
 
 def test_a_connection_a_test_makes_past_loopback_is_refused_by_the_os() -> None:
@@ -45,3 +45,9 @@ def test_a_macos_whose_sandbox_holds_loopback_starts_the_run(release: str) -> No
 def test_a_macos_whose_sandbox_refuses_loopback_at_random_stops_the_run_saying_so() -> None:
     with pytest.raises(pytest.UsageError, match=r"refuses loopback at random before macOS 15: this is macOS 14\.8\.9$"):
         sandboxable("14.8.9")
+
+
+def test_a_run_started_inside_the_held_run_is_held_and_says_how() -> None:
+    held = subprocess.run([sys.executable, "-c", "import offline; print(offline.hold())"], cwd=Path(offline.__file__).parent, capture_output=True, text=True, timeout=30)
+    assert held.returncode == 0, held.stderr
+    assert held.stdout.startswith(str(offline.OFFLINE)), held.stdout

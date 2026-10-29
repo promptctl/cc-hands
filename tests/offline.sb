@@ -1,8 +1,9 @@
-; What the test run may connect to once its fetches are done, as macOS's sandbox holds it and every process it starts
-; (tests/conftest.py): loopback, where hands' proxy, its server and the mock of Anthropic's API listen, and local
-; sockets, but not the system's resolver, which would ask the network for a name; `localhost` resolves without it, from
-; /etc/hosts. A proxy setting reaches only the clients that honour it, and ssh, among others, does not. A process in any
-; sandbox cannot exec a setuid binary, ps among them, whatever its profile allows.
+; What a test run may connect to, hands' once its fetches are done, fritter's and wake-training's from their start, as
+; macOS's sandbox holds it and every process it starts (tests/offline.py): loopback, where hands' proxy, its server and
+; the mock of Anthropic's API listen, and local sockets, but not the system's resolver, which would ask the network for
+; a name; `localhost` resolves without it, from /etc/hosts. A proxy setting reaches only the clients that honour it, and
+; ssh, among others, does not. A process in any sandbox cannot exec a setuid binary, ps among them, whatever its profile
+; allows.
 (version 1)
 (allow default)
 (deny network-outbound)
