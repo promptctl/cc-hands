@@ -25,10 +25,9 @@ from xml.etree import ElementTree
 import numpy as np
 
 from hands.voice import engaged, streaming
-from measuring import AMI_AUDIO, RATE, SHAPES, Live, Stretch, fetched, mono, turn, turns
+from measuring import AMI_AUDIO, AMI_TEST, RATE, SHAPES, Live, Stretch, fetched, mono, turn, turns
 
 AMI_WORDS = "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip"
-MEETINGS = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
 PEOPLE = "ABCD"
 BEFORE = 0.3
 # What the transcript times that is heard. Not its disfluency markers: each marks where someone broke off, and over the 70
@@ -101,7 +100,7 @@ def main() -> None:
     # Each meeting's holds in each shape, and the words said in them, copied out so its whole audio, a few hundred MB, is let
     # go.
     meetings = list[list[tuple[tuple[str, ...], dict[str, np.ndarray]]]]()
-    for name in MEETINGS:
+    for name in AMI_TEST:
         audio = mono(fetched(directory, AMI_AUDIO.format(name)))
         alone = turns(*transcribed(archive, name), len(audio) / RATE, before=BEFORE, after=engaged.STOP_SECS)
         meetings.append([(said.words, {shape: turn(audio, said.start, said.end, after).copy() for shape, after in SHAPES.items()}) for said in alone])

@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import soundfile
@@ -18,10 +19,16 @@ from hands.voice import streaming
 
 # Last on the path, so nothing in tests/ stands in for a module of the same name installed.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "tests"))
-from listening import SHAPES, Live, turn  # noqa: E402
+from listening import LEAD, SHAPES, Live, turn  # noqa: E402
 
 RATE = streaming.RATE
 AMI_AUDIO = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/{0}/audio/{0}.Mix-Headset.wav"
+# Who sounds when in each AMI meeting, per pyannote's AMI-diarization-setup references, marking each person's words alone
+# or their words and every laugh, cough and other sound they make.
+AMI_REFERENCES = "https://raw.githubusercontent.com/pyannote/AMI-diarization-setup/main/{0}/rttms/test/{1}.rttm"
+type Marked = Literal["only_words", "word_and_vocalsounds"]
+# AMI's sixteen test meetings, which the models were not trained on.
+AMI_TEST = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
 # A turn: one person's speech with no gap of GAP or more inside it, at least SHORTEST long.
 GAP = 0.5
 SHORTEST = 0.8
@@ -52,6 +59,13 @@ class Stretch:
     end: float
     person: str
     words: tuple[str, ...] = ()
+
+
+def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
+    """Who sounds when in AMI meeting `name`, as pyannote's references mark it, fetched into `directory` once."""
+    (directory / marked).mkdir(exist_ok=True)
+    path = fetched(directory / marked, AMI_REFERENCES.format(marked, name))
+    return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in path.read_text().splitlines())]
 
 
 def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
