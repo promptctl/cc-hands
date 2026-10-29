@@ -94,12 +94,13 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
     if fixturedef.scope == "function":
         return (yield)
     config, fixture = request.config, fixturedef.argname
-    # Finalizers run last-added first, so these two bracket the teardown the fixture's own setup registers.
+    # Finalizers run last-added first, so these two bracket the teardown the fixture's own setup registers. The second
+    # is added before the test's timer is re-armed, which a spent bound fires at once.
     teardown = ExitStack()
     fixturedef.addfinalizer(teardown.close)
     with shared(config, "setup", fixture):
         value = yield
-    fixturedef.addfinalizer(lambda: teardown.enter_context(shared(config, "teardown", fixture)))
+        fixturedef.addfinalizer(lambda: teardown.enter_context(shared(config, "teardown", fixture)))
     return value
 
 
