@@ -95,16 +95,19 @@ from hands.voice.tool import Result, Tool, silent, whole
 
 class Asking(Protocol):
     """What the stage needs of the brain: the session its requests carry, a turn asked, told of each permission it holds
-    for the user, and the turn in flight stopped, saying whether there was one."""
+    for the user, which of Claude Code's turns runs and which answers the turn asked, and a turn of Claude Code's stopped,
+    saying whether there was one."""
 
     @property
     def session(self) -> SessionId: ...
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
 
-    def interrupt(self) -> bool: ...
+    def interrupt(self, running: ClaudeTurn | None) -> bool: ...
 
     def current(self) -> ClaudeTurn | None: ...
+
+    def answering(self) -> ClaudeTurn | None: ...
 
 
 @dataclass(frozen=True)
@@ -618,7 +621,8 @@ class BrainStage(FrameProcessor):
             return await turn()
 
     def _begin(self, asker: Asker, utterances: tuple[Utterance, ...], span: Span, since: Seconds) -> _Turn:
-        """A turn of the stage's, speaking from the start: its words, and its acknowledgement, if anyone waits on it."""
+        """A turn of the stage's, speaking from the start: its words, and its acknowledgement, which only a turn the user
+        asked and has heard nothing of is given (`_Turn.unheard`)."""
         turn = _Turn(asyncio.Queue(), [], asker, utterances, span, since, Epoch(time.time()))
         turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
         turn.acknowledging = asyncio.create_task(self._acknowledge(turn), name="the turn's acknowledgement")
@@ -808,6 +812,8 @@ class BrainStage(FrameProcessor):
             # The stage stopped asking this turn, so nothing would put it to the user or hear their answer.
             asked.settle(Deny(NOBODY))
             return
+        # [LAW:one-source-of-truth] put by the turn that says what this one asked, the one turn speaking for it.
+        turn = turn.joined if turn.joined is not None else turn
         if turn.interrupted:
             # Nothing more of the turn is said, so they would never hear it asked.
             asked.settle(Deny(SPOKEN_OVER))
@@ -832,11 +838,17 @@ class BrainStage(FrameProcessor):
                     case _Close() | Asked() as point:
                         # Nothing of it is played, so it is reached as it is taken: no barge-in finds it still to hear.
                         turn.reach(point)
-                    case _Aside():
-                        pass
+                    case _Aside(line=line, since=since):
+                        # Hands' answer to the user's own words, which quiet holds nothing of: said, alone.
+                        turn.asides.append((line, _ms(self._now() - since)))
+                        await self._floor.wait()
+                        await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
             return
+        # [LAW:no-ambient-temporal-coupling] the reply starts with the first thing the turn says, not with the turn: a turn
+        # typed behind one Claude Code opened itself says nothing until that one has ended, so no two replies interleave.
+        words = await self._handed(turn)
         await self._reply(turn, True)
-        while (words := await self._handed(turn)) is not None:
+        while words is not None:
             match words:
                 case str():
                     turn.spoken.append(words)
@@ -851,6 +863,7 @@ class BrainStage(FrameProcessor):
                     await self._reply(turn, True)
                 case _Close() | Asked() as point:
                     await self._point(turn, point)
+            words = await self._handed(turn)
         # Not on a barge-in, which cancels this: an end would have TTS say the sentence the user spoke over.
         await self._reply(turn, False)
 
@@ -986,15 +999,21 @@ class BrainStage(FrameProcessor):
         if running is None:
             return None
         asked = self._turn
-        # hands' words, not yet heard in a turn of the stage's, answered by this one.
-        unheard = asked if running.awaited and asked is not None and asked.running is None and asked.joined is None else None
         turn = self._turns.get(running)
-        if turn is None:
-            turn = unheard if unheard is not None else self._unawaited(running)
+        if asked is not None and running is self._brain.answering():
+            if turn is None:
+                # The turn asked, heard in the turn of Claude Code's that answers it: its own words opened it, or wait
+                # to run as it behind a turn told, whichever turn it was heard in before.
+                if asked.running is not None and self._turns.get(asked.running) is asked:
+                    del self._turns[asked.running]
+                turn, asked.running, asked.joined = asked, running, None
+                self._turns[running] = asked
+            elif turn is not asked:
+                # [LAW:nothing-unseen] filed into a turn Claude Code opened itself: that turn says what they asked.
+                asked.joined = turn
+        elif turn is None:
+            turn = self._unawaited(running)
             turn.running, self._turns[running] = running, turn
-        elif unheard is not None:
-            # [LAW:nothing-unseen] filed into a turn Claude Code opened itself: that turn says what they asked.
-            unheard.joined = turn
         self._running = turn
         return turn
 
@@ -1023,8 +1042,11 @@ class BrainStage(FrameProcessor):
                 return NotWorking()
             case _Turn(span=span) if span.span_id != turn:
                 return AlreadyEnded()
-            case _:
-                return Stopping() if self._brain.interrupt() else NotWorking()
+            case facing:
+                # [LAW:one-source-of-truth] the turn of Claude Code's shown is the one stopped: for the turn asked, the one
+                # the brain says answers it, heard on the wire yet or not.
+                running = self._brain.answering() if facing is self._turn else facing.running
+                return Stopping() if self._brain.interrupt(running) else NotWorking()
 
     def _called(self, tool: str) -> str:
         """A tool as the user knows it: one of hands' own by its own name, any other as the model called it."""

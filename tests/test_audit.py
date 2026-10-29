@@ -852,7 +852,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
     let_go = asyncio.create_task(sessions.stop(Stopped(member().id, "done", mode=None, prompt=PromptId("p4"), again=False, heard=Stamp(STOP_HEARD + 2000), request=RequestId("let-go"))))
     await asyncio.sleep(0)
     sessions.release_waiting()
-    assert await asyncio.wait_for(let_go, 1.0) == "let go"
+    assert await asyncio.wait_for(let_go, 1.0) == "released"
 
 
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:

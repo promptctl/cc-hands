@@ -577,7 +577,7 @@ The daemon subscribes to the events in the table. `PermissionDenied`, `SubagentS
 otherwise a noted utterance. They run in the background. The subagent hooks match `.+`, because Claude Code's own
 internal agents (prompt suggestions, `/btw`) fire them under an empty `agent_type`. Each hook posted, to the socket or the display route, is one `hook`
 wide event, open as long as the hook holds its session: which hook and session, and the branch it was answered by — a
-Stop `decided` or `let go` at the hold, the reply a permission was given (`cancelled` when its session closed it), the
+Stop `decided`, `let go` at the hold, or `released` by shutdown, the reply a permission was given (`cancelled` when its session closed it), the
 name a prompt gave or withheld. One the daemon refuses is a failed event saying why.
 
 `MessageDisplay` is the only
@@ -1151,13 +1151,17 @@ holds Claude Code until hands has applied it, so a turn's id is known before its
 opens its own turn for it from `Brain.current()`: the user's turn where hands' words opened it, else a turn nobody waits
 on, spoken unless hands is quiet, which keeps what it withheld on its event. A telling ends the open turn it shares an id
 with, by the ids it carries (`Summarise.ids`, the told turn's every id as it was decided), however it was told: under a
-flushed id, or naming none. Words still waiting in Claude Code's queue at a telling run as the turn behind it, which no
-hook opens; it is named by the first telling no open turn shares an id with. hands' words filed into a turn Claude Code
-opened itself are answered by it, and the user's `voice.turn` says which (`joined`). Each `voice.turn` says whether
+flushed id, or naming none. Words still waiting in Claude Code's queue at a telling, hands' or a task's result, run as
+the turn behind it, which no hook opens; it is named by the first telling no open turn shares an id with. hands' words
+filed into a turn Claude Code opened itself are answered by it, and the user's `voice.turn` says which (`joined`); the
+stage follows them to whichever turn `Brain.answering()` says answers them. Each turn's reply starts with its first word,
+so a turn typed behind one Claude Code opened itself never speaks over it. The work shown is the turn stopped
+(`Brain.interrupt`), a turn Claude Code opened itself included. Each `voice.turn` says whether
 anyone waited on it (`origin`), what opened it (`opener`), and how its end was matched (`matched`). A turn is typed only
-once no turn Claude Code opened itself runs. This order rests on Claude Code waiting on the brain's hooks, so the brain
-declares its prompt hook's timeout as `TAKE_SECONDS`, holds its Stop as long, and declares the Stop's hook past that
-hold (`hookconfig.brain_declared`). A prompt hook answered past its timeout, or a Stop let go undecided, loses the
+once no turn Claude Code opened itself runs, read with the input held. This order rests on Claude Code waiting on the
+brain's hooks, so the brain bounds its prompt hook and its Stop's hold by `TAKE_SECONDS`, and declares each hook's
+timeout past that bound (`hookconfig.brain_declared`). The hold ends the moment the Stop is decided: only a Stop still
+undecided waits it out, and letting it go sooner would fail every open turn rather than answer any. A prompt hook answered past its timeout, or a Stop let go undecided, loses the
 order: every open turn fails `OrderLost`, and none is guessed. Anything the model holds untold, or waiting in
 Claude Code's queue, when a turn is to be typed is no turn's, for an ask that already failed or one nobody made, so the
 turn stops it with Escape and Ctrl-C before it is typed, once, decided on the model as its period and hooks have read it. A turn whose asker stopped waiting is still heard to its end. One that is stopped ends once Claude Code holds nothing

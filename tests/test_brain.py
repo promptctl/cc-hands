@@ -1,6 +1,7 @@
 """The brain: hands' tools over MCP as a Claude Code client reaches them, the brain's process as hands drives it, and the
 side questions hands asks of a Claude Code of their own."""
 
+from types import SimpleNamespace
 import asyncio
 import json
 import os
@@ -42,7 +43,7 @@ from conftest import events, onboard, patiently, pin, pinned_to, unread
 from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
-from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Taken, Unqueued
+from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
 from hands.core.session import Keystroke, Membership, PromptId, PromptText, SessionId, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
@@ -281,7 +282,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert hooks.pop("Elicitation") == [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/Elicitation"}]}]
     # The order of the brain's turns rests on its prompt hook and its Stop being waited on: a prompt's as long as a typed
     # turn has to be taken, and a Stop's past the hold the model puts on it, as the shim's outlives a working session's.
-    waits = {"UserPromptSubmit": TAKE_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}
+    waits = {"UserPromptSubmit": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "Stop": TAKE_SECONDS + POST_TIMEOUT_SECONDS, "StopFailure": TAKE_SECONDS + POST_TIMEOUT_SECONDS}
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
     # A permission is held while the user is asked, as long as a working session's is.
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
@@ -585,13 +586,13 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
     try:
-        assert brain.interrupt() is False
+        assert brain.interrupt(brain.answering()) is False
         # A turn that runs until Escape stops it.
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         assert await asyncio.wait_for(asking, 10) == BrainStopped()
-        assert brain.interrupt() is False
+        assert brain.interrupt(brain.answering()) is False
         # Escape, then Ctrl-C, which empties whatever Escape put back in the input: read by the fake as it reads them.
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
@@ -639,7 +640,7 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
 
         brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
         cleared = brain._cleared  # pyright: ignore[reportPrivateUsage]
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
         going.set()
         # The stop's last key is in, and with it the stop has asked whether Claude Code holds anything of the turn.
@@ -669,7 +670,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
         assert not asking.done()
         stopping.set()
@@ -1864,7 +1865,7 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     try:
         turn = asyncio.ensure_future(brain.ask(asking, held.append))
         await until(lambda: len(held) == count)
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         assert await asyncio.wait_for(turn, 10) == BrainStopped()
         await until(lambda: [line for line in typed(tmp_path) if line[0] == "permission"] == [["permission", "deny", STOPPED, True]] * count)
         assert _dialogs(brain) == ()
@@ -1907,7 +1908,7 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
         stopping.set()
         with pytest.raises(StopUnrecorded):
@@ -1933,7 +1934,7 @@ async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unre
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
-        assert brain.interrupt() is True
+        assert brain.interrupt(brain.answering()) is True
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
         os.kill(brain.pid, signal.SIGKILL)
         with pytest.raises(BrainGone):
@@ -2079,7 +2080,7 @@ async def test_a_turn_asked_while_a_notification_turn_runs_is_typed_only_once_it
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     for _ in range(5):
         await asyncio.sleep(0)
-    assert (keys.pressed, brain._turn) == ([], None)  # pyright: ignore[reportPrivateUsage]
+    assert keys.pressed == []
     await brain.posted("Stop", _hooked("Stop", "p1", last_assistant_message="The build passed.", stop_hook_active=False))
     # Typed once the notification's turn is told, behind nothing: no Escape, no Ctrl-C.
     await until(lambda: keys.pressed == [" and now?"])
@@ -2128,3 +2129,80 @@ async def test_a_permission_hook_claude_code_gave_up_on_fails_no_turn() -> None:
     await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path(TRANSCRIPT))))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Abandoned(SessionId("b1"), RequestId("r1"), 1.0))  # pyright: ignore[reportPrivateUsage]
     assert (turn.answered.done(), len(brain._claude_turns.open)) == (False, 1)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_task_result_queued_behind_a_turn_runs_as_its_own_turn_behind_it_never_as_the_typed_turns() -> None:
+    brain = _owning()
+    turn = _typed_turn(brain, "hello")
+    _took(brain, "p1", "hello")
+    # Claude Code queued the notification under the running turn's id, and it still waits as that turn is told.
+    _took(brain, "p1", NOTICE, queued=True)
+    _told(brain, "p1", ["p1"], waiting=(NOTICE,))
+    assert turn.answered.result() == BrainAnswered(PromptId("p1"), None)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    assert (notified.opener, notified.awaited, notified.ids) == ("notified", False, frozenset())
+    # Its telling is its own: no turn of hands' is ended by it.
+    _told(brain, "p9", ["p9"])
+    assert (notified.ended.result(), notified.matched, brain._claude_turns.open) == (BrainAnswered(PromptId("p9"), None), "behind", ())  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_task_result_queued_behind_a_turn_already_told_runs_as_the_turn_behind_it() -> None:
+    brain = _owning()
+    _took(brain, "p1", NOTICE, queued=True)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    assert (notified.opener, notified.ids) == ("notified", frozenset())
+
+
+async def test_the_answering_turn_follows_hands_words_from_the_turn_they_were_filed_into_to_the_turn_behind_it() -> None:
+    brain = _owning()
+    _took(brain, "n1", NOTICE)
+    turn = _typed_turn(brain, "and the tests?")
+    _took(brain, "n1", "and the tests?", queued=True)
+    (notified,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    assert brain.answering() is notified
+    _told(brain, "n1", ["n1"], waiting=(" and the tests?",))
+    behind = brain.answering()
+    assert behind is not None and behind is not notified and not turn.answered.done()
+    _told(brain, "p2", ["p2"])
+    assert turn.answered.result() == BrainAnswered(PromptId("p2"), None)
+
+
+async def test_a_turn_claude_code_opened_itself_is_stopped_when_its_work_is_the_work_shown() -> None:
+    recorded: list[Entry] = []
+    brain = _owning()
+    keys = _keyed(brain, recorded)
+    _took(brain, "n1", NOTICE)
+    (notified,) = brain._claude_turns.opened_itself  # pyright: ignore[reportPrivateUsage]
+    # No turn of hands' is in flight: the notification's is stopped all the same, so the user is never locked out by it.
+    assert brain.interrupt(notified) is True
+    await until(lambda: "escape" in keys.pressed)
+    # A turn of no kind Claude Code opens itself, and none at all, is not the brain's to stop on its own.
+    assert brain.interrupt(None) is False
+    for task in brain._typing:  # pyright: ignore[reportPrivateUsage]
+        task.cancel()
+
+
+async def test_a_notification_that_opens_while_a_turn_waits_for_the_input_is_never_escaped_for_it() -> None:
+    recorded: list[Entry] = []
+    brain = _owning()
+    keys = _keyed(brain, recorded)
+    await brain._input.acquire()  # pyright: ignore[reportPrivateUsage]
+    asking = asyncio.ensure_future(brain.ask("and now?", unasked))
+    await until(lambda: brain._turn is not None)  # pyright: ignore[reportPrivateUsage]
+    # Past the ask, waiting on the input: Claude Code opens a turn of its own meanwhile.
+    _took(brain, "n1", NOTICE)
+    brain._input.release()  # pyright: ignore[reportPrivateUsage]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert keys.pressed == []
+    _told(brain, "n1", ["n1"])
+    await until(lambda: keys.pressed == [" and now?"])
+    asking.cancel()
+
+
+async def test_a_brain_stop_released_by_shutdown_loses_no_order() -> None:
+    brain = _owning()
+    _took(brain, "n1", NOTICE)
+    stop = Stopped(SessionId("b1"), "done", mode=None, prompt=PromptId("n1"), again=False, heard=Stamp(0), request=RequestId("r"))
+    brain._ordered(SimpleNamespace(happened=stop), "released", 0.0)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    assert len(brain._claude_turns.open) == 1  # pyright: ignore[reportPrivateUsage]
