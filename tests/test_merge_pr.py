@@ -133,6 +133,8 @@ def test_a_check_is_its_latest_run(tmp_path: Path, checks: tuple[dict[str, Any],
     """As the gate reads it: a cancelled run that a rerun on the same commit replaced is not the check's result."""
     ran = merge(tmp_path, pull(), pull(auto=True, checks=checks), pull("MERGED"))
     assert ran.said[0] == f"merge-pr: #7 {said}"
+    assert ran.code == (1 if said.startswith("WILL NOT MERGE") else 0), ran.said
+    assert (f"pr merge --disable-auto {PR}" in ran.calls) == (ran.code == 1)
 
 
 def test_a_pr_that_conflicts_with_master_while_it_waits_ends_the_wait_and_the_auto_merge(tmp_path: Path) -> None:
@@ -208,6 +210,13 @@ def test_a_question_github_cannot_answer_fails(tmp_path: Path) -> None:
     ran = merge(tmp_path, pull(), pull(position=1))
     assert ran.code == 2
     assert ran.said[-1] == "gh: no answer for question 3"
+
+
+def test_an_answer_that_is_not_a_pr_fails_as_one_github_could_not_give(tmp_path: Path) -> None:
+    """Not as a PR that will not merge: only GitHub's word that it will not ends the wait with 1."""
+    ran = merge(tmp_path, pull(), {"data": {"repository": {"pullRequest": None}}})
+    assert ran.code == 2
+    assert ran.said[-1] == "merge-pr: #7 null"
 
 
 def test_an_auto_merge_gh_cannot_disable_fails(tmp_path: Path) -> None:

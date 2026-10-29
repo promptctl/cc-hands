@@ -2,7 +2,8 @@
 # merge-pr.sh PR [INTERVAL]: merge PR into master through its merge queue, and return only once it has merged or will
 # not. `gh pr merge` alone returns as soon as the PR is queued (or set to merge once its checks pass), and the queue can
 # still drop it when `test` fails on master with it merged; so this asks GitHub every INTERVAL seconds, 30 unless given,
-# which only the tests do. Exits 0 when PR merged, 1 when it did not, saying why, and 2 when gh fails, in gh's words.
+# which only the tests do. Exits 0 when PR merged, 1 when it did not, saying why, and 2 when gh fails, in gh's words, or
+# answers what this cannot read.
 # Waits with no deadline of its own: the queue's check timeout drops an entry whose `test` never reports.
 # Run again on a PR already queued or set to merge, it waits on that PR's merge, so a wait that exits 2 is re-run.
 set -eu
@@ -57,7 +58,9 @@ while :; do
     QUEUED*|WAITING*) sleep "$interval" ;;
     # GitHub keeps the auto-merge of a PR that will not merge, so a later push or rerun could merge what this said did not.
     WILL\ NOT\ MERGE*) gh pr merge --disable-auto "$pr" || exit 2; exit 1 ;;
-    *) exit 1 ;;
+    CLOSED | NOT\ QUEUED*) exit 1 ;;
+    # [LAW:no-silent-failure] an answer none of the above is GitHub's that this could not read, not a PR that did not merge.
+    *) exit 2 ;;
   esac
   now=$(ask) || exit 2
 done
