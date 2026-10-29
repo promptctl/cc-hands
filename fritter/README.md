@@ -192,6 +192,7 @@ The tests wrap a shell, or the test binary itself reading its terminal raw and r
 each read, rather than Claude Code, so they need no session and no network, and they are
 held to none: before the first test the test binary puts itself in macOS's sandbox with the
 repository's `tests/offline.sb`, as hands' own test run is held, so a test that connects
-past loopback fails. That needs macOS 15 or later, and a shell that is not sandboxed already.
+past loopback fails. That needs macOS 15 or later, cgo, which Go turns off on a Mac without
+Xcode's command line tools, and a shell that is not sandboxed already.
 They use short temporary directories on purpose: `t.TempDir()` names the directory after
 the test, which pushes the socket path past the 104-byte limit.
