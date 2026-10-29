@@ -118,9 +118,10 @@ START_SECONDS = 10.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
 # input empty.
 EXIT_SECONDS = 1.0
-# How long Claude Code has to set its session idle once hands pressed Escape: it does in milliseconds, and the rest is
-# room for a loaded machine.
-ESCAPE_SECONDS = 4.0
+# How long Claude Code has to set its session idle once hands pressed Escape. It does in milliseconds on an idle machine;
+# a loaded one (CI's, running the whole suite) has taken longer than the 4 s this was, so a stop that lands is failed for
+# nothing (promptctl-testing-px1f.6i5). The bound only decides when a stop that never lands is declared failed.
+ESCAPE_SECONDS = 10.0
 # How long Claude Code has to interrupt a turn hands pressed Escape for: its idle, then a status read to hear it, then the
 # model's wait past an idle for the record of how the turn ended (UNTOLD). [LAW:one-source-of-truth] the model's two
 # bounds are the model's, so a change to either moves this one.
