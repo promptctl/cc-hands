@@ -138,6 +138,8 @@ class OwnModel:
         self._home = home
         self._running = running
         self._reachable = reachable
+        # [LAW:single-enforcer] the one lock over a switch of the model, taken by `hands.voice.modelswitch.switch_model`.
+        self.changing = asyncio.Lock()
 
     def running(self) -> str:
         """The model the run is on: the one --model named, or the file's as it started."""

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hands' voices and options</title>
+<style>
+  :root { color-scheme: light dark; font-family: -apple-system, system-ui, sans-serif; }
+  body { max-width: 40rem; margin: 0 auto; padding: 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 1.6rem; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: .5rem; padding: .5rem 0; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+  .name { flex: 1; }
+  .muted { font-size: .85rem; opacity: .7; }
+  .choices { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  button, select { font: inherit; min-height: 2.25rem; padding: .3rem .8rem; border-radius: .5rem; border: 1px solid currentColor; background: transparent; color: inherit; }
+  button[aria-pressed="true"] { font-weight: 600; text-decoration: underline; }
+  button:disabled, select:disabled { opacity: .4; }
+  #status { min-height: 1.5rem; margin-top: 1rem; }
+  #status.error { color: #c0392b; }
+</style>
+</head>
+<body>
+<h1>hands' voices and options</h1>
+<p id="status" role="status" aria-live="polite"></p>
+
+<h2>Voices</h2>
+<p class="muted">Play hears a voice through the Mac's speaker. Use makes it the voice hands speaks in from now on.</p>
+<ul id="voices"></ul>
+
+<h2>Listening</h2>
+<div id="levels" class="choices"></div>
+
+<h2>Modality</h2>
+<div id="modalities" class="choices"></div>
+
+<h2>Model</h2>
+<p class="muted" id="running"></p>
+<form id="model-form" class="choices">
+  <select id="model" aria-label="Model"></select>
+  <button type="submit">Switch model</button>
+</form>
+<p class="muted">Switching restarts hands. This page loses its connection for a few seconds while it does.</p>
+
+<script>
+// The phone's key travels in the fragment, which the browser never sends with the page's own request.
+const key = decodeURIComponent(location.hash.slice(1));
+const status = document.getElementById("status");
+let busy = false;
+
+// The name a voice, level, or modality is shown by: bill_boerst is Bill Boerst, audio-only is Audio Only.
+const label = text => text.replace(/[_-]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
+
+function say(text, failed = false) {
+  status.textContent = text;
+  status.className = failed ? "error" : "";
+}
+
+// A request hands does not answer within a minute is given up on by the page, not by hands: the choice may still be made.
+const ANSWER_MS = 60000;
+
+async function call(method, path, body) {
+  const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(ANSWER_MS) };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  let response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    if (error.name === "TimeoutError") throw new Error("hands did not answer within a minute; it may still make the choice");
+    throw error;
+  }
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || `the page got ${response.status}`);
+  return JSON.parse(text);
+}
+
+function button(text, onClick, pressed) {
+  const control = document.createElement("button");
+  control.type = "button";
+  control.textContent = text;
+  control.addEventListener("click", onClick);
+  // A control made while a choice is being answered waits with the rest.
+  control.disabled = busy;
+  if (pressed !== undefined) control.setAttribute("aria-pressed", String(pressed));
+  return control;
+}
+
+// One choice at a time: every control is off until the last one has been heard back.
+function setBusy(value) {
+  busy = value;
+  document.querySelectorAll("button, select").forEach(control => { control.disabled = value; });
+}
+
+// A choice that restarts hands is not refreshed after: the restart drops the connection the refresh would read on.
+async function act(path, body, readback, restarts = false) {
+  if (busy) return;
+  setBusy(true);
+  let restarting = false;
+  try {
+    const result = await call("POST", path, body);
+    say(readback(result));
+    // Once hands restarts, its controls stay off: the page is loaded again when it is back.
+    if (restarts) {
+      restarting = true;
+      return;
+    }
+    await refresh();
+  } catch (error) {
+    say(error.message, true);
+  } finally {
+    if (!restarting) setBusy(false);
+  }
+}
+
+function render(state) {
+  // What was picked in the model list and not yet switched to is kept across a refresh.
+  const pending = document.getElementById("model").value;
+
+  document.getElementById("voices").replaceChildren(...state.voices.map(voice => {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = label(voice);
+    if (voice === state.speaking_in) {
+      const mark = document.createElement("span");
+      mark.className = "muted";
+      mark.textContent = "speaking in";
+      item.append(name, mark);
+    } else {
+      item.append(name);
+    }
+    item.append(
+      button("Play", () => act("/gallery/hear", { voice }, () => `Heard ${label(voice)}.`)),
+      button("Use", () => act("/gallery/use", { voice }, () => `Speaking in ${label(voice)} from now on.`)),
+    );
+    return item;
+  }));
+
+  document.getElementById("levels").replaceChildren(...state.levels.map(level =>
+    button(label(level), () => act("/gallery/level", { level }, result => result.readback), level === state.level)));
+
+  document.getElementById("modalities").replaceChildren(...state.modalities.map(modality =>
+    button(label(modality), () => act("/gallery/modality", { modality }, () => `Taking you as ${label(modality)}.`), modality === state.modality)));
+
+  document.getElementById("running").textContent = `hands runs on ${state.running_on}.`;
+  document.getElementById("model").replaceChildren(...state.models.map(model => {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    option.selected = model === (pending || state.running_on);
+    return option;
+  }));
+}
+
+async function refresh() {
+  render(await call("GET", "/gallery/state"));
+}
+
+document.getElementById("model-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const model = document.getElementById("model").value;
+  act("/gallery/model", { model }, result => `${result.said} Reload this page when hands is back.`, true);
+});
+
+if (!key) {
+  say("Open this page from the address `hands phone` prints, with gallery on its path.", true);
+} else {
+  refresh().catch(error => say(error.message, true));
+}
+</script>
+</body>
+</html>

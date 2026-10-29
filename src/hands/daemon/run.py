@@ -32,7 +32,7 @@ from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
-from hands.daemon.config import OwnModel, Settings
+from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
 from hands.daemon.notify import post_notification
@@ -94,6 +94,7 @@ from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Levels
 from hands.voice.tool import Tool
+from hands.voice.gallerypage import Gallery
 from hands.voice.tools import audited, close_session_tool, cued, intermediary_tools, start_session_tool, usage_tool
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
@@ -274,13 +275,18 @@ async def run(
         # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
         # tap or set_listening_level's choice, and the tools read it.
         levels = Levels()
+        # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a hearing
+        # or a choice on one never interleaves with the other's in the speaker.
+        voice_choices = voices.Voices(home, player.lines, voices.fetched)
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop)
         if config is not None:
-            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
+            # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
+            gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
@@ -296,7 +302,7 @@ async def run(
                 voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment)
+                    await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -350,6 +356,7 @@ async def converse(
     wake_word: Word,
     run_start: Start,
     environment: Mapping[str, str],
+    gallery: Gallery,
 ) -> None:
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
@@ -430,7 +437,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment), name="the phone's page")
+                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment, gallery), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()

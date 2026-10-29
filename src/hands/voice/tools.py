@@ -13,10 +13,11 @@ from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, TypedDict
 
 from loguru import logger
 
+from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -54,8 +55,7 @@ from hands.voice.sentences import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
-from hands.voice.voices import VOICES, Voices, fetched, parse_voice, spoken
-from hands.threads import off_loop
+from hands.voice.voices import VOICES, Voices, parse_voice, spoken
 from hands import spotify
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, own: "OwnModel", catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act. `environment` is the run's, which says where tmux keeps its
@@ -147,7 +147,7 @@ def intermediary_tools(
         attention_tool(home),
         modality_tool(switch),
         *listening_tools(levels, wake),
-        *voice_tools(Voices(home, player.lines, fetched)),
+        *voice_tools(voices),
         *model_tools(own, player),
         *playback_tools(player),
         *spotify_tools(spotify.Player(), catalogue),
@@ -957,15 +957,6 @@ def voice_tools(voices: Voices) -> list[Tool]:
     return [tool(voices_on_offer), tool(hear_voices), tool(use_voice)]
 
 
-class OwnModel(Protocol):
-    """The model hands itself runs on (hands.daemon.config.OwnModel): hands has no session id, so what targets it is a
-    tool of its own, never a session's."""
-
-    def running(self) -> str: ...
-
-    def weigh(self, model: str) -> Callable[[], None]: ...
-
-
 def model_tools(own: OwnModel, player: Player) -> list[Tool]:
     """Choosing the model hands runs on, which is a setting of hands' own and never a session's.
 
@@ -988,18 +979,12 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
             model: the model's id, such as claude-opus-5-5.
         """
         try:
-            keep = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen by voice")
-        except Rejected as error:
-            return {"error": str(error)}
-        line = f"Switching to {model.strip()}. I'll be back in a few seconds."
-        # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
-        if not await player.heard(line):
-            return {"error": f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch. Ask whether they still want it."}
-        try:
-            await off_loop(keep, "keeping a model chosen by voice")
+            return await switch_model(own, player, model)
+        except SpokenOver as error:
+            # The brain is told to ask again; the page shows the same refusal without this instruction.
+            return {"error": f"{error} Ask whether they still want it."}
         except (Rejected, OSError) as error:
             return {"error": str(error)}
-        return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
 
     # A barge-in over the line is what `heard` reports, and the model is told the switch did not happen.
     return [tool(model_in_use), tool(use_model, then="silence")]
