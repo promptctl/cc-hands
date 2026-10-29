@@ -14,7 +14,7 @@ from aiohttp import web
 from aiohttp.http_parser import HttpResponseParserPy, RawResponseMessage
 from aiohttp.streams import StreamReader
 from conftest import hearing_with, model_facts
-from speech import spoken
+from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
@@ -153,7 +153,7 @@ def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_eve
 
 def said(asked: str) -> bytes:
     """What is `asked`, with a second of silence either side."""
-    return bytes(SAMPLE_RATE * 2) + spoken(asked) + bytes(SAMPLE_RATE * 2)
+    return quiet(1.0) + spoken(asked) + quiet(1.0)
 
 
 def wakes(word: WakeWord, audio: bytes) -> bool:
@@ -210,7 +210,7 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
 async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_breath_or_after_a_pause(asked: str, models: Path) -> None:
     """Silero, Smart Turn, and the wake word's model, real, on macOS's own voice: Smart Turn's verdict on what was asked
     sends the turn, not the silence after it, and not the pause after the wake word."""
-    audio = said(asked) + bytes(SAMPLE_RATE * 2 * 4)
+    audio = said(asked) + quiet(4.0)
     level = AtLevel()
     made: list[Move] = []
     events: list[WideEvent] = []

@@ -92,11 +92,6 @@ def model_facts(load: WideEvent) -> dict[str, Fact]:
     return facts
 
 
-def quiet(seconds: float) -> bytes:
-    """Silence as the desk's microphone hands it over: 16 kHz, 16-bit mono."""
-    return bytes(round(16_000 * seconds) * 2)
-
-
 # How long a pipeline may take to start before a test fails on it.
 STARTUP_SECS = 5.0
 # How long a test's wait may look and see nothing move before it fails on a stall.

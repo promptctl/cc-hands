@@ -11,8 +11,8 @@ from functools import partial
 from pathlib import Path
 
 import pytest
-from conftest import quiet, patiently
-from speech import spoken
+from conftest import patiently
+from speech import quiet, spoken
 
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent

@@ -25,6 +25,11 @@ RECORDINGS = Path(__file__).parent / "fixtures" / "speech"
 RATE = 16_000
 
 
+def quiet(seconds: float) -> bytes:
+    """Silence as the desk's microphone hands it over."""
+    return bytes(round(RATE * seconds) * 2)
+
+
 def recording(text: str) -> Path:
     """Where the recording of `text` is: a slug to find it by, and its digest, since `say` speaks two texts that differ
     only in punctuation differently."""
@@ -38,7 +43,7 @@ def spoken(text: str) -> bytes:
     if not path.is_file():
         raise FileNotFoundError(f"{text!r} has no recording at {path}: record it with `uv run python tests/speech.py {shlex.quote(text)}`")
     samples, rate = cast(tuple[NDArray[np.int16], int], soundfile.read(path, dtype="int16"))  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
-    assert rate == RATE, (path, rate)
+    assert (rate, samples.ndim) == (RATE, 1), (path, rate, samples.shape)
     return samples.tobytes()
 
 

@@ -6,8 +6,8 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 
 import pytest
-from conftest import quiet, hearing_with, model_facts
-from speech import spoken
+from conftest import hearing_with, model_facts
+from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
