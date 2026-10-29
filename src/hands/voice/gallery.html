@@ -57,13 +57,22 @@ function say(text, failed = false) {
   status.className = failed ? "error" : "";
 }
 
+// A request hands does not answer within a minute is given up on by the page, not by hands: the choice may still be made.
+const ANSWER_MS = 60000;
+
 async function call(method, path, body) {
-  const init = { method, headers: { "Authorization": `Bearer ${key}` } };
+  const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(ANSWER_MS) };
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
-  const response = await fetch(path, init);
+  let response;
+  try {
+    response = await fetch(path, init);
+  } catch (error) {
+    if (error.name === "TimeoutError") throw new Error("hands did not answer within a minute; it may still make the choice");
+    throw error;
+  }
   const text = await response.text();
   if (!response.ok) throw new Error(text || `the page got ${response.status}`);
   return JSON.parse(text);
@@ -74,6 +83,8 @@ function button(text, onClick, pressed) {
   control.type = "button";
   control.textContent = text;
   control.addEventListener("click", onClick);
+  // A control made while a choice is being answered waits with the rest.
+  control.disabled = busy;
   if (pressed !== undefined) control.setAttribute("aria-pressed", String(pressed));
   return control;
 }
@@ -100,6 +111,9 @@ async function act(path, body, readback, restarts = false) {
 }
 
 function render(state) {
+  // What was picked in the model list and not yet switched to is kept across a refresh.
+  const pending = document.getElementById("model").value;
+
   document.getElementById("voices").replaceChildren(...state.voices.map(voice => {
     const item = document.createElement("li");
     const name = document.createElement("span");
@@ -131,7 +145,7 @@ function render(state) {
     const option = document.createElement("option");
     option.value = model;
     option.textContent = model;
-    option.selected = model === state.running_on;
+    option.selected = model === (pending || state.running_on);
     return option;
   }));
 }

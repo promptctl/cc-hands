@@ -148,6 +148,7 @@ class FakeOwn:
     def __init__(self, refusal: str | None = None) -> None:
         self.refusal = refusal
         self.kept: list[str] = []
+        self.changing = asyncio.Lock()
 
     def running(self) -> str:
         return "claude-sonnet-5-5"

@@ -4,12 +4,12 @@ import asyncio
 import datetime
 import json
 import ssl
-from unittest.mock import Mock
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from importlib import resources
 from types import SimpleNamespace
+from unittest.mock import Mock
 from typing import cast, get_args
 
 import numpy as np
@@ -41,12 +41,13 @@ from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.sentences import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.wakeword import Pretrained
+from conftest import events
 
 
 def unused_gallery() -> Gallery:
-    """A gallery no request in these tests reads: the page's own routes are tested in test_gallerypage."""
+    """A gallery no request in these tests reads: the page's own routes are tested in test_gallerypage, and the one check
+    that the phone's server mounts them is made on the port below."""
     return Gallery(voices=Mock(), levels=Mock(), desk=Mock(), own=Mock(), speaker=Mock(), wake=Pretrained(), models=())
-from conftest import events
 
 KEY = "the-phone-key"
 PAGE_RATE = 48000
@@ -626,6 +627,9 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     unverified.check_hostname, unverified.verify_mode = False, ssl.CERT_NONE
     async with ClientSession() as session, session.post(f"https://127.0.0.1:{served.facts['port']}/offer", data="{}", ssl=unverified) as refused:
         assert refused.status == 401
+    # The gallery is mounted on the phone's server: its read is refused for want of the key, not unrouted.
+    async with ClientSession() as session, session.get(f"https://127.0.0.1:{served.facts['port']}/gallery/state", ssl=unverified) as gallery:
+        assert gallery.status == 401
     [event] = calls(recorded)
     assert event.parent_id is None and event.trace_id != served.trace_id
     keyed = {"Authorization": f"Bearer {phone_key(Home(tmp_path))}"}

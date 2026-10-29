@@ -10,7 +10,7 @@ the same change.
 import json
 from dataclasses import dataclass
 from importlib import resources
-from typing import Protocol, cast
+from typing import Protocol, cast, get_args
 
 from aiohttp import web
 
@@ -20,12 +20,13 @@ from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, fail
 from hands.voice.desk import LEVELS, Level
 from hands.voice.keyed import keyed
-from hands.voice.tools import Heard, OwnModel, switch_model
+from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
 from hands.voice.voices import VOICES, Voice, parse_voice
 from hands.voice.wakeword import Word
 
-MODALITIES: tuple[Modality, ...] = ("screen", "audio-only")
+# [LAW:one-source-of-truth] the modalities are the ones Modality names; the page offers and accepts exactly those.
+MODALITIES: tuple[Modality, ...] = get_args(Modality)
 
 
 class Voicing(Protocol):
@@ -85,19 +86,17 @@ def parse_field(body: bytes, field: str) -> str:
 
 
 def parse_level(text: str) -> Level:
-    match text:
-        case "off" | "wake word" | "engaged":
-            return text
-        case _:
-            raise Rejected(f"hands listens at {', '.join(LEVELS)}, not {text!r}")
+    for level in LEVELS:
+        if text == level:
+            return level
+    raise Rejected(f"hands listens at {', '.join(LEVELS)}, not {text!r}")
 
 
 def parse_modality(text: str) -> Modality:
-    match text:
-        case "screen" | "audio-only":
-            return text
-        case _:
-            raise Rejected(f"hands takes you as {', '.join(MODALITIES)}, not {text!r}")
+    for modality in MODALITIES:
+        if text == modality:
+            return modality
+    raise Rejected(f"hands takes you as {', '.join(MODALITIES)}, not {text!r}")
 
 
 def _refusal(error: Exception) -> web.Response:

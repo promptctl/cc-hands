@@ -13,10 +13,11 @@ from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import Literal, TypedDict
 
 from loguru import logger
 
+from hands.voice.modelswitch import OwnModel, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -55,7 +56,6 @@ from hands.voice.readback import identifier, keyboard_readback, readback, spoken
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, parse_voice, spoken
-from hands.threads import off_loop
 from hands import spotify
 
 @dataclass(frozen=True)
@@ -957,42 +957,6 @@ def voice_tools(voices: Voices) -> list[Tool]:
     return [tool(voices_on_offer), tool(hear_voices), tool(use_voice)]
 
 
-class OwnModel(Protocol):
-    """The model hands itself runs on (hands.daemon.config.OwnModel): hands has no session id, so what targets it is a
-    tool of its own, never a session's."""
-
-    def running(self) -> str: ...
-
-    def weigh(self, model: str) -> Callable[[], None]: ...
-
-
-class Heard(Protocol):
-    """The speaker as a model switch reads it: a line said, and whether the user heard it to its end."""
-
-    async def heard(self, sentence: str) -> bool: ...
-
-
-async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
-    """Run hands on `model`: weighed, the switch said aloud, and kept once the user has heard it, since keeping restarts hands.
-
-    [LAW:one-source-of-truth] the one policy for a switch of model, by voice or on the phone's page alike: the order of
-    weighing, saying, and keeping is the same whoever asks.
-    """
-    try:
-        keep = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen by voice")
-    except Rejected as error:
-        return {"error": str(error)}
-    line = f"Switching to {model.strip()}. I'll be back in a few seconds."
-    # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
-    if not await player.heard(line):
-        return {"error": f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch. Ask whether they still want it."}
-    try:
-        await off_loop(keep, "keeping a model chosen by voice")
-    except (Rejected, OSError) as error:
-        return {"error": str(error)}
-    return {"said": line, "running_on": own.running(), "switching_to": model.strip()}
-
-
 def model_tools(own: OwnModel, player: Player) -> list[Tool]:
     """Choosing the model hands runs on, which is a setting of hands' own and never a session's.
 
@@ -1014,7 +978,11 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
         Args:
             model: the model's id, such as claude-opus-5-5.
         """
-        return await switch_model(own, player, model)
+        result = await switch_model(own, player, model)
+        # The brain is told to ask again: the page shows the same refusal, without the instruction written for the brain.
+        if result.get("spoken_over"):
+            return {"error": f"{result['error']} Ask whether they still want it."}
+        return {key: value for key, value in result.items() if key != "spoken_over"}
 
     # A barge-in over the line is what `heard` reports, and the model is told the switch did not happen.
     return [tool(model_in_use), tool(use_model, then="silence")]

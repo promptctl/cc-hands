@@ -26,8 +26,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, begun, continuing, unit
 from hands.voice.backlogpage import backlog_routes
-from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.conversationpage import Conversation, conversation_routes
+from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet

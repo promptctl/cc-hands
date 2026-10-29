@@ -1,6 +1,7 @@
 """The gallery on the phone's page: the voices heard and chosen, the listening level, the modality, and the model, each
 choice the one its tool makes, and each refused where the tool refuses it."""
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -74,10 +75,12 @@ class Speaker:
     """Hands' speech as the model switch reads it: a line, and whether the user heard it to its end."""
 
     heard_in_full: bool = True
+    hold: float = 0.0
     said: list[str] = field(default_factory=list[str])
 
     async def heard(self, sentence: str) -> bool:
         self.said.append(sentence)
+        await asyncio.sleep(self.hold)
         return self.heard_in_full
 
 
@@ -88,6 +91,9 @@ class Own:
     running_on: str = MODELS[0]
     refused: Exception | None = None
     kept: list[str] = field(default_factory=list[str])
+    changing: asyncio.Lock = field(default_factory=asyncio.Lock)
+    open_weighings: int = 0
+    most_open: int = 0
 
     def running(self) -> str:
         return self.running_on
@@ -95,7 +101,14 @@ class Own:
     def weigh(self, model: str) -> Callable[[], None]:
         if self.refused is not None:
             raise self.refused
-        return lambda: self.kept.append(model)
+        self.open_weighings += 1
+        self.most_open = max(self.most_open, self.open_weighings)
+
+        def keep() -> None:
+            self.open_weighings -= 1
+            self.kept.append(model)
+
+        return keep
 
 
 @dataclass
@@ -238,6 +251,18 @@ async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_mode
     assert page.own.kept == []
     [switch] = page.events("gallery.model")
     assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
+
+
+async def test_two_model_switches_at_once_are_made_one_after_the_other(page: Page) -> None:
+    # Each weighs the file as the one before it kept it: never two weighed and open at once.
+    page.speaker.hold = 0.05
+    first, second = await asyncio.gather(
+        page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"}),
+        page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-sonnet-5-5"}),
+    )
+    assert (first.status, second.status) == (200, 200)
+    assert page.own.most_open == 1
+    assert sorted(page.own.kept) == ["claude-opus-5-5", "claude-sonnet-5-5"]
 
 
 async def test_a_model_the_weighing_refuses_is_a_400_and_nothing_is_said(page: Page) -> None:
