@@ -6,6 +6,7 @@ import gc
 import hashlib
 import json
 import os
+import platform
 import shutil
 import stat
 import subprocess
@@ -450,6 +451,16 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
 
 # The sandbox profile the run is held to once its fetches are done.
 OFFLINE = Path(__file__).with_name("offline.sb")
+# The first macOS whose sandbox holds the run to OFFLINE without refusing loopback: on macOS 14, CI's macos-14 refused
+# some ten tests' binds and connects on 127.0.0.1 with EPERM on every run, under this profile and under Bazel's.
+SANDBOXED_MACOS = 15
+
+
+def sandboxable(release: str) -> None:
+    """[LAW:no-silent-failure] a macOS `release` whose sandbox cannot hold the run offline stops it before any fetch,
+    saying why, never a run whose loopback connections fail at random."""
+    if int(release.split(".")[0]) < SANDBOXED_MACOS:
+        raise pytest.UsageError(f"the run holds itself offline with macOS's sandbox, which refuses loopback at random before macOS {SANDBOXED_MACOS}: this is macOS {release}")
 
 
 def offline() -> None:
@@ -478,6 +489,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
     from no process, so this interpreter stays offline after the session, and a second session in it can fetch nothing."""
     yield
+    sandboxable(platform.mac_ver()[0])
     config = session.config
     terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
     write = partial(terminal.write, flush=True)

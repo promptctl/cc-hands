@@ -8,6 +8,8 @@ import subprocess
 
 import pytest
 
+from conftest import sandboxable
+
 UNROUTED = ("192.0.2.1", 443)
 
 
@@ -33,3 +35,13 @@ def test_loopback_is_reachable_by_address_and_by_localhost() -> None:
         port = server.getsockname()[1]
         for host in ("127.0.0.1", "localhost"):
             socket.create_connection((host, port), timeout=5).close()
+
+
+@pytest.mark.parametrize("release", ["15.0", "15.7.9", "26.5.2"])
+def test_a_macos_whose_sandbox_holds_loopback_starts_the_run(release: str) -> None:
+    sandboxable(release)
+
+
+def test_a_macos_whose_sandbox_refuses_loopback_at_random_stops_the_run_saying_so() -> None:
+    with pytest.raises(pytest.UsageError, match=r"refuses loopback at random before macOS 15: this is macOS 14\.8\.9$"):
+        sandboxable("14.8.9")

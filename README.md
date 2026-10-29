@@ -422,6 +422,7 @@ uv run hands phone                      # the addresses a phone opens the talk p
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
 make check                              # pytest, pyright, and fritter's Go tests; fails when any of them fails
+                                        # pytest holds itself offline in macOS's sandbox once its fetches are done, so it needs macOS 15 or later
 ```
 
 `hands check` looks at each step of [Installing on a new Mac](#installing-on-a-new-mac)

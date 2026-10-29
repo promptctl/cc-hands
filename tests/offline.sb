@@ -3,14 +3,9 @@
 ; sockets, but not the system's resolver, which would ask the network for a name; `localhost` resolves without it, from
 ; /etc/hosts. A proxy setting reaches only the clients that honour it, and ssh, among others, does not. A process in any
 ; sandbox cannot exec a setuid binary, ps among them, whatever its profile allows.
-;
-; Every network operation is denied and loopback's allowed back, the form of Bazel's macOS sandbox: under a profile that
-; denies only network-outbound, macOS 14 refuses some connects to 127.0.0.1 with EPERM, the same ten tests' on every run
-; on CI's macos-14, and none under this one.
 (version 1)
 (allow default)
-(deny network*)
-(allow network-inbound (local ip "localhost:*"))
-(allow network* (remote ip "localhost:*"))
-(allow network* (remote unix-socket))
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote unix-socket))
 (deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))

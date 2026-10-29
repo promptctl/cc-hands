@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     # The suite takes ~4 minutes here; a hung test fails the check instead of holding it for GitHub's 6 hours.
     timeout-minutes: 20
     steps:
