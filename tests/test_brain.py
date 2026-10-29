@@ -2004,3 +2004,26 @@ async def test_an_end_bound_to_no_turn_nobody_waits_on_ends_the_oldest_unbound_o
     assert turn.taken.done() and not stuck.done()
     _ended(brain, "p4")
     assert stuck.result() == BrainAnswered(PromptId("p4"), None) and turn.answered.result() == BrainAnswered(PromptId("p4"), None)
+
+
+async def test_a_prompt_id_whose_turn_ended_binds_no_turn_claude_code_opens_after_it() -> None:
+    # p5 opened a turn no turn nobody waits on was heard for, and ended: the next such turn is not bound to it.
+    brain = _unwaited()
+    _opened_itself(brain, "p5", "<task-notification>")
+    _ended(brain, "p5")
+    told = brain.unawaited()
+    _opened_itself(brain, "p6", "<task-notification>")
+    _ended(brain, "p6")
+    assert told.result() == BrainAnswered(PromptId("p6"), None)
+
+
+async def test_hands_turn_filed_into_a_bound_turn_nobody_waits_on_ends_with_it() -> None:
+    brain = _unwaited()
+    loop = asyncio.get_running_loop()
+    notified = brain.unawaited()
+    _opened_itself(brain, "p7", "<task-notification>")
+    turn = brain._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" check the build"))  # pyright: ignore[reportPrivateUsage]
+    # Claude Code queued what hands typed into p7.
+    _opened_itself(brain, "p7", " check the build", queued=True)
+    _ended(brain, "p7")
+    assert notified.result() == BrainAnswered(PromptId("p7"), None) and turn.answered.result() == BrainAnswered(PromptId("p7"), None)

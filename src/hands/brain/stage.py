@@ -551,8 +551,11 @@ class BrainStage(FrameProcessor):
         """Asks the brain each turn the pipeline hands this stage, one at a time, for as long as it runs; returns only by
         raising what stopped it, since a stage that can no longer ask leaves every question unanswered."""
         while True:
+            # [LAW:no-ambient-temporal-coupling] behind a turn Claude Code opened itself, which no lane holds, before what
+            # waits is taken: words said meanwhile join it as one turn.
+            await self._free.wait()
             waiting, arrived, released = await self._upcoming()
-            # [LAW:no-ambient-temporal-coupling] behind a turn Claude Code opened itself, which no lane holds.
+            # One may have opened while the lane was waited on.
             await self._free.wait()
             # Taken from its lane: how long it waited there, which reading the screen is not.
             taken = self._now()
@@ -817,8 +820,14 @@ class BrainStage(FrameProcessor):
         if not await self._heard(turn.asker):
             # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none of them is handed to the speaker.
             while (words := await turn.said.get()) is not None:
-                if isinstance(words, str):
-                    turn.withheld.append(words)
+                match words:
+                    case str():
+                        turn.withheld.append(words)
+                    case _Close() | Asked() as point:
+                        # Nothing of it is played, so it is reached as it is taken: no barge-in finds it still to hear.
+                        turn.reach(point)
+                    case _Aside():
+                        pass
             return
         await self._reply(turn, True)
         while (words := await self._handed(turn)) is not None:
@@ -972,7 +981,7 @@ class BrainStage(FrameProcessor):
         one Claude Code opened itself, which nobody waits on."""
         pending = self._pending
         # [LAW:single-enforcer] the words matched as the brain matches what it typed to what Claude Code took (`kept`).
-        if pending is not None and opened.by == "asked" and any(kept(text) == kept(pending.typed) for text in opened.texts):
+        if pending is not None and any(kept(text) == kept(pending.typed) for text in opened.texts):
             self._pending, self._turn = None, pending
             return pending
         if pending is not None:

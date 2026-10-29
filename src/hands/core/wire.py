@@ -304,7 +304,7 @@ def opening(body: object) -> Opening | None:
     if not turned:
         return None
     _, last = turned[-1]
-    if _role(last) != "user" or any(item.get("type") == "tool_result" for item in _mappings(_blocks(last))):
+    if not _prompt(last):
         return None
     texts = tuple(_texts(last))
     return Opening("notified" if any(NOTIFICATION.match(text) for text in texts) else "asked", texts)
@@ -315,14 +315,18 @@ def turns(body: object) -> int:
     return max((turn + 1 for turn, _ in _turned(body)), default=0)
 
 
+def _prompt(message: object) -> bool:
+    """Whether a message opens a turn: a prompt, a message from the user that answers no call."""
+    return _role(message) == "user" and not any(item.get("type") == "tool_result" for item in _mappings(_blocks(message)))
+
+
 def _turned(body: object) -> list[tuple[int, object]]:
     """Each message of a request with the turn it belongs to, counted from 0 at the first prompt."""
     messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
     turned: list[tuple[int, object]] = []
     turn = -1
     for message in messages:
-        # A turn opens with a prompt: a message from the user that answers no call.
-        turn += _role(message) == "user" and not any(item.get("type") == "tool_result" for item in _mappings(_blocks(message)))
+        turn += _prompt(message)
         turned.append((turn, message))
     return turned
 

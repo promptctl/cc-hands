@@ -1185,20 +1185,19 @@ class Brain:
                 return
             case Summarise():
                 pass
-        # [LAW:single-enforcer] a turn is matched to its end by the id it was told under: a turn nobody waits on by the one
-        # its prompt hook bound, before any turn of hands' is asked whether the end is its.
-        unawaited = next((waiting for waiting in self._unawaited if waiting.prompt is not None and waiting.prompt == told.turn), None)
-        if unawaited is not None:
-            self._unawaited.remove(unawaited)
-            unawaited.told.set_result(BrainAnswered(told.turn, told.failure))
-            return
-        # Claude Code runs one turn at a time, so an end bound to no turn nobody waits on is the end of what it runs, the
-        # oldest such turn whose prompt hook was matched elsewhere or never heard among them: none is left waiting on an
-        # end that will not come.
-        unbound = next((waiting for waiting in self._unawaited if waiting.prompt is None), None)
-        if unbound is not None:
-            self._unawaited.remove(unbound)
-            unbound.told.set_result(BrainAnswered(told.turn, told.failure))
+        # [LAW:single-enforcer] a turn nobody waits on is matched to its end by the id its prompt hook bound; else, since
+        # Claude Code runs one turn at a time, an end bound to none of them is the end of the oldest whose hook was matched
+        # elsewhere or never heard. Either way the end is then asked of hands' own turn too: its words, filed into that
+        # same turn, end with it.
+        bound = next((waiting for waiting in self._unawaited if waiting.prompt == told.turn), None)
+        ending = bound if bound is not None else next((waiting for waiting in self._unawaited if waiting.prompt is None), None)
+        if ending is not None:
+            self._unawaited.remove(ending)
+            ending.told.set_result(BrainAnswered(told.turn, told.failure))
+            # [LAW:nothing-unseen] how the end was matched to the turn nobody waited on.
+            logger.info(f"the brain's Claude Code ended turn {told.turn}, nobody's, matched by {'its prompt id' if ending is bound else 'order'}")
+        # [LAW:one-source-of-truth] a prompt id whose turn is over binds no turn opened after it.
+        self._unbound = deque(prompt for prompt in self._unbound if prompt != told.turn)
         turn = self._turn
         if turn is None or turn.answered.done():
             logger.info(f"the brain's Claude Code ended turn {told.turn}, which no turn in flight was waiting on")
