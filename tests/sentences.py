@@ -1,6 +1,7 @@
 """NLTK's punkt_tab, the sentence tokenizer pipecat splits a reply with, at a pin, fetched before the run (conftest):
 unfound, pipecat downloads whatever NLTK's index serves that day into the HOME of whichever test first splits a sentence."""
 
+import errno
 import hashlib
 import io
 import tempfile
@@ -66,7 +67,7 @@ async def install(pin: Pin, cache: Path, fetch: Callable[[str, pinned.Write], Aw
         # runs that install at once each rename a whole package there, and the first one's stands.
         try:
             unzipped.rename(data)
-        except OSError:
-            if not data.is_dir():
+        except OSError as error:
+            if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
                 raise
     return data

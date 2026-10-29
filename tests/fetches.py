@@ -9,6 +9,7 @@ fetch, and fails naming what it could not fetch and why."""
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -126,6 +127,8 @@ def fetched_apart(fetches: Fetches) -> None:
     )
     if done.returncode == CANNOT_FETCH:
         raise pytest.UsageError("the run cannot fetch what it needs: why is above")
+    if done.returncode < 0:
+        raise pytest.UsageError(f"the run's fetches were ended by {signal.Signals(-done.returncode).name}")
     if done.returncode:
         raise pytest.UsageError(f"the run's fetches failed with a defect (exit {done.returncode}): its stack is above")
 

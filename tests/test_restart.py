@@ -273,14 +273,18 @@ KINFO_PROC_SIZE = 648
 P_STAT = 36
 SZOMB = 5
 _libc = ctypes.CDLL(None, use_errno=True)
+_libc.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
 
 
 def zombie(pid: int) -> bool:
-    """Whether `pid` has exited and is not yet reaped."""
+    """Whether `pid` has exited and is not yet reaped. [LAW:no-silent-failure] a process the table does not hold, or a
+    kinfo_proc not the size its layout is read at, fails, never reads as a process not yet exited."""
     info = ctypes.create_string_buffer(KINFO_PROC_SIZE)
     size = ctypes.c_size_t(KINFO_PROC_SIZE)
     if _libc.sysctl((ctypes.c_int * 4)(1, 14, 1, pid), 4, info, ctypes.byref(size), None, 0):
         raise OSError(ctypes.get_errno(), f"sysctl of process {pid}")
+    if size.value != KINFO_PROC_SIZE:
+        raise OSError(f"the process table gave {size.value} bytes for process {pid}, not a kinfo_proc of {KINFO_PROC_SIZE}")
     return info.raw[P_STAT] == SZOMB
 
 

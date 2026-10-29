@@ -476,7 +476,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Then
     the hub in this process goes offline for the rest of the run, as a child's is by its environment, so a weight the run
     did not fetch fails the test that loads it and never downloads inside it. Undone by the config's cleanup, which runs however the session ends, but for the sandbox: the OS lifts it
-    from no process, so this interpreter stays offline after the session, and a second session in it fetches nothing."""
+    from no process, so this interpreter stays offline after the session, and a second session in it can fetch nothing."""
     yield
     config = session.config
     terminal = cast(pytest.TerminalReporter, config.pluginmanager.get_plugin("terminalreporter"))
