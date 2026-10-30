@@ -405,7 +405,7 @@ async def keyed(hands: Hands, *keys: str) -> None:
 
 
 async def pasted(hands: Hands, text: str) -> None:
-    """`text` pasted into the brain's pane in one bracketed paste, its newlines kept, as hands pastes a turn."""
+    """`text` pasted into the brain's pane in one bracketed paste by tmux, its newlines kept."""
     claude = hands.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
     await at_the_pane(hands, "set-buffer", "-b", "pasted", text, ";", "paste-buffer", "-p", "-r", "-d", "-b", "pasted", "-t", claude._session)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
