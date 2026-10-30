@@ -22,10 +22,10 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import RUN, located, running, unread
+from conftest import RUN, events, located, running, unread
 from hands.brain import pinned
 from hands.brain.fork import REMINDER
-from hands.brain.stage import OWED, BrainStage
+from hands.brain.stage import ANSWERS, OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
 from hands.brain.process import BROKEN, STOPPED, starting_settings, workdir
@@ -162,7 +162,7 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)"]
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
@@ -415,3 +415,44 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
     assert held(hands) == ()
     await hands.say("say hello")
     await hands.until(lambda: "Hello." in "".join(hands.out.said()))
+
+
+async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_and_are_the_next_turn(mock_api: MockApi, hands: Hands) -> None:
+    """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
+    a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
+    turn, with no note (promptctl-barge-in-duao.51y)."""
+    # The call runs until the test ends it: a read of a named pipe in the brain's workdir, which returns once the test
+    # writes to it, so the words are said while it runs however slow the run is.
+    pipe = hands.workdir / "go"
+    os.mkfifo(pipe)
+    # Tried in name order: the second turn, whose history holds the first's result too, ahead of the first's end.
+    mock_api.script("1-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
+    mock_api.script("2-done", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Renamed it."})
+    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": f"cat {pipe}"}}, stop="tool_use")
+    await connected(hands)
+    await hands.say("rename the module")
+    await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
+    await hands.say("and check the logs too")
+    # hands' answer is said while the call still runs.
+    await hands.until(lambda: any(answer in "".join(hands.out.said()) for answer in ANSWERS))
+    assert "Renamed it." not in "".join(hands.out.said())
+    # Opening the pipe for writing waits for the call's read, off the loop; writing and closing it ends the call.
+    await asyncio.to_thread(pipe.write_text, "go")
+    await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
+    said = "".join(hands.out.said())
+    first, second = events(hands.recorded, "voice.turn")
+    match first.facts["asides"]:
+        case ((str() as answer, int() | float() as waited_ms),):
+            pass
+        case asides:
+            raise AssertionError(f"the first turn's asides are not one answer: {asides!r}")
+    # C1: not a barge-in. Neither turn is interrupted, the first is cut in on once, and nothing of it is spoken over.
+    assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"], second.facts["interrupted"]) == (False, 1, "", False)
+    # C2: nothing is lost: the turn runs on to its end, heard, its sentence before the call, then the answer, then the rest.
+    assert answer in ANSWERS
+    assert said.index("Let me look.") < said.index(answer) < said.index("Renamed it.") < said.index("The logs are clean."), said
+    # C3: the next turn's asked is the words, with no note of the turn before; only the screen's, which every turn carries.
+    assert second.facts["asked"] == "and check the logs too\n\n[hands] The user can see a screen."
+    # C5: the answer within about a second of the words reaching hands, and the next turn's waits recorded.
+    assert waited_ms < 1000, first.facts["asides"]
+    assert isinstance(second.facts["queued_ms"], int | float) and isinstance(second.facts["waited_ms"], int | float), second.facts
