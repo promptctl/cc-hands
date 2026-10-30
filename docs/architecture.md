@@ -1942,9 +1942,10 @@ turn's `UserAsked` says it:
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
-The wake-word edge is the only one that opens the mic without a hand, and it is
-half-duplex: while hands speaks, the wake-word detector hears silence in place of the
-room, because an open mic in a room with speakers hears the pipeline's own voice. The
+The wake-word edge opens the mic without a hand, as `engaged conversation` does, and
+hears what it hears: the room with hands' own voice taken out by the echo canceller,
+while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
+it off. Each hearing records `while_speaking`, so a wake on leftover echo is seen. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech

@@ -39,7 +39,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | the edge that opened the hold | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a hold the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
-| a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound; but hands' detector is fed silence while hands speaks, so it cuts only a turn working in silence, never a reading |
+| a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound, heard through the echo canceller while hands speaks as engaged conversation's speech is |
 | a hold engaged conversation opened cuts once the streaming recognizer hears words in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
@@ -55,7 +55,7 @@ tables under the tree carry the reason for each branch and the code and test tha
 flowchart TD
     speak(["The user speaks"]) --> opened{"What opened the listening window?"}
     opened -- "push-to-talk, the phone's button" --> now["Cut as the window opens"]
-    opened -- "wake word, which is not heard while hands speaks" --> now
+    opened -- "wake word" --> now
     opened -- "engaged conversation" --> whisper{"Does Whisper push words for it?"}
     whisper -- "yes" --> words["Cut once the words arrive"]
     whisper -- "no, a cough or the reply's own echo" --> nocut(["No cut: the reply plays on as if nothing had opened"])
@@ -81,7 +81,7 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | The hold was opened by | It cuts |
 |---|---|
 | the user's hand: the held key, the phone's button | as it opens |
-| the wake word | as it opens; the detector is fed silence while hands speaks (`voice/wake.py:6`, `136–140`), so it opens no hold on a reading, only on a turn working in silence |
+| the wake word | as it opens, over a reading or a turn working in silence alike; each hearing records whether hands was speaking (`voice/wake.py`, `listening`) |
 | engaged conversation | once the streaming recognizer hears words in it, while it is open |
 | a hold that holds no words | nothing, so nothing has to be undone |
 

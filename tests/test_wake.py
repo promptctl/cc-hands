@@ -131,24 +131,24 @@ class FakeWord(WakeWord):
         self.resets += 1
 
 
-def test_while_hands_speaks_the_detector_hears_silence_and_each_waking_is_an_event() -> None:
+def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whether_it_did() -> None:
     word = FakeWord()
     speaking = [True]
     events: list[WideEvent] = []
     woken = listening(word, lambda: speaking[0], events.append)
 
     async def heard() -> list[bool]:
-        with unit("desk", events.append, counts=("heard", "muted")):
-            deaf = await woken(b"\x01\x02" * 160, False)
+        with unit("desk", events.append, counts=("heard",)):
+            over = await woken(b"\x01\x02" * 160, False)
             speaking[0] = False
-            return [deaf, await woken(b"\x01\x02" * 160, False)]
+            return [over, await woken(b"\x01\x02" * 160, False)]
 
-    assert asyncio.run(heard()) == [False, True]
-    assert word.heard == [bytes(320), b"\x01\x02" * 160]
-    assert word.resets == 1
-    assert [(event.event, event.facts.get("score")) for event in events] == [("desk.wake_word_heard", 0.9), ("desk", None)]
-    assert dict(events[1].counts) == {"heard": 1, "muted": 1}
-    assert events[0].parent_id == events[1].span_id
+    assert asyncio.run(heard()) == [True, True]
+    assert word.heard == [b"\x01\x02" * 160] * 2
+    assert word.resets == 2
+    assert [(event.event, event.facts.get("while_speaking")) for event in events] == [("desk.wake_word_heard", True), ("desk.wake_word_heard", False), ("desk", None)]
+    assert dict(events[2].counts) == {"heard": 2}
+    assert events[0].parent_id == events[2].span_id
 
 
 def said(asked: str) -> bytes:
