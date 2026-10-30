@@ -26,6 +26,8 @@ class Armed:
 # The suite's own settings, resolved once as the run is configured: `--timeout`, PYTEST_TIMEOUT and the ini file, never a
 # test's marker, and never the environment as a test has left it.
 SUITE = pytest.StashKey[Settings]()
+
+
 @dataclass(frozen=True)
 class Paused:
     """`item`'s bound stopped between two of its phases with `left` of it still to run."""
@@ -49,9 +51,11 @@ def pytest_configure(config: pytest.Config) -> None:
 @pytest.hookimpl(wrapper=True)
 def pytest_timeout_set_timer(item: pytest.Item, settings: Settings) -> Generator[None, object, object]:
     """[LAW:single-enforcer] pytest-timeout arms every timer, the ones this plugin asks for among them; this only reads
-    off what it armed."""
+    off what it armed, once it has: the deadline never comes before the timer's own, so a bound with nothing left by it
+    has expired."""
+    armed = yield
     item.config.stash[BOUND] = Armed(item, settings, time.monotonic() + settings.timeout)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  (untyped in pytest-timeout)
-    return (yield)
+    return armed
 
 
 @pytest.hookimpl(wrapper=True)
@@ -69,16 +73,14 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
     junitxml."""
     # The timer armed on entry: a test's, or an outer shared setup's.
     armed = config.stash[BOUND]
-    # With no timer armed, as under `timeout_func_only`, nothing bounds the work to rescope.
-    if armed is None:
+    # With no timer armed, as under `timeout_func_only` or between a test's phases, nothing bounds the work to rescope.
+    if not isinstance(armed, Armed):
         yield
         return
-    assert isinstance(armed, Armed), f"{fixture}'s {phase} ran between {armed.item.nodeid}'s phases, with its bound paused"
     started = time.monotonic()
-    left = armed.deadline - started
+    paused = pause(config, armed)
     suite = config.stash[SUITE]
     bound = cast(float | None, suite.timeout)  # pyright: ignore[reportUnknownMemberType]  (untyped in pytest-timeout)
-    config.hook.pytest_timeout_cancel_timer(item=armed.item)
     # A suite with no bound gives its shared fixtures none.
     if bound:
         config.hook.pytest_timeout_set_timer(item=armed.item, settings=suite)
@@ -90,9 +92,16 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
         # reported after it names that remainder, not the test's configured bound. Recorded before the re-arm, which a
         # bound with next to nothing left fires at once.
         armed.item.user_properties.append(
-            (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(left, 3)})
+            (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(paused.left, 3)})
         )
-        resume(config, Paused(armed.item, armed.settings, left))
+        resume(config, paused)
+
+
+def pause(config: pytest.Config, armed: Armed) -> Paused:
+    """[LAW:single-enforcer] `armed`'s timer cancelled, keeping what it had left for `resume`."""
+    left = armed.deadline - time.monotonic()
+    config.hook.pytest_timeout_cancel_timer(item=armed.item)
+    return Paused(armed.item, armed.settings, left)
 
 
 def resume(config: pytest.Config, paused: Paused) -> None:
@@ -144,8 +153,7 @@ def phase(item: pytest.Item) -> Generator[None, None, None]:
         armed = config.stash[BOUND]
         # Under `timeout_func_only` pytest-timeout's own call hook has already ended the bound.
         if isinstance(armed, Armed):
-            config.hook.pytest_timeout_cancel_timer(item=armed.item)
-            config.stash[BOUND] = Paused(armed.item, armed.settings, armed.deadline - time.monotonic())
+            config.stash[BOUND] = pause(config, armed)
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
