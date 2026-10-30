@@ -1,7 +1,7 @@
 """pytest-timeout's bound, scoped to the work it bounds: a fixture wider than one function is set up inside whichever test
 first asks for it and torn down inside the last, yet it is the work of every test that shares it, so its setup and its
-teardown run under the suite's bound and the test's own bound resumes with what it had left; and no timer is armed
-while a phase that raised is reported. A plugin of its own, so a run in another process can load it by name with
+teardown run under the suite's bound and the test's own bound resumes with what it had left; and the test's bound runs
+only inside its phases, never while pytest reports one. A plugin of its own, so a run in another process can load it by name with
 `-p timeouts`; conftest registers it for the suite."""
 
 import time
@@ -26,27 +26,39 @@ class Armed:
 # The suite's own settings, resolved once as the run is configured: `--timeout`, PYTEST_TIMEOUT and the ini file, never a
 # test's marker, and never the environment as a test has left it.
 SUITE = pytest.StashKey[Settings]()
-# [LAW:no-shared-mutable-globals] the timer armed right now, written only by the two hooks that arm and cancel it.
-ARMED = pytest.StashKey[Armed | None]()
+@dataclass(frozen=True)
+class Paused:
+    """`item`'s bound stopped between two of its phases with `left` of it still to run."""
+
+    item: pytest.Item
+    settings: Settings
+    left: float
+
+
+# [LAW:no-shared-mutable-globals] [LAW:one-source-of-truth] the test's bound right now: armed, paused between its phases,
+# or none. Written only by the two hooks that arm and cancel a timer and by the phase boundary that pauses it.
+BOUND = pytest.StashKey[Armed | Paused | None]()
 
 
 @pytest.hookimpl(trylast=True)
 def pytest_configure(config: pytest.Config) -> None:
     config.stash[SUITE] = get_env_settings(config)
-    config.stash[ARMED] = None
+    config.stash[BOUND] = None
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_timeout_set_timer(item: pytest.Item, settings: Settings) -> Generator[None, object, object]:
     """[LAW:single-enforcer] pytest-timeout arms every timer, the ones this plugin asks for among them; this only reads
     off what it armed."""
-    item.config.stash[ARMED] = Armed(item, settings, time.monotonic() + settings.timeout)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  (untyped in pytest-timeout)
+    item.config.stash[BOUND] = Armed(item, settings, time.monotonic() + settings.timeout)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  (untyped in pytest-timeout)
     return (yield)
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_timeout_cancel_timer(item: pytest.Item) -> Generator[None, object, object]:
-    item.config.stash[ARMED] = None
+    """pytest-timeout ending the test's bound ends it paused or armed: after a failure, in pytest_exception_interact, the
+    phases left run unbounded, as pytest-timeout's own would."""
+    item.config.stash[BOUND] = None
     return (yield)
 
 
@@ -56,11 +68,12 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
     with the time it had left, nested work restoring innermost first. What it did lands on the test's report, and so in
     junitxml."""
     # The timer armed on entry: a test's, or an outer shared setup's.
-    armed = config.stash[ARMED]
+    armed = config.stash[BOUND]
     # With no timer armed, as under `timeout_func_only`, nothing bounds the work to rescope.
     if armed is None:
         yield
         return
+    assert isinstance(armed, Armed), f"{fixture}'s {phase} ran between {armed.item.nodeid}'s phases, with its bound paused"
     started = time.monotonic()
     left = armed.deadline - started
     suite = config.stash[SUITE]
@@ -79,15 +92,15 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
         armed.item.user_properties.append(
             (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(left, 3)})
         )
-        resume(config, armed, left)
+        resume(config, Paused(armed.item, armed.settings, left))
 
 
-def resume(config: pytest.Config, armed: Armed, left: float) -> None:
-    """[LAW:single-enforcer] `armed`'s bound re-armed with the `left` it had when it was stopped. A bound with nothing left
-    has fired, and pytest-timeout's timer fires once: a timer re-armed with nothing left would fire at once, inside pytest's
-    own machinery rather than in any work it bounds, and report a second timeout for the one the test already has."""
-    if left > 0:
-        config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=left))
+def resume(config: pytest.Config, paused: Paused) -> None:
+    """[LAW:single-enforcer] `paused`'s bound re-armed with what it had left. A bound with nothing left has fired, and
+    pytest-timeout's timer fires once: a timer re-armed with nothing left would fire at once, inside pytest's own machinery
+    rather than in any work it bounds, and report a second timeout for the one the test already has."""
+    if paused.left > 0:
+        config.hook.pytest_timeout_set_timer(item=paused.item, settings=paused.settings._replace(timeout=paused.left))
 
 
 # The name a rescoping is recorded under on a test's report.
@@ -113,19 +126,38 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
     return value
 
 
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    """A phase that raised is reported with no timer armed. pytest-timeout ends a test's bound in
-    pytest_exception_interact, once the failure's report is built and logged; a timer still armed meanwhile, the test's
-    own or one this plugin re-armed after shared work, fires inside pytest's reporting and ends the run in INTERNALERROR.
-    A phase that raised without failing, a skip, resumes the bound with what it had left, as pytest-timeout's would."""
-    armed = item.config.stash[ARMED]
-    if call.excinfo is None or armed is None:
+def phase(item: pytest.Item) -> Generator[None, None, None]:
+    """[LAW:single-enforcer] the test's bound runs only inside its phases. pytest-timeout arms one timer for the whole
+    runtest protocol, so pytest's reporting of each phase runs under it, and a timer that fires there ends the run in
+    INTERNALERROR. So the bound pauses as each phase ends, still inside pytest's call of it, where a timer that fires is
+    that phase's error, and resumes with what it had left as the next phase starts: the reporting between counts against
+    no bound."""
+    config = item.config
+    paused = config.stash[BOUND]
+    if isinstance(paused, Paused):
+        # One with nothing left, as an xfail's that fired, stays ended.
+        config.stash[BOUND] = None
+        resume(config, paused)
+    try:
         return (yield)
-    # [LAW:single-enforcer] the one place a raised phase's timer stops, whatever raised: the suite's bound on shared
-    # work, the work's own error, or the test's.
-    item.config.hook.pytest_timeout_cancel_timer(item=armed.item)
-    report = yield
-    if not report.failed:
-        resume(item.config, armed, armed.deadline - time.monotonic())
-    return report
+    finally:
+        armed = config.stash[BOUND]
+        # Under `timeout_func_only` pytest-timeout's own call hook has already ended the bound.
+        if isinstance(armed, Armed):
+            config.hook.pytest_timeout_cancel_timer(item=armed.item)
+            config.stash[BOUND] = Paused(armed.item, armed.settings, armed.deadline - time.monotonic())
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_setup(item: pytest.Item) -> Generator[None, None, None]:
+    return (yield from phase(item))
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
+    return (yield from phase(item))
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
+    return (yield from phase(item))
