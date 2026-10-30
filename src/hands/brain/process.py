@@ -1051,40 +1051,49 @@ class Brain:
         untold before a turn is typed (`_taking`). It raises StopUnrecorded when Claude Code still holds what it stopped
         after INTERRUPT_SECONDS, and BrainGone when the brain exits first."""
         held = self._modelled()
-        # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog it
-        # holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether it
-        # reaches Claude Code before the Escape or after it.
-        self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
-        await self._type(lambda typist: typist.press("escape"))
-        # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
-        # prompt (its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
-        # it. On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes,
-        # whatever was typed between; so no two are pressed that close,
-        # counted from when each went and with room for Claude Code to read the first late.
-        loop = asyncio.get_running_loop()
-        await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
-        await self._type(lambda typist: typist.press("ctrl_c"))
-        self._cleared = loop.time()
-        if turn is not None and (turn is not self._turn or not turn.stopped):
-            logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
-        # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
-        # queue. [LAW:no-silent-failure] still held past INTERRUPT_SECONDS, it was not stopped, and says what Claude Code
-        # showed.
-        waiting = asyncio.ensure_future(self._told_out())
-        try:
-            await self._waited(INTERRUPT_SECONDS, waiting, self._exit)
-        finally:
-            waiting.cancel()
-            await asyncio.wait({waiting})
-        if not waiting.cancelled():
-            waiting.result()
-            # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no telling
-            # will end: words Ctrl-C cleared from its queue before they ran. Each ends here, where they were cleared.
-            self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
-            return
-        if self._exit.done():
-            raise BrainGone("the brain exited while hands stopped what it ran")
-        raise StopUnrecorded(f"the brain's Claude Code did not stop what hands pressed Escape for in {INTERRUPT_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}")
+        # [LAW:nothing-unseen] each stop is one event: whose it was, and how long Claude Code took to stop what it ran.
+        with unit("brain.stop", self._record):
+            annotate(turn=turn is not None)
+            # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog
+            # it holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether
+            # it reaches Claude Code before the Escape or after it.
+            self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
+            loop = asyncio.get_running_loop()
+            await self._type(lambda typist: typist.press("escape"))
+            escaped = loop.time()
+            if turn is not None and (turn is not self._turn or not turn.stopped):
+                logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
+            # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
+            # queue. The Escape alone stops it, in up to half a second on CI (promptctl-testing-px1f.6i5).
+            # [LAW:no-silent-failure] still held past INTERRUPT_SECONDS, it was not stopped, and says what Claude Code
+            # showed.
+            waiting = asyncio.ensure_future(self._told_out())
+            try:
+                await self._waited(INTERRUPT_SECONDS, waiting, self._exit)
+            finally:
+                waiting.cancel()
+                await asyncio.wait({waiting})
+            if not waiting.cancelled():
+                waiting.result()
+                annotate(stopped_in=round(loop.time() - escaped, 3))
+                # [LAW:no-ambient-temporal-coupling] Escape puts a prompt stopped before any reply back in the input, and
+                # with it what was typed queued behind the prompt (its cancel pops the queue into the input), which the
+                # next turn typed would join; Ctrl-C clears it. It goes once Claude Code has acted on the Escape: a Ctrl-C
+                # a busy Claude Code reads in one chunk with the ESC is Alt+Ctrl-C, and neither key does anything. On an
+                # input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes, whatever
+                # was typed between; so no two are pressed that close, counted from when each went and with room for
+                # Claude Code to read the first late.
+                await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
+                await self._type(lambda typist: typist.press("ctrl_c"))
+                self._cleared = loop.time()
+                # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
+                # telling will end: words Ctrl-C cleared from its queue before they ran. Each ends here, where they were
+                # cleared.
+                self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
+                return
+            if self._exit.done():
+                raise BrainGone("the brain exited while hands stopped what it ran")
+            raise StopUnrecorded(f"the brain's Claude Code did not stop what hands pressed Escape for in {INTERRUPT_SECONDS:g}s: the model holds {self._modelled()}; it showed:\n{self._claude.shown()}")
 
     async def _told_out(self) -> None:
         """Returns once Claude Code holds nothing of what it ran, as the model reads it.
