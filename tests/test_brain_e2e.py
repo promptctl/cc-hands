@@ -12,18 +12,18 @@ import json
 from hands.core.attention import Attention
 import os
 import pwd
+import socket
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import cast
 
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import RUN, located, running, unread
+from conftest import RUN, events, located, running, unread
 from hands.brain import pinned
 from hands.brain.fork import REMINDER
 from hands.brain.stage import ANSWERS, OWED, BrainStage
@@ -422,29 +422,39 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
     a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
     turn, with no note (promptctl-barge-in-duao.51y)."""
+    # The call runs until the test ends it: a listener on loopback that returns once something connects, so the words
+    # are said while it runs however slow the run is.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
     # Tried in name order: the second turn, whose history holds the first's result too, ahead of the first's end.
     mock_api.script("1-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
     mock_api.script("2-done", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Renamed it."})
-    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 3"}}, stop="tool_use")
+    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": f"nc -l 127.0.0.1 {port}"}}, stop="tool_use")
     await connected(hands)
     await hands.say("rename the module")
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
-    assert "Let me look." in "".join(hands.out.said())
     await hands.say("and check the logs too")
-    def turns() -> list[WideEvent]:
-        return [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
-
-    # Each turn's event is written as its unit ends, after its last word is said.
-    await hands.until(lambda: len(turns()) == 2)
+    # hands' answer is said while the call still runs.
+    await hands.until(lambda: any(answer in "".join(hands.out.said()) for answer in ANSWERS))
+    assert "Renamed it." not in "".join(hands.out.said())
+    _, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.close()
+    await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
     said = "".join(hands.out.said())
-    # C2: the turn runs on to its end, heard, and the answer to the words comes after it.
-    assert said.index("Let me look.") < said.index("Renamed it.") < said.index("The logs are clean.")
-    first, second = turns()
-    # C1, C3: not a barge-in; the first turn is cut in on once, and nothing of it is said over the user.
-    assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"]) == (False, 1, "")
-    # C5: hands answers the words within about a second.
-    [(answer, waited_ms)] = cast(tuple[tuple[str, float], ...], first.facts["asides"])
-    assert answer in ANSWERS and waited_ms < 1000, first.facts["asides"]
-    # C4: the next turn carries the words, with no note that the user spoke over the turn or that it broke off.
-    asked = cast(str, second.facts["asked"])
-    assert asked.startswith("and check the logs too") and "spoke over you" not in asked and "broken off" not in asked, asked
+    first, second = events(hands.recorded, "voice.turn")
+    match first.facts["asides"]:
+        case ((str() as answer, int() | float() as waited_ms),):
+            pass
+        case asides:
+            raise AssertionError(f"the first turn's asides are not one answer: {asides!r}")
+    # C1: not a barge-in. Neither turn is interrupted, the first is cut in on once, and nothing of it is spoken over.
+    assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"], second.facts["interrupted"]) == (False, 1, "", False)
+    # C2: nothing is lost: the turn runs on to its end, heard, its sentence before the call, then the answer, then the rest.
+    assert answer in ANSWERS
+    assert said.index("Let me look.") < said.index(answer) < said.index("Renamed it.") < said.index("The logs are clean."), said
+    # C3: the next turn's asked is the words, with no note of the turn before; only the screen's, which every turn carries.
+    assert second.facts["asked"] == "and check the logs too\n\n[hands] The user can see a screen."
+    # C5: the answer within about a second of the words reaching hands, and the next turn's waits recorded.
+    assert waited_ms < 1000, first.facts["asides"]
+    assert isinstance(second.facts["queued_ms"], int | float) and isinstance(second.facts["waited_ms"], int | float), second.facts
