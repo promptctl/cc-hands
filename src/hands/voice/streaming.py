@@ -30,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads, voiceprints
 from hands.threads import SerialThread
-from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Samples, Sound, decoded
+from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Samples, Sound, decoded, slots
 from hands.voice.voiceprints import WINDOW, Identifier, Voiced
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
@@ -152,13 +152,8 @@ def joined(texts: Iterable[str | None]) -> str | None:
 # A 10 ms slot of a hold: the unit the speaker's reference, and so the voices hands played, come in.
 SLOT = RATE // 100
 
-# The voices of hands' TTS played over each 10 ms of a stretch of a hold, in order.
+# The voices of hands' TTS played over each 10 ms of a stretch of a hold, in order (`hands.voice.holds.slots`).
 type Played = tuple[tuple[str, ...], ...]
-
-
-def played(sound: Sound) -> Played:
-    """The voices hands played over each 10 ms of `sound`; none known at the phone."""
-    return tuple(reference.voices for reference in sound.played or ())
 
 
 class _Tape:
@@ -200,23 +195,26 @@ class _Voice:
     over them; and how many rows of the table they have been handed to be identified at."""
 
     latest: deque[tuple[Samples, bool]] = field(default_factory=deque[tuple[Samples, bool]])
+    # How many samples `latest` holds, kept as it changes.
+    held: int = 0
     seconds: float = 0.0
     played: dict[str, None] = field(default_factory=dict[str, None])
     reached: int = 0
 
     def add(self, heard: Samples, shared: bool, played: tuple[str, ...]) -> None:
         self.latest.append((heard, shared))
-        while sum(len(samples) for samples, _ in self.latest) - len(self.latest[0][0]) >= round(WINDOW * RATE):
-            self.latest.popleft()
+        self.held += len(heard)
+        # The oldest frame let go of while the window is whole without it.
+        while self.held - len(self.latest[0][0]) >= round(WINDOW * RATE):
+            self.held -= len(self.latest.popleft()[0])
         self.seconds += len(heard) / RATE
         self.played |= dict.fromkeys(played)
 
     def voiced(self, speaker: int) -> Voiced:
         """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared."""
-        window = round(WINDOW * RATE)
         voice = np.concatenate([samples for samples, _ in self.latest])
         # The oldest frame kept is cut to the window, and its share with it.
-        cut = max(0, len(voice) - window)
+        cut = max(0, self.held - round(WINDOW * RATE))
         shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
         return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played))
 
@@ -399,14 +397,14 @@ class StreamingRecognizer:
 
     def opened(self, hold: Hold, before: Sound) -> Hearings:
         """`hold` opens: what it kept from before it opened is the start of its words."""
-        samples, start, voices = decoded(before.heard), self._fed, played(before)
+        samples, start, voices = decoded(before.heard), self._fed, slots(before)
         self._hold = hold
         self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start, voices)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
         """More of the hold open, decoded on the thread behind everything given before it."""
-        samples, voices = decoded(sound.heard), played(sound)
+        samples, voices = decoded(sound.heard), slots(sound)
         self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples, voices)))
         return self._fed_with(len(samples))
 
@@ -421,10 +419,27 @@ class StreamingRecognizer:
             logger.opt(exception=error).error("the streaming session's decoding broke; no hold is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, silence: int) -> Ended:
-        """The hold open, heard through the silence after it, on the thread."""
-        self._moved(lambda stream: stream.silence(silence))
-        return self._stream.ended()
+    def _ended(self, hold: Hold, silence: int) -> Ended:
+        """The hold open, heard through the silence after it, on the thread, and every speaker in it handed on to be
+        identified at its end. [LAW:single-enforcer] a hold's end is handed on here whatever comes of it, nobody in it
+        for a hold the stream could not hear: the identifier lets go of all it held for the hold, and no hearing that
+        fails or runs out of time on the owner's side can skip it."""
+        voices: tuple[Voiced, ...] = ()
+        try:
+            self._moved(lambda stream: stream.silence(silence))
+            heard = self._stream.ended()
+            voices = heard.voices
+            return heard
+        finally:
+            self._identify.ended(hold, voices)
+
+    def _said(self, hold: Hold) -> Since:
+        """What the stream found since the last hearing, on the thread, each speaker who reached a row handed on to be
+        identified in the same step that marked the row reached, so a hearing cancelled after it loses none."""
+        since = self._stream.said()
+        if since.reached:
+            self._identify.identify(hold, since.reached)
+        return since
 
     def _fed_with(self, samples: int) -> Hearings:
         """A hearing of the hold open where `samples` more complete a step of the diarizer's, and none where they do not:
@@ -435,16 +450,15 @@ class StreamingRecognizer:
             case 0:
                 return ()
             case _:
-                said, hold = self._thread.settles(lambda: self._stream.said()), self._hold
+                # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its table:
+                # the words go out without waiting on it.
+                hold = self._hold
+                said = self._thread.settles(lambda: self._said(hold))
 
                 async def hear() -> Heard:
                     since = await said
                     # [LAW:nothing-unseen] the words each speaker added in this hearing: the hold's whole is on its end's.
                     annotate(added=since.added)
-                    # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its
-                    # table: the words go out without waiting on it.
-                    if since.reached:
-                        self._identify.identify(hold, since.reached)
                     return Heard(joined(each.text for each in since.added))
 
                 return (hear,)
@@ -453,7 +467,7 @@ class StreamingRecognizer:
         """The hold open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same hold."""
         silence = through(self._fed) - self._fed
-        ended = self._thread.settles(lambda: self._ended(silence))
+        ended = self._thread.settles(lambda: self._ended(hold, silence))
         self._fed += silence
 
         async def settle() -> Heard:
@@ -463,7 +477,6 @@ class StreamingRecognizer:
             heard = await ended
             # [LAW:nothing-unseen] the close's words are among the hold's, told apart: what the floor decoded, not the feed.
             annotate(words=heard.words, seconds=heard.seconds, closed=heard.closed.speakers, closing=heard.closed.words)
-            self._identify.ended(hold, heard.voices)
             return Heard(joined(said.text for said in heard.words))
 
         return (settle,)

@@ -36,7 +36,7 @@ from typing import Literal, Protocol, cast
 
 import pyaudio
 from loguru import logger
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, OutputAudioRawFrame, StartFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -54,7 +54,7 @@ from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, count, unit
 from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
 from hands.voice.phone import Phone
-from hands.voice.ptt import PushToTalk
+from hands.voice.ptt import Key, PushToTalk
 from hands.voice.turnstop import TurnOpened
 from hands.voice.voices import SpeakingIn
 from hands.threads import SerialThread, off_loop
@@ -84,11 +84,12 @@ REOPEN_DEADLINE = timedelta(seconds=10)
 class Overheard:
     """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
     speaker played over it; whether the desk is where hands is, the gate's say, the desk heard as silence where not; and
-    whether a press of the key was arming or holding as it was captured, the gate's say too."""
+    the gate's key as it was captured, which says both the press and the level: up at the desk is the off level with no
+    press, where nothing but a held key opens a hold."""
 
     cancelled: Cancelled
     desk: bool
-    held: bool
+    key: Key
 
 
 class Stream(Protocol):
@@ -391,7 +392,7 @@ class Speaker(LocalAudioOutputTransport):
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
         # the place the user has moved to. The phone's earbuds keep its microphone clear, so the canceller is not told.
-        voices, self._chunk_voices = self._chunk_voices, () if self._voice is None else (self._voice,)
+        voices = self._voiced(frame)
         match self._key.gate.place:
             case "phone":
                 if frame.audio.count(0) != len(frame.audio):
@@ -400,6 +401,16 @@ class Speaker(LocalAudioOutputTransport):
                 return True
             case "desk":
                 return await self._write_here(frame, voices)
+
+    def _voiced(self, frame: OutputAudioRawFrame) -> tuple[str, ...]:
+        """The voices of hands' TTS in `frame`: those of the chunk for a chunk of TTS audio, none for the silence and
+        padding the transport writes of its own."""
+        match frame:
+            case TTSAudioRawFrame():
+                voices, self._chunk_voices = self._chunk_voices, () if self._voice is None else (self._voice,)
+                return voices
+            case _:
+                return ()
 
     async def _write_here(self, frame: OutputAudioRawFrame, voices: tuple[str, ...]) -> bool:
         # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
@@ -587,7 +598,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by an edge as by the hold owner: while hands is at the
         # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
-        overheard = Overheard(cancelled, gate.hears("desk"), gate.key in ("arming", "down"))
+        overheard = Overheard(cancelled, gate.hears("desk"), gate.key)
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the hold owner; while hands is at the

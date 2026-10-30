@@ -20,7 +20,7 @@ from loguru import logger
 from conftest import PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent, begun
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice import engaged, streaming, voiceprints
 from hands.voice.holdowner import HoldOwner
 from hands.voice.holds import Fate, Hold, Reference, Sound
@@ -321,6 +321,44 @@ async def test_a_speaker_is_handed_on_once_at_each_row_of_the_table_they_reach_a
     assert [round(voiced.seconds, 2) for _, (voiced,) in told.identified] == [1.2, 1.68]
     await rig.ended(HELD, "sent")
     assert [round(voiced.seconds, 2) for _, (voiced,) in told.ended_with] == [2.4]
+
+
+async def test_a_hold_the_broken_stream_could_not_hear_still_ends_for_the_identifier_with_nobody_in_it() -> None:
+    told = Told()
+    rig = rigged(Scripted([], failing=frozenset({1})), told)
+    await rig.opened(HELD, sound(0))
+    await rig.heard(HELD, sound(seconds(2 * STEPPED)))
+    await rig.ended(HELD, "sent")
+    assert told.ended_with == [(HELD, ())]
+
+
+@dataclass
+class Closing(Scripted):
+    """A session whose close waits on the test, as a decode stuck on the GPU would."""
+
+    closes: threading.Event = field(default_factory=threading.Event)
+
+    def closed(self) -> Closed:
+        assert self.closes.wait(timeout=10)
+        return super().closed()
+
+
+async def test_a_holds_end_the_owner_gave_up_waiting_on_still_ends_for_the_identifier_once_the_stream_gets_there() -> None:
+    told = Told()
+    session = Closing([], active=[(), (Active(0, 0),)])
+    rig = rigged(session, told)
+    await rig.opened(HELD, sound(0))
+    await rig.heard(HELD, sound(seconds(STEPPED)))
+    [settle] = rig.listener.ended(HELD, "sent", Sound(b"", b"", None))
+    # The owner's bound runs out on the hearing: it is cancelled while the stream is still closing the hold.
+    with pytest.raises(TimeoutError), unit("hearing", lambda _event: None):
+        await asyncio.wait_for(settle(), 0.05)
+    session.closes.set()
+    async with asyncio.timeout(10):
+        while not told.ended_with:
+            await asyncio.sleep(0.01)
+    [(hold, (voiced,))] = told.ended_with
+    assert (hold, voiced.speaker) == (HELD, 0)
 
 
 async def test_a_speaker_marked_only_where_the_hold_has_no_samples_is_nobody() -> None:

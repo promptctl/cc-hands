@@ -75,9 +75,8 @@ def decoded(audio: bytes) -> Samples:
 
 @dataclass(frozen=True)
 class Reference:
-    """10 ms of what the desk's speaker played, as the echo canceller was given it: 16-bit at the speaker's own rate and
-    channels, which are not a hold's; and each voice of hands' own TTS in it, as the TTS made it, none for silence or a
-    cue."""
+    """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
+    speaker's own rate and channels, which are not a hold's; and each voice of the TTS in it, as the TTS made it."""
 
     audio: bytes
     rate: int
@@ -85,16 +84,20 @@ class Reference:
     voices: tuple[str, ...]
 
 
+# What the desk's speaker played over each 10 ms of a sound: hands' TTS, or None where it played no TTS, silence or a
+# cue; and None for the whole at the phone, whose own canceller is told what it plays, and hands is not.
+type Played = tuple[Reference | None, ...] | None
+
+
 @dataclass(frozen=True)
 class Sound:
     """Audio of a hold, mono 16-bit at RATE: as the pipeline hears it, after the echo canceller, and as the microphone
     captured it, before; the two the same length, and the same at the phone, which is heard through no canceller. And
-    what the desk's speaker was playing as it was captured, the canceller's reference, one for each 10 ms of it; None at
-    the phone, whose own canceller is told what it plays, and hands is not."""
+    what the desk's speaker was playing as it was captured, the canceller's reference, one for each 10 ms of it."""
 
     heard: bytes
     captured: bytes
-    played: tuple[Reference, ...] | None
+    played: Played
 
     @property
     def seconds(self) -> float:
@@ -106,6 +109,16 @@ class Sound:
         return Levels(dbfs(self.captured), dbfs(self.heard))
 
 
+def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
+    """The voices of hands' TTS over each 10 ms of `sound`, none where it played none, and none known at the phone."""
+    return tuple(() if reference is None else reference.voices for reference in sound.played or ())
+
+
+def voices(sound: Sound) -> tuple[str, ...]:
+    """Every voice of hands' TTS played over `sound`, in the order first played."""
+    return tuple(dict.fromkeys(voice for slot in slots(sound) for voice in slot))
+
+
 class Recording:
     """The audio of the hold being gathered, as the pipeline hears it, as the microphone captured it, before the echo
     canceller, and what the speaker played over it: appended and trimmed together, so a hold is measured on both sides
@@ -115,7 +128,7 @@ class Recording:
         self._heard = bytearray()
         self._captured = bytearray()
         # None once a frame with no reference is added: a recording is of one place, cleared as the place moves.
-        self._played: list[Reference] | None = []
+        self._played: list[Reference | None] | None = []
 
     def add(self, sound: Sound, gathering: bool) -> None:
         """A frame more; while nothing is `gathering` it, only the last second is kept, the second a hold the desk was

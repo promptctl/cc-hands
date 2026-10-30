@@ -13,7 +13,7 @@ from pipecat.clocks.system_clock import SystemClock
 from pipecat.processors.frame_processor import FrameProcessorSetup
 from pipecat.utils.asyncio.task_manager import TaskManager
 
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, UserStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
@@ -21,7 +21,7 @@ from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
-from hands.voice.holds import Reference
+from hands.voice.holds import Played, Reference
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
@@ -73,7 +73,7 @@ class Rig:
         self.pushed: list[bytes] = []
         # Each pushed frame's sound as the microphone captured it, before the canceller, and what was played over it.
         self.captured: list[bytes] = []
-        self.played: list[tuple[Reference, ...] | None] = []
+        self.played: list[Played] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
         self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)
@@ -96,6 +96,11 @@ class Rig:
     async def play(self, audio: bytes, at: float) -> None:
         self.now = at
         await self.speaker.write_audio_frame(OutputAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1))
+
+    async def tts(self, audio: bytes, at: float) -> None:
+        """A chunk of hands' TTS, as Pipecat's sender writes it."""
+        self.now = at
+        await self.speaker.write_audio_frame(TTSAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1, context_id="reply"))
 
     async def capture(self, at: float) -> None:
         self.now = at
@@ -503,17 +508,18 @@ async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_
         pass
 
     monkeypatch.setattr(LocalAudioOutputTransport, "push_frame", passed)
-    await devices.play(LOUD, at=1.0)  # before the TTS says any voice: none
+    await devices.tts(LOUD, at=1.0)  # before the TTS says any voice: none
     await devices.speaker.push_frame(SpeakingIn("alba"))
-    await devices.play(LOUD, at=1.02)
-    await devices.play(LOUD, at=1.04)
+    await devices.tts(LOUD, at=1.02)
+    await devices.play(LOUD, at=1.03)  # the transport's own silence or padding: no voice, and alba's next chunk keeps hers
+    await devices.tts(LOUD, at=1.04)
     await devices.speaker.push_frame(SpeakingIn("mary"))
     # Pipecat's sender joins utterances into its chunks: the first after the change may end alba's last.
-    await devices.play(LOUD, at=1.06)
-    await devices.play(LOUD, at=1.08)
+    await devices.tts(LOUD, at=1.06)
+    await devices.tts(LOUD, at=1.08)
     devices.speaker.cue(OPENED)
     await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
-    assert devices.stream.voiced == [(), ("alba",), ("alba",), ("alba", "mary"), ("mary",), ()]
+    assert devices.stream.voiced == [(), ("alba",), (), ("alba",), ("alba", "mary"), ("mary",), ()]
 
 
 def test_the_canceller_is_given_the_voices_in_each_buffer_the_device_takes() -> None:
@@ -530,16 +536,19 @@ def test_the_canceller_is_given_the_voices_in_each_buffer_the_device_takes() -> 
 async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood() -> None:
     devices = Rig()
     async with devices.microphone.echoes() as echoes:
-        await devices.capture(at=1.0)  # key up
+        await devices.capture(at=1.0)  # the off level, no press
+        devices.key.move("listen", "wake word")
+        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a hold
         devices.key.move("start", "held key")
-        await devices.capture(at=1.02)  # a hold open
+        await devices.capture(at=1.04)  # a hold open
         devices.key.go("phone")
-        await devices.capture(at=1.04)  # hands at the phone
-        heard = [await anext(echoes) for _ in range(3)]
-    assert [(each.cancelled, each.desk, each.held) for each in heard] == [
-        (Cancelled(CLEANED, PLAYED), True, False),
-        (Cancelled(CLEANED, PLAYED), True, True),
-        (Cancelled(CLEANED, PLAYED), False, False),
+        await devices.capture(at=1.06)  # hands at the phone
+        heard = [await anext(echoes) for _ in range(4)]
+    assert [(each.cancelled, each.desk, each.key) for each in heard] == [
+        (Cancelled(CLEANED, PLAYED), True, "up"),
+        (Cancelled(CLEANED, PLAYED), True, "listening"),
+        (Cancelled(CLEANED, PLAYED), True, "down"),
+        (Cancelled(CLEANED, PLAYED), False, "up"),
     ]
 
 

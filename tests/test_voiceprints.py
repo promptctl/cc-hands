@@ -274,6 +274,20 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
     assert [event.facts["hold"] for event in entries(recorded, "voiceprints.identified")] == [1, 2, 1, 2]
 
 
+async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_person_in_it(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
+    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints.speaking_in("charles")
+    await until(recorded, "voiceprints.enrolled", 1)
+    prints.identify(HOLD, (voiced(5, 1.5),))
+    # A broken stream, or an end the owner gave up on, ends the hold with nobody: no event, and the person let go of.
+    prints.ended(HOLD, ())
+    prints.identify(HOLD, (voiced(7, 3.0),))
+    told = [whos(event) for event in await until(recorded, "voiceprints.identified", 2)]
+    assert told == [[Person(0.0, 1.5, Window(0.0, 0.0))], [Hands(1.0, 3.0, Window(0.0, 0.0))]]
+
+
 async def test_an_echo_span_is_identified_as_one_voice_on_an_event_of_its_own(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     model = by_length({1: unit(1, 0), 7: unit(1, 0)})
@@ -293,8 +307,21 @@ def test_the_model_loads_and_prints_are_of_unit_length() -> None:
 
 async def test_the_models_load_is_a_unit_saying_what_it_loaded(tmp_path: Path) -> None:
     recorded: list[Entry] = []
-    Voiceprints(voiceprints.load, said_in({}, []), tmp_path, recorded.append)
+    loads: list[str] = []
+
+    def counted() -> Embed:
+        loads.append("loaded")
+        return voiceprints.load()
+
+    prints = Voiceprints(counted, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    # Nothing is loaded until the voice is built, which says the voice hands speaks in.
+    await asyncio.sleep(0.05)
+    assert loads == []
+    prints.speaking_in("charles")
+    prints.speaking_in("alba")
     [load] = await until(recorded, "voiceprints.loaded", 1)
+    await until(recorded, "voiceprints.enrolled", 1)
+    assert loads == ["loaded"]
     assert (load.outcome, model_facts(load)) == ("ok", {"model": voiceprints.MODEL, "revision": voiceprints.REVISION, "file": voiceprints.FILE})
 
 

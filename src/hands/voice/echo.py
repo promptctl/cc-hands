@@ -53,7 +53,7 @@ class Cancelled:
     each of its 10 ms frames was matched with, as the canceller was given it, so the two line up frame for frame."""
 
     heard: bytes
-    played: tuple[Reference, ...]
+    played: tuple[Reference | None, ...]
 
 
 class Echo(Protocol):
@@ -63,6 +63,17 @@ class Echo(Protocol):
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled: ...
     def counts(self) -> dict[str, int]: ...
     def close(self) -> None: ...
+
+
+def spoken(reference: rtc.AudioFrame, voices: tuple[str, ...]) -> Reference | None:
+    """The frame of reference as hands' TTS, kept as given, where it carries TTS audio: a voice the TTS made it in, and
+    sound; None for silence, a cue, or the speaker's own padding. Only a frame of TTS is copied, on the capture thread."""
+    match voices:
+        case ():
+            return None
+        case _:
+            audio = bytes(reference.data.cast("B"))
+            return None if audio.count(0) == len(audio) else Reference(audio, reference.sample_rate, reference.num_channels, voices)
 
 
 class EchoCanceller:
@@ -124,13 +135,12 @@ class EchoCanceller:
         # [LAW:parse-dont-validate] the microphone is opened on 20 ms buffers; any other length is a stream opened wrong.
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
-        cleaned, played = bytearray(), list[Reference]()
+        cleaned, played = bytearray(), list[Reference | None]()
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference.
             reference, voices = self._next_played()
             self._apm.process_reverse_stream(reference)
-            # Kept as given: the capture thread does no more for what hands played than copy it.
-            played.append(Reference(bytes(reference.data.cast("B")), reference.sample_rate, reference.num_channels, voices))
+            played.append(spoken(reference, voices))
             frame = rtc.AudioFrame(audio[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
             self._apm.process_stream(frame)  # in place
             cleaned += frame.data.cast("B")

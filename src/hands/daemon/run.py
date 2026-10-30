@@ -277,18 +277,19 @@ async def run(
         # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
         # tap or set_listening_level's choice, and the tools read it.
         levels = Levels()
-        # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a hearing
-        # or a choice on one never interleaves with the other's in the speaker.
-        # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks in,
-        # the chooser each one it changes to. Its models load on threads of their own, so nothing waits on them.
-        prints = Voiceprints(voiceprints.load, voices.pocket, home.voiceprints, record)
-        voice_choices = voices.Voices(home, player.lines, voices.fetched, prints.speaking_in)
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop)
         if config is not None:
+            # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks
+            # in, the chooser each one it changes to. Its model loads on a thread of its own once the voice is built, so
+            # nothing waits on it.
+            prints = Voiceprints(voiceprints.load, voices.pocket, home.voiceprints, record)
+            # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
+            # hearing or a choice on one never interleaves with the other's in the speaker.
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, prints.speaking_in)
             tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
@@ -465,7 +466,7 @@ async def converse(
     async def keep_echoes_once_started() -> None:
         # As for the talk key: the desk is overheard once the pipeline has opened its streams.
         await pipeline.started.wait()
-        await voice.recorder.overhear(voice.audio.input().echoes, lambda: voice.audio.output().hands_speaking)
+        await voice.recorder.overhear(voice.audio.input().echoes)
 
     echoes = asyncio.create_task(keep_echoes_once_started(), name="the echo spans")
     echoes.add_done_callback(stop_if_failed)

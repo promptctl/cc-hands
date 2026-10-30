@@ -12,13 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.echo import Cancelled
 from hands.voice.holdowner import HoldOwner
 from hands.voice.holds import RATE, Hold, Reference, Sound
-from hands.voice.recorder import Recorder, reformatted
+from hands.voice import recorder as recorders
+from hands.voice.recorder import Recorder, track
 from hands.voice.voiceprints import Voiced
 
 
@@ -63,12 +65,13 @@ async def test_a_hold_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     recorded: list[Entry] = []
     directory = tmp_path / "holds" / "run"
     hold = Hold(7, "engaged conversation")
-    played = (Reference(tone(-1), RATE, 1, ("alba",)), Reference(tone(-2), RATE, 1, ("alba", "mary")), Reference(tone(-3), RATE, 1, ()))
+    played = (Reference(tone(-1), RATE, 1, ("alba",)), Reference(tone(-2), RATE, 1, ("alba", "mary")), None)
     event = await kept(Recorder(tmp_path / "holds", "run", unidentified, recorded.append), hold, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
     assert event.outcome == "ok"
-    # What it heard, and what the speaker played against each 10 ms of it, sample for sample.
+    # What it heard, and what the speaker played against each 10 ms of it, sample for sample: silence where no TTS.
     assert read(directory / "7.heard.wav") == (1, RATE, tone(1) + tone(2, 2))
-    assert read(directory / "7.played.wav") == (1, RATE, tone(-1) + tone(-2) + tone(-3))
+    assert read(directory / "7.played.wav")[:2] == (1, RATE)
+    assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
         "hold": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"],
     }
@@ -76,14 +79,19 @@ async def test_a_hold_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert (event.facts["kept"], event.facts["seconds"], event.facts["played"], event.facts["voices"]) == (directory / "7.heard.wav", 0.03, True, ("alba", "mary"))
 
 
-def test_what_the_speaker_played_is_put_in_the_holds_format_mono_at_its_rate() -> None:
+def test_what_the_speaker_played_is_put_in_the_holds_format_a_run_at_a_time_slot_for_slot() -> None:
     played_rate = 24_000
-    wave_ = (8000 * np.sin(2 * np.pi * 440 * np.arange(played_rate // 100) / played_rate)).astype(np.int16)
+    # Half a second of a 440 Hz tone, in stereo at the speaker's rate, in 10 ms references, then 10 ms of no TTS.
+    wave_ = (8000 * np.sin(2 * np.pi * 440 * np.arange(played_rate // 2) / played_rate)).astype(np.int16)
     stereo = np.repeat(wave_, 2).tobytes()
-    held = np.frombuffer(reformatted(Reference(stereo, played_rate, 2, ())), np.int16)
-    # The same 440 Hz tone, at the hold's rate: each sample where the tone is at that instant, give or take one step.
-    expected = 8000 * np.sin(2 * np.pi * 440 * np.arange(RATE // 100) / RATE)
-    assert len(held) == RATE // 100 and np.max(np.abs(held - expected)) < 8000 * 2 * np.pi * 440 / played_rate
+    size = 4 * played_rate // 100
+    references = tuple(Reference(stereo[at : at + size], played_rate, 2, ("alba",)) for at in range(0, len(stereo), size))
+    held = np.frombuffer(track((*references, None)), np.int16).astype(np.float64)
+    # One slot for each reference, the last silent; and the same tone at the hold's rate, past the resampler's edges.
+    assert len(held) == (len(references) + 1) * RATE // 100 and not held[-RATE // 100 :].any()
+    expected = 8000 * np.sin(2 * np.pi * 440 * np.arange(len(held)) / RATE)
+    middle = slice(RATE // 20, RATE // 2 - RATE // 20)
+    assert np.max(np.abs(held[middle] - expected[middle])) < 100
 
 
 async def test_a_hold_at_the_phone_is_kept_with_nothing_said_to_have_played_over_it(tmp_path: Path) -> None:
@@ -148,56 +156,59 @@ class Heard:
 
     cancelled: Cancelled
     desk: bool
-    held: bool
+    key: str
 
 
-def buffer(level: int, voices: tuple[str, ...], held: bool = False, desk: bool = True) -> Heard:
-    """20 ms of the desk, heard at `level`, over 20 ms hands played in `voices`."""
-    return Heard(Cancelled(tone(level, 2), (Reference(tone(-level), RATE, 1, voices),) * 2), desk, held)
+def buffer(level: int, voices: tuple[str, ...], key: str = "up", desk: bool = True) -> Heard:
+    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS in `voices`, or none for no voice."""
+    reference = Reference(tone(-level), RATE, 1, voices) if voices else None
+    return Heard(Cancelled(tone(level, 2), (reference, reference)), desk, key)
 
 
-def overheard(buffers: list[tuple[Heard, bool]], speaking: list[bool]) -> tuple[Callable[[], AbstractAsyncContextManager[AsyncIterator[Heard]]], Callable[[], bool]]:
-    """The desk's buffers, each with whether hands is speaking as it is taken."""
+def overheard(buffers: list[Heard]) -> Callable[[], AbstractAsyncContextManager[AsyncIterator[Heard]]]:
+    """The desk's buffers, as the microphone hands them on."""
 
     @asynccontextmanager
     async def echoes() -> AsyncGenerator[AsyncIterator[Heard]]:
         async def each() -> AsyncIterator[Heard]:
-            for heard, saying in buffers:
-                speaking[0] = saying
+            for heard in buffers:
                 yield heard
 
         yield each()
 
-    return echoes, lambda: speaking[0]
+    return echoes
 
 
-async def test_hands_echo_with_no_hold_open_is_kept_and_identified_span_by_span_and_a_press_ends_a_span(tmp_path: Path) -> None:
+async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_span_by_span(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     identified: list[tuple[int, Voiced]] = []
     recorder = Recorder(tmp_path, "run", lambda span, voiced: identified.append((span, voiced)), recorded.append)
-    echoes, speaking = overheard(
-        [
-            (buffer(1, ("alba",)), False),  # hands not speaking: no span
-            (buffer(2, ("alba",)), True),  # a span opens
-            (buffer(3, ("alba", "mary")), True),
-            (buffer(4, ("mary",), held=True), True),  # a press: the span ends there, and the press is the hold's
-            (buffer(5, ("mary",)), True),  # a second span
-            (buffer(6, ("mary",), desk=False), True),  # hands at the phone: it ends
-        ],
-        [False],
+    await recorder.overhear(
+        overheard([
+            buffer(1, ()),  # no TTS played: hands not speaking, no span
+            buffer(2, ("alba",)),  # a span opens
+            buffer(3, ("alba", "mary")),
+            buffer(4, ("mary",), key="arming"),  # a press: the span ends there, and the press is the hold's
+            buffer(5, ("mary",)),  # a second span
+            buffer(6, ("mary",), key="listening"),  # the wake word's level, where a voice can open a hold: it ends
+            buffer(7, ("mary",)),  # a third
+            buffer(8, ("mary",), desk=False),  # hands at the phone: it ends
+        ])
     )
-    await recorder.overhear(echoes, speaking)
     assert read(tmp_path / "run" / "echo-1.heard.wav")[2] == tone(2, 2) + tone(3, 2)
     assert read(tmp_path / "run" / "echo-1.played.wav")[2] == tone(-2, 2) + tone(-3, 2)
     assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
         "span": 1, "hold": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"],
     }
     assert read(tmp_path / "run" / "echo-2.heard.wav")[2] == tone(5, 2)
+    assert read(tmp_path / "run" / "echo-3.heard.wav")[2] == tone(7, 2)
     assert [(event.outcome, event.facts["span"], event.facts["voices"]) for event in events(recorded, "echo.kept")] == [
-        ("ok", 1, ("alba", "mary")), ("ok", 2, ("mary",)),
+        ("ok", 1, ("alba", "mary")), ("ok", 2, ("mary",)), ("ok", 3, ("mary",)),
     ]
     # Each span is one voice, hands', identified against its prints once it has ended, with every voice it played.
-    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.played) for span, voiced in identified] == [(1, 0, 0.04, ("alba", "mary")), (2, 0, 0.02, ("mary",))]
+    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.played) for span, voiced in identified] == [
+        (1, 0, 0.04, ("alba", "mary")), (2, 0, 0.02, ("mary",)), (3, 0, 0.02, ("mary",)),
+    ]
     assert np.array_equal(identified[1][1].voice, np.full(320, 5 / 32768, np.float32))
 
 
@@ -205,7 +216,23 @@ async def test_echo_spans_count_toward_the_stores_cap(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
     recorder = Recorder(tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=10_500)
-    echoes, speaking = overheard([(buffer(1, ("alba",)), True), (buffer(1, ("alba",)), False)], [False])
-    await recorder.overhear(echoes, speaking)
+    await recorder.overhear(overheard([buffer(1, ("alba",)), buffer(1, ())]))
     [pruned] = events(recorded, "holds.pruned")
     assert pruned.facts["runs"] == ("2026-10-01T00-00-00Z",)
+
+
+async def test_a_run_alone_over_the_cap_prunes_nothing_and_never_walks_the_store_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    walked: list[Path] = []
+    measured = recorders.size
+
+    def size(directory: Path) -> int:
+        walked.append(directory)
+        return measured(directory)
+
+    monkeypatch.setattr(recorders, "size", size)
+    recorder = Recorder(tmp_path, "run", unidentified, recorded.append, cap=100)
+    for number in (1, 2, 3):
+        await kept(recorder, Hold(number, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
+    assert events(recorded, "holds.pruned") == [] and walked == []
+    assert len(list((tmp_path / "run").glob("*.heard.wav"))) == 3

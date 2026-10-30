@@ -264,7 +264,8 @@ class Voiceprints:
         # [LAW:one-source-of-truth] each speaker found a person in each hold, which they stay for it, by the hold's
         # number: a hold's last identification, at its end, may come after the next hold's first.
         self._people: dict[int, dict[int, Person]] = {}
-        self._lane.give(lambda: self._loaded(load))
+        # The model is loaded as the lane's first work, given it by the first voice hands speaks in: the voice's build.
+        self._load: Callable[[], Embed] | None = load
 
     def _loaded(self, load: Callable[[], Embed]) -> None:
         """[LAW:nothing-unseen] the model's load is a unit of its own, as each speech model's is."""
@@ -279,6 +280,12 @@ class Voiceprints:
         """hands speaks in `voice` from now: its voiceprint is read back, or made, off everything hands says, and until
         it is, every speaker is Unidentified. Returns at once, and cannot fail: a print not made fails its own unit."""
         began = begun()
+        match self._load:
+            case None:
+                pass
+            case load:
+                self._load = None
+                self._lane.give(lambda: self._loaded(load))
         self._lane.give(lambda: self._spoken_in(voice, began))
 
     def _spoken_in(self, voice: str, began: Begun) -> None:

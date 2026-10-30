@@ -1916,8 +1916,9 @@ off the voice's build.
 hands knows which voice it played under each 10 ms of what the microphone heard. Its TTS
 (`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each utterance's audio.
 Pipecat's sender queues that frame in line with the audio chunks, and the speaker labels each
-chunk it writes with the voice. The playout carries the label to the echo canceller, which puts
-it on each 10 ms reference. A speaker is `Unidentified` with the reason when nothing can score
+chunk of TTS audio it writes with the voice; the transport's own silence and padding carry none.
+The playout carries the label to the echo canceller. On the capture thread, the canceller keeps a
+10 ms reference only for a frame of labelled, non-silent TTS audio, and None for every other frame. A speaker is `Unidentified` with the reason when nothing can score
 them against every voice they may be: the model did not load, there is no print yet of the voice
 hands speaks in, or hands played a voice over them that it holds no print of.
 
@@ -1929,13 +1930,15 @@ speaker played it and put in the hold's format only as the hold is written, so t
 sample for sample; the phone has none. Beside them go what opened the hold, what the gate did
 with it, and every voice hands played over it.
 
-The recorder also keeps hands' echo as labelled data. While the speaker says hands is speaking at
-the desk, and no press of the key is arming or held (the gate's say, read as each buffer was
-captured), what the microphone overhears is nobody's but hands'. Each stretch of it is an echo
-span, `echo-<span>.*` in the same directory, its `.json` saying no hold was open. It is
-identified as one voice at its end, on a `voiceprints.identified` unit carrying the span number.
-A press ends the span it opens in. The store is kept under 2 GB by deleting whole runs, oldest
-first and never the current one (`holds.pruned`). So held-key use is the data the voiceprint
+The recorder also keeps hands' echo as labelled data. A buffer counts as hands' echo when all
+three hold as it is captured: the desk is at the off level with no press (the gate's key is up,
+so only a held key could open a hold), and a frame of it carries hands' TTS. Then what the
+microphone overhears is nobody's but hands'. Each stretch of such buffers is an echo span,
+`echo-<span>.*` in the same directory, its `.json` saying no hold was open. It is identified as
+one voice at its end, on a `voiceprints.identified` unit carrying the span number. A press or a
+change of level ends the span. The store is kept under 2 GB by deleting whole runs, oldest first
+and never the current one (`holds.pruned`). The size is counted once as the run's directory is
+claimed and kept as a running total after that. So held-key use is the data the voiceprint
 table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A hold
 that cannot be written fails its `hearing` event with why, and a span its `echo.kept` event.
 

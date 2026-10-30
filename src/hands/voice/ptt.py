@@ -28,7 +28,7 @@ from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
 from hands.voice.hold import Move
-from hands.voice.holds import Reference
+from hands.voice.holds import Played
 from hands.voice.trigger import Edge, place_of
 
 # [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
@@ -50,7 +50,7 @@ class KeyedAudio(InputAudioRawFrame):
     captured: bytes
     # What the desk's speaker was playing as it was captured, the echo canceller's reference for each 10 ms of `audio`;
     # None at the phone, whose own canceller is told what it plays, and hands is not.
-    played: tuple[Reference, ...] | None
+    played: Played
     key: Key
     # How many turns the gate has sent, and thrown away, by this frame.
     sent: int
@@ -151,7 +151,7 @@ class Gate:
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
-    def framed(self, audio: bytes, captured: bytes, played: tuple[Reference, ...] | None, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
+    def framed(self, audio: bytes, captured: bytes, played: Played, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
         """Audio captured at `place`, as the pipeline hears it, as the microphone `captured` it, and what the speaker
         `played` over it, tagged with this gate. What was played is not the microphone's, so the key mutes none of it."""
         return KeyedAudio(
