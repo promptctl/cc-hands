@@ -14,6 +14,7 @@ import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
+from conftest import PATIENCE_SECS
 from hands.daemon import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -122,28 +123,29 @@ async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_aske
 async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 0.01)
     started: list[int] = []
-    listing = threading.Event()
+    running = threading.Event()
     released = threading.Event()
 
     def stalled() -> list[str]:
         started.append(1)
-        listing.set()
-        assert released.wait(10)
+        running.set()
+        assert released.wait(PATIENCE_SECS)
         return ["vctk/p225_023_enhanced.wav"]
 
     stuck = Library(stalled)
     try:
-        # [LAW:no-ambient-temporal-coupling] each search times out while the listing, as it says itself, stalls in its thread.
+        # [LAW:no-ambient-temporal-coupling] each search times out while the listing stalls in its thread, which `running`
+        # says it is, rather than a guess at how soon the thread runs.
         with pytest.raises(OSError):
             await stuck.search("", 10)
-        assert await asyncio.to_thread(listing.wait, 10)
+        assert await asyncio.to_thread(running.wait, PATIENCE_SECS)
         with pytest.raises(OSError):
             await stuck.search("", 10)
     finally:
         released.set()
     # Given time, the next search waits for that same listing, has its names, and forgets the listing. Every listing a search
     # started was awaited by a search, so one started is the one listing there ever was.
-    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 10)
+    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", PATIENCE_SECS)
     assert (await stuck.search("", 10)).names == ("vctk/p225_023_enhanced",)
     assert len(started) == 1
     assert stuck._pending is None  # pyright: ignore[reportPrivateUsage]
