@@ -81,9 +81,9 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | The hold was opened by | It cuts |
 |---|---|
 | the user's hand: the held key, the phone's button | as it opens |
-| the wake word | as it opens, over a reading or a turn working in silence alike; each hearing records whether hands was speaking (`voice/wake.py`, `listening`) |
+| the wake word | as it opens, over a reading or a turn working in silence alike; so a wake on hands' own echo, or a false one, cuts too, with nothing to undo it; each hearing records whether hands was speaking as its audio arrived (`voice/wake.py`) |
 | engaged conversation | once the streaming recognizer hears words in it, while it is open |
-| a hold that holds no words | nothing, so nothing has to be undone |
+| a hold engaged conversation opened that holds no words | nothing, so nothing has to be undone |
 
 **2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
 a barge-in. The guards on lines 733–737 say no in four cases:

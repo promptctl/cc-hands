@@ -1945,7 +1945,7 @@ turn's `UserAsked` says it:
 The wake-word edge opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
 while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
-it off. Each hearing records `while_speaking`, so a wake on leftover echo is seen. The
+it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
