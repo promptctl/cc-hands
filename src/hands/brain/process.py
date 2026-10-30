@@ -121,6 +121,11 @@ EXIT_SECONDS = 1.0
 # How long Claude Code has to set its session idle once hands pressed Escape: it does in milliseconds, and the rest is
 # room for a loaded machine.
 ESCAPE_SECONDS = 4.0
+# How long a stop waits for Claude Code to show the elapsed counter of a call it is running before Escape is sent. Escape
+# sent as a call starts is not honored, and a stop of a turn with no call running waits this long for nothing
+# (promptctl-testing-px1f.6i5).
+COUNTER_SECONDS = 1.0
+COUNTER = re.compile(r"\(\d+s\)")
 # How long Claude Code has to interrupt a turn hands pressed Escape for: its idle, then a status read to hear it, then the
 # model's wait past an idle for the record of how the turn ended (UNTOLD). [LAW:one-source-of-truth] the model's two
 # bounds are the model's, so a change to either moves this one.
@@ -1055,6 +1060,7 @@ class Brain:
         # holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether it
         # reaches Claude Code before the Escape or after it.
         self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
+        await self._counted()
         await self._type(lambda typist: typist.press("escape"))
         # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
         # prompt (its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
@@ -1099,6 +1105,14 @@ class Brain:
             if self._all_told():
                 return
             await moved.wait()
+
+    async def _counted(self) -> None:
+        """Returns once Claude Code shows the elapsed counter of a call it runs, or COUNTER_SECONDS have passed: the screen
+        is the read that says a call is running, so Escape is sent once one is (`COUNTER`)."""
+        loop = asyncio.get_running_loop()
+        until = loop.time() + COUNTER_SECONDS
+        while COUNTER.search(self._claude.shown()) is None and loop.time() < until:
+            await asyncio.sleep(0.05)
 
     async def _stop(self, turn: _Turn) -> None:
         try:
