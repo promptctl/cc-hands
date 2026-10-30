@@ -234,11 +234,11 @@ def gate(hands: Hands) -> Path:
     return pipe
 
 
-def opened(gate: Path) -> bool:
+def opened(pipe: Path) -> bool:
     """Whether the gate opened: written and closed once a command has it open to read. It never blocks, so a wait on it is
     `Hands.until`'s, and a command that never came to read it fails the test there with what hands saw, not as a hang."""
     try:
-        end = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+        end = os.open(pipe, os.O_WRONLY | os.O_NONBLOCK)
     except OSError as error:
         # ENXIO is the one answer that means nothing reads it yet; every other error is the test's own fault, and raised.
         if error.errno != errno.ENXIO:
@@ -483,8 +483,8 @@ async def test_a_background_command_s_turn_ends_while_it_runs_and_its_end_opens_
     opens a turn of its own for, and hands speaks that turn and ends it."""
     pipe = gate(hands)
     # Tried in name order: the notification's turn, whose history holds the launch's result too, ahead of the launch's end.
-    # The launch is answered only as Claude Code answers a command it backgrounded; any other result has no answer, and
-    # the mock's fault check fails the test on it.
+    # The launch is answered only once Claude Code says it backgrounded the command; a launch it refused or ran in the
+    # foreground has no answer, and the mock's fault check fails the test on it.
     mock_api.script("1-finished", {"lastUserContains": ["<task-notification>"], "bodyContains": [TURN]}, {"type": "text", "text": "It finished."})
     mock_api.script("2-started", {"bodyContains": [TURN, "Command running in background with ID"]}, {"type": "text", "text": "Started it."})
     mock_api.script("3-background", {"lastUserContains": ["start it in the background"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"cat {pipe}", "run_in_background": True}}, stop="tool_use")
