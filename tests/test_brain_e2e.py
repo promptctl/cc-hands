@@ -484,7 +484,8 @@ async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answ
         keyed(hands, *keys)
     keyed(hands, SUBMIT)
     keyed(hands, "Down")
-    await hands.until(lambda: "❯ 2. No" in shown(hands))
+    # The second option, whatever it says: a Bash dialog in default mode offers "Yes, and don't ask again" there.
+    await hands.until(lambda: "❯ 2." in shown(hands))
     assert "Do you want to proceed?" in shown(hands)
     assert len(held(hands)) == 1
     assert not made.is_symlink()
