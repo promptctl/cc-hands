@@ -12,7 +12,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
@@ -22,6 +21,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 import pytest
+from hands.sessions.pseudoterminal import on_terminal
 from loguru import logger
 
 from hands.core.playback import Bookmark
@@ -30,7 +30,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
-from hands.brain.process import ClaudeTurns, BROKEN, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import ClaudeTurns, BROKEN, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, model, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
 from hands.core.permissions import heard
@@ -309,18 +309,28 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in env and env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
+def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None:
+    # Set for the voice library's fetches, and inherited by whatever the brain runs: the brain has no use for it.
+    inherited = {"PATH": "/usr/bin:/bin", "HF_TOKEN": "a-hub-token"}
+    assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
+
+
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
 async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp_path: Path, given: dict[str, str]) -> None:
-    # The brain and each side question are spawned on a terminal of hands' own; `hands login` and the brain's
+    # The brain is run in its tmux session; `hands login` and the brain's
     # `claude auth status` run in the same environment.
     recorder = tmp_path / "claude"
-    recorder.write_text('#!/bin/sh\nprintf "updater=%s\\n" "${DISABLE_AUTOUPDATER-unset}"\n')
+    recorder.write_text(f'#!/bin/sh\nprintf "updater=%s" "${{DISABLE_AUTOUPDATER-unset}}" > {tmp_path / "seen"}\n')
     recorder.chmod(0o755)
-    inherited = {"PATH": "/usr/bin:/bin", **given}
+    inherited = {name: value for name, value in os.environ.items() if name != "DISABLE_AUTOUPDATER"} | given
     assert environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
-    running = await spawn(Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)])
-    assert await running.exit == 0
-    assert running.shown() == "updater=1"
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        running = await in_tmux(Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)], workspace)
+        assert await running.exit == 0
+    finally:
+        shutil.rmtree(workspace)
+    assert (tmp_path / "seen").read_text() == "updater=1"
 
 
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
@@ -345,7 +355,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "pid": brain.pid,
+        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
     # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
@@ -603,31 +613,30 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
 
 
-class _HeldClear:
-    """A typist whose Ctrl-C goes in only once `going` is set, so the model reads what the Escape did before the stop is
-    done pressing keys."""
+class _Pressed:
+    """A typist that notes each key as it goes, with whether `told` was set then: a key's order against a telling, read as
+    it is pressed rather than as the fake brain logs it."""
 
-    def __init__(self, typist: Typist, going: threading.Event) -> None:
+    def __init__(self, typist: Typist, told: asyncio.Event) -> None:
         self._typist = typist
-        self._going = going
+        self._told = told
+        self.pressed: list[tuple[Keystroke, bool]] = []
 
     def type(self, text: PromptText) -> None:
         self._typist.type(text)
 
     def press(self, key: Keystroke) -> None:
-        if key == "ctrl_c":
-            assert self._going.wait(10)
+        self.pressed.append((key, self._told.is_set()))
         self._typist.press(key)
 
 
 async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the_model_reads_ahead_of_its_telling(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
-    # performed, when the stop is done pressing keys: the turn is over only once the telling is heard, under its id.
+    # performed: the turn is over only once the telling is heard, under its id, and the stop's Ctrl-C goes only then.
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
-    going = threading.Event()
-    brain._typist = _HeldClear(brain._typist, going)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     performing = asyncio.Event()
+    typist = brain._typist = _Pressed(brain._typist, performing)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
@@ -640,21 +649,24 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
             await perform(effect)
 
         brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-        cleared = brain._cleared  # pyright: ignore[reportPrivateUsage]
         assert brain.interrupt(brain.answering()) is True
         await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
-        going.set()
-        # The stop's last key is in, and with it the stop has asked whether Claude Code holds anything of the turn.
-        await until(lambda: brain._cleared != cleared)  # pyright: ignore[reportPrivateUsage]
         assert not asking.done()
         performing.set()
         assert await asyncio.wait_for(asking, 10) == BrainStopped()
+        # The stop's Ctrl-C, emptying the input, went once Claude Code had acted on the Escape, as the model heard it: after
+        # the telling, never while it waited, and before the turn was answered.
+        assert typist.pressed == [("escape", False), ("ctrl_c", True)]
     finally:
-        going.set()
         performing.set()
         await brain.stop()
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
+    # [LAW:nothing-unseen] the stop's clear is its own event: for a turn, no wait to space its Ctrl-C from one before, and
+    # how long Claude Code took to stop what it ran.
+    [clear] = events(recorded, "brain.clear")
+    assert (clear.outcome, clear.facts["for_turn"], clear.facts["spaced"]) == ("ok", True, 0.0)
+    assert isinstance(clear.facts["stopped_in"], float)
 
 
 async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_the_model_holds_and_what_it_showed(tmp_path: Path, fake_claude: Path) -> None:
@@ -672,11 +684,14 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt(brain.answering()) is True
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape"])
         assert not asking.done()
         stopping.set()
         with pytest.raises(StopUnrecorded, match=rf"did not stop what hands pressed Escape for in {re.escape(f'{INTERRUPT_SECONDS:g}')}s: the model holds Session\(.*turn=Opened\(turn='p1'.*it showed:") as raised:
             await asyncio.wait_for(asking, 10)
+        # The stop's Ctrl-C went only once its time had passed, never while Claude Code might still read it with the ESC
+        # as one chord that does neither (promptctl-testing-px1f.6i5).
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
         await brain.stop()
     # The model's account says what it holds of the brain's dialogs: none, each refused as the stop went, and the stop
@@ -684,6 +699,40 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     assert f"dialogs=(), ending=DenyAndInterrupt(message={STOPPED!r})" in str(raised.value)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
+
+
+async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_turn_is_not_typed_onto_its_prompt(tmp_path: Path, fake_claude: Path) -> None:
+    # [LAW:no-silent-failure] Claude Code acts on the Escape and puts the stopped prompt back in its input, but the model
+    # hears it only after the stop's time has passed: the stop fails, and its Ctrl-C still empties the input, so the next
+    # turn is not typed onto the prompt the Escape put back.
+    stopping, performing = asyncio.Event(), asyncio.Event()
+
+    async def pause(seconds: float) -> None:
+        await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
+
+    brain = await start(launch(tmp_path), lambda _entry: None, pause)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
+        perform = brain._sessions._perform  # pyright: ignore[reportPrivateUsage]
+
+        async def told_late(effect: Effect) -> None:
+            if isinstance(effect, Summarise):
+                await performing.wait()
+            await perform(effect)
+
+        brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        assert brain.interrupt(brain.answering()) is True
+        await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
+        stopping.set()
+        with pytest.raises(StopUnrecorded):
+            await asyncio.wait_for(asking, 10)
+        performing.set()
+        await brain.ask("and now?", unasked)
+    finally:
+        performing.set()
+        await brain.stop()
+    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
 
 
 class _Timed:
@@ -1268,6 +1317,119 @@ async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_n
     assert [event.event for event in events(recorded, "brain.launch") + events(recorded, "brain.run")] == ["brain.launch", "brain.run"]
 
 
+def tmux_at(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """What the user's default tmux server, the one `tmux attach` reaches, answers `arguments` with."""
+    environment = {name: value for name, value in os.environ.items() if name != "TMUX"}
+    return subprocess.run(["tmux", *arguments], capture_output=True, text=True, env=environment)
+
+
+async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server_that_a_person_can_attach_to(tmp_path: Path, fake_claude: Path) -> None:
+    brain = await start(launch(tmp_path), lambda _entry: None)
+    try:
+        session = brain_session(tmp_path / "brain")
+        assert session.startswith("hands-brain-")
+        # The pane runs the brain's fritter, which a person attached to it watches and types into.
+        assert _child_of(int(tmux_at("display-message", "-p", "-t", f"={session}:", "#{pane_pid}").stdout)) == brain.pid
+    finally:
+        await brain.stop()
+    # Stopped with nobody attached, it leaves no session behind.
+    assert tmux_at("has-session", "-t", f"={brain_session(tmp_path / 'brain')}").returncode != 0
+
+
+async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    running = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    try:
+        session = brain_session(station.config_dir)
+        await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
+        # A person attaches, as `tmux attach -t hands-brain` does, on a terminal of their own.
+        person = await on_terminal(["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
+        await running._client.stop()  # pyright: ignore[reportPrivateUsage]
+        # hands' client is gone; the brain keeps running while someone is attached.
+        assert tmux_at("has-session", "-t", f"={session}").returncode == 0
+        await person.stop()
+        await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode != 0)
+        # Its fritter was hung up with the session.
+        assert await running.exit == 128 + signal.SIGHUP
+    finally:
+        await running.stop()
+        shutil.rmtree(workspace)
+
+
+async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    assert await (await in_tmux(station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
+    (workspace / "status").unlink()
+    (workspace / "pane").unlink()
+    ended = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
+    try:
+        await until(lambda: tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode == 0)
+        tmux_at("kill-session", "-t", f"={brain_session(station.config_dir)}")
+        # The pane's shell outlives the hangup to say how fritter ended.
+        assert await ended.exit == 128 + signal.SIGHUP
+    finally:
+        await ended.stop()
+        shutil.rmtree(workspace)
+
+
+async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_brain_neither_ends_it_nor_keeps_it(tmp_path: Path) -> None:
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    go = tmp_path / "go"
+    running = await in_tmux(station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
+    try:
+        session = brain_session(station.config_dir)
+        await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
+        # A person attaches as `tmux attach -d` does, detaching every other client: hands' attaches again, and the brain
+        # is not taken for ended.
+        person = await on_terminal(["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
+        assert not running.exit.done()
+        # A window opened beside it does not keep the session once fritter ends.
+        assert tmux_at("new-window", "-d", "-t", f"={session}:", "sleep 60").returncode == 0
+        go.touch()
+        assert await running.exit == 5
+        await person.exit
+        await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode != 0)
+    finally:
+        await running.stop()
+        shutil.rmtree(workspace)
+
+
+async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_session(tmp_path: Path) -> None:
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        ready = tmp_path / "ready"
+        running = await in_tmux(station, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
+        await until(ready.exists)
+        await running.stop()
+        assert running.exit.result() == 7
+        assert tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode != 0
+    finally:
+        shutil.rmtree(workspace)
+
+
+async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_path: Path) -> None:
+    # A server the user started holds their environment, a key among it; the brain is given only what environment() keeps.
+    holder = tmux_at("new-session", "-d", "-s", "theirs", "-e", "ANTHROPIC_API_KEY=theirs", "sleep 60")
+    assert holder.returncode == 0, holder.stderr
+    tmux_at("set-environment", "-g", "ANTHROPIC_API_KEY", "theirs")
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
+    workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        seen = tmp_path / "seen"
+        assert await (await in_tmux(station, ["/bin/sh", "-c", f'printf "%s" "${{ANTHROPIC_API_KEY-unset}} $CLAUDE_CONFIG_DIR" > {seen}'], workspace)).exit == 0
+        assert seen.read_text() == f"unset {tmp_path / 'brain'}"
+    finally:
+        tmux_at("kill-session", "-t", "=theirs")
+        tmux_at("set-environment", "-gu", "ANTHROPIC_API_KEY")
+        shutil.rmtree(workspace)
+
+
 # How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter.
 BRAIN = """
 brain = await start(launch, lambda _entry: None)
@@ -1287,7 +1449,7 @@ async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing
             return False
         return True
 
-    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, spawn, start\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
+    script = pinned_to(fake_claude) + "import asyncio, os, pickle, sys\nfrom hands.brain.process import _child_of, brain_claude, start\nasync def main():\n    launch = pickle.load(sys.stdin.buffer)\n"
     script += "".join(f"    {line}\n" for line in started.strip().splitlines()) + "    os._exit(0)\nasyncio.run(main())\n"
     hands = await asyncio.create_subprocess_exec(sys.executable, "-c", script, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, "TMPDIR": str(temp)})
     try:
@@ -1921,14 +2083,14 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt(brain.answering()) is True
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape"])
         stopping.set()
         with pytest.raises(StopUnrecorded):
             await asyncio.wait_for(asking, 10)
         stopping.clear()
         # The next turn clears what still runs first, and waits for the clear to take: it never does, so nothing is typed.
         following = asyncio.ensure_future(brain.ask("write", unasked))
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape", "ctrl_c"])
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape"])
         stopping.set()
         with pytest.raises(StopUnrecorded, match="did not stop what hands pressed Escape for"):
             await asyncio.wait_for(following, 10)
@@ -1947,7 +2109,7 @@ async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unre
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
         assert brain.interrupt(brain.answering()) is True
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape"])
         os.kill(brain.pid, signal.SIGKILL)
         with pytest.raises(BrainGone):
             await asyncio.wait_for(asking, 10)

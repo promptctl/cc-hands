@@ -90,6 +90,7 @@ from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Fail
 from hands.voice.intermediary_instruction import brain_instruction
 from hands.voice.player import Player
 from hands.voice import voices
+from hands.voice.library import Library
 from hands.sessions.payload import Rejected
 from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Levels
@@ -99,7 +100,7 @@ from hands.voice.tools import audited, close_session_tool, cued, intermediary_to
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
-from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -138,12 +139,17 @@ def _attempted(configure: Callable[[], Configured]) -> Configured | CannotStart:
         return error
 
 
-def _voice(home: Home) -> voices.Voice:
-    """The voice the user kept; a kept name hands has no voice for, or a file it cannot read, stops the process naming it."""
+def _voice(home: Home) -> voices.Chosen:
+    """The voice the user kept. A kept name hands has no voice for, or a file it cannot read, stops the process naming it;
+    so does a kept library voice that the choice of it would refuse, since it would fail at its first utterance instead."""
     try:
-        return voices.chosen(home)
+        kept = voices.chosen(home)
+        if isinstance(kept, voices.LibraryVoice):
+            # The same check the choice made: the cloning model, then the voice's own audio prompt.
+            voices.fetched(kept)
     except (Rejected, OSError) as error:
         raise CannotStart(str(error)) from error
+    return kept
 
 
 @dataclass(frozen=True)
@@ -213,7 +219,7 @@ async def mind(
 async def outlived(brain: Brain) -> None:
     # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
     code = await brain.exited()
-    raise RuntimeError(f"the brain exited ({code}) while hands was running")
+    raise RuntimeError(f"the brain ended while hands was running: {exited(code)}")
 
 
 async def run(
@@ -277,7 +283,7 @@ async def run(
         levels = Levels()
         # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a hearing
         # or a choice on one never interleaves with the other's in the speaker.
-        voice_choices = voices.Voices(home, player.lines, voices.fetched)
+        voice_choices = voices.Voices(home, player.lines, voices.fetched, Library())
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
@@ -328,7 +334,7 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
     read_from = read.settings.path(home)
     run_start.heard(
         settings=read_from, collector=read.settings.config.collector,
-        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=config.voice,
+        backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=str(config.voice),
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
     )
     return config

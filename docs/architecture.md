@@ -1121,7 +1121,7 @@ each line hands said in it, the acknowledgement and its answers alike (`asides`)
 for it began it was handed to the speaker, as the turn's own words are told: a line the user spoke over before it came
 to be said is not told. A cut over one of these lines is not a barge-in, since none is the brain's.
 
-The brain's own process is five kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
+The brain's own process is six kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), on which
 claude (`claude`: hands' copy of the release `hands.brain.pinned` names, refused when it is missing or does not hash to
 the checksum beside that version, in words naming `hands install-brain`, whose event is `brain.install`), and in which
@@ -1133,7 +1133,7 @@ end, with the prompt id Claude Code took it under (`taken`), whether that id was
 it queued the words behind or into that turn (`queued`), the id it was told under (`told`), the tools its latest request
 offered the model (`offered`), the ids of the turn of Claude Code's that answered it (`ids`), how its telling was found
 to be that turn's (`matched`: `id`, or `behind` for words run as the turn behind the one told), and why the order of
-the brain's turns was lost while it was in flight (`order_lost`), or with the error that failed it. What Claude Code's turns are is the model's to read: its session is a session of the
+the brain's turns was lost while it was in flight (`order_lost`), or with the error that failed it. Each clear (`brain.clear`), the Escape and then the Ctrl-C hands presses to stop what Claude Code runs and empty its input, runs from the stop until its Ctrl-C has gone, with whether it was for a turn (`for_turn`), how long it waited before reading whether Claude Code held anything still, to keep its Ctrl-C clear of Claude Code's exit (`spaced`), and how long from the Escape until it read Claude Code holding nothing (`stopped_in`, never less than `spaced`), or with the error that failed it. Its Ctrl-C goes whether or not Claude Code stopped: one that did not is pressed once the stop's time has passed. What Claude Code's turns are is the model's to read: its session is a session of the
 one model of a turn (`core/reducer.py`), in a `Sessions` of its own (`brain.process.model`), fed as a working session's
 is: its hooks, each applied by the same `Reader.hooked` as a working session's, answered once it is applied, and its
 Stop held as a working session's is, and its status and transcript by the same `Reader`, on its period and through now

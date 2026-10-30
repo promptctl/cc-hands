@@ -768,6 +768,19 @@ def test_a_pyaudio_that_cannot_load_is_missing_and_names_homebrews_portaudio(mon
     assert isinstance(found, Missing) and "`brew install portaudio`" in found.said
 
 
+# tmux
+
+
+def test_a_path_with_tmux_is_ready_and_one_without_is_missing_and_says_how_to_install_it(tmp_path: Path) -> None:
+    tmux = tmp_path / "with" / "tmux"
+    tmux.parent.mkdir()
+    tmux.write_text("#!/bin/sh\n")
+    tmux.chmod(0o755)
+    assert isinstance(readiness.tmux(str(tmux.parent)), Ready)
+    found = readiness.tmux(str(tmp_path / "without"))
+    assert isinstance(found, Missing) and "`brew install tmux`" in found.said
+
+
 # hands on PATH
 
 
@@ -869,7 +882,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 # hands check
 
 
-STEPS = ["claude", "portaudio", "hands", "shim", "plugin", "brain_claude", "backend", "grant", "running", "sessions"]
+STEPS = ["claude", "portaudio", "tmux", "hands", "shim", "plugin", "brain_claude", "backend", "grant", "running", "sessions"]
 
 
 def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
@@ -887,6 +900,7 @@ def set_up(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, plugins: 
     pin(monkeypatch, executable(root / "pinned" / "claude", "#!/bin/sh\n"))
     monkeypatch.setattr(readiness, "resolve", logged_in)
     hands_printing(root, f"hands {version('hands')}")
+    executable(root / "tools" / "tmux", "#!/bin/sh\n")
     monkeypatch.setenv("PATH", f"{home.bin}:{root / 'tools'}:{claude_listing(root, plugins)}")
     monkeypatch.setattr("hands.voice.talkkey.granted", lambda: True)
 
