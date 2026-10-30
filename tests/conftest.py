@@ -45,6 +45,7 @@ from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import MARKING, PATIENCE, Deltas
 from hands.sessions.home import Home
 from hands.sessions.marketplace import render
+from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import streaming
@@ -81,6 +82,12 @@ def pytest_make_collect_report() -> Generator[None, pytest.CollectReport, pytest
 def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
     """The wide events named `name`, in the order they were emitted."""
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
+
+
+# [LAW:locality-or-seam] the one place tests build the session registry, so a change to its constructor is one edit here.
+# A test passes, by the constructor's own names, what its behavior rests on: a clock it reads, the audit it reads, its
+# typist or sinks. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
+new_sessions = partial(Sessions, clock=lambda: 0.0, record=lambda _: None)
 
 
 def model_facts(load: WideEvent) -> dict[str, Fact]:

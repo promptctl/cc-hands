@@ -15,7 +15,6 @@ from hands.core.narration import narration
 from hands.core.subagents import Subagent, reporting
 from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Delegated, Notified, Other, Ran, Ref, Reported, Said, Turn
 from hands.sessions.payload import Payload
-from hands.sessions.registry import Sessions
 from hands.sessions.subagents import read_subagent
 from hands.sessions.tail import Tails
 from hands.sessions.transcript import edge_of, turn_record
@@ -24,6 +23,7 @@ from hands.voice.narrator import Recounts, recount
 from hands.voice.tools import expand_tool
 
 from test_narrator import Registry, heard
+from conftest import new_sessions
 
 SID = SessionId("s1")
 REVIEWER = AgentId("a1b2c3d4e5f6a7b8c")
@@ -105,7 +105,7 @@ async def told(transcript: Path) -> tuple[Recounts, dict[str, object]]:
 
 
 async def opened(recounts: Recounts, part: str) -> list[str]:
-    call = expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body
+    call = expand_tool(new_sessions(), recounts).body
     result = await call(session=SID, part=part)
     return [entry["told"] for entry in cast(list[dict[str, str]], result["parts"])]
 
@@ -114,7 +114,7 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
     transcript = parent(tmp_path, REVIEWER)
     reviewer(transcript)
     recounts, facts = await told(transcript)
-    whole = await expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body(session=SID)
+    whole = await expand_tool(new_sessions(), recounts).body(session=SID)
     lines = [entry["told"] for entry in cast(list[dict[str, str]], whole["parts"]) if entry["part"] == WORK]
     # Named by the job it was given, and counted: its prompt is the job, and not a step of it.
     assert lines == ["A subagent's own work on /code-review medium 66: two steps."]

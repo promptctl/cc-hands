@@ -13,9 +13,10 @@ from hands.core.status import Busy, Stamp
 from hands.sessions.audit import Entry, Primed, level
 from hands.sessions.focus import Unreadable, set_focus
 from hands.sessions.home import Home
-from hands.sessions.registry import Listing, Sessions
+from hands.sessions.registry import Listing
 from hands.voice import vocabulary as lexicon
 from hands.voice.vocabulary import TOKENS, WORDS, Lexicon, prompt, vocabulary
+from conftest import new_sessions
 
 
 def git(repository: Path, *args: str) -> None:
@@ -154,7 +155,7 @@ async def test_with_nothing_focused_and_nothing_running_whisper_is_unprimed_and_
     recorded: list[Entry] = []
     home = Home(tmp_path)
     set_focus(home, None)
-    lexicon = Lexicon(Sessions(clock=lambda: 0.0, record=recorded.append), home, os.environ, recorded.append)
+    lexicon = Lexicon(new_sessions(record=recorded.append), home, os.environ, recorded.append)
 
     assert await lexicon() is None
     assert [(entry.focus, entry.words, entry.failed) for entry in recorded if isinstance(entry, Primed)] == [(None, (), None)]

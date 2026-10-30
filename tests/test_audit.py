@@ -41,11 +41,12 @@ from hands.sessions.delta import NoChanges
 from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
 from hands.sessions.wide import WideEvent, annotate, fail, root, unit
-from hands.sessions.registry import EFFECT_KINDS, Performed, Sessions
+from hands.sessions.registry import EFFECT_KINDS, Performed
 from hands.voice.tool import tool
 from hands.voice.tools import Called, audited
 from hands.core.status import Busy, Report, Stamp
 from hands.core.wire import Answered, Exchanged, Garbled, MainTurn, Reached, Uncopied, Unfinished, Unkept, Unreached
+from conftest import new_sessions
 
 # When hands heard a Stop, on the clock Claude Code stamps a status with.
 STOP_HEARD = Stamp(1500)
@@ -624,7 +625,7 @@ def test_a_batch_the_collector_took_with_a_warning_is_a_warning_line() -> None:
 
 async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Tick(1.0))
     assert recorded == []
     await sessions.apply(Joined(member(), "startup"))
@@ -635,7 +636,7 @@ async def test_an_event_that_changed_nothing_is_not_a_line_and_one_that_did_is()
 
 async def test_an_applied_event_whose_effects_all_succeed_is_one_event_with_each_effect_and_them_counted_by_kind() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
@@ -658,7 +659,7 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
     # The one effect a test can make fail: an audit effect is performed as a line through loguru.
     sink = logger.add(full, level="WARNING", catch=False)
     try:
-        sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+        sessions = new_sessions(record=recorded.append)
         never = Prompted(SessionId("never-joined"), at=1.0, mode=None, prompt=PromptId("p1"), text="")
         with pytest.raises(OSError):
             await sessions.apply(never)
@@ -674,7 +675,7 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
 
 async def test_an_event_applied_inside_a_unit_of_work_is_that_units_child() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     with unit("hook", recorded.append):
         await sessions.apply(Joined(member(), "startup"))
     event, hook = recorded
@@ -684,7 +685,7 @@ async def test_an_event_applied_inside_a_unit_of_work_is_that_units_child() -> N
 
 async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     asked = PermissionRequested(member().id, at=1.0, request=RequestId("r1"), on=Permission(tool="Bash", input={"command": "ls"}), mode=None)
     hook = asyncio.create_task(sessions.waited(asked, sessions.hold(asked)))
@@ -698,7 +699,7 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
 
 async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it_heard_or_applied_inside_a_unit() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=Marking(recorded.append))
+    sessions = new_sessions(record=recorded.append, changes=Marking(recorded.append))
     await sessions.apply(Joined(member(), "startup"))
     with unit("hook", recorded.append):
         await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -718,7 +719,7 @@ async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_dec
     however long what was decided ahead of that telling takes, so it is never taken for their answer."""
     handed: list[object] = []
     slow = Slow()
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _entry: None, changes=slow, story_sink=handed.append, submitted_sink=handed.append)
+    sessions = new_sessions(changes=slow, story_sink=handed.append, submitted_sink=handed.append)
     await sessions.apply(Joined(member(), "startup"))
     first, second = (Prompted(member().id, at=at, mode=None, prompt=PromptId(prompt), text=words) for at, prompt, words in [(1.0, "p1", "first"), (2.0, "p2", "second")])
     sessions.hear(first)
@@ -733,7 +734,7 @@ async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_dec
 async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_performed() -> None:
     recorded: list[Entry] = []
     hanging = Hanging()
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, changes=hanging)
+    sessions = new_sessions(record=recorded.append, changes=hanging)
     await sessions.apply(Joined(member(), "startup"))
     prompts = [Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""), Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"), text="")]
     for prompted in prompts:
@@ -755,7 +756,7 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
 
 async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     recorded.clear()
     assert sessions.answer(RequestId("gone"), Deny("no")) == NotWaiting(RequestId("gone"))
@@ -764,7 +765,7 @@ async def test_an_answer_to_a_request_nothing_waits_on_is_no_applied_event() -> 
 
 async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     stop = Stopped(member().id, "done", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST)
     await sessions.apply(stop)
@@ -777,7 +778,7 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
 async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_marks_the_turn_they_run_as() -> None:
     """[LAW:nothing-unseen] the facts the queue gives a Stop land on the applied event that decided them."""
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text="Open the turn."))
@@ -793,7 +794,7 @@ async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_ma
 
 async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a_line_as_it_is_let_go_unmarked() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text="Open the turn."))
@@ -806,7 +807,7 @@ async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a
 
 async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_once_read_through_without_one() -> None:
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+    sessions = new_sessions(record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     # Its transcript is read once a status is, so a record could name the Stop.
@@ -824,7 +825,7 @@ async def test_a_stop_held_for_its_record_is_a_line_as_it_is_heard_and_again_onc
 
 async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
     """Claude Code waits on the hook, so what deciding the Stop calls for is done before it goes on."""
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     # Its transcript is read once a status is, so a record could name the Stop.
@@ -838,7 +839,7 @@ async def test_a_stop_hook_is_answered_only_once_its_stop_is_decided() -> None:
 
 async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whichever_came_first() -> None:
     """A Stop decided just before shutdown began was decided, though shutdown has since let every hook go."""
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
@@ -858,7 +859,7 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:
     """The hold bounds how long Claude Code waits, however slowly the transcript is read."""
     recorded: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
+    sessions = new_sessions(clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
@@ -871,7 +872,7 @@ async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_l
 
 async def test_a_stop_heard_as_the_daemon_shuts_down_is_still_applied() -> None:
     """Letting every hook go at shutdown lets go of its wait, not of what it says happened."""
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.release_waiting()
@@ -943,7 +944,7 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
     failing = logger.add(full, level="WARNING", catch=False)
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="ERROR")
     try:
-        sessions = Sessions(clock=lambda: 0.0, record=recorded.append)
+        sessions = new_sessions(record=recorded.append)
         sessions.hear(never)
 
         async def failed() -> None:

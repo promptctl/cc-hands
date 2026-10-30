@@ -10,12 +10,13 @@ from hands.sessions.focus import focused, set_focus
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
+from conftest import new_sessions
 
 ONE, OTHER = SessionId("one"), SessionId("other")
 
 
 async def running_sessions(*names: SessionId) -> Sessions:
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     for name in names:
         await sessions.apply(Joined(Membership(name, pid=zlib.crc32(name.encode()), cwd=Path("/code") / name, transcript=Path("/unread") / name), "startup"))
     return sessions

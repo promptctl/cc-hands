@@ -20,6 +20,7 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import Titles, session_name
 from hands.voice.tools import list_sessions_tool
+from conftest import new_sessions
 
 
 def membership(tmp_path: Path, name: str) -> Membership:
@@ -49,7 +50,7 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
     named(working.transcript, "first guess", "pipeline spike")
     named(blocked.transcript, "auth refactor")
     named(ended.transcript, "old work")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     for event in (
         Joined(working, "startup"),
         StatusReported(working.id, Report(Busy(), Stamp(1)), at=1.0),
@@ -84,7 +85,7 @@ async def test_live_sessions_are_named_by_their_project_then_their_newest_name(t
 async def test_a_session_that_joins_on_its_permission_request_is_listed_as_waiting_on_it(tmp_path: Path) -> None:
     """Its status is not read yet, and what it waits on is what its hook asked."""
     lagging = membership(tmp_path, "lagging")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     for event in (Joined(lagging, "startup"), PermissionRequested(lagging.id, at=1.0, request=RequestId("r"), on=Permission("Bash", {}), mode="default")):
         await sessions.apply(event)
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "lagging", "name": "lagging", "state": "waiting for permission to use Bash", "mode": "manual mode", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
@@ -94,7 +95,7 @@ async def test_a_session_at_its_prompt_with_a_background_shell_running_is_listed
     """As seen live: a session cleared while a background poll it started ran on reported shell, and sat at
     its prompt doing nothing."""
     cleared = membership(tmp_path, "cleared")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     for event in (Joined(cleared, "clear"), StatusReported(cleared.id, Report(Shell(), Stamp(1)), at=1.0)):
         await sessions.apply(event)
     listed = {"id": "cleared", "name": "cleared", "state": "idle, with a shell command it started in the background still running", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}
@@ -105,7 +106,7 @@ async def test_a_session_at_its_prompt_with_a_subagent_working_in_the_background
     """Claude Code keeps busy from a background subagent's launch until the turn reporting it back ends; the turn that
     launched it has stopped, so the session sits at its prompt, and is said to."""
     waiting = membership(tmp_path, "waiting")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     turn = PromptId("p1")
     for event in (
         Joined(waiting, "startup"),
@@ -128,7 +129,7 @@ async def test_a_session_idle_since_the_turn_that_renamed_it_is_listed_by_its_ne
     named(idle.transcript, "pr 231 review")
     named(renamed.transcript, "auth refactor")
     names = Names()
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None, names=names)
+    sessions = new_sessions(names=names)
     for event in (Joined(idle, "startup"), Joined(renamed, "startup")):
         await sessions.apply(event)
     names.rename(idle.id, "monetization review", "pr 231 review")
@@ -174,7 +175,7 @@ def test_a_transcript_written_anew_shorter_than_what_was_read_of_it_is_read_agai
 async def test_a_transcript_whose_name_cannot_be_read_lists_the_session_by_its_project(tmp_path: Path) -> None:
     broken = membership(tmp_path, "broken")
     broken.transcript.write_text('{"type":"custom-title","sessionId":"broken"}\n')
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(broken, "startup"))
     assert await call(sessions, tmp_path) == {"sessions": [{"id": "broken", "name": "broken", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": "not in tmux"}], "focus": None}
 
@@ -184,13 +185,13 @@ async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why
         raise ValueError("not enough values to unpack")
 
     monkeypatch.setattr(tmux, "servers", broken)
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(membership(tmp_path, "plain"), "startup"))
     listed = {"id": "plain", "name": "plain", "state": "not reported yet", "mode": "not reported yet", "overlay": "normal", "tmux": {"cannot_read": "ValueError: not enough values to unpack"}}
     assert await call(sessions, tmp_path) == {"sessions": [listed], "focus": None}
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(new_sessions(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

@@ -25,6 +25,7 @@ from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns, turns
 from hands.voice.tool import Result, Tool, tool
 from hands.voice.tools import audited, cued, draft_tools, keyboard_tools
+from conftest import new_sessions
 
 
 def unrecorded(_: object) -> None:
@@ -50,7 +51,7 @@ def in_pane(pane: Keyboard) -> Callable[[Sequence[int]], Awaitable[list[Keyboard
 
 
 async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[Input]], None] = lambda _: None, pane: Keyboard = NotInTmux()) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(clock=lambda: 0.0, record=record, typist=typing_into(typed), keyboards=in_pane(pane))
+    sessions = new_sessions(record=record, typist=typing_into(typed), keyboards=in_pane(pane))
     membership = Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp / "none.jsonl")
     await sessions.apply(Joined(membership, "startup"))
     return sessions, membership.id
@@ -194,7 +195,7 @@ async def test_a_control_in_what_was_heard_reaches_the_terminal_as_its_escape_an
 
 
 async def wrapped(tmp: Path, typist: Callable[[Type[Input]], None], record: Record = unrecorded) -> tuple[Sessions, SessionId]:
-    sessions = Sessions(clock=lambda: 0.0, record=record, typist=typing_into(typist), keyboards=in_pane(NotInTmux()))
+    sessions = new_sessions(record=record, typist=typing_into(typist), keyboards=in_pane(NotInTmux()))
     await sessions.apply(Joined(Membership(SessionId("s1"), 4242, Path("/code/cc-hands"), tmp / "none.jsonl", tmp / "f.sock"), "startup"))
     return sessions, SessionId("s1")
 
@@ -267,7 +268,7 @@ async def test_only_a_send_waits_on_its_pane_so_staging_and_amending_are_decided
         read.append(pids)
         return [NotInTmux()] * len(pids)
 
-    sessions = Sessions(clock=lambda: 0.0, record=unrecorded, keyboards=keyboards)
+    sessions = new_sessions(keyboards=keyboards)
     await sessions.apply(Joined(Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp_path / "none.jsonl"), "startup"))
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session="s1", text="run the tests", resolutions=[])

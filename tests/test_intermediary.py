@@ -31,6 +31,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.trigger import Levels
 from hands.voice.wakeword import Pretrained
 from hands.voice.tools import intermediary_tools
+from conftest import new_sessions
 
 AUTH = {"id": "5b0e2f4e-3c1a-4d8e-9f21-7a6c0d9e1b34", "name": "cc-hands, auth refactor", "state": "idle", "mode": "manual mode"}
 FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "state": "working", "mode": "not reported yet"}
@@ -56,7 +57,7 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # The rule in intermediary_instruction: a prompt that asks for a tool before it exists gets that tool paraphrased.
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
-    given = set(names(Sessions(clock=lambda: 0.0, record=lambda _: None)))
+    given = set(names(new_sessions()))
     prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands", None)
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
     assert named, "the prompt names no tool at all"
