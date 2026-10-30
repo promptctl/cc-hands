@@ -75,11 +75,19 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
         config.hook.pytest_timeout_cancel_timer(item=armed.item)
         # [LAW:nothing-unseen] the bound the work ran under, how long it took, and what the test had left: a timeout
         # reported after it names that remainder, not the test's configured bound. Recorded before the re-arm, which a
-        # spent bound fires at once.
+        # bound with next to nothing left fires at once.
         armed.item.user_properties.append(
             (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(left, 3)})
         )
-        config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(left, SPENT)))
+        resume(config, armed, left)
+
+
+def resume(config: pytest.Config, armed: Armed, left: float) -> None:
+    """[LAW:single-enforcer] `armed`'s bound re-armed with the `left` it had when it was stopped. A bound with nothing left
+    has fired, and pytest-timeout's timer fires once: a timer re-armed with nothing left would fire at once, inside pytest's
+    own machinery rather than in any work it bounds, and report a second timeout for the one the test already has."""
+    if left > 0:
+        config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=left))
 
 
 # The name a rescoping is recorded under on a test's report.
@@ -96,7 +104,7 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
         return (yield)
     config, fixture = request.config, fixturedef.argname
     # Finalizers run last-added first, so these two bracket the teardown the fixture's own setup registers. The second
-    # is added before the test's timer is re-armed, which a spent bound fires at once.
+    # is added before the test's timer is re-armed, which a bound with next to nothing left fires at once.
     teardown = ExitStack()
     fixturedef.addfinalizer(teardown.close)
     with shared(config, "setup", fixture):
@@ -119,9 +127,5 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
     item.config.hook.pytest_timeout_cancel_timer(item=armed.item)
     report = yield
     if not report.failed:
-        item.config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(armed.deadline - time.monotonic(), SPENT)))
+        resume(item.config, armed, armed.deadline - time.monotonic())
     return report
-
-
-# The shortest timer either method arms: a signal's interval timer takes no zero, which disarms it.
-SPENT = 1e-6

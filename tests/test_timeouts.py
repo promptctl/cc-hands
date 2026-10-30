@@ -140,13 +140,17 @@ def test_that_fails():
     assert False
 """
 
-# Skipped as its setup runs, after a fixture whose teardown never returns.
+# Skipped as its setup runs, after a fixture whose teardown never returns and with a shared one torn down after it.
 SKIPS = """
 import time
 import pytest
 
+@pytest.fixture(scope="module")
+def shared():
+    yield
+
 @pytest.fixture
-def never_torn_down():
+def never_torn_down(shared):
     yield
     time.sleep(60)
 
@@ -214,9 +218,10 @@ def test_under_a_signal_no_timer_fires_while_a_failure_is_reported(suite: pytest
 
 
 def test_under_a_signal_a_test_skipped_in_its_setup_is_bounded_through_its_teardown(suite: pytest.Pytester) -> None:
-    ran = run(suite, "signal", "-rs", "test_skips.py")
+    # The bound fires once: the shared teardown after it re-arms nothing, so the error is the one timeout, not a group.
+    ran = run(suite, "signal", "-rsE", "test_skips.py")
     ran.assert_outcomes(skipped=1, errors=1)
-    ran.stdout.fnmatch_lines_random(["ERROR test_skips.py::test_that_skips - Failed: Timeout (>*s)*"])
+    ran.stdout.fnmatch_lines_random(["ERROR test_skips.py::test_that_skips - Failed: Timeout (>1.9*s)*"])
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
