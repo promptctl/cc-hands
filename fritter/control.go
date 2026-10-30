@@ -154,6 +154,7 @@ const loneEscape = 100 * time.Millisecond
 func (w *Wrapped) typeIn(keys []byte) error {
 	w.writing.Lock()
 	defer w.writing.Unlock()
+	w.trace.line("in-req", keys)
 	if _, err := w.master.Write(keys); err != nil {
 		return err
 	}

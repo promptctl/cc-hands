@@ -23,6 +23,7 @@ type Wrapped struct {
 	master *os.File
 	cmd    *exec.Cmd
 	paste  *pasteMode
+	trace  *tracer
 	// Held for each write into the child's input, the user's keys and a request's alike, so
 	// that neither lands in the middle of the other.
 	writing sync.Mutex
@@ -49,7 +50,7 @@ func start(argv []string, env []string) (*Wrapped, error) {
 		master.Close()
 		return nil, fmt.Errorf("cannot start %s on a pty: %w", argv[0], err)
 	}
-	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode()}, nil
+	return &Wrapped{master: master, cmd: cmd, paste: newPasteMode(), trace: newTracer(master)}, nil
 }
 
 // run pumps the terminal and the child into each other until the child exits, and
@@ -96,7 +97,7 @@ func (w *Wrapped) run(stdin *os.File, stdout io.Writer, killed <-chan os.Signal)
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		_, _ = io.Copy(io.MultiWriter(&screen{out: stdout}, w.paste), w.master)
+		_, _ = io.Copy(io.MultiWriter(&screen{out: stdout}, w.paste, w.trace), w.master)
 	}()
 	// [LAW:no-silent-failure] cmd.Wait returns the moment the child is reaped, which is
 	// before the last of what it printed has been copied out - `fritter -- sh -c 'echo
@@ -198,6 +199,7 @@ const drainGrace = 2 * time.Second
 func (w *Wrapped) Write(input []byte) (int, error) {
 	w.writing.Lock()
 	defer w.writing.Unlock()
+	w.trace.line("in-user", input)
 	return w.master.Write(input)
 }
 

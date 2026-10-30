@@ -108,5 +108,15 @@ jobs:
           "$GOBIN/lit" version
           echo "$GOBIN" >> "$GITHUB_PATH"
       # [LAW:one-source-of-truth] the suite is the Makefile's check.
-      - name: make check
-        run: make check
+      - name: probe 6i5
+        run: |
+          mkdir -p probe
+          for i in $(seq 1 10); do
+            uv run pytest "tests/test_brain_e2e.py::test_the_brain_s_running_call_is_shown_and_its_stop_ends_the_turn_and_the_next_is_answered" -q -p no:randomly > "probe/run-$i.log" 2>&1 && echo "run $i passed" || echo "run $i FAILED"
+            mkdir -p "probe/trace-$i" && mv /tmp/fritter-trace/* "probe/trace-$i/" 2>/dev/null; true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-6i5
+          path: probe
