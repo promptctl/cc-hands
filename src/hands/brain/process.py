@@ -106,7 +106,7 @@ DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elici
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
 # dialog about to open. Escape ends a turn with none of them, so a turn told to stop is over when
 # it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
+HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation", "PreToolUse")
 # A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
 # where it had none, inside a tag pair.
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
@@ -1062,8 +1062,7 @@ class Brain:
         # whatever was typed between; so no two are pressed that close,
         # counted from when each went and with room for Claude Code to read the first late.
         loop = asyncio.get_running_loop()
-        await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
-        await self._type(lambda typist: typist.press("ctrl_c"))
+        # PROBE 6i5: Escape alone, so whether it stops the turn is seen unmasked
         self._cleared = loop.time()
         if turn is not None and (turn is not self._turn or not turn.stopped):
             logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
@@ -1211,6 +1210,12 @@ class Brain:
                 dialog.set_result(None)
 
     async def _posted(self, event: str, body: bytes) -> Mapping[str, object]:
+        if event == "PreToolUse":  # PROBE 6i5: when the gate answers, on the clock fritter's trace uses
+            import datetime as _dt, os as _os
+            _os.makedirs("/tmp/fritter-trace", exist_ok=True)
+            with open(f"/tmp/fritter-trace/hooks-{_os.getpid()}.log", "a") as _f:
+                _f.write(f"{_dt.datetime.now().strftime('%H:%M:%S.%f')} pretooluse-answered\n")
+            return {}
         if event == "Elicitation":
             # A dialog is kept shut, whatever it says.
             self._refused(body)
