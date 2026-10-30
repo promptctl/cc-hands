@@ -1060,7 +1060,10 @@ class Brain:
         # holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether it
         # reaches Claude Code before the Escape or after it.
         self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
-        await self._counted()
+        # [LAW:one-source-of-truth] the wait is for a turn of Claude Code's that runs: with none running, the turn is typed
+        # at once, as before, and the screen is not waited on.
+        if self._claude_turns.current is not None:
+            await self._counted()
         await self._type(lambda typist: typist.press("escape"))
         # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
         # prompt (its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears
@@ -1111,7 +1114,7 @@ class Brain:
         is the read that says a call is running, so Escape is sent once one is (`COUNTER`)."""
         loop = asyncio.get_running_loop()
         until = loop.time() + COUNTER_SECONDS
-        while COUNTER.search(self._claude.shown()) is None and loop.time() < until:
+        while COUNTER.search(self._claude.shown()) is None and loop.time() < until and not self._exit.done():
             await asyncio.sleep(0.05)
 
     async def _stop(self, turn: _Turn) -> None:

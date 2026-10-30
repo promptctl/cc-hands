@@ -30,7 +30,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
-from hands.brain.process import ClaudeTurns, BROKEN, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import ClaudeTurns, BROKEN, COUNTER_SECONDS, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, account_kept_out, command, conversation, model, settings_mode, environment, logged_in, spawn, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
 from hands.core.permissions import heard
@@ -1976,6 +1976,37 @@ def _owning() -> Brain:
 class _Counting:
     def shown(self) -> str:
         return "(3s) ctrl+b to run in background"
+
+
+class _Screen:
+    """A screen whose last lines are `text`, as Claude Code shows them."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def shown(self) -> str:
+        return self.text
+
+
+async def test_a_stop_waits_for_the_counter_of_a_running_call_only_as_long_as_it_takes_to_show_or_the_brain_exits() -> None:
+    """The counter wait returns as soon as a call's counter shows, after COUNTER_SECONDS when none does, and at once when the
+    brain has exited (promptctl-testing-px1f.6i5)."""
+    brain = _owning()
+    brain._claude = _Screen("idle prompt")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._exit = asyncio.get_running_loop().create_future()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await brain._counted()  # pyright: ignore[reportPrivateUsage]
+    assert loop.time() - started >= COUNTER_SECONDS * 0.9
+    brain._claude = _Screen("(12s) ctrl+b to run in background")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    started = loop.time()
+    await brain._counted()  # pyright: ignore[reportPrivateUsage]
+    assert loop.time() - started < COUNTER_SECONDS / 2
+    brain._claude = _Screen("idle prompt")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._exit.set_result(0)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    started = loop.time()
+    await brain._counted()  # pyright: ignore[reportPrivateUsage]
+    assert loop.time() - started < COUNTER_SECONDS / 2
 
 
 def _typed_turn(brain: Brain, words: str) -> _Turn:  # pyright: ignore[reportPrivateUsage]
