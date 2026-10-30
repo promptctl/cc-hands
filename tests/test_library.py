@@ -2,6 +2,7 @@
 search once an hour, and given the Hugging Face token from the environment or the keychain. No test lists or fetches the
 real library: each takes its listing, its download, and its keychain from a fake."""
 
+import asyncio
 import os
 import threading
 from collections.abc import Callable
@@ -121,29 +122,30 @@ async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_aske
 async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 0.01)
     started: list[int] = []
+    listing = threading.Event()
     released = threading.Event()
 
     def stalled() -> list[str]:
         started.append(1)
+        listing.set()
         assert released.wait(10)
         return ["vctk/p225_023_enhanced.wav"]
 
     stuck = Library(stalled)
     try:
-        # Each search times out; neither starts a second listing while the first still runs in its thread.
+        # [LAW:no-ambient-temporal-coupling] each search times out while the listing, as it says itself, stalls in its thread.
         with pytest.raises(OSError):
             await stuck.search("", 10)
+        assert await asyncio.to_thread(listing.wait, 10)
         with pytest.raises(OSError):
             await stuck.search("", 10)
-        assert len(started) == 1
     finally:
         released.set()
-    # [LAW:no-ambient-temporal-coupling] once the stalled listing has finished, as its own future says, the next search has
-    # its names and forgets the listing.
-    pending = stuck._pending  # pyright: ignore[reportPrivateUsage]
-    assert pending is not None
-    await pending
+    # Given time, the next search waits for that same listing, has its names, and forgets the listing. Every listing a search
+    # started was awaited by a search, so one started is the one listing there ever was.
+    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 10)
     assert (await stuck.search("", 10)).names == ("vctk/p225_023_enhanced",)
+    assert len(started) == 1
     assert stuck._pending is None  # pyright: ignore[reportPrivateUsage]
 
 
