@@ -390,9 +390,9 @@ So the brain's mode is its config directory's to say: `tui` in its settings.json
 
 ## Submitting the prompt with a chord no dialog binds
 
-Return is the yes key of every dialog. Ctrl-Q, bound to the prompt's submit in the brain's own keybindings, submits the prompt, and no dialog acts on it. With this binding the outcome of a typed turn is binary: the turn is taken, or nothing is typed. No key hands sends approves anything, however slowly Claude Code reads keys or draws frames. Settled for promptctl-brain-z04s.ar0 from the code, with the anchors below, and by runs:
+Return is the yes key of every dialog. Ctrl-Q, bound to the prompt's submit in the brain's own keybindings, submits the prompt, and no dialog acts on it. A turn typed as a paste and this chord approves nothing, however slowly Claude Code reads keys or draws frames. Its words can still land in a dialog: a paste typed while an option's text field has the focus goes into that field, and the chord then leaves it there unsent. Settled for promptctl-brain-z04s.ar0 from the code, with the anchors below, and by runs. hands still ends a typed turn with Return (`src/hands/sessions/tmux.py`, `_typing`), and nothing writes the binding into the brain's home yet:
 
-- **The brain end to end** (`tests/test_brain_e2e.py`): `test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing`, and `test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord`. Every other test in that file types its turns as paste and Return, with this binding in place.
+- **The brain end to end** (`tests/test_brain_e2e.py`): `test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing`, and `test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord`. Only these two run with the binding.
 - **By hand**: the pinned Claude Code against mock-anthropic in a tmux pane. That machine's policy put it in auto mode, so its dialogs came from an `ask` rule.
 
 The binding:
@@ -462,7 +462,7 @@ The binding is half of a contract hands' typing depends on: the chord hands send
 - **A file without `"enter": null`** leaves every turn unsent.
 - **A file that binds Ctrl-Q to `confirm:yes` or `select:accept`** makes hands' submit approve dialogs.
 
-So hands writes the whole file, from the same definition its typing sends the chord from, where it sets up the brain's config directory (`src/hands/brain/process.py`). It writes it at every start: a person's edit is undone at the next start. `settings.json` is different: hands writes it once and leaves it to the person.
+So the whole file is hands' to write, from the same definition its typing sends the chord from, where it sets up the brain's config directory (`src/hands/brain/process.py`). `settings.json` is different: hands writes it once and leaves it to the person. Claude Code reloads the file on every edit ("Edits", above), so an edit made while the brain runs changes the chord's meaning at once, not at hands' next start.
 
 ## The rule
 
