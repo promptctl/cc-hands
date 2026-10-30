@@ -117,8 +117,8 @@ def test_overruns_its_own_bound(shared):
 """
 
 # Each phase's report takes longer to build than its test has left, as on a loaded machine: a shared setup that raises
-# after the test's own setup spent 1.3 s of its 2, a test that fails after 1.3 s of its 2, and a test that passes once its
-# reports have taken longer than its whole bound.
+# after the test's own setup spent 1.3 s of its 2, a test that fails after 1.3 s of its 2, and a test that passes though
+# pytest's logging of its start alone takes longer than its whole bound.
 REPORTED = """
 import time
 import pytest
@@ -139,6 +139,7 @@ def test_that_fails():
     time.sleep(1.3)
     assert False
 
+@pytest.mark.timeout(0.5)
 def test_that_passes():
     pass
 """
@@ -165,9 +166,13 @@ def test_that_skips(skips):
     pass
 """
 
-SLOW_REPORT = """
+# pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
+SLOW_REPORTING = """
 import time
 import pytest
+
+def pytest_runtest_logstart(nodeid, location):
+    time.sleep(0.8)
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
@@ -215,9 +220,9 @@ def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_b
 
 
 def test_under_a_signal_no_timer_runs_while_a_phase_is_reported(suite: pytest.Pytester) -> None:
-    # pytest-timeout's one timer spans the whole protocol, reporting and all, so a timer that fires while a report is built
-    # fires inside pytest's own reporting, and the run ends in INTERNALERROR with outcomes uncounted.
-    suite.makeconftest(SLOW_REPORT)
+    # pytest-timeout's one timer spans the whole protocol, reporting and all, so a timer that fires while pytest logs or
+    # reports fires inside pytest's own code, and the run ends in INTERNALERROR with outcomes uncounted.
+    suite.makeconftest(SLOW_REPORTING)
     ran = run(suite, "signal", "test_hangs.py", "test_reported.py")
     ran.assert_outcomes(passed=1, failed=1, errors=2)
     assert "INTERNALERROR" not in ran.stdout.str()

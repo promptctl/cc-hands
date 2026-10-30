@@ -38,7 +38,7 @@ class Paused:
 
 
 # [LAW:no-shared-mutable-globals] [LAW:one-source-of-truth] the test's bound right now: armed, paused between its phases,
-# or none. Written only by the two hooks that arm and cancel a timer and by the phase boundary that pauses it.
+# or none. Written only by the two hooks that arm and cancel a timer, and by `pause` and `resume`.
 BOUND = pytest.StashKey[Armed | Paused | None]()
 
 
@@ -110,6 +110,8 @@ def resume(config: pytest.Config, paused: Paused) -> None:
     rather than in any work it bounds, and report a second timeout for the one the test already has."""
     if paused.left > 0:
         config.hook.pytest_timeout_set_timer(item=paused.item, settings=paused.settings._replace(timeout=paused.left))
+    else:
+        config.stash[BOUND] = None
 
 
 # The name a rescoping is recorded under on a test's report.
@@ -135,6 +137,16 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
     return value
 
 
+@pytest.hookimpl(wrapper=True, trylast=True)
+def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object]:
+    """pytest-timeout arms the test's bound as its protocol starts, before pytest logs the test's start: inside
+    pytest-timeout's wrapper, it waits paused for the setup phase."""
+    armed = item.config.stash[BOUND]
+    if isinstance(armed, Armed):
+        item.config.stash[BOUND] = pause(item.config, armed)
+    return (yield)
+
+
 def phase(item: pytest.Item) -> Generator[None, None, None]:
     """[LAW:single-enforcer] the test's bound runs only inside its phases. pytest-timeout arms one timer for the whole
     runtest protocol, so pytest's reporting of each phase runs under it, and a timer that fires there ends the run in
@@ -144,8 +156,6 @@ def phase(item: pytest.Item) -> Generator[None, None, None]:
     config = item.config
     paused = config.stash[BOUND]
     if isinstance(paused, Paused):
-        # One with nothing left, as an xfail's that fired, stays ended.
-        config.stash[BOUND] = None
         resume(config, paused)
     try:
         return (yield)
