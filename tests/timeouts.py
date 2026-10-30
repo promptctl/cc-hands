@@ -1,16 +1,17 @@
 """pytest-timeout's bound, scoped to the work it bounds: a fixture wider than one function is set up inside whichever test
 first asks for it and torn down inside the last, yet it is the work of every test that shares it, so its setup and its
-teardown run under the suite's bound and the test's own bound resumes with what it had left. A plugin of its own, so a
-run in another process can load it by name with `-p timeouts`; conftest registers it for the suite."""
+teardown run under the suite's bound and the test's own bound resumes with what it had left; and no timer is armed
+while a phase that raised is reported. A plugin of its own, so a run in another process can load it by name with
+`-p timeouts`; conftest registers it for the suite."""
 
 import time
 from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import cast
 
 import pytest
-from pytest_timeout import PYTEST_FAILURE_MESSAGE, Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
+from pytest_timeout import Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
 
 
 @dataclass(frozen=True)
@@ -68,43 +69,21 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
     # A suite with no bound gives its shared fixtures none.
     if bound:
         config.hook.pytest_timeout_set_timer(item=armed.item, settings=suite)
-    fired = False
     try:
         yield
-    except pytest.fail.Exception as failed:
-        # The suite's bound fired on the work: the failure pytest-timeout raises, by the message it builds.
-        fired = str(failed) == PYTEST_FAILURE_MESSAGE % bound
-        raise
     finally:
         config.hook.pytest_timeout_cancel_timer(item=armed.item)
-        # [LAW:nothing-unseen] the bound the work ran under, how long it took, what the test had left, and whether the
-        # suite's bound fired: a timeout reported after it names that remainder, not the test's configured bound, unless
-        # the suite's fired. Recorded before the re-arm, which a spent bound fires at once.
+        # [LAW:nothing-unseen] the bound the work ran under, how long it took, and what the test had left: a timeout
+        # reported after it names that remainder, not the test's configured bound. Recorded before the re-arm, which a
+        # spent bound fires at once.
         armed.item.user_properties.append(
-            (RESCOPED, Rescoping(phase=phase, fixture=fixture, bound=bound, seconds=round(time.monotonic() - started, 3), left=round(left, 3), fired=fired))
+            (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(left, 3)})
         )
-        # A test's timer fires once, as pytest-timeout arms it: once the suite's bound has fired in the test, the test's
-        # stays spent, and nothing fires again while pytest reports the failure.
-        if not fired:
-            config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(left, SPENT)))
+        config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(left, SPENT)))
 
 
 # The name a rescoping is recorded under on a test's report.
 RESCOPED = "timeouts.shared"
-
-
-class Rescoping(TypedDict):
-    """One shared fixture's setup or teardown, as a test's report records it."""
-
-    phase: str
-    fixture: str
-    # The suite's bound the work ran under, None when the suite has none.
-    bound: float | None
-    seconds: float
-    # What the test's own bound had left as the work began.
-    left: float
-    # Whether the suite's bound fired on the work, leaving the test's own spent.
-    fired: bool
 
 
 @pytest.hookimpl(wrapper=True)
@@ -124,6 +103,24 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[object], request: pytest.
         value = yield
         fixturedef.addfinalizer(lambda: teardown.enter_context(shared(config, "teardown", fixture)))
     return value
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    """A phase that raised is reported with no timer armed. pytest-timeout ends a test's bound in
+    pytest_exception_interact, once the failure's report is built and logged; a timer still armed meanwhile, the test's
+    own or one this plugin re-armed after shared work, fires inside pytest's reporting and ends the run in INTERNALERROR.
+    A phase that raised without failing, a skip, resumes the bound with what it had left, as pytest-timeout's would."""
+    armed = item.config.stash[ARMED]
+    if call.excinfo is None or armed is None:
+        return (yield)
+    # [LAW:single-enforcer] the one place a raised phase's timer stops, whatever raised: the suite's bound on shared
+    # work, the work's own error, or the test's.
+    item.config.hook.pytest_timeout_cancel_timer(item=armed.item)
+    report = yield
+    if not report.failed:
+        item.config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(armed.deadline - time.monotonic(), SPENT)))
+    return report
 
 
 # The shortest timer either method arms: a signal's interval timer takes no zero, which disarms it.
