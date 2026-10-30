@@ -12,7 +12,6 @@ import json
 from hands.core.attention import Attention
 import os
 import pwd
-import socket
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -163,7 +162,7 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)"]
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
@@ -422,15 +421,14 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
     a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
     turn, with no note (promptctl-barge-in-duao.51y)."""
-    # The call runs until the test ends it: a listener on loopback that returns once something connects, so the words
-    # are said while it runs however slow the run is.
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+    # The call runs until the test ends it: a read of a named pipe in the brain's workdir, which returns once the test
+    # writes to it, so the words are said while it runs however slow the run is.
+    pipe = hands.workdir / "go"
+    os.mkfifo(pipe)
     # Tried in name order: the second turn, whose history holds the first's result too, ahead of the first's end.
     mock_api.script("1-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
     mock_api.script("2-done", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Renamed it."})
-    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": f"nc -l 127.0.0.1 {port}"}}, stop="tool_use")
+    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": f"cat {pipe}"}}, stop="tool_use")
     await connected(hands)
     await hands.say("rename the module")
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
@@ -438,8 +436,8 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     # hands' answer is said while the call still runs.
     await hands.until(lambda: any(answer in "".join(hands.out.said()) for answer in ANSWERS))
     assert "Renamed it." not in "".join(hands.out.said())
-    _, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.close()
+    # Opening the pipe for writing waits for the call's read, off the loop; writing and closing it ends the call.
+    await asyncio.to_thread(pipe.write_text, "go")
     await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
     said = "".join(hands.out.said())
     first, second = events(hands.recorded, "voice.turn")
