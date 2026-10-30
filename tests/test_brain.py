@@ -1359,8 +1359,9 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
-        running = await in_tmux(station, ["/bin/sh", "-c", "trap 'exit 7' HUP; while :; do sleep 0.05; done"], workspace)
-        await until(lambda: running.shell is not None)
+        ready = tmp_path / "ready"
+        running = await in_tmux(station, ["/bin/sh", "-c", f"trap 'exit 7' HUP; touch {ready}; while :; do sleep 0.05; done"], workspace)
+        await until(ready.exists)
         await running.stop()
         assert running.exit.result() == 7
         assert tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode != 0
@@ -1381,6 +1382,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
         assert seen.read_text() == f"unset {tmp_path / 'brain'}"
     finally:
         tmux_at("kill-session", "-t", "=theirs")
+        tmux_at("set-environment", "-gu", "ANTHROPIC_API_KEY")
         shutil.rmtree(workspace)
 
 

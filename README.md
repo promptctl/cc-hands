@@ -228,8 +228,8 @@ the checksum hands carries for it, and the brain does not start on a copy that i
 A restart resumes the brain's conversation rather than starting it over; to start it over, remove `~/.hands/brain/conversation`
 before starting hands.
 The brain runs in a tmux session of its own on your default tmux server, `hands-brain-` and eight characters: `tmux attach
--t hands-brain` (the whole name, from `tmux ls`, when more than one hands runs) shows what it is doing, and what you type there reaches it as from its keyboard. It ends with hands,
-unless you are attached then, in which case it ends when you detach.
+-t hands-brain` (the whole name, from `tmux ls`, when more than one hands runs) shows what it is doing, and what you type there reaches it as from its keyboard. It ends when hands
+stops or restarts; if hands dies while you are attached, it ends when you detach.
 `hands login` sets it up: it writes the brain's starting `settings.json` if it has none, never changing one that is
 there; then, on a brain Claude Code has not finished its first run on, it runs that first run in the directory the brain
 runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
