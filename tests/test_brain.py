@@ -39,7 +39,7 @@ from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, segment
-from conftest import events, onboard, patiently, pin, pinned_to, unread
+from conftest import events, new_sessions, onboard, patiently, pin, pinned_to, unread
 from turns import RECORDINGS, prompts, stops
 
 from hands.brain.stage import BrainStage
@@ -58,7 +58,6 @@ from hands.sessions.typing import Typist
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
-from hands.sessions.registry import Sessions
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -1777,7 +1776,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     recorded: list[Entry] = []
     wire = Wire(lambda _observed: None)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
@@ -1810,7 +1809,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
 async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
         return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
@@ -1832,7 +1831,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
@@ -1848,7 +1847,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path), recorded.append)
+    refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
 

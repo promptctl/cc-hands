@@ -15,6 +15,7 @@ from hands.sessions.home import Home
 from hands.sessions.registry import Performed, Sessions
 from hands.sessions.wide import WideEvent
 from hands.voice.tools import Called, CATCH_UP_CLOSINGS, CATCH_UP_LEAST, audited, catch_up_tool
+from conftest import new_sessions
 
 LEFT = datetime(2026, 10, 3, 14, 0, tzinfo=UTC)
 BACK = LEFT + timedelta(minutes=10)
@@ -46,7 +47,7 @@ def written(home: Home, lines: list[tuple[datetime, Entry]]) -> None:
 
 
 async def sessions_of(*names: str) -> Sessions:
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     for name in names:
         await sessions.apply(Joined(member(name), "startup"))
     return sessions

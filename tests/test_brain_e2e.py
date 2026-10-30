@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
-from conftest import RUN, events, located, running, unread
+from conftest import RUN, events, located, new_sessions, running, unread
 from hands.brain import pinned
 from hands.brain.fork import REMINDER
 from hands.brain.stage import ANSWERS, OWED, BrainStage
@@ -36,7 +36,6 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
-from hands.sessions.registry import Sessions
 from hands.voice import voices
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.conversation import UserWords
@@ -246,7 +245,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
     # e2e fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
     environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
-    refocus = Refocus(Sessions(clock=lambda: 0.0, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
+    refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))

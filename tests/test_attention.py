@@ -15,7 +15,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame
 
-from conftest import SYSTEM_PATH
+from conftest import SYSTEM_PATH, new_sessions
 
 from hands.core.attention import Attention, Delivery, Level, Overlay, Spoken, Switch, Withheld
 from hands.core.delta import Delta
@@ -29,7 +29,6 @@ from hands.sessions.focus import focused, set_focus
 from hands.sessions.home import Home
 from hands.sessions.overlays import Overlays
 from hands.sessions.payload import Rejected
-from hands.sessions.registry import Sessions
 from hands.sessions.attention import Settings, attention, set_attention
 from hands.sessions.tail import Tails
 from hands.voice.refocus import Refocus
@@ -97,7 +96,7 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
     """The summary is the thing to iterate on, so there is one: told unasked or asked for, the model is handed the same."""
     member = membership(tmp_path, "one")
     finished_turn(member)
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     told: dict[Delivery, str] = {}
     for delivered in (Spoken("full", "finished"), Spoken("full", "watched"), Withheld("off"), Withheld("muted"), Withheld("quiet")):
@@ -114,7 +113,7 @@ async def test_every_way_a_turn_is_told_tells_the_one_summary(tmp_path: Path) ->
 
 async def test_a_turn_is_asked_for_only_of_a_running_session_and_one_with_nothing_to_tell_says_so(tmp_path: Path) -> None:
     member = membership(tmp_path, "one")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     recounts = Recounts()
     asked = tell_turn_tool(sessions, recounts, Refocus(sessions, Home(tmp_path), lambda _: None))
     assert await asked.body(session=member.id) == {"error": "no running session has the id 'one'; take one from list_sessions"}
@@ -133,7 +132,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     watched, other = membership(tmp_path, "watched"), membership(tmp_path, "other")
     home = Home(tmp_path / "home")
     entries: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=entries.append)
+    sessions = new_sessions(record=entries.append)
     for each in (watched, other):
         finished_turn(each)
         await sessions.apply(Joined(each, "startup"))
@@ -167,7 +166,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     home.overlays.mkdir(parents=True)
     home.overlay(member.id).write_text("loud\n")
     entries: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=entries.append)
+    sessions = new_sessions(record=entries.append)
     await sessions.apply(Joined(member, "startup"))
     sink = logged_to(entries.append, lambda _: True)
     utterances = Utterances(entries.append)
@@ -191,7 +190,7 @@ async def test_a_turn_asked_for_moves_the_focus_to_its_session_as_a_turn_told_as
     member = membership(tmp_path, "one")
     home = Home(tmp_path)
     set_focus(home, SessionId("other"))
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     recounts = Recounts()
     recounts.put(member.id, PromptId("p1"), News(None, "Told.", "", "", (), frozenset()))
@@ -204,7 +203,7 @@ async def test_a_turn_asked_for_moves_the_focus_to_its_session_as_a_turn_told_as
 
 async def test_a_turn_asked_for_before_any_has_finished_is_said_to_be_missing(tmp_path: Path) -> None:
     member = membership(tmp_path, "one")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     result = await tell_turn_tool(sessions, Recounts(), Refocus(sessions, Home(tmp_path), lambda _: None)).body(session=member.id)
     assert "error" in result and "has finished since hands started" in str(result["error"])
@@ -293,7 +292,7 @@ def test_a_file_holding_anything_but_settings_is_refused_and_a_kind_never_writte
 )
 async def test_setting_a_session_s_overlay_says_what_is_told_of_it_and_holds(tmp_path: Path, overlay: Overlay, readback: str) -> None:
     member = membership(tmp_path, "dropped")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     result = await set_overlay_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, overlay=overlay)
     assert result == {"readback": readback}
@@ -316,7 +315,7 @@ async def test_a_normal_session_s_readback_says_how_its_turns_are_told_as_set(tm
     member = membership(tmp_path, "dropped")
     home = Home(tmp_path / "home")
     set_attention(home, set_to)
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     result = await set_overlay_tool(sessions, Overlays(home)).body(session=member.id, overlay="normal")
     assert result == {"readback": readback}
@@ -327,7 +326,7 @@ async def test_an_overlay_set_with_the_switch_unreadable_is_set_and_read_back_as
     home = Home(tmp_path / "home")
     home.attention.parent.mkdir(parents=True, exist_ok=True)
     home.attention.write_text("loud\n")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     result = await set_overlay_tool(sessions, Overlays(home)).body(session=member.id, overlay="normal")
     assert result == {"readback": "I'll hold dropped's turns until you ask for one."}
@@ -335,13 +334,13 @@ async def test_an_overlay_set_with_the_switch_unreadable_is_set_and_read_back_as
 
 
 def test_set_overlay_offers_the_model_only_the_overlays_there_are(tmp_path: Path) -> None:
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     assert set_overlay_tool(sessions, Overlays(Home(tmp_path))).properties["overlay"]["enum"] == ["normal", "watched", "muted"]
 
 
 async def test_an_overlay_the_model_names_that_is_none_is_refused_and_nothing_is_set(tmp_path: Path) -> None:
     member = membership(tmp_path, "one")
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     await sessions.apply(Joined(member, "startup"))
     result = await set_overlay_tool(sessions, Overlays(Home(tmp_path / "home"))).body(session=member.id, overlay="quiet")
     assert result == {"error": "'quiet' is no overlay; it is one of normal, watched, muted"}
@@ -353,7 +352,7 @@ async def test_a_muted_session_s_turn_is_held_with_finished_turns_told_and_told_
     muted, other = membership(tmp_path, "muted"), membership(tmp_path, "other")
     home = Home(tmp_path / "home")
     entries: list[Entry] = []
-    sessions = Sessions(clock=lambda: 0.0, record=entries.append)
+    sessions = new_sessions(record=entries.append)
     for each in (muted, other):
         finished_turn(each)
         await sessions.apply(Joined(each, "startup"))
@@ -397,7 +396,7 @@ def test_an_overlay_file_holding_anything_else_is_refused(tmp_path: Path) -> Non
 
 
 async def test_a_session_that_is_not_running_cannot_have_its_overlay_set(tmp_path: Path) -> None:
-    sessions = Sessions(clock=lambda: 0.0, record=lambda _: None)
+    sessions = new_sessions()
     result = await set_overlay_tool(sessions, Overlays(Home(tmp_path))).body(session="../escape", overlay="watched")
     assert "error" in result
     assert not (tmp_path / "overlays").exists()

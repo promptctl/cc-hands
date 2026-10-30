@@ -7,11 +7,11 @@ from hands.core.drilldown import LADDER, drill
 from hands.core.narration import narration
 from hands.core.session import PromptId, SessionId
 from hands.core.turn import CUT, Asked, Edited, Said, Step, Tested, Turn
-from hands.sessions.registry import Sessions
 from hands.core.pending import News
 from hands.voice.narrator import Recounts
 from hands.voice.tool import Body, Result
 from hands.voice.tools import expand_tool
+from conftest import new_sessions
 
 SID = SessionId("s1")
 WHY = "test_splits_on_commas\nAssertionError: assert ['a,b'] == ['a', 'b']"
@@ -30,7 +30,7 @@ def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
 
 def expand(recounts: Recounts) -> Body:
     """The tool's body, as the model calls it."""
-    return expand_tool(Sessions(clock=lambda: 0.0, record=lambda _: None), recounts).body
+    return expand_tool(new_sessions(), recounts).body
 
 
 def parts(result: Result) -> list[tuple[str, str]]:

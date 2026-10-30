@@ -17,15 +17,11 @@ from hands.sessions.liveness import observations, sweep
 from hands.sessions.payload import Rejected
 from hands.sessions.processes import START_SLACK_SECONDS, parse_pid, process_starts
 from hands.sessions.membership import Recorded, recorded, remove_ended_membership, write_membership
-from hands.sessions.registry import Sessions
+from conftest import new_sessions
 
 
 def member(name: str, pid: int) -> Membership:
     return Membership(SessionId(name), pid=pid, cwd=Path("/code") / name, transcript=Path("/nowhere") / f"{name}.jsonl")
-
-
-def sessions() -> Sessions:
-    return Sessions(clock=time.monotonic, record=lambda _: None)
 
 
 @pytest.mark.parametrize(
@@ -98,7 +94,7 @@ def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: 
     assert [file.path for file in unreadable] == [home.membership(SessionId("bad"))]
     # Reading removes nothing; the sweep removes what it read as unreadable.
     assert home.membership(SessionId("bad")).exists()
-    asyncio.run(sweep(home, sessions(), frozenset()))
+    asyncio.run(sweep(home, new_sessions(), frozenset()))
     assert not home.membership(SessionId("bad")).exists()
     assert (home.memberships / "half.tmp").exists()
 
@@ -120,7 +116,7 @@ async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_spe
     # The file names the parent pid but was written before that process started: the pid was taken by someone else.
     long_ago = time.time() - 10 * 365 * 86400
     os.utime(home.membership(reused.id), (long_ago, long_ago))
-    registry = sessions()
+    registry = new_sessions()
     for membership in (running, dead, reused):
         await registry.apply(Joined(membership, "startup"))
 
@@ -143,7 +139,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
     long_ago = time.time() - 60
     os.utime(home.membership(SessionId(stale)), (long_ago, long_ago))
     write_membership(home, member("m-current", os.getpid()))
-    registry = sessions()
+    registry = new_sessions()
     await sweep(home, registry, frozenset())
     assert [listing.session.membership.id for listing in registry.live()] == ["m-current"]
     assert sorted(path.stem for path in home.memberships.glob("*.json")) == ["m-current"]
@@ -153,7 +149,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
 
 async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by_the_next_sweep(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
-    registry = sessions()
+    registry = new_sessions()
     await registry.apply(Joined(member("closed", dead_pid()), "startup"))
     unfiled = await sweep(home, registry, frozenset())
     assert len(registry.live()) == 1
@@ -166,7 +162,7 @@ async def test_a_restarted_daemon_lists_the_sessions_the_last_one_did(tmp_path: 
     home = Home(tmp_path)
     for name, pid in (("one", os.getpid()), ("two", os.getppid())):
         write_membership(home, member(name, pid))
-    before, after = sessions(), sessions()
+    before, after = new_sessions(), new_sessions()
     await sweep(home, before, frozenset())
     await sweep(home, after, frozenset())
     assert [listing.session for listing in after.live()] == [listing.session for listing in before.live()]
@@ -180,7 +176,7 @@ def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_as
     home.memberships.mkdir()
     home.membership(SessionId("bad")).write_text(json.dumps({"pid": pid, "cwd": "/c", "transcript_path": "/t.jsonl"}))
     assert recorded(home)[0] == []
-    asyncio.run(sweep(home, sessions(), frozenset()))
+    asyncio.run(sweep(home, new_sessions(), frozenset()))
     assert not home.membership(SessionId("bad")).exists()
 
 
@@ -188,7 +184,7 @@ async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_rem
     home = Home(tmp_path)
     for name in ("one", "two", "three"):
         write_membership(home, member(name, dead_pid()))
-    registry = sessions()
+    registry = new_sessions()
     await sweep(home, registry, frozenset())
     assert registry.live() == []
     assert list(home.memberships.glob("*.json")) == []

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import onboard, patiently
+from conftest import new_sessions, onboard, patiently
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
@@ -314,7 +314,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None)
-    sessions = Sessions(clock=time.monotonic, record=lambda _event: None)
+    sessions = new_sessions(clock=time.monotonic)
     config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
 
@@ -449,7 +449,7 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "reap", kept)
 
     def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
-        sessions = Sessions(clock=time.monotonic, record=record)
+        sessions = new_sessions(clock=time.monotonic, record=record)
 
         async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
