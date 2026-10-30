@@ -6,7 +6,28 @@ hands types into the brain's terminal. Return in a dialog answers it, so hands t
 
 ## How to read this document
 
-Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression of the kind `node grep.mjs <binary> '<regex>'` takes, written to match the source text as it is. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
+Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression, written to match the source text as it is, and the script at the end of this section finds it: `node grep.mjs <binary> '<regex>'` prints every hit with the text around it. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
+
+```js
+// grep.mjs: search the binary's JS modules in memory. node grep.mjs <binary> <regex> [context] [max]
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const g = require(process.env.HOME + '/code/cc-extra/src/bun-graph.js');
+const [bin, pat, ctx = '300', max = '20'] = process.argv.slice(2);
+const r = g.readGraphFromFile(bin);
+if (!r.ok) { console.error(r); process.exit(1); }
+const re = new RegExp(pat, 'g');
+let n = 0;
+for (const m of r.modules) {
+  if (m.loader !== 'js' && m.loader !== 1) continue;
+  const t = m.text();
+  for (const hit of t.matchAll(re)) {
+    if (n++ >= +max) process.exit(0);
+    const i = hit.index;
+    console.log(`=== ${m.name} @${i}\n${t.slice(Math.max(0, i - +ctx), i + +ctx)}\n`);
+  }
+}
+```
 
 ## The brain as hands launches it
 
@@ -23,7 +44,7 @@ What the brain can reach follows from how `src/hands/brain/process.py` starts it
 
 ## How a key travels
 
-1. **Before the REPL.** At process start Claude Code puts stdin in raw mode and buffers what is typed (chunk-fgyxav5k.js, search `process\.stdin\.on\("readable",e\.readableHandler\)`). A carriage return is kept in the buffer as a newline, not a send. When the REPL mounts, the buffer becomes the prompt's draft, unsent (chunk-3ghxrna3.js, search `ZFe\(Jd,ABt\(\)\)`). Text typed before the REPL is up, even across a startup dialog, lands in the prompt input and is not sent.
+1. **Before the first screen.** At process start Claude Code puts stdin in raw mode and buffers what is typed (chunk-fgyxav5k.js, search `process\.stdin\.on\("readable",e\.readableHandler\)`). A carriage return is kept in the buffer as a newline, not a send; Ctrl-C exits Claude Code with status 130 and Ctrl-D ends the buffering (chunk-fgyxav5k.js, search `if\(o===3\)\{b2\(\),process\.exit\(130\)`). The buffering stops the moment Ink first turns on raw mode (chunk-e4p6x208.js, search `if\(this\.rawModeEnabledCount===0\)\{if\(b2\(\)`), which the first screen that reads keys does, a startup screen or the REPL. When the REPL mounts, what was buffered becomes the prompt's draft, unsent (chunk-3ghxrna3.js, search `ZFe\(Jd,ABt\(\)\)`). So text typed before the first screen lands in the draft unsent, and keys typed while a startup screen is up go to that screen ("Startup screens").
 2. **Reading.** Ink's app reads stdin on "readable" (chunk-e4p6x208.js, search `u\.addListener\("readable",this\.handleReadable\)`), parses keys, bracketed paste and mouse. A bracketed paste becomes one paste event for the focused element (chunk-e4p6x208.js, search `if\(D\.kind==="paste"\)\{n\.props\.dispatchPasteEvent\(D\.text\);continue\}`). hands' prompt is pasted, so it arrives as one paste event, never as key presses; the Enter after it is a separate key.
 3. **Root capture.** The whole app sits in one box that captures every key first (chunk-vkjeenf8.js, search `keybindingScope:"Global",tabIndex:-1,flexDirection:"column",flexGrow:1,onKeyDownCapture:W`). The key is resolved against the keybinding contexts. A matching action runs the handler that registered it and the key goes no further. The default bindings are one table (chunk-dg7g57st.js, search `TB=\[{context:"Global",bindings:{"ctrl\+c":"app:interrupt"`): Return is `chat:submit` in the Chat context, `confirm:yes` in Confirmation, `select:accept` in Select, `historySearch:execute` in HistorySearch, `footer:openSelected` in Footer; Escape is `chat:cancel`, `confirm:no`, `select:cancel`; Ctrl-C is `app:interrupt` everywhere; Ctrl+B is `task:background` in the Task context only.
 4. **Registered handlers.** A component registers handlers through three hooks (chunk-cpb453mc.js, search `function at\(e,o,r=\{\}\)\{let\{context:t="Global",isActive:s=!0\}=r`, `function on\(e,o=\{\}\)\{let\{context:r="Global",isActive:t=!0\}=o`, `function Kf\(e,\{isActive:o=!0\}=\{\}\)`). A handler is live while its component is mounted and active, whatever has focus. Which components are mounted decides where a Return goes.
@@ -43,12 +64,12 @@ When a blocking dialog is held back because the user is typing, the line `Waitin
 
 ### What marks it and nothing else
 
-`❯` followed by U+00A0 is drawn by the prompt input alone; the source string above has one hit in the whole graph. Every other `❯` is followed by an ordinary space:
+Of everything Claude Code's own code draws, only the prompt input puts U+00A0 after `❯` or `!`. Every U+00A0 in the graph was read: 42 sites in 19 chunks, written as `\xA0`, `\u00A0` or the character itself. The only ones joined to `❯` or `!` are the prompt's two prefixes above and `knr`, the U+00A0 that `BT`, the fullscreen prefix builder, puts after `❯`, `!` or an agent's name (chunk-3ghxrna3.js, search `function BT\(\{mode:h,agent:x,maxWidth:L\}\)`). The rest sit in regular expressions, entity tables, the transcript's `⎿` and `⏺` rows, and the markdown renderer, below. Every other `❯` the code draws is followed by an ordinary space:
 
 - a past user prompt in the transcript draws `❯`, a space, then the text (chunk-e5ckmb4a.js, search `"aria-label":"you:",color:"inactive",children:te\.pointer`, `children:\[W," ",e\(n,{color:"text",children:B}\)\]`);
 - the cursor on a select's focused option is its own box beside the label with a one-cell gap (chunk-amjw57qh.js, search `r\(s,{flexDirection:"row",gap:1,children:\[Ve,ne,E\]}\)`).
 
-So a row whose first non-blank characters are `❯` and U+00A0, or `!` and U+00A0, is the prompt input's row.
+Text the model writes is another matter. The markdown renderer turns a space before a list number into U+00A0 (chunk-tcb99wbx.js, search `function ve\(e\)\{return e\.replace\(/ \(\\d\{1,9\}\[\.\)\]\)\(\?!\\w\)/g,"\\xA0\$1"\)\}`), so a line of the brain's reply reading `❯ 1. Yes`, as when it quotes a dialog, is drawn in the transcript as `❯`, U+00A0, `1. Yes`. A row whose first non-blank characters are `❯` and U+00A0, or `!` and U+00A0, is the prompt input's row or a line of transcript text; "The rule" tells them apart only by what is drawn around the row.
 
 ### When it is drawn
 
@@ -79,6 +100,8 @@ The editor takes focus only when `zE` holds (chunk-3ghxrna3.js, search `zE=yp===
 - **Escape:** `chat:cancel` stops a running turn. On an empty, idle prompt with history, a second Escape within 800 ms opens Rewind (chunk-3ghxrna3.js, search `of=l5\(Poo,Se.openMessageSelector\)`; the window is chunk-cpb453mc.js, search `var a=800;function l5\(`).
 - **Ctrl-C:** `app:interrupt` stops a turn or clears the draft; on an empty prompt the first press shows `Press Ctrl-C again to exit` and a second within 800 ms exits.
 - **Ctrl+B:** bound only while a foreground tool's progress is drawn (chunk-59apvq15.js, search `return d.registerHandler\({action:"task:background",context:"Task"`); it moves that tool to the background. At an idle prompt it is unbound.
+- **Shift-Tab:** `chat:cycleMode` moves the brain to its next permission mode (chunk-dg7g57st.js, search `d=b\?"shift\+tab":"meta\+m"`, `\.\.\.\{\[d\]:"chat:cycleMode"\}`).
+- **Ctrl-U:** deletes the draft from the cursor back to the start of its line (chunk-prsva4j5.js, search `\["u",Tt\]`).
 
 ## The dialog store and its host
 
@@ -118,6 +141,8 @@ The dialog closes when it is answered, when the PermissionRequest hook answers f
 - **Escape:** denies and stops the turn.
 - **Ctrl-C:** no permission dialog binds it. The REPL's `app:interrupt` stops the turn, which cancels the dialog and denies the tool (chunk-3ghxrna3.js, search `at\("app:interrupt",Mr,{context:"Global",isActive:jn}\)`). The REPL's own Escape handler is off while a dialog is drawn (chunk-3ghxrna3.js, search `Qn=EB\(\)==="visible"`).
 - **Ctrl+B:** no dialog binds it. With a dialog up the asked tool is not running; Ctrl+B reaches only a tool already running beside it.
+- **Shift-Tab:** answers the file dialog (see "Files"); no other permission dialog registers it.
+- **Up, Down, Ctrl-U:** Up and Down move the focus between options. Ctrl-U is not bound in Confirmation or Select and acts only in a focused text field.
 - **Prompt input:** not drawn while the dialog is drawn; drawn while it is held back (none of the permission kinds names "draft").
 - **Status file:** `waiting`, reason `permission prompt` unless named below.
 
@@ -138,6 +163,7 @@ The dialog closes when it is answered, when the PermissionRequest hook answers f
 
 - Kind `permission_file` (chunk-681adkg3.js, search `kind:"permission_file"`), for Edit, Write, NotebookEdit, Read, Glob and Grep with a path.
 - Text: title `Edit file` (chunk-681adkg3.js, search `title:"Edit file"`), `Create file`, `Overwrite file` (chunk-681adkg3.js, search `h="Overwrite file"`), `Edit notebook`, `Read file`, or `Read outside the working directories` with the question `Allow this read outside the working directories?` (chunk-681adkg3.js, search `Ve="Read outside the working directories"`, `Xe="Allow this read outside the working directories\?"`). A diff sits between the title and the question, which is `Do you want to <verb> <file>?` (chunk-3ghxrna3.js, search `return r\(n,{children:\["Do you want to ",h.verbPhrase`).
+- **Shift-Tab answers it.** This is the one permission dialog that registers `confirm:cycleMode`, Shift-Tab's Confirmation binding (chunk-3ghxrna3.js, search `on\(\{"confirm:cycleMode":sn\},\{context:"Confirmation"\}\)`). It chooses the dialog's session-wide yes row, which a write dialog labels with a bold `(shift+tab)` (chunk-3ghxrna3.js, search `et=DS\("confirm:cycleMode","Confirmation","shift\+tab"\)`). If Tab has turned Yes or No into a text field, Shift-Tab chooses that option instead.
 - Brain: reachable. The brain's working directory is empty, so a read of any real path is outside it and asks in default mode, and asks with the outside-reads title in auto mode. The auto-mode outside-reads ask has a kind of its own for the bridge (chunk-681adkg3.js, search `kind:"auto_mode_outside_reads"`); in the terminal it is this dialog.
 
 ### WebFetch: "Fetch"
@@ -283,7 +309,7 @@ hands sends none of Meta+P, Meta+O, Meta+T, Ctrl+R or Ctrl+G. The background tas
 
 ## Autocomplete
 
-Typing `/`, or `@` and a path, opens a suggestion list under the input. It is the one overlay that leaves the editor focused and `chat:submit` registered. Its keys are Tab to accept, Escape to dismiss, Up and Down to move (chunk-dg7g57st.js, search `\{context:"Autocomplete",bindings:\{tab:"autocomplete:accept",escape:"autocomplete:dismiss"`; registered at chunk-3ghxrna3.js, search `on\(Fs,{context:"Autocomplete",isActive:Wi&&!Ti}\)`). Return applies the highlighted suggestion and, for a slash command, runs it (see "Keys at the prompt"). The prompt row stays drawn. hands' `Text` escapes a leading `/`; an `@` inside a prompt can still open the list.
+Typing `/`, or `@` and a path, opens a suggestion list under the input. It is the one overlay that leaves the editor focused and `chat:submit` registered. Its keys are Tab to accept, Escape to dismiss, Up and Down to move (chunk-dg7g57st.js, search `\{context:"Autocomplete",bindings:\{tab:"autocomplete:accept",escape:"autocomplete:dismiss"`; registered at chunk-3ghxrna3.js, search `on\(Fs,{context:"Autocomplete",isActive:Wi&&!Ti}\)`). Return applies the highlighted suggestion and, for a slash command, runs it (see "Keys at the prompt"). The prompt row stays drawn. hands' `Text` escapes a leading `/`; an `@` inside a prompt can still open the list. hands' `Command` types its `/name` as keys, which opens the list, so with no arguments its Enter is the list's Return; which suggestion is highlighted when the typed name matches a command exactly was not traced.
 
 ## History search
 
@@ -308,7 +334,7 @@ These keep the prompt row drawn:
 
 ## Startup screens
 
-These run before the REPL mounts, one after another (chunk-njr2st7n.js), so no prompt row is drawn and no hook runs. Text typed meanwhile is buffered into the prompt's draft, and its Return does not send it ("How a key travels").
+These run before the REPL mounts, one after another (chunk-njr2st7n.js), so no prompt row is drawn and no hook runs. Each one that reads keys ends the early buffering ("How a key travels"), so keys typed while it is up go to it: Return answers it, and on the workspace trust screen Return exits Claude Code.
 
 - **Onboarding** (theme, terminal setup): unless the config has `hasCompletedOnboarding` (chunk-njr2st7n.js, search `if\(v.hasCompletedOnboarding&&a.CLAUDE_CODE_POWERUP_ONBOARDING!=="banner"`). Text `Choose the text style that looks best with your terminal` (chunk-j84edmt2.js, search `Choose the text style that looks best with your terminal`). Brain: done by `hands login`'s first run.
 - **Workspace trust:** unless the working directory or an ancestor is trusted in the config (chunk-njr2st7n.js, search `if\(O=Ds\(\),O&&!I3e\(\)\)return null`; chunk-dxcygj28.js, search `if\(e.projects\?.\[n\]\?.hasTrustDialogAccepted\)return!0`). Trust is read from the brain's `.claude.json`, so `--setting-sources user` does not change it. Text `Accessing workspace:`, the directory, `Quick safety check: Is this a project you created or one you trust?` (chunk-k0k7hd82.js, search `Quick safety check: Is this a project you created or one you trust\?`). Options `Yes, I trust this folder` and `No, exit`, **focus on No, exit** (chunk-k0k7hd82.js, search `cancelFirst:!0,focus:"cancel",confirmLabel:"Yes, I trust this folder"`): Return exits Claude Code. Brain: only if its empty working directory was never trusted.
@@ -327,16 +353,16 @@ These run before the REPL mounts, one after another (chunk-njr2st7n.js), so no p
 
 ## Timing against the hooks and the status file
 
-- **PermissionRequest hook.** The dialog is pushed to the store in the same synchronous run that starts the hook, before its HTTP request leaves ("How a tool's ask becomes a dialog"). The dialog reaches the screen on the next frame. hands, holding the hook, knows of a hook-backed dialog no later than the screen shows it. Person-only asks post no hook.
+- **PermissionRequest hook.** The dialog is pushed to the store in the same synchronous run that starts the hook, before its HTTP request leaves ("How a tool's ask becomes a dialog"). The dialog reaches the screen on the next frame. The hooks run through an async generator (chunk-681adkg3.js, search `async runHooks\(h,D,F,T,B,E\)\{if\(n\.forRemoteExecution===!0\)return null;for await\(let x of L1e\(`), and the request then crosses loopback to hands' listener, so the code does not fix whether hands has the hook before that frame reaches the pane. Person-only asks post no hook.
 - **Frames.** Claude Code writes a frame at most every 16 ms, every 4 ms for 50 ms after input, and holds a frame back in 250 ms steps while more than 16384 bytes wait to reach stdout (chunk-z44ns0zs.js, search `var Zg=16,Tls=50,Als=4,Rls=16384,yeo=250`; chunk-e4p6x208.js, search `f=n<this.inputPriorityUntil\?Als:Zg`).
 - **An answered dialog** leaves the store at once (chunk-5a2asxb8.js, search `answer\(t,n\){if\(e.getState\(\).open.find\(\(a\)=>a.id===t\)\?.countedAsk\?.settle\(\),!r\(t\)\)return`), and so does one whose hook won. It stays drawn until the next frame: about 4 ms after a key answered it, about 16 ms after a hook did, longer while stdout is backed up. A dialog queued beneath it is revealed in the same store update (chunk-5a2asxb8.js, search `shownAt:Date.now\(\),revealSeq:\(r.revealSeq\?\?0\)\+1`), so it is drawn in the same frame the answered one leaves. With none queued, the prompt input is drawn again in that frame.
-- **Status file.** The status is `waiting` whenever the store's top blocking entry exists, drawn or held back (chunk-3ghxrna3.js, search `function TEo\(h\){if\(h.queuedElicitation\)return"input needed";if\(h.topDialogWaitingFor!==void 0\)return h.topDialogWaitingFor`, `function XRe\(h,x\){let L=x\?qU\(h\):QE\(h\);return Rpt\(L\?.kind\)}`). The reason is the kind's (chunk-3ghxrna3.js, search `function Rpt\(h\){return h===void 0\?void 0:jh\[h\]\?.waitingFor\?\?"permission prompt"}`): `permission prompt` for permission kinds, `input needed` for AskUserQuestion, elicitations and iTerm2 setup, `sandbox request`, `goal proposal`, `dialog open` for the rest, and `dialog open` while a slash-command panel shows and nothing streams. While a turn runs, the "suggestion" kinds do not count. The file is written by an effect after the render that changed the status (chunk-3ghxrna3.js, search `co=\(\)=>{Yze\({status:Yo,waitingFor:ao`), asynchronously; whether it lands before or after the frame of the same change is not fixed by the code. `waiting` with the prompt input drawn means a dialog held back, not one on screen.
+- **Status file.** The status is `waiting` whenever the store's top blocking entry exists, drawn or held back (chunk-3ghxrna3.js, search `function TEo\(h\){if\(h.queuedElicitation\)return"input needed";if\(h.topDialogWaitingFor!==void 0\)return h.topDialogWaitingFor`, `function XRe\(h,x\){let L=x\?qU\(h\):QE\(h\);return Rpt\(L\?.kind\)}`). The reason is the kind's (chunk-3ghxrna3.js, search `function Rpt\(h\){return h===void 0\?void 0:jh\[h\]\?.waitingFor\?\?"permission prompt"}`): `permission prompt` for permission kinds, `input needed` for AskUserQuestion, elicitations and iTerm2 setup, `sandbox request`, `goal proposal`, `dialog open` for the rest, and `dialog open` while a slash-command panel shows and nothing streams. While a turn runs, the "suggestion" kinds do not count. The file is written by an effect after the render that changed the status (chunk-3ghxrna3.js, search `co=\(\)=>{Yze\({status:Yo,waitingFor:ao`), asynchronously; whether it lands before or after the frame of the same change is not fixed by the code. `waiting` with the prompt input drawn means a dialog held back, or one whose first frame is not yet on screen.
 - **Notification hook, `permission_prompt`.** It is not sent when the dialog appears. A drawn or held-back dialog starts a timer; the hook fires once the dialog has been up 6 s with no user input in the last 6 s (chunk-3ghxrna3.js, search `function GPe\(h,x,L\)`, `function YNo\(h,x\){return Date.now\(\)-Math.max\(Cf\(\),x\)>=h}`; chunk-6dp77wfw.js, search `Ion=6000`). A dialog answered sooner never fires it. Its message for permission kinds is `Claude needs your permission` (chunk-3ghxrna3.js, search `ob=\{text:"Claude needs your permission"\}`). `CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS` turns off another path, the SDK's, not this one (chunk-z1fhep8d.js, search `if\(a.CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS\)return\(\)=>{}`).
 - **Held back and released.** A dialog held back for typing is released 1500 ms after the last edit, or at once when the draft empties, as it does when the prompt is sent. On release the 150 ms grace (600 ms if the draft still holds text) applies.
 
 ## What `capture-pane` returns
 
-hands reads the pane with `tmux capture-pane -p -t <pane>` and strips trailing whitespace (`shown` in `src/hands/sessions/tmux.py`). Without `-e` the text carries no colour or attributes; without `-J` a row the terminal wrapped comes back as two lines; without `-S`/`-E` only the visible rows come back, never the pane's history; without `-a` or `-M` it is the grid the pane shows now, whichever screen (main or alternate) is active.
+hands reads the pane with `tmux capture-pane -p -t <pane>` and strips the trailing whitespace of the whole text, not of each row (`shown` in `src/hands/sessions/tmux.py`). Without `-e` the text carries no colour or attributes; without `-J` a row the terminal wrapped comes back as two lines; without `-S`/`-E` only the visible rows come back, never the pane's history; without `-a` or `-M` it is the grid the pane shows now, whichever screen (main or alternate) is active.
 
 ### Fullscreen or inline
 
@@ -354,7 +380,7 @@ So the brain's mode is its config directory's to say: `tui` in its settings.json
 - The brain's pane is made 200 columns by 50 rows (`COLS`, `ROWS` in `src/hands/sessions/pseudoterminal.py`, used by `in_tmux`). hands' own client attaches with `-f ignore-size`, so it does not size the window; a person who attaches a client without that flag resizes it under tmux's `window-size` option. fritter passes each size change on to Claude Code's terminal (`pty.InheritSize` on SIGWINCH, `fritter/wrap.go`), and Claude Code redraws at the new size.
 - Claude Code wraps its own text to the width it was given. A row that reaches the last column can still be wrapped by the terminal, and then `capture-pane -p` returns it as two lines: a marker must be matched on one row's text, never across rows.
 - A dialog or prompt taller than the screen loses its top rows: in inline mode they scroll into history, in fullscreen mode the layout clips them. The rows nearest the bottom (a dialog's options and footer, the prompt input and its footer) are the ones always on screen, so markers are taken from there.
-- Claude Code paces frames: at most one each 16 ms, one each 4 ms for 50 ms after input, and a frame is held back 250 ms while more than 16384 bytes wait to reach stdout (chunk-z44ns0zs.js, search `var Zg=16,Tls=50,Als=4,Rls=16384,yeo=250`; used at chunk-e4p6x208.js, search `f=n<this\.inputPriorityUntil\?Als:Zg`). Each frame's bytes pass through fritter to the pane, and tmux applies them as it reads them. A capture taken while tmux has applied part of a frame returns rows of two frames. The code cannot rule this out; two captures that agree, taken a frame apart, can.
+- Claude Code paces frames: at most one each 16 ms, one each 4 ms for 50 ms after input, and a frame is held back 250 ms while more than 16384 bytes wait to reach stdout (chunk-z44ns0zs.js, search `var Zg=16,Tls=50,Als=4,Rls=16384,yeo=250`; used at chunk-e4p6x208.js, search `f=n<this\.inputPriorityUntil\?Als:Zg`). Each frame's bytes pass through fritter to the pane, and tmux applies them as it reads them. A capture taken while tmux has applied part of a frame returns rows of two frames. Claude Code writes no synchronized-output marks that would tell tmux where a frame ends (the source has no `?2026h`). While a frame's bytes keep flowing, two captures that agree, taken a frame apart, rule a torn frame out. While stdout is backed up, the rest of a frame can wait in the pipe from Claude Code through fritter to tmux for longer than any fixed gap, and two captures agree on the torn grid.
 
 ### What the pane can show that is not Claude Code's
 
@@ -365,12 +391,12 @@ So the brain's mode is its config directory's to say: `tui` in its settings.json
 
 Read the pane with `tmux capture-pane -p`, as `shown` in `src/hands/sessions/tmux.py` does. A key typed now reaches the prompt input when all four hold, and does not otherwise:
 
-1. **A prompt row is on screen.** Some row's first non-blank characters are `❯` (U+276F) followed by U+00A0, or `!` followed by U+00A0. Take the last such row. Only the prompt input draws either pair ("What marks it and nothing else"), and it is drawn only while no blocking dialog, no prompt-hiding panel, no overlay in place of the editor, no transcript view and no exit is on screen ("When it is drawn").
+1. **A prompt row is on screen.** Some row's first non-blank characters are `❯` (U+276F) followed by U+00A0, or `!` followed by U+00A0. Take the last such row: Claude Code's own drawing puts either pair only on the prompt input, but transcript text above it can show one too ("What marks it and nothing else"). The prompt input is drawn only while no blocking dialog, no prompt-hiding panel, no overlay in place of the editor, no transcript view and no exit is on screen ("When it is drawn").
 2. **The row is the input box's first row.** The row directly above it begins with `─`, the box's top rule, which may carry a label.
 3. **Nothing below it holds the keys.** No row below it is a choice with the select cursor, that is `❯`, an ordinary space, a digit and a period; and no row below it reads `search prompts:` or `no matching prompt:`.
-4. **The screen is settled.** A second capture, taken at least 20 ms after the first, returns the same text. Claude Code writes a frame at most every 16 ms, so a capture that caught tmux part-way through a frame differs from the next one.
+4. **The screen is settled.** A second capture, taken at least 20 ms after the first, returns the same text. Claude Code writes a frame at most every 16 ms, so while its output flows, a capture that caught tmux part-way through a frame differs from the next one. While its stdout is backed up, it does not ("Size, wrapping and redraws").
 
-tmux returns U+00A0 as its own character, not as a space: on tmux 3.7b, a pane that printed `❯`, U+00A0 and `hello` captured as the bytes `e2 9d af c2 a0` followed by `hello`.
+tmux returns U+00A0 as its own character, not as a space: on tmux 3.7b, a pane that printed `❯`, U+00A0 and `hello` captured as the bytes `e2 9d af c2 a0` followed by `hello`. Python's `str.strip()`, `rstrip()` and `split()` treat U+00A0 as whitespace, so a row that captures as `❯` and U+00A0 alone, as an empty prompt's row can, becomes a bare `❯` once stripped. Match a row before stripping it, or strip only ordinary spaces.
 
 ## Where the rule is wrong
 
@@ -385,22 +411,23 @@ Every surface in this document, and the verdict of the rule on it:
 | Slash-command panel opened from the prompt, and the message selector | does not reach | right: shown with `hidesPrompt:true` |
 | **Slash-command panel opened mid-turn** (an immediate command typed while a turn runs) | reaches | **wrong**: the prompt row stays drawn while the panel holds the keys, and nothing in the text says which has them |
 | Overlays in place of the editor (pickers, background tasks dialog, fullscreen history picker, external editor) | does not reach | right: the hidden editor draws no prompt row |
-| **Autocomplete list** | reaches | **wrong for Return**: keys reach the prompt input, but Return applies the highlighted suggestion, and runs it for a slash command, instead of sending the draft |
+| **Autocomplete list** | reaches | **wrong for Return**: keys reach the prompt input, but Return applies the highlighted suggestion, and runs it for a slash command, instead of sending the draft. hands' `Command` with no arguments presses its Enter with the list open |
 | History search, inline | does not reach | right, by condition 3 |
 | Transcript view | does not reach | right |
 | **Footer item selected** (Down past the end of history while footer items show) | reaches | **wrong**: Return opens the item; the selection is drawn as colour only |
 | **Above-prompt pane focused** (Ctrl+X Tab, plugin panes only) | reaches | **wrong**: the pane holds the keys |
 | **Inline digit question above the prompt, draft of one digit** | reaches | **wrong for Return**: it answers the question instead of sending the digit |
 | **Vim NORMAL mode** (only if the brain's settings name vim) | reaches | **wrong for text**: printable keys are editing commands; Return still sends |
-| Startup screens | does not reach | right; text typed meanwhile would land in the draft unsent |
+| Startup screens | does not reach | right: keys go to the screen, and Return on workspace trust exits Claude Code |
 | Exit in progress, exit and worktree questions | does not reach | right |
 | Viewing another agent (the prompt's prefix is the agent's name) | does not reach | wrong, on the safe side: hands waits though the prompt takes keys |
 | Screen-reader mode (the prefix is `$` and U+00A0) | does not reach | wrong, on the safe side |
 | Input taller than the pane, its first row off screen | does not reach | wrong, on the safe side |
-| **A dialog pushed to the store but not yet drawn** | reaches | **wrong**: the screen lags the store by up to one frame, 16 ms, longer while stdout is backed up. A hook-backed ask has already posted its PermissionRequest hook by then; a person-only ask has not |
-| **Keys in flight when a dialog appears** (between the capture and the keys' arrival) | reaches | **wrong**: a first ordinary main-conversation permission dialog has no input grace, so a Return arriving as it is drawn answers it. Asks with the grace armed refuse a key within 150 ms |
+| **A dialog pushed to the store but not yet drawn** | reaches | **wrong**: the screen lags the store by up to one frame, 16 ms, longer while stdout is backed up. A hook-backed ask has started its PermissionRequest hook by then, but the code does not fix whether hands has it before the frame; a person-only ask posts none |
+| **Keys in flight when a dialog appears** (between the capture and the keys' arrival) | reaches | **wrong**: a first ordinary main-conversation permission dialog has no input grace, so a Return arriving as it is drawn answers it, as does a Shift-Tab on a file dialog. Asks with the grace armed refuse a key within 150 ms |
+| **A frame torn while stdout is backed up** | reaches, when the torn grid still holds the prompt row | **wrong**: two captures agree on a grid that is half one frame and half the next, so condition 4 passes while a dialog is being drawn |
 | **Pane in a tmux mode, or a person typing at the pane** | reaches | **wrong**: copy mode takes `send-keys` keys, and a person shares the input. tmux reports a mode as `#{pane_in_mode}`, not in the text |
-| **Transcript text imitating the prompt** (a row beginning `─`, then a row beginning `❯` and U+00A0, written by the model) above a dialog whose choices are not numbered rows, such as an elicitation form | reaches | **wrong**: condition 3 catches dialogs whose choices are numbered rows, not one whose choices are buttons |
+| **Transcript text imitating the prompt** (a row beginning `─`, then a row beginning `❯` and U+00A0, which the markdown renderer draws from an ordinary `❯ 1.` line of the brain's reply) above a dialog whose choices are not numbered rows, such as an elicitation form | reaches | **wrong**: condition 3 catches dialogs whose choices are numbered rows, not one whose choices are buttons |
 
 ## What the code does not settle
 
@@ -409,6 +436,7 @@ Every surface in this document, and the verdict of the rule on it:
 - Whether AskUserQuestion draws the permission frame's top rule.
 - What Claude Code draws when hands' Elicitation hook fails or times out.
 - Whether the status file's write or the frame of the same change lands first.
+- Whether hands receives a PermissionRequest hook before the dialog's first frame reaches the pane.
 - Whether hands' proxy counts as a gateway host for the auto-mode billing notice.
 - The account-dependent screens: managed settings, the Grove policy, the Pro trial, the cost notice.
 - Each slash-command panel's own key map (84 panels, not each read), which inline digit questions the brain can be shown, and what opens the auto-mode environment offer.
@@ -438,10 +466,10 @@ That is 1145 registrations in 143 chunks. Below, they are grouped by the compone
 | HistorySearch | Ctrl+R search and the fuzzy picker | History search |
 | Transcript | the transcript view | Transcript view |
 | Task | Ctrl+B while a foreground tool runs | The prompt input (Keys at the prompt) |
-| Footer, AbovePrompt, AbovePromptInput, AbovePromptSelect, Pane, PaneField, FeedbackSurvey, DiffPanel, Attachments | the footer, the above-prompt band and panes, surveys, the diff side panel, image attachments | Above-prompt band, panes, footer selection and surveys |
+| Footer, AbovePrompt, AbovePromptInput, AbovePromptSelect, Pane, PaneField, FeedbackSurvey | the footer, the above-prompt band and panes, surveys | Above-prompt band, panes, footer selection and surveys |
 | Tabs | AskUserQuestion, surveys, panels | the surface that draws the tabs |
 | Plugin, DiffDialog, ThemePicker, ModelPicker, EffortSlider, Help, ProactivityMenu | /plugin, /diff, /theme, /model, /effort, /help, the proactivity menu | Slash-command panels |
-| Scroll | fullscreen scrolling and selection | none: no Return or text binding |
+| Scroll, DiffPanel, Attachments | fullscreen scrolling and selection; the diff side panel (Ctrl+X B only); image attachments (arrows, Backspace, Delete, Escape) | none: no Return or text binding |
 | Agents | defined in the defaults, registered by nothing in the REPL | none |
 | Terminal, fork, info | not keybinding contexts: a VS Code keybinding writer, a skill's context, a command category | none |
 
@@ -623,7 +651,7 @@ That is 1145 registrations in 143 chunks. Below, they are grouped by the compone
 | chunk-3ghxrna3.js | `Keep worktree` | exit worktree prompt (Keep/Remove worktree) | Select, Dialog frame | Global keys and the exit states |
 | chunk-3ghxrna3.js | `function qMe\(\)\{let\{inter` | suspend/resume (Ctrl+Z) notice | app event listener | None: takes no Return or text in place of the prompt input |
 | chunk-3ghxrna3.js | `Diff unavailable` | app:toggleReplTab | at hook | Global keys and the exit states |
-| chunk-3ghxrna3.js | `Diff unavailable` | diff panel (DiffPanel context, app:diffFileList*) | at hook×2 | Above-prompt band, panes, footer selection and surveys |
+| chunk-3ghxrna3.js | `Diff unavailable` | diff panel (DiffPanel context, app:diffFileList*) | at hook×2 | none: no Return or text binding |
 | chunk-3ghxrna3.js | `Too many changed files to show diff` | diff panel | at hook, on hook | Above-prompt band, panes, footer selection and surveys |
 | chunk-3jxq5p27.js | `Do you want to use this API key\?` | custom API key approval | Confirm, Dialog frame | Startup screens |
 | chunk-3kb5ba6v.js | `function Z\(c\)\{let L=Dc\(t` | shared List/scroll-list component (rn/od) with select:* bindings; each use listed | on hook×2 | How a key travels (shared component: each use is listed under its own row) |
@@ -647,7 +675,7 @@ That is 1145 registrations in 143 chunks. Below, they are grouped by the compone
 | chunk-4z4prp8c.js | `function Y\(Z\)\{let a=w\(63` | background task detail (background tasks dialog) | onKeyDown, detail keys, Dialog frame, KeyBox | Overlays drawn in place of the editor |
 | chunk-55qwcww5.js | `function Ge\(o\)\{let r=w\(3` | base Pressable (mI) and text-entry (Jse) components; each use listed | onKeyDown, onAction, autoFocus×2 | How a key travels (shared component: each use is listed under its own row) |
 | chunk-55qwcww5.js | `function qe\(o\)\{let r=w\(3` | base Pressable (mI) and text-entry (Jse) components; each use listed | onKeyDown×2, onPaste×2, autoFocus×2, textEntry | How a key travels (shared component: each use is listed under its own row) |
-| chunk-59apvq15.js | `function v3t\(\{handler:i,` | Task context task:background (Ctrl+B) while a foreground tool runs; acts on the running task, not a dialog answer | registerHandler | Global keys and the exit states |
+| chunk-59apvq15.js | `function v3t\(\{handler:i,` | Task context task:background (Ctrl+B) while a foreground tool runs; acts on the running task, not a dialog answer | registerHandler | The prompt input (Keys at the prompt) |
 | chunk-5ac3cnn0.js | `Pin model versions` | provider model pinning | exit keys | Startup screens |
 | chunk-5ac3cnn0.js | `Pin model versions` | provider model pinning | Dialog frame | Startup screens |
 | chunk-5ac3cnn0.js | `Pin model versions` | provider model pinning | Select | Startup screens |
