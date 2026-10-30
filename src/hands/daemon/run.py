@@ -67,6 +67,8 @@ from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
+from hands.voice import voiceprints
+from hands.voice.voiceprints import Voiceprints
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
@@ -277,7 +279,10 @@ async def run(
         levels = Levels()
         # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a hearing
         # or a choice on one never interleaves with the other's in the speaker.
-        voice_choices = voices.Voices(home, player.lines, voices.fetched)
+        # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks in,
+        # the chooser each one it changes to. Its models load on threads of their own, so nothing waits on them.
+        prints = Voiceprints(voiceprints.load, voices.pocket, record)
+        voice_choices = voices.Voices(home, player.lines, voices.fetched, prints.speaking_in)
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
         quiet_cues = QuietCues()
@@ -301,7 +306,7 @@ async def run(
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
                 # Each run's holds in a directory of their own, named by when the voice was built: a hold's number is the run's.
                 held_since = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, home.holds / held_since, record), "the voice load"), heart, sessions.live_count, degraded, stop)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, prints, home.holds / held_since, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)

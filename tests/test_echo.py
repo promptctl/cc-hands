@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from hands.voice.echo import EchoCanceller
+from hands.voice.holds import Reference
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
@@ -96,17 +97,14 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
     assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28}
 
 
-def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_it_in_the_microphones_format() -> None:
-    """What hands keeps of what it said over a hold: the reference frame each microphone frame was matched with, at the
-    microphone's rate, so the two line up sample for sample; silence where nothing was playing."""
+def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_of_its_frames_as_it_was_played() -> None:
+    """What hands keeps of what it said over a hold: the reference frame each 10 ms of the microphone was matched with,
+    in the speaker's own format, untouched on the capture thread; silence where nothing was playing."""
     canceller = EchoCanceller()
-    tone = (8000 * np.sin(2 * np.pi * 440 * np.arange(int(0.02 * PLAYED_RATE)) / PLAYED_RATE)).astype(np.int16)
-    canceller.heard(bytes(320), HEARD_RATE, 1)  # one frame before anything plays
-    canceller.played(tone.tobytes(), PLAYED_RATE, 1)
+    tone = (8000 * np.sin(2 * np.pi * 440 * np.arange(int(0.02 * PLAYED_RATE)) / PLAYED_RATE)).astype(np.int16).tobytes()
+    canceller.played(tone, PLAYED_RATE, 1)
     cancelled = canceller.heard(bytes(640), HEARD_RATE, 1)
-    played = np.frombuffer(cancelled.played, np.int16)
-    assert len(cancelled.played) == len(cancelled.heard) == 640
-    # The same 440 Hz tone, at the microphone's rate: each sample where the tone is at that instant, give or take one step.
-    expected = 8000 * np.sin(2 * np.pi * 440 * np.arange(320) / HEARD_RATE)
-    assert np.max(np.abs(played - expected)) < 8000 * 2 * np.pi * 440 / PLAYED_RATE
-    assert canceller.heard(bytes(320), HEARD_RATE, 1).played == bytes(320)  # nothing more played: silence
+    half = len(tone) // 2
+    assert cancelled.played == (Reference(tone[:half], PLAYED_RATE, 1), Reference(tone[half:], PLAYED_RATE, 1))
+    # Nothing more played: silence, in the format the speaker last played in.
+    assert canceller.heard(bytes(320), HEARD_RATE, 1).played == (Reference(bytes(half), PLAYED_RATE, 1),)

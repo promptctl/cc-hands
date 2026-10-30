@@ -93,8 +93,8 @@ class Counted:
     def heard(self, sound: Sound) -> Hearings:
         return self._counted(self.recognizer.heard(sound))
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        return self._counted(self.recognizer.ended(hold, fate))
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+        return self._counted(self.recognizer.ended(hold, fate, sound))
 
     def _counted(self, hearings: Hearings) -> Hearings:
         self.returned += [self.captured()] * len(hearings)

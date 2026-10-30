@@ -48,7 +48,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import streaming, voices
+from hands.voice import streaming, voiceprints
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -318,15 +318,17 @@ def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(streaming, "load", unspoken)
 
 
-@pytest.fixture(autouse=True)
-def no_enrolment_speech(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Building the voice makes hands' print from a second of noise, not from its TTS: Pocket TTS loading a model of its
-    own and saying ENROLMENT is a second or two that no test is about but the one that asks for it (test_voiceprints)."""
+def stood_in() -> voiceprints.Voiceprints:
+    """hands' voiceprints where no test is about them: a model that prints every voice alike, and a TTS that says
+    anything as a second of silence. The real model is test_voiceprints' and test_streaming's."""
 
-    def noise(_voice: str, _text: str) -> streaming.Samples:
-        return np.random.default_rng(0).normal(0, 0.1, streaming.RATE).astype(np.float32)
+    def model() -> voiceprints.Embed:
+        return lambda _voice: np.ones(2, np.float32) / np.sqrt(np.float32(2))
 
-    monkeypatch.setattr(voices, "synthesized", noise)
+    def speech() -> voiceprints.Synthesize:
+        return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
+
+    return voiceprints.Voiceprints(model, speech, lambda _: None)
 
 
 async def unprimed() -> None:

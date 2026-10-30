@@ -35,7 +35,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import events, model_facts, patiently, running, unprimed
+from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -291,6 +291,7 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
         prompt=vocabulary,
+        prints=stood_in(),
         holds=tmp_path / "holds",
         record=recorded.append,
     )

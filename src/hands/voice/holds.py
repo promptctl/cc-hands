@@ -74,15 +74,25 @@ def decoded(audio: bytes) -> Samples:
 
 
 @dataclass(frozen=True)
+class Reference:
+    """10 ms of what the desk's speaker played, as the echo canceller was given it: 16-bit at the speaker's own rate and
+    channels, which are not a hold's."""
+
+    audio: bytes
+    rate: int
+    channels: int
+
+
+@dataclass(frozen=True)
 class Sound:
     """Audio of a hold, mono 16-bit at RATE: as the pipeline hears it, after the echo canceller, and as the microphone
     captured it, before; the two the same length, and the same at the phone, which is heard through no canceller. And
-    what the desk's speaker was playing as it was captured, the canceller's reference, frame for frame and as long; None
-    at the phone, whose own canceller is told what it plays, and hands is not."""
+    what the desk's speaker was playing as it was captured, the canceller's reference, one for each 10 ms of it; None at
+    the phone, whose own canceller is told what it plays, and hands is not."""
 
     heard: bytes
     captured: bytes
-    played: bytes | None
+    played: tuple[Reference, ...] | None
 
     @property
     def seconds(self) -> float:
@@ -103,7 +113,7 @@ class Recording:
         self._heard = bytearray()
         self._captured = bytearray()
         # None once a frame with no reference is added: a recording is of one place, cleared as the place moves.
-        self._played: bytearray | None = bytearray()
+        self._played: list[Reference] | None = []
 
     def add(self, sound: Sound, gathering: bool) -> None:
         """A frame more; while nothing is `gathering` it, only the last second is kept, the second a hold the desk was
@@ -111,7 +121,7 @@ class Recording:
         self._heard += sound.heard
         self._captured += sound.captured
         match self._played, sound.played:
-            case bytearray() as played, bytes() as more:
+            case list() as played, tuple() as more:
                 played += more
             case _:
                 self._played = None
@@ -119,72 +129,28 @@ class Recording:
         cut = 0 if gathering else max(0, len(self._heard) - SECOND)
         del self._heard[:cut]
         del self._captured[:cut]
-        if self._played is not None:
-            del self._played[:cut]
+        match self._played:
+            case list() as played:
+                # One reference for each 10 ms cut.
+                del played[: cut // (SECOND // 100)]
+            case None:
+                pass
 
     def clear(self) -> None:
         self._heard.clear()
         self._captured.clear()
-        self._played = bytearray()
+        self._played = []
 
     @property
     def sound(self) -> Sound:
-        return Sound(bytes(self._heard), bytes(self._captured), None if self._played is None else bytes(self._played))
-
-
-@dataclass(frozen=True)
-class Person:
-    """A speaker who is not hands: their voice scored `score` against hands' own voiceprint, on `seconds` of it."""
-
-    score: float
-    seconds: float
-
-
-@dataclass(frozen=True)
-class Hands:
-    """A speaker who is hands' own voice, come back through the microphone."""
-
-    score: float
-    seconds: float
-
-
-@dataclass(frozen=True)
-class Unsure:
-    """A speaker heard long enough to score, whose score is in hands' range at that length, and who is not yet heard
-    long enough to be called hands."""
-
-    score: float
-    seconds: float
-
-
-@dataclass(frozen=True)
-class Unheard:
-    """A speaker heard too briefly for any score to tell them from hands."""
-
-    seconds: float
-
-
-# Who a speaker of a hold is, by their voiceprint against hands' own (`hands.voice.voiceprints`).
-type Who = Person | Hands | Unsure | Unheard
-
-
-@dataclass(frozen=True)
-class Speaker:
-    """One speaker in the hold open, as a hearing found them: their number in the run, the words they added in it, None
-    for none, and who they are by everything the hold has of their voice so far."""
-
-    number: int
-    words: str | None
-    who: Who
+        return Sound(bytes(self._heard), bytes(self._captured), None if self._played is None else tuple(self._played))
 
 
 @dataclass(frozen=True)
 class Heard:
-    """What a listener heard of the hold open: the words said in it, None where it heard none; and each speaker it told
-    apart in it, none from a listener that tells no speakers apart."""
+    """What a listener heard of the hold open: the words said in it, None where it heard none."""
 
     words: str | None
-    speakers: tuple[Speaker, ...]
 
 
 # A hearing: a listener's slow work on a hold, while it is open or after it closed, which the owner runs off the audio
@@ -220,9 +186,9 @@ class Listener(Protocol):
         """More of the hold open, as it was captured."""
         ...
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        """The hold open ends, sent or thrown away: what the listener still has to hear of it, such as the last words the
-        streaming recognizer decodes from the silence after it, which settle after it closes."""
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+        """The hold open ends, sent or thrown away, `sound` all of it: what the listener still has to hear of it, such as
+        the last words the streaming recognizer decodes from the silence after it, which settle after it closes."""
         ...
 
 

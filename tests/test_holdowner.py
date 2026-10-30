@@ -16,7 +16,7 @@ from hands.sessions.audit import Entry, Levels
 from hands.sessions.wide import WideEvent
 from hands.voice import holdowner
 from hands.voice.holdowner import HoldOwner
-from hands.voice.holds import Fate, Hands, Heard, Hearing, Hearings, Hold, Person, Sound, Speaker, Unheard
+from hands.voice.holds import Fate, Heard, Hearing, Hearings, Hold, Recording, Reference, Sound
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed, Words
@@ -43,8 +43,8 @@ class Heeding:
         assert self._open is not None
         return self.hearings(self._open, sound)
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        self.given.append(("ended", (hold, fate)))
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+        self.given.append(("ended", (hold, fate, sound)))
         return self.after(hold, fate)
 
 
@@ -98,7 +98,7 @@ class Rig:
 
     async def frame(self, gate: Gate, sound: bytes, by: Edge = "held key") -> None:
         self.gate = gate
-        await self.run.worker.queue_frame(gate.framed(sound, sound, None, 16000, 1, "desk"))
+        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound), 16000, 1, "desk"))
 
     async def held(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Edge = "engaged conversation") -> None:
         """A hold opened by `by`, a frame of each sound captured while it is open, then sent or thrown away."""
@@ -129,6 +129,11 @@ def frame_of(n: int) -> bytes:
     return n.to_bytes(2, "little") * 320
 
 
+def played_with(sound: bytes) -> tuple[Reference, ...]:
+    """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound."""
+    return tuple(Reference(sound[start : start + 320], 16000, 1) for start in range(0, len(sound), 320))
+
+
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_hold_kept_from_before_it_included() -> None:
     first, second = Heeding("first"), Heeding("second")
     async with rigged(Scripted([None]), (first, second)) as rig:
@@ -143,12 +148,30 @@ async def test_every_listener_is_given_the_same_samples_in_capture_order_what_th
         await rig.frame(down.after("stop", "engaged conversation"), frame_of(5))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
     hold = Hold(1, "engaged conversation")
+    def sound(*levels: int) -> Sound:
+        audio = b"".join(map(frame_of, levels))
+        return Sound(audio, audio, played_with(audio))
+
+    # And as it ends, the whole of it, with what the speaker played over every 10 ms of it.
     assert first.given == second.given == [
-        ("opened", (hold, Sound(frame_of(1) + frame_of(2), frame_of(1) + frame_of(2), None))),
-        ("heard", Sound(frame_of(3), frame_of(3), None)),
-        ("heard", Sound(frame_of(4), frame_of(4), None)),
-        ("ended", (hold, "sent")),
+        ("opened", (hold, sound(1, 2))),
+        ("heard", sound(3)),
+        ("heard", sound(4)),
+        ("ended", (hold, "sent", sound(1, 2, 3, 4))),
     ]
+
+
+def test_the_second_a_hold_keeps_from_before_it_keeps_what_was_played_over_that_second_and_no_more() -> None:
+    recording = Recording()
+    for level in range(60):
+        audio = frame_of(level)
+        recording.add(Sound(audio, audio, played_with(audio)), gathering=False)
+    # 60 frames of 20 ms, the last 50 kept: one second, and a reference for each 10 ms of it.
+    kept = b"".join(map(frame_of, range(10, 60)))
+    assert recording.sound == Sound(kept, kept, played_with(kept))
+    # A frame the phone heard has nothing of the desk's speaker under it: the recording says nothing was referenced.
+    recording.add(Sound(frame_of(1), frame_of(1), None), gathering=True)
+    assert recording.sound.played is None
 
 
 async def test_the_transcribers_words_go_on_in_the_order_the_holds_ended_and_a_typed_hold_waits_its_turn() -> None:
@@ -171,23 +194,9 @@ def worded(words: str) -> Callable[[Hold, Sound], Hearings]:
     """Hearings that hear `words` in every frame."""
 
     async def hearing() -> Heard:
-        return Heard(words, ())
+        return Heard(words)
 
     return lambda _hold, _sound: (hearing,)
-
-
-async def test_who_each_speaker_is_is_on_the_hearing_and_words_cut_as_they_always_have_hands_own_too() -> None:
-    # The voiceprint is measured beside the cut and decides nothing yet: words hands' own voice said still cut.
-    speakers = (Speaker(0, "and then", Hands(0.82, 3.2)), Speaker(1, None, Unheard(0.4)), Speaker(2, "stop", Person(0.08, 1.1)))
-
-    async def hearing() -> Heard:
-        return Heard("and then stop", speakers)
-
-    async with rigged(Scripted([None]), (Heeding("identifying", hearings=lambda _hold, _sound: (hearing,)),)) as rig:
-        await rig.frame(rig.gate.after("start", "engaged conversation"), frame_of(3))
-        await rig.until(lambda: ("interim", "and then stop") in rig.seen.seen)
-        [event] = rig.events("hearing")
-        assert (event.facts["speakers"], event.facts["heard"], event.facts["cut"]) == (speakers, "words", True)
 
 
 async def test_a_listener_slow_to_hear_holds_up_no_other_listeners_cut() -> None:
@@ -195,7 +204,7 @@ async def test_a_listener_slow_to_hear_holds_up_no_other_listeners_cut() -> None
 
     async def waiting() -> Heard:
         await stuck.wait()
-        return Heard(None, ())
+        return Heard(None)
 
     slow, quick = Heeding("slow", hearings=lambda _hold, _sound: (waiting,)), Heeding("quick", hearings=worded("wait"))
     async with rigged(Scripted([None]), (slow, quick)) as rig:
@@ -209,7 +218,7 @@ async def test_words_heard_once_their_hold_closed_cut_nothing_and_never_land_beh
 
     async def late() -> Heard:
         await go.wait()
-        return Heard("too late", ())
+        return Heard("too late")
 
     listener = Heeding("late", hearings=lambda _hold, _sound: (late,))
     async with rigged(Scripted([None]), (listener,)) as rig:
@@ -236,7 +245,7 @@ async def test_words_heard_while_their_hold_is_open_cut_hands_off_ahead_of_its_r
 
 async def test_a_listeners_work_after_its_hold_ends_is_a_hearing_of_its_own() -> None:
     async def settled() -> Heard:
-        return Heard(None, ())
+        return Heard(None)
 
     listener = Heeding("settling", after=lambda _hold, _fate: (settled,))
     async with rigged(Scripted([None]), (listener,)) as rig:
@@ -253,10 +262,10 @@ async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_
 
     async def never() -> Heard:
         await hung.wait()
-        return Heard(None, ())
+        return Heard(None)
 
     async def words() -> Heard:
-        return Heard("still here", ())
+        return Heard("still here")
 
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _hold, _sound: (answers.pop(0),))
@@ -277,12 +286,12 @@ async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_qu
 
     async def never() -> Heard:
         await hung.wait()
-        return Heard(None, ())
+        return Heard(None)
 
     async def words() -> Heard:
         # A hearing that has to wait at all: one whose words are already in hand is no hearing still to come back.
         await asyncio.sleep(0)
-        return Heard("too long in line", ())
+        return Heard("too long in line")
 
     answers += [never, words]
     listener = Heeding("hung", hearings=lambda _hold, _sound: (answers.pop(0),))
@@ -377,7 +386,7 @@ async def test_hearings_still_to_run_as_the_pipeline_stops_end_cancelled() -> No
 
     async def waiting() -> Heard:
         await stuck.wait()
-        return Heard(None, ())
+        return Heard(None)
 
     listener = Heeding("stuck", hearings=lambda _hold, _sound: (waiting,))
     async with rigged(Scripted([None]), (listener,)) as rig:

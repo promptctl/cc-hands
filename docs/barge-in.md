@@ -85,9 +85,10 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | engaged conversation | once the streaming recognizer hears words in it, while it is open |
 | a hold that holds no words | nothing, so nothing has to be undone |
 
-Who said the words is measured beside the cut and does not yet decide it: each `hearing` event
-carries every speaker the diarizer heard, identified by voiceprint against hands' own voice as a
-`Person`, `Hands`, `Unsure` or `Unheard` with the score that said so (`voice/voiceprints.py`), and
+Who said the words is measured beside the cut and does not yet decide it: after each hearing's
+words go out, a `voiceprints.identified` event says who each speaker the diarizer heard was, by
+voiceprint against hands' own voice, `Person`, `Hands`, `Unsure`, `Unheard` or `Unidentified`, with
+the score or reason that said so (`voice/voiceprints.py`), and
 each hold is kept with what hands was playing over it (`voice/recorder.py`), so the cut on a
 person's voice rather than any words can be fitted on real use first.
 

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.holds import Unheard, Who
+from hands.voice.holds import Hold
+from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Closed, Decoded, Ended, Said, Samples, Session, Spoken, steps, through
 
 # A turn's hold opens LEAD before its first word and ends `after` past its last, in one of the two shapes a hold takes:
@@ -45,9 +46,8 @@ class Gridded:
         return self.session.closed()
 
 
-def unidentified(_voice: Samples, seconds: float) -> Who:
-    """No speaker scored: what is measured through `Live` is the words."""
-    return Unheard(seconds)
+def unidentified(_hold: Hold, _voiced: tuple[Voiced, ...]) -> None:
+    """Nobody identified: what a test of the words alone measures is the words."""
 
 
 class Live:
@@ -56,13 +56,13 @@ class Live:
 
     def __init__(self, paired: Session) -> None:
         self.session = Gridded(paired)
-        self.stream = streaming.Stream(self.session, unidentified)
+        self.stream = streaming.Stream(self.session)
 
     def spoken(self, samples: Samples) -> tuple[Spoken, Ended]:
         """A hold of `samples`: each speaker's words heard while it was open, and the hold as it ended."""
-        self.stream.opened(np.zeros(0, np.float32))
+        self.stream.opened(np.zeros(0, np.float32), self.session.fed)
         for start in range(0, len(samples), 320):
             self.stream.heard(samples[start : start + 320])
-        live = tuple(Said(speaker.number, speaker.words) for speaker in self.stream.said() if speaker.words)
+        live = tuple(Said(voiced.speaker, voiced.words) for voiced in self.stream.said() if voiced.words)
         self.stream.silence(through(self.session.fed) - self.session.fed)
         return live, self.stream.ended()

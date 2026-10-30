@@ -21,6 +21,7 @@ from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
+from hands.voice.holds import Reference
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
@@ -31,7 +32,7 @@ from hands.voice.turnstop import TurnOpened
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 CLEANED = b"\x01\x00" * 320  # what the room's canceller makes of anything the microphone hears
-PLAYED = b"\x02\x00" * 320  # what it matched each buffer with, of what the speaker played
+PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1),) * 2  # what it matched each buffer's two frames with
 
 
 def _phone() -> Phone:
@@ -71,7 +72,7 @@ class Rig:
         self.pushed: list[bytes] = []
         # Each pushed frame's sound as the microphone captured it, before the canceller, and what was played over it.
         self.captured: list[bytes] = []
-        self.played: list[bytes | None] = []
+        self.played: list[tuple[Reference, ...] | None] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
         self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)

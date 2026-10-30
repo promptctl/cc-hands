@@ -282,7 +282,7 @@ class HoldOwner(FrameProcessor):
         # end is pushed find it closed, and cut nothing.
         self._key = "up"
         self._recording.clear()
-        self._tell(hold, lambda listener: listener.ended(hold, fate))
+        self._tell(hold, lambda listener: listener.ended(hold, fate, sound))
         match fate:
             case "sent":
                 await self.push_frame(VADUserStoppedSpeakingFrame())
@@ -371,9 +371,6 @@ class HoldOwner(FrameProcessor):
             annotate(listener=listener.name, hold=hold.number)
             async with asyncio.timeout(HEARING_SECONDS - (time.monotonic() - began.began)):
                 heard = await hearing()
-            # [LAW:nothing-unseen] who each speaker the listener told apart is, beside what cut: the cut is on words, and
-            # who said them is measured here, to fit the voiceprint's table on real use before it decides anything.
-            annotate(speakers=heard.speakers)
             # [LAW:single-enforcer] the one cut: words a listener heard while their hold is still open. Heard once it has
             # closed, they cut nothing, and the hold's own transcription says what it held. The check and the queueing are
             # one step, with nothing awaited between.

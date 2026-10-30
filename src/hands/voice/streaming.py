@@ -8,8 +8,8 @@ runs one cache-aware FastConformer-RNNT stream per speaker, so a word comes out 
 taken back. hands keeps one session for the run and feeds it only the holds, so a speaker keeps its number from the first
 hold to the last: a new session, or the session's own end, numbers everyone from 0 again (promptctl-voice-i15t.99s.gaq).
 
-Each speaker in each hold is identified by their voice in the frames the diarizer heard them in, against hands' own
-(`hands.voice.voiceprints`), and who each was goes on every hearing, beside the cut, which it does not yet decide.
+Each hearing hands each speaker's voice in the hold, the frames the diarizer heard them in, to be identified against
+hands' own (`hands.voice.voiceprints`), after its words have gone out: who they were decides nothing yet.
 
 It is one listener on the hold owner (`hands.voice.holdowner`), which cuts hands off on the first words it hears in a hold
 still open, so a turn engaged conversation opened cuts while the user is still speaking over hands, not once they stop.
@@ -29,8 +29,8 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
-from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Person, Samples, Sound, Speaker, Unheard, Who, decoded
-from hands.voice.voiceprints import WINDOW, Identify
+from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Samples, Sound, decoded
+from hands.voice.voiceprints import WINDOW, Voiced
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
 MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
@@ -175,17 +175,16 @@ class _Tape:
 
 @dataclass
 class _Voice:
-    """One speaker of the hold open: the latest WINDOW of where the diarizer heard them, overlap included, how many
-    seconds of them in all, and who they were last found to be."""
+    """One speaker of the hold open: the latest WINDOW of where the diarizer heard them, overlap included, and how many
+    seconds of them in all."""
 
     latest: Samples
     seconds: float
-    who: Who
 
 
 def _unheard() -> _Voice:
     """A speaker before the diarizer has marked them in any of the hold's own frames."""
-    return _Voice(np.zeros(0, np.float32), 0.0, Unheard(0.0))
+    return _Voice(np.zeros(0, np.float32), 0.0)
 
 
 @dataclass
@@ -204,17 +203,17 @@ class _Held:
 @dataclass(frozen=True)
 class Ended:
     """A hold, once the stream heard the silence after it: every word each speaker said in it, how many seconds of it
-    were heard, its close, whose words are among them, and every speaker heard in it, with who they are by all of it."""
+    were heard, its close, whose words are among them, and every speaker heard in it, with their voice in it."""
 
     words: Spoken
     seconds: float
     closed: Closed
-    speakers: tuple[Speaker, ...]
+    voices: tuple[Voiced, ...]
 
 
 class Stream:
-    """The run's streaming recognition: one session of the pair for the whole run, fed only holds, each speaker in each
-    hold identified by their voice in it.
+    """The run's streaming recognition: one session of the pair for the whole run, fed only holds, and each speaker's
+    voice in each hold.
 
     [LAW:one-source-of-truth] a hold's words are what the session decoded from its opening to the silence after it, so a
     word belongs to one hold and one speaker, and a speaker keeps its number from the first hold to the last. A speaker's
@@ -222,16 +221,14 @@ class Stream:
     same frames.
     """
 
-    def __init__(self, session: Session, identify: Identify) -> None:
+    def __init__(self, session: Session) -> None:
         self._session = session
-        self._identify = identify
-        # The samples the session has been given in the run, the silence after each hold included.
-        self._fed = 0
         self._held = _Held(_Tape(0))
 
-    def opened(self, samples: Samples) -> None:
-        """A hold opens, with `samples`, what it kept from before it opened: its words start with what they decode to."""
-        self._held = _Held(_Tape(self._fed))
+    def opened(self, samples: Samples, start: int) -> None:
+        """A hold opens, `start` samples into the run, with `samples`, what it kept from before it opened: its words start
+        with what they decode to."""
+        self._held = _Held(_Tape(start))
         self.heard(samples)
 
     def heard(self, samples: Samples) -> None:
@@ -248,7 +245,6 @@ class Stream:
 
     def _decoded(self, samples: Samples) -> None:
         decoded = self._session.decoded(samples)
-        self._fed += len(samples)
         self._added(decoded.words)
         for active in decoded.active:
             self._voiced(active)
@@ -264,32 +260,25 @@ class Stream:
         voice.latest = np.concatenate([voice.latest, heard])[-round(WINDOW * RATE) :]
         voice.seconds += len(heard) / RATE
 
-    def _who(self, speaker: int) -> Who:
-        """Who `speaker` is, by the hold's voice of them so far. [LAW:single-enforcer] once a person in a hold, they are
-        one for the rest of it: a cut made on them is not taken back."""
-        voice = self._held.voices.setdefault(speaker, _unheard())
-        match voice.who:
-            case Person():
-                return voice.who
-            case _:
-                voice.who = self._identify(voice.latest, voice.seconds)
-                return voice.who
+    def _voice(self, speaker: int, words: str | None) -> Voiced:
+        voice = self._held.voices.get(speaker, _unheard())
+        return Voiced(speaker, words, voice.latest, voice.seconds)
 
-    def said(self) -> tuple[Speaker, ...]:
-        """The words each speaker added to the hold open since this was last asked, and who they are."""
-        held, added = self._held, list[Speaker]()
+    def said(self) -> tuple[Voiced, ...]:
+        """The words each speaker added to the hold open since this was last asked, each with their voice in it so far."""
+        held, added = self._held, list[Voiced]()
         for speaker, text in held.text.items():
             known = words(text) or ""
             new, held.said[speaker] = words(known[held.said.get(speaker, 0) :]), len(known)
-            added += [Speaker(speaker, new, self._who(speaker))] if new else []
+            added += [self._voice(speaker, new)] if new else []
         return tuple(added)
 
     def ended(self) -> Ended:
         """The hold open, heard to the silence after it."""
         held = self._held
         spoken = tuple(Said(speaker, said) for speaker, text in held.text.items() if (said := words(text)))
-        speakers = tuple(Speaker(speaker, words(held.text.get(speaker, "")), self._who(speaker)) for speaker in {**held.text, **held.voices})
-        return Ended(spoken, round(held.tape.length / RATE, 3), held.closed, speakers)
+        voices = tuple(self._voice(speaker, words(held.text.get(speaker, ""))) for speaker in {**held.text, **held.voices})
+        return Ended(spoken, round(held.tape.length / RATE, 3), held.closed, voices)
 
 
 @dataclass(frozen=True)
@@ -300,7 +289,7 @@ class Broken:
 
     error: str
 
-    def opened(self, samples: Samples) -> None:
+    def opened(self, samples: Samples, start: int) -> None:
         """A hold no model hears."""
 
     def heard(self, samples: Samples) -> None:
@@ -309,7 +298,7 @@ class Broken:
     def silence(self, samples: int) -> None:
         """Silence no model hears."""
 
-    def said(self) -> tuple[Speaker, ...]:
+    def said(self) -> tuple[Voiced, ...]:
         """No word, which the hold's end says why of."""
         return ()
 
@@ -331,16 +320,19 @@ class StreamingRecognizer:
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, model: Callable[[int], Session], identify: Identify, record: Record) -> None:
+    def __init__(self, model: Callable[[int], Session], identify: Callable[[Hold, tuple[Voiced, ...]], None], record: Record) -> None:
         self._record = record
+        self._identify = identify
         # The models load on the thread first, so holds spoken while they load wait behind them, and nothing else does.
         self._thread = SerialThread("Streaming")
-        self._thread.give(lambda: self._load(model, identify))
-        # The samples the run's stream has been given, the silence after each hold included: the diarizer's steps they
-        # complete are where the stream's words change.
+        self._thread.give(lambda: self._load(model))
+        # [LAW:one-source-of-truth] the samples the run's stream has been given, the silence after each hold included:
+        # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a hold.
         self._fed = 0
+        # The hold open, or the last one, as the owner told it.
+        self._hold = Hold(0, "held key")
 
-    def _load(self, model: Callable[[int], Session], identify: Identify) -> None:
+    def _load(self, model: Callable[[int], Session]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each hold with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
@@ -355,14 +347,15 @@ class StreamingRecognizer:
                     gating=GATING,
                 )
                 # [LAW:one-source-of-truth] the gating the event says is the one the session is made with.
-                self._stream = Stream(model(GATING), identify)
+                self._stream = Stream(model(GATING))
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
     def opened(self, hold: Hold, before: Sound) -> Hearings:
         """`hold` opens: what it kept from before it opened is the start of its words."""
-        samples = decoded(before.heard)
-        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples)))
+        samples, start = decoded(before.heard), self._fed
+        self._hold = hold
+        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
@@ -387,6 +380,14 @@ class StreamingRecognizer:
         self._moved(lambda stream: stream.silence(silence))
         return self._stream.ended()
 
+    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+        """Hand the speakers a hearing found on to be identified; a hearing that found none hands on nothing."""
+        match voiced:
+            case ():
+                pass
+            case _:
+                self._identify(hold, voiced)
+
     def _fed_with(self, samples: int) -> Hearings:
         """A hearing of the hold open where `samples` more complete a step of the diarizer's, and none where they do not:
         only a step committed decodes a word."""
@@ -396,17 +397,19 @@ class StreamingRecognizer:
             case 0:
                 return ()
             case _:
-                said = self._thread.settles(lambda: self._stream.said())
+                said, hold = self._thread.settles(lambda: self._stream.said()), self._hold
 
                 async def hear() -> Heard:
                     added = await said
                     # [LAW:nothing-unseen] the words each speaker added in this hearing: the hold's whole is on its end's.
-                    annotate(added=tuple(Said(speaker.number, speaker.words) for speaker in added if speaker.words))
-                    return Heard(joined(speaker.words for speaker in added), added)
+                    annotate(added=tuple(Said(voiced.speaker, voiced.words) for voiced in added if voiced.words))
+                    # Who said them is worked out on the voiceprints' own lane: the words go out without waiting on it.
+                    self._identified(hold, added)
+                    return Heard(joined(voiced.words for voiced in added))
 
                 return (hear,)
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
         """The hold open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same hold."""
         silence = through(self._fed) - self._fed
@@ -420,7 +423,8 @@ class StreamingRecognizer:
             heard = await ended
             # [LAW:nothing-unseen] the close's words are among the hold's, told apart: what the floor decoded, not the feed.
             annotate(words=heard.words, seconds=heard.seconds, closed=heard.closed.speakers, closing=heard.closed.words)
-            return Heard(joined(said.text for said in heard.words), heard.speakers)
+            self._identified(hold, heard.voices)
+            return Heard(joined(said.text for said in heard.words))
 
         return (settle,)
 
@@ -457,12 +461,18 @@ class _Paired:
         push = session._push_features
 
         def pushed(mel: Any, probs: Any, *, final: bool = False) -> Any:
-            first, pending = session._mel_offset, mx.concatenate([session._probs, probs], axis=0)
+            first, pending = session._mel_offset, session._probs
             updates = push(mel, probs, final=final)
             taken = session._mel_offset - first
-            frames, speakers = np.nonzero(np.array(speaker_activity(pending[:taken], session.factor, session.threshold)))
-            self._active += [Active(int(each), first // session.factor + int(frame)) for frame, each in zip(frames, speakers, strict=True)]
-            return updates
+            match taken:
+                case 0:
+                    # Most feeds complete no chunk: nothing to threshold.
+                    return updates
+                case _:
+                    heard = mx.concatenate([pending, probs], axis=0)[:taken]
+                    frames, speakers = np.nonzero(np.array(speaker_activity(heard, session.factor, session.threshold)))
+                    self._active += [Active(int(each), first // session.factor + int(frame)) for frame, each in zip(frames, speakers, strict=True)]
+                    return updates
 
         session._push_features = pushed
 

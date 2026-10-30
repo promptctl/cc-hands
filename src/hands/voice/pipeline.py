@@ -69,11 +69,19 @@ class Voice:
 
 
 def build_voice(
-    config: VoiceConfig, llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, prompt: Callable[[], Awaitable[str | None]], holds: Path, record: Record
+    config: VoiceConfig,
+    llm: FrameProcessor,
+    key: PushToTalk,
+    player: Player,
+    floor: Floor,
+    prompt: Callable[[], Awaitable[str | None]],
+    prints: voiceprints.Voiceprints,
+    holds: Path,
+    record: Record,
 ) -> Voice:
     """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer and the recorder
-    listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each hold the
-    recorder hears is kept in `holds`."""
+    listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each speaker the
+    streaming recognizer hears is identified by `prints`, and each hold the recorder hears is kept in `holds`."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and the hold owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
@@ -98,12 +106,11 @@ def build_voice(
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
-    # [LAW:no-silent-failure] hands' own voice, as a print made from its TTS in the voice it speaks in, before it says
-    # anything: a voiceprint model that does not load, or a print that cannot be made, fails the voice's build.
-    hands_voice = voiceprints.HandsVoice(config.voice, voiceprints.load(record), voices.synthesized, record)
+    # hands' own print of the voice it speaks in, made on the voiceprints' own threads: nothing here waits on it.
+    prints.speaking_in(config.voice)
     # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
     # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each hold.
-    listeners = (streaming.StreamingRecognizer(streaming.load, hands_voice.identify, record), Recorder(holds))
+    listeners = (streaming.StreamingRecognizer(streaming.load, prints.identify, record), Recorder(holds))
     stt = HoldOwner(Whisper(prompt=prompt, record=record), listeners, record)
 
     start = EdgeTurnStart(record)
@@ -125,7 +132,7 @@ def build_voice(
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
     # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, pieces, player.lines, voices.Enrolling(hands_voice), tts, output, Marks(), assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, pieces, player.lines, tts, output, Marks(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=params,
