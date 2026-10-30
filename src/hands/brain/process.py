@@ -864,6 +864,9 @@ class Brain:
         self._dialogs: set[asyncio.Future[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
+        # Whether an Escape went that no Ctrl-C followed: what it put back in the input may be there still, for the next
+        # turn typed to join, so it is cleared first (`_taking`).
+        self._unemptied = False
         with continuing(launched):
             self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
             self._exit = asyncio.ensure_future(self._run_out(begun()))
@@ -1004,11 +1007,11 @@ class Brain:
         """Types `turn`, with the input held, behind nothing, and waits out a pause of `turn.take` for it to be taken, or to
         end: says whether it was. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
-        turn is typed, so the turn is Claude Code's next and runs alone."""
+        turn is typed, so the turn is Claude Code's next and runs alone. So is what a stop that failed left in the input."""
         # [LAW:no-ambient-temporal-coupling] typed at once, never held behind a turn Claude Code opened itself: Claude Code
         # queues the words behind it, and runs them in it or as the turn behind it (`_took`, `_told`), so the turn's take
         # is bounded from now. Only what is no turn's, and none of Claude Code's own, is stopped.
-        if not self._claude_turns.opened_itself and not self._all_told():
+        if not self._claude_turns.opened_itself and (not self._all_told() or self._unemptied):
             await self._clear(turn)
         # [LAW:single-enforcer] nothing typed answers a dialog: every dialog held now is nobody's, as the turn is not yet
         # taken (`_owner`), so it is refused, and the turn is typed once each dialog's hook is answered, within its take.
@@ -1061,7 +1064,7 @@ class Brain:
             self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
             loop = asyncio.get_running_loop()
             await self._type(lambda typist: typist.press("escape"))
-            escaped = loop.time()
+            escaped, self._unemptied = loop.time(), True
             if turn is not None and (turn is not self._turn or not turn.stopped):
                 logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
             # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
@@ -1086,15 +1089,15 @@ class Brain:
                 waiting.result()
                 # Read once any spacing has passed: where `spaced` was the longer wait, Claude Code stopped sooner than this.
                 annotate(stopped_in=round(loop.time() - escaped, 3))
+                # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
+                # telling will end: words the Escape put back in the input, which the Ctrl-C clears, before they ran. Each
+                # ends here, in the step the model reads it so, before any turn Claude Code opens later can be among them.
+                self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
                 # [LAW:no-ambient-temporal-coupling] the Ctrl-C goes once Claude Code has acted on the Escape, as the model
                 # reads it now, with nothing waited on between: a Ctrl-C a busy Claude Code reads in one chunk with the ESC
                 # is Alt+Ctrl-C, and neither key does anything.
                 await self._type(lambda typist: typist.press("ctrl_c"))
-                self._cleared = loop.time()
-                # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
-                # telling will end: words Ctrl-C cleared from its queue before they ran. Each ends here, where they were
-                # cleared.
-                self._claude_turns.failed(Unran("Claude Code was stopped, and its input cleared, before they ran"))
+                self._cleared, self._unemptied = loop.time(), False
                 return
             if self._exit.done():
                 raise BrainGone("the brain exited while hands stopped what it ran")

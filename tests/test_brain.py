@@ -690,6 +690,41 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
 
 
+async def test_a_stop_told_past_its_bound_leaves_its_ctrl_c_to_the_next_turn_which_empties_the_input_before_it_is_typed(tmp_path: Path, fake_claude: Path) -> None:
+    # [LAW:no-silent-failure] Claude Code acts on the Escape and puts the stopped prompt back in its input, but the model
+    # hears it only after the stop's time has passed: the stop fails with no Ctrl-C pressed, and the next turn is not
+    # typed onto the prompt left in the input.
+    stopping, performing = asyncio.Event(), asyncio.Event()
+
+    async def pause(seconds: float) -> None:
+        await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
+
+    brain = await start(launch(tmp_path), lambda _entry: None, pause)
+    try:
+        asking = asyncio.ensure_future(brain.ask("wait", unasked))
+        await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
+        perform = brain._sessions._perform  # pyright: ignore[reportPrivateUsage]
+
+        async def told_late(effect: Effect) -> None:
+            if isinstance(effect, Summarise):
+                await performing.wait()
+            await perform(effect)
+
+        brain._sessions._perform = told_late  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+        assert brain.interrupt(brain.answering()) is True
+        await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
+        stopping.set()
+        with pytest.raises(StopUnrecorded):
+            await asyncio.wait_for(asking, 10)
+        performing.set()
+        await brain.ask("and now?", unasked)
+    finally:
+        performing.set()
+        await brain.stop()
+    # The next turn's clear pressed the Ctrl-C the stop left, on the prompt the Escape put back, before it was typed.
+    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["escape", " wait"], ["ctrl_c", " wait"], ["prompt", " and now?"]]
+
+
 class _Timed:
     """A typist that notes when each Ctrl-C it pressed had gone in, on the monotonic clock."""
 
@@ -2074,7 +2109,7 @@ def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
     loop = asyncio.get_running_loop()
     keys = _Keys()
     brain._typist, brain._record, brain._typing, brain._input = keys, recorded.append, set(), asyncio.Lock()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-    brain._exit, brain._cleared = loop.create_future(), float("-inf")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._exit, brain._cleared, brain._unemptied = loop.create_future(), float("-inf"), False  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
 
     async def never(_seconds: float) -> None:
         await loop.create_future()
