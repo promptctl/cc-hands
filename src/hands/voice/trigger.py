@@ -27,15 +27,15 @@ def turn_start(opener: Opener) -> TurnStart:
     """When a turn `opener` opens cuts off what hands is saying.
 
     Sound the desk heard can be nobody: hands' own reply left over from the echo canceller, a cough, a door. So a turn the
-    voice opens cuts only once a listener hears words in it (`hands.voice.streaming`). One the user's hand opens cuts at once, since holding a key or a
-    button and letting go with nothing said is how the user stops hands; and so does one the wake word opens, said on
-    purpose, and heard through the echo canceller while hands speaks as the voice is. Words typed and sent are as deliberate as a press, and are
-    words already.
+    voice or the wake word opens cuts only once a listener hears words in it (`hands.voice.streaming`): the wake word is
+    heard through the echo canceller while hands speaks, and hands says the wake word itself when it describes its level.
+    One the user's hand opens cuts at once, since holding a key or a button and letting go with nothing said is how the
+    user stops hands. Words typed and sent are as deliberate as a press, and are words already.
     """
     match opener:
-        case "engaged conversation":
+        case "engaged conversation" | "wake word":
             return "on words"
-        case "held key" | "phone button" | "wake word" | "typed":
+        case "held key" | "phone button" | "typed":
             return "on the hold"
 
 

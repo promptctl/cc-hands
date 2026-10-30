@@ -113,6 +113,8 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
     level `begun` with, with nothing of the room before it."""
 
     async def woken(audio: bytes, begun: bool) -> bool:
+        # Read with the buffer, not after the hops off the loop below, by which time a reply may have stopped.
+        while_speaking = speaking()
         if begun:
             await asyncio.to_thread(word.reset)
         score = await asyncio.to_thread(word.score, audio)
@@ -125,7 +127,7 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
         # a wake on hands' own voice, left over from the echo canceller, reads as one heard while it spoke. Whether it
         # opened a turn is the desk's to say, as its count of starts.
         with unit("desk.wake_word_heard", emit):
-            annotate(score=score, threshold=THRESHOLD, while_speaking=speaking())
+            annotate(score=score, threshold=THRESHOLD, while_speaking=while_speaking)
         return True
 
     return woken

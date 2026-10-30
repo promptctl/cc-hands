@@ -1,5 +1,5 @@
-"""The wake word: saying it opens a turn with no key, end-of-turn detection closes it, and while hands speaks the
-detector hears silence."""
+"""The wake word: saying it opens a turn with no key, end-of-turn detection closes it, and the detector hears the
+room while hands speaks as while it is quiet."""
 
 import ast
 import asyncio

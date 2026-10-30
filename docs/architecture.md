@@ -1781,8 +1781,7 @@ When a turn cuts is the edge's that opened its hold (`turn_start` in
 `hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
 from the gate, as it carries the key. A hold the user's hand opens, the held key or the
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
-nothing said is how the user stops hands. So does the wake word's, said on purpose,
-whose detector hears nothing while hands speaks. A hold engaged conversation opens cuts
+nothing said is how the user stops hands. A hold engaged conversation or the wake word opens cuts
 only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
 Nemotron Speech Streaming paired with Nemotron 3 Diarization on MLX, one session for the run,
 fed only the holds), Pipecat's
@@ -1945,7 +1944,7 @@ turn's `UserAsked` says it:
 The wake-word edge opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
 while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
-it off. Each hearing records `while_speaking`, so a wake on leftover echo is seen. The
+it off once words are heard after it, as engaged conversation's speech does. Each hearing records `while_speaking`, so a wake on leftover echo is seen. The
 pause after the wake word is no end of the turn: Smart Turn judges the vocative
 complete, so a stop goes to it only once speech has started again after the wake word.
 The driver hears afresh from the wake (`Ears.afresh`): Silero is quiet until sure of speech
