@@ -4,7 +4,7 @@ real library: each takes its listing, its download, and its keychain from a fake
 
 import asyncio
 import os
-import time
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
+from conftest import PATIENCE_SECS
 from hands.daemon import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -122,22 +123,31 @@ async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_aske
 async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", 0.01)
     started: list[int] = []
+    running = threading.Event()
+    released = threading.Event()
 
     def stalled() -> list[str]:
         started.append(1)
-        time.sleep(0.5)
+        running.set()
+        assert released.wait(PATIENCE_SECS)
         return ["vctk/p225_023_enhanced.wav"]
 
     stuck = Library(stalled)
-    # Each search times out; neither starts a second listing while the first still runs in its thread.
-    with pytest.raises(OSError):
-        await stuck.search("", 10)
-    with pytest.raises(OSError):
-        await stuck.search("", 10)
-    assert len(started) == 1
-    # Once the stalled listing has finished, the next search has its names and forgets the listing.
-    await asyncio.sleep(0.6)
+    try:
+        # [LAW:no-ambient-temporal-coupling] each search times out while the listing stalls in its thread, which `running`
+        # says it is, rather than a guess at how soon the thread runs.
+        with pytest.raises(OSError):
+            await stuck.search("", 10)
+        assert await asyncio.to_thread(running.wait, PATIENCE_SECS)
+        with pytest.raises(OSError):
+            await stuck.search("", 10)
+    finally:
+        released.set()
+    # Given time, the next search waits for that same listing, has its names, and forgets the listing. Every listing a search
+    # started was awaited by a search, so one started is the one listing there ever was.
+    monkeypatch.setattr(library, "LISTING_TIMEOUT_SECONDS", PATIENCE_SECS)
     assert (await stuck.search("", 10)).names == ("vctk/p225_023_enhanced",)
+    assert len(started) == 1
     assert stuck._pending is None  # pyright: ignore[reportPrivateUsage]
 
 
