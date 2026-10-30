@@ -445,6 +445,6 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     # C5: hands answers the words within about a second.
     [(answer, waited_ms)] = cast(tuple[tuple[str, float], ...], first.facts["asides"])
     assert answer in ANSWERS and waited_ms < 1000, first.facts["asides"]
-    # C4: the next turn carries the words, with no note.
+    # C4: the next turn carries the words, with no note that the user spoke over the turn or that it broke off.
     asked = cast(str, second.facts["asked"])
-    assert asked.strip().endswith("and check the logs too") and "note" not in asked.lower(), asked
+    assert asked.startswith("and check the logs too") and "spoke over you" not in asked and "broken off" not in asked, asked
