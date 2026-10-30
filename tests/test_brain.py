@@ -1968,7 +1968,7 @@ def _owning() -> Brain:
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     # A screen showing a call's running counter, so a stop does not wait for one: the wait is the end-to-end test's.
-    brain._claude = _Counting()  # pyright: ignore[reportPrivateUsage]
+    brain._claude = _Counting()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     _modelled(brain)
     return brain
 
