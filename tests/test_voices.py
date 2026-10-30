@@ -19,7 +19,8 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import voices
 from hands.voice.tools import audited, voice_tools
-from hands.voice.voices import DEFAULT, VOICES, Voice, Voices, chosen, parse_voice, sample
+from hands.voice.library import Library
+from hands.voice.voices import DEFAULT, VOICES, Chosen, LibraryVoice, Voice, Voices, chosen, parse_voice, sample
 
 
 class Speaker(TTSService):
@@ -44,24 +45,33 @@ class Speaker(TTSService):
         return self.said
 
 
-def ready(voice: Voice) -> None:
+def ready(voice: Chosen) -> None:
     """Every voice already in the cache."""
 
 
-def downloading(voice: Voice) -> None:
+def downloading(voice: Chosen) -> None:
     """Every voice fetched as a download is: taking long enough for another call to run meanwhile."""
     time.sleep(0.05)
 
 
-def offline(voice: Voice) -> None:
+def offline(voice: Chosen) -> None:
     raise OSError(f"cannot reach the hub for {voice}")
+
+
+def unlisted() -> Library:
+    """A library that lists nothing: no test lists the real library, so each search finds nothing unless it is given a listing."""
+    return Library(lambda: [])
 
 
 def test_a_voice_is_named_as_a_person_says_it_and_one_hands_does_not_have_is_refused() -> None:
     assert parse_voice("Bill Boerst") == "bill_boerst"
     assert parse_voice("charles") == DEFAULT
+    # A library voice is a folder and a file, so a bare name that is no built-in is refused at the parser, not sent to the hub.
+    assert parse_voice("kyutai/Zed") == LibraryVoice("kyutai/Zed")
     with pytest.raises(Rejected, match="no voice called 'Zed'"):
         parse_voice("Zed")
+    with pytest.raises(Rejected, match="no voice called 'Zed!'"):
+        parse_voice("Zed!")
 
 
 def test_the_voice_is_the_default_until_one_is_kept() -> None:
@@ -77,8 +87,8 @@ def test_a_chosen_voice_is_read_back_by_a_daemon_started_after_it(tmp_path: Path
 
 def test_a_hand_edited_choice_hands_has_no_voice_for_is_refused_by_name(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    home.voice.write_text("zed\n")
-    with pytest.raises(Rejected, match=f"{home.voice} says 'zed'"):
+    home.voice.write_text("../zed\n")
+    with pytest.raises(Rejected, match=f"{home.voice} says '../zed'"):
         chosen(home)
 
 
@@ -92,7 +102,7 @@ def test_a_choice_that_is_not_text_is_refused_by_name(tmp_path: Path) -> None:
 async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = IdentityFilter(), Speaker(DEFAULT)
-    tools = {tool.name: tool for tool in voice_tools(Voices(home, lines, offline, lambda _voice: None))}
+    tools = {tool.name: tool for tool in voice_tools(Voices(home, lines, offline, unlisted(), lambda _voice: None))}
     async with running([lines, speaker]) as run:
         assert "cannot reach the hub for mary" in str((await tools["hear_voices"].body(names=["Mary"]))["error"])
         assert "cannot reach the hub for mary" in str((await tools["use_voice"].body(name="Mary"))["error"])
@@ -103,8 +113,8 @@ async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path
 
 async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_next_line_is_in_the_kept_one(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    lines, speaker, speaking = IdentityFilter(), Speaker(DEFAULT), list[Voice]()
-    chosen_voices = Voices(home, lines, ready, speaking.append)
+    lines, speaker, speaking = IdentityFilter(), Speaker(DEFAULT), list[str]()
+    chosen_voices = Voices(home, lines, ready, unlisted(), speaking.append)
     async with running([lines, speaker]) as run:
         assert await chosen_voices.hear((Voice("mary"), Voice("bill_boerst"))) == DEFAULT
         await run.worker.queue_frame(TTSSpeakFrame("Back to you."))
@@ -113,16 +123,24 @@ async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_n
         assert speaking == []
 
         await chosen_voices.use(Voice("mary"))
-        assert speaking == [Voice("mary")]
+        assert speaking == ["mary"]
         await run.worker.queue_frame(TTSSpeakFrame("Like this."))
         assert (await speaker.until(4))[-1] == ("mary", "Like this.")
     assert chosen(Home(tmp_path)) == "mary"
 
 
+async def test_a_library_voice_chosen_is_told_by_what_the_tts_service_is_handed(tmp_path: Path) -> None:
+    # One string names the voice to the TTS service, to the speaker's SpeakingIn, and to hands' print of it.
+    lines, speaker, speaking = IdentityFilter(), Speaker(DEFAULT), list[str]()
+    async with running([lines, speaker]):
+        await Voices(Home(tmp_path), lines, ready, unlisted(), speaking.append).use(LibraryVoice("vctk/p225_023_enhanced"))
+    assert speaking == [voices.source(LibraryVoice("vctk/p225_023_enhanced"))] and speaking[0].startswith("hf://")
+
+
 async def test_a_hearing_and_a_choice_called_together_each_run_whole(tmp_path: Path) -> None:
     home = Home(tmp_path)
     lines, speaker = IdentityFilter(), Speaker(DEFAULT)
-    chosen_voices = Voices(home, lines, downloading, lambda _voice: None)
+    chosen_voices = Voices(home, lines, downloading, unlisted(), lambda _voice: None)
     async with running([lines, speaker]) as run:
         # As Pipecat runs two calls of one reply: side by side.
         await asyncio.gather(chosen_voices.hear((Voice("alba"), Voice("bill_boerst"))), chosen_voices.use(Voice("mary")))
@@ -136,7 +154,7 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
     home = Home(tmp_path)
     lines, speaker = IdentityFilter(), Speaker(DEFAULT)
     async with running([lines, speaker]) as run:
-        await Voices(home, lines, ready, lambda _voice: None).hear(VOICES[:3])
+        await Voices(home, lines, ready, unlisted(), lambda _voice: None).hear(VOICES[:3])
         await run.worker.queue_frame(InterruptionFrame())
         await run.worker.queue_frame(TTSSpeakFrame("After the barge-in."))
         said = await speaker.until(1)
@@ -148,13 +166,13 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
 async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_refuses_a_voice_hands_lacks(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     lines, speaker = IdentityFilter(), Speaker(DEFAULT)
-    tools = {tool.name: audited(tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, lambda _voice: None))}
+    tools = {tool.name: audited(tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), lambda _voice: None))}
     async with running([lines, speaker]):
         assert await tools["voices_on_offer"].body() == {"speaking_in": DEFAULT, "voices": VOICES}
-        assert await tools["hear_voices"].body(names=["Eve"]) == {"heard": ("eve",), "speaking_in": DEFAULT}
+        assert await tools["hear_voices"].body(names=["Eve"]) == {"heard": ["eve"], "speaking_in": "charles"}
         assert await tools["use_voice"].body(name="Eve") == {"speaking_in": "eve", "readback": "This is Eve, and I'll speak in this voice from now on."}
         assert (await tools["voices_on_offer"].body())["speaking_in"] == "eve"
-        refused = await tools["use_voice"].body(name="Zed")
-        assert "no voice called 'Zed'" in str(refused["error"])
+        refused = await tools["use_voice"].body(name="Zed!")
+        assert "no voice called 'Zed!'" in str(refused["error"])
     assert [(entry.event, entry.outcome) for entry in recorded if isinstance(entry, WideEvent)] == [("tool.run", "ok")] * 4 + [("tool.run", "failed")] and len(recorded) == 5
     assert chosen(Home(tmp_path)) == "eve"

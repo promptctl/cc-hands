@@ -20,6 +20,7 @@ from hands.sessions.sentences import Sentences
 from hands.voice.briefing import as_sent
 from hands.voice.narrator import Recounts
 from hands.voice.player import Player
+from hands.voice.library import Library
 from hands.voice.voices import Voices
 from hands.voice.refocus import Refocus
 from hands.voice.sentences import SummaryStore
@@ -47,7 +48,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
 
 def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and each call its event in `record`."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, lambda _voice: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": str(home.root)}, acting)
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(lambda: []), lambda _voice: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": str(home.root)}, acting)
     return {tool.name: audited(tool, record) for tool in given}
 
 
