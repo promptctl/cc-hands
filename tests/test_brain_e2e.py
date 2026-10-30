@@ -421,9 +421,10 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
     a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
     turn, with no note (promptctl-barge-in-duao.51y)."""
-    mock_api.script("1-done", {"bodyContains": [TURN, RESULT], "lastUserContains": ["rename the module"]}, {"type": "text", "text": "Renamed it."})
-    mock_api.script("2-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 3"}}, stop="tool_use")
-    mock_api.script("3-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
+    # Tried in name order: the second turn, whose history holds the first's result too, ahead of the first's end.
+    mock_api.script("1-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
+    mock_api.script("2-done", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Renamed it."})
+    mock_api.script("3-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 3"}}, stop="tool_use")
     await connected(hands)
     await hands.say("rename the module")
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
