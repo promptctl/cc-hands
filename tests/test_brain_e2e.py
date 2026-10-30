@@ -13,6 +13,7 @@ from hands.core.attention import Attention
 import os
 import pwd
 import subprocess
+import shlex
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -161,7 +162,7 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)", "Bash(sh:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
@@ -455,3 +456,24 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     # C5: the answer within about a second of the words reaching hands, and the next turn's waits recorded.
     assert waited_ms < 1000, first.facts["asides"]
     assert isinstance(second.facts["queued_ms"], int | float) and isinstance(second.facts["waited_ms"], int | float), second.facts
+
+
+async def test_a_background_call_ends_its_voice_turn_at_once_and_the_work_it_started_runs_on(mock_api: MockApi, hands: Hands, tmp_path: Path) -> None:
+    """A command the brain starts in the background returns at once, so its turn ends while the command still runs; the
+    command then runs on to its end (promptctl-latency-3fui.h2r). The command waits on a gate file the test creates, so
+    the order is what is proven: no clock, and no sleep left running after the test."""
+    gate, done = tmp_path / "gate", tmp_path / "done"
+    command = f"sh -c {shlex.quote(f'until [ -f {gate} ]; do sleep 0.1; done; touch {done}')}"
+    mock_api.script("1-background", {"lastUserContains": ["start it in the background"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": command, "run_in_background": True}}, stop="tool_use")
+    mock_api.script("2-after", {"bodyContains": [RESULT, TURN]}, {"type": "text", "text": "Started it."})
+    await connected(hands)
+    try:
+        await hands.say("start it in the background")
+        await hands.until(lambda: "Started it." in "".join(hands.out.said()))
+        await hands.until(lambda: hands.stage.work() == Idle())
+        # The turn is over while the work it started has not finished.
+        assert not done.exists()
+    finally:
+        # Opened on every path, so a failed wait never leaves the command polling.
+        gate.touch()
+    await hands.until(lambda: done.exists())
