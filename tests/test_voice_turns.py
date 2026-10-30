@@ -502,10 +502,9 @@ def user_turns(rig: Rig) -> list[tuple[TurnStart, bool]]:
     return [(entry.start, entry.cut is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
 
 
-@pytest.mark.parametrize("by", ["engaged conversation", "wake word"])
-async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_is_a_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge) -> None:
+async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_is_a_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        await rig.hold(OPENED_BY_THE_VOICE, by=by)
+        await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.texts.put("")
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
         # The turn took the floor and nothing over: nothing behind it heard the user start, so the model's reply streams
@@ -516,10 +515,9 @@ async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_
         assert user_turns(rig) == [("on words", False), ("on the hold", True)]
 
 
-@pytest.mark.parametrize("by", ["engaged conversation", "wake word"])
-async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_in_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge) -> None:
+async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_in_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        await rig.hold(OPENED_BY_THE_VOICE, by=by)
+        await rig.hold(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.until(lambda: rig.out.released == 1)
         # The turn is the user's from the hold's opening, but it takes nothing over until its words are heard.
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
@@ -665,7 +663,7 @@ async def test_the_reply_a_turn_cut_off_is_written_ahead_of_the_words_that_cut_i
         assert written == [Replied("The parser is fixed.", interrupted=True), Transcribed("wait, not yet")]
 
 
-@pytest.mark.parametrize("by", ["held key", "phone button"])
+@pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])
 async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_without_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(["down", "down", "up"], by=by)
