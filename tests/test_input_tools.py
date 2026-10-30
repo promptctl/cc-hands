@@ -268,7 +268,7 @@ async def test_only_a_send_waits_on_its_pane_so_staging_and_amending_are_decided
         read.append(pids)
         return [NotInTmux()] * len(pids)
 
-    sessions = new_sessions(record=unrecorded, keyboards=keyboards)
+    sessions = new_sessions(keyboards=keyboards)
     await sessions.apply(Joined(Membership(SessionId("s1"), pid=4242, cwd=Path("/code/cc-hands"), transcript=tmp_path / "none.jsonl"), "startup"))
     tools = draft_tools(sessions)
     await call(tools, "stage_draft", session="s1", text="run the tests", resolutions=[])
