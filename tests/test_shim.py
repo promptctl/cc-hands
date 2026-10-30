@@ -350,7 +350,7 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
         await shim(home, {**PROMPT, "prompt_id": "p2"})
         # A Stop for a turn whose prompt hands never heard waits for the transcript to say whose it is, read once a
         # status is; no record comes, so the hold passes.
-        await registry.apply(StatusReported(SID, Report(Busy(), Stamp(1000)), at=10.0))
+        await registry.apply(StatusReported(SID, Report(Busy(), Stamp(1000)), at=registry.now()))
         await shim(home, {**STOP, "prompt_id": "p3"})
     finally:
         await runner.cleanup()
