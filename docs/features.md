@@ -343,6 +343,20 @@ So that in conversation hands can tell the owner from another person, and from i
   then FEE013's gives most of FEE016's words to FEE013's speaker, and one more hold of FEE013
   first gives each her own.
   Built: tests/test_streaming.py; not verified live.
+- **hands' own voice told from a person's** (`promptctl-voice-i15t.8vg.di1`). Each speaker in
+  each hold is scored against hands' own voiceprint, made from its Pocket TTS output in each
+  voice it speaks in, never from a person, with 3D-Speaker's ERes2Net on the CPU, on the frames
+  the diarizer heard them in: `Person`, `Hands`, `Unsure` or `Unheard`, by one table of score
+  floors by how much of them was heard (`hands.voice.voiceprints.FLOORS`). It is measured, not
+  yet acted on: each `hearing` event says who each speaker was beside what cut, and the cut is on
+  words as before. Fitted on one room and one voice (`scripts/measure-voiceprints.py`, zoj's
+  recordings): hands' echo, uncancelled, scored at least 0.37 at 1 s, 0.64 at 1.5 s and 0.74 at
+  3 s, a person alone at most 0.21, a person over hands at most 0.66 at 1.5 s and 0.64 at 3 s.
+  Built: tests/test_voiceprints.py, tests/test_streaming.py (the real model, on recorded echo
+  and a second voice over it: the echo is never a person); not verified live.
+- **Each hold kept as labelled data.** The recorder keeps every hold under `holds/<run>/` in
+  the home, as heard after the canceller and beside what hands was playing over it, so the
+  voiceprint table is refitted on real use. Built: tests/test_recorder.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)
 

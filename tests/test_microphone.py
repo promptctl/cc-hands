@@ -20,6 +20,7 @@ from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioO
 from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
+from hands.voice.echo import Cancelled
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
@@ -30,6 +31,7 @@ from hands.voice.turnstop import TurnOpened
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 CLEANED = b"\x01\x00" * 320  # what the room's canceller makes of anything the microphone hears
+PLAYED = b"\x02\x00" * 320  # what it matched each buffer with, of what the speaker played
 
 
 def _phone() -> Phone:
@@ -48,9 +50,9 @@ class Room:
     def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
         self.plays.append((audio, sample_rate, channels))
 
-    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled:
         self.hears.append(audio)
-        return CLEANED
+        return Cancelled(CLEANED, PLAYED)
 
     def counts(self) -> dict[str, int]:
         return {"heard": len(self.hears), "unplayed": 0, "dropped": 0}
@@ -67,8 +69,9 @@ class Rig:
         self.key = PushToTalk(lambda _: None)
         self.phone = Phone(self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
         self.pushed: list[bytes] = []
-        # Each pushed frame's sound as the microphone captured it, before the canceller.
+        # Each pushed frame's sound as the microphone captured it, before the canceller, and what was played over it.
         self.captured: list[bytes] = []
+        self.played: list[bytes | None] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
         self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)
@@ -82,6 +85,7 @@ class Rig:
             assert isinstance(frame, KeyedAudio)
             self.pushed.append(frame.audio)
             self.captured.append(frame.captured)
+            self.played.append(frame.played)
 
         self.microphone.push_audio_frame = push_audio_frame
         self.microphone.get_event_loop = asyncio.get_running_loop
@@ -127,6 +131,8 @@ async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_
     assert devices.pushed == [QUIET, CLEANED]
     # Each frame carries what the microphone captured too, muted by the same key: a hold's level before the canceller.
     assert devices.captured == [QUIET, LOUD]
+    # And what the speaker played over it, the canceller's reference, which no key mutes: what hands said over a hold.
+    assert devices.played == [PLAYED, PLAYED]
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
 
 
@@ -150,7 +156,7 @@ async def test_an_edge_overhears_the_desk_cleaned_whatever_the_key_says_and_only
 
 
 class Refusing(Room):
-    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled:
         raise RuntimeError("the audio processing module refused the frame")
 
 

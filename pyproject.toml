@@ -21,6 +21,8 @@ dependencies = [
     "openwakeword>=0.6,<0.7",
     "tomlkit>=0.15.1",  # hands.daemon.config sets the model chosen by voice in config.toml, every other line kept
     "mlx-audio==0.6.2",  # hands.voice.streaming runs Nemotron Speech Streaming paired with Nemotron 3 Diarization in its speaker streaming session, and closes each speaker's stream at a hold's end through the session's own state, which no release promises; hands.voice.engaged judges each stop with its Smart Turn port's predict_endpoint, whose settings and verdicts hands measured: so the version is pinned
+    "sherpa-onnx>=2.0.1,<3",  # hands.voice.voiceprints runs ERes2Net speaker embeddings with its SpeakerEmbeddingExtractor, on the CPU
+    "soxr>=1.0,<2",  # hands.voice.voices resamples the TTS output its own voiceprint is made from
 ]
 
 [project.scripts]

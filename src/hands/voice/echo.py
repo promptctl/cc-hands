@@ -11,8 +11,10 @@ in 8 of 8, where muting the microphone until the reply's sound had died away los
 
 import threading
 from collections import deque
+from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
 from livekit import rtc
 
 # The canceller works on 10 ms frames, in both directions.
@@ -44,11 +46,30 @@ def frame_bytes(sample_rate: int, channels: int) -> int:
     return sample_rate // _FRAMES_PER_SECOND * channels * SAMPLE_BYTES
 
 
+@dataclass(frozen=True)
+class Cancelled:
+    """A microphone buffer through the canceller: `heard`, with the speaker's echo taken out; and `played`, the reference
+    each of its frames was matched with, in the microphone's format and as long, so the two line up sample for sample."""
+
+    heard: bytes
+    played: bytes
+
+
+def reformatted(frame: rtc.AudioFrame, sample_rate: int, channels: int) -> bytes:
+    """A 10 ms frame of reference in the microphone's format: mixed down to mono, linearly interpolated to the
+    microphone's rate, and the same in every channel. What hands keeps of what it played (`hands.voice.recorder`), not
+    what the canceller is given, which is the frame itself."""
+    samples = np.frombuffer(frame.data.cast("B"), np.int16).reshape(-1, frame.num_channels).mean(axis=1)
+    wanted = sample_rate // _FRAMES_PER_SECOND
+    resampled = np.interp(np.arange(wanted) * len(samples) / wanted, np.arange(len(samples)), samples)
+    return np.repeat(np.round(resampled).astype(np.int16), channels).tobytes()
+
+
 class Echo(Protocol):
     """What the transport asks of an echo canceller: told what the speaker plays, it cleans what the microphone hears."""
 
     def played(self, audio: bytes, sample_rate: int, channels: int) -> None: ...
-    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes: ...
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled: ...
     def counts(self) -> dict[str, int]: ...
     def close(self) -> None: ...
 
@@ -98,21 +119,24 @@ class EchoCanceller:
             self._held.extend(frames)
             self._format = (sample_rate, channels)
 
-    def heard(self, audio: bytes, sample_rate: int, channels: int) -> bytes:
-        """A microphone buffer with the speaker's echo taken out; the same length, of whole 10 ms frames."""
+    def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled:
+        """A microphone buffer with the speaker's echo taken out, and what it was matched with; the same length, of whole
+        10 ms frames."""
         size = frame_bytes(sample_rate, channels)
         # [LAW:parse-dont-validate] the microphone is opened on 20 ms buffers; any other length is a stream opened wrong.
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
-        cleaned = bytearray()
+        cleaned, played = bytearray(), bytearray()
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference.
-            self._apm.process_reverse_stream(self._next_played())
+            reference = self._next_played()
+            self._apm.process_reverse_stream(reference)
+            played += reformatted(reference, sample_rate, channels)
             frame = rtc.AudioFrame(audio[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
             self._apm.process_stream(frame)  # in place
             cleaned += frame.data.cast("B")
         self._counts["heard"] += len(audio) // size
-        return bytes(cleaned)
+        return Cancelled(bytes(cleaned), bytes(played))
 
     def counts(self) -> dict[str, int]:
         """What the canceller has done so far, by the names in COUNTS."""

@@ -299,7 +299,9 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, record), "the voice load"), heart, sessions.live_count, degraded, stop)
+                # Each run's holds in a directory of their own, named by when the voice was built: a hold's number is the run's.
+                held_since = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, home.holds / held_since, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)

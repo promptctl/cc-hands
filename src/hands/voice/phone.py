@@ -378,7 +378,7 @@ class Phone:
                     gate = self._key.gate
                     if gate.hears("phone"):
                         audio = out.to_ndarray().astype(np.int16).tobytes()
-                        self.heard.put_nowait(gate.framed(audio, audio, self._heard_rate, 1, "phone"))
+                        self.heard.put_nowait(gate.framed(audio, audio, None, self._heard_rate, 1, "phone"))
             case move:
                 match self._key.move(move, "phone button"):
                     case None:

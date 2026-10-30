@@ -9,16 +9,21 @@ import asyncio
 from collections.abc import Callable
 from typing import NewType
 
-from pipecat.frames.frames import TTSSpeakFrame, TTSUpdateSettingsFrame
-from pipecat.processors.frame_processor import FrameProcessor
+import numpy as np
+import soxr
+from pipecat.frames.frames import Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
+from pocket_tts import TTSModel
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.voice.holds import RATE, Samples
+from hands.voice.voiceprints import HandsVoice
 
 Voice = NewType("Voice", str)
 
@@ -125,3 +130,35 @@ class Voices:
 
     async def _speak_in(self, voice: Voice) -> None:
         await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=voice)))
+
+
+def synthesized(voice: str, text: str) -> Samples:
+    """`text` said in `voice` by Pocket TTS, hands' own TTS, at RATE. On a model of its own, loaded for this and let go
+    of after, a quarter of a second from the cache: a Pocket TTS model generates for one caller at a time, and the
+    TTS service's is the speaker's."""
+    model = TTSModel.load_model(language=language_to_pocket_tts_language(LANGUAGE))
+    state = model.get_state_for_audio_prompt(voice)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (pocket_tts types its state as a bare dict)
+    said = model.generate_audio(state, text).numpy().astype(np.float32)  # pyright: ignore[reportUnknownMemberType]
+    return soxr.resample(said, model.sample_rate, RATE).astype(np.float32)
+
+
+class Enrolling(FrameProcessor):
+    """Stands ahead of the TTS service, and has hands' print of each voice made before anything is said in it: a change
+    of voice goes on to the service only once its print is made (`hands.voice.voiceprints.HandsVoice`).
+
+    [LAW:no-ambient-temporal-coupling] the change is a frame in order with the speech around it, so holding it back holds
+    back what is said after it, and nothing is said in a voice hands has no print of.
+    """
+
+    def __init__(self, voice: HandsVoice) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        self._voice = voice
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        match frame:
+            case TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=str() as voice)):
+                await asyncio.to_thread(self._voice.enrol, voice)
+            case _:
+                pass
+        await self.push_frame(frame, direction)

@@ -26,7 +26,7 @@ from pipecat.utils.time import time_now_iso8601
 from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
-from hands.voice.holds import LANGUAGE, RATE, SECOND, Fate, Hearing, Hearings, Hold, Listener, Sound, Transcriber
+from hands.voice.holds import LANGUAGE, RATE, Fate, Hearing, Hearings, Hold, Listener, Recording, Sound, Transcriber
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.turnstop import HoldDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
 
@@ -50,34 +50,6 @@ def _transcribing_seconds(held: float) -> float:
     took to say is not coming back; a bound that did not grow with the hold would fail a long one whole on a busier Mac,
     which is a turn lost to its length (promptctl-voice-je8.d20)."""
     return max(TRANSCRIBING_SECONDS, held)
-
-
-class Recording:
-    """The audio of the hold being gathered, as the pipeline hears it and as the microphone captured it, before the echo
-    canceller: appended and trimmed together, so a hold is measured on both sides of the canceller over the very audio it
-    is made of."""
-
-    def __init__(self) -> None:
-        self._heard = bytearray()
-        self._captured = bytearray()
-
-    def add(self, sound: Sound, gathering: bool) -> None:
-        """A frame more; while nothing is `gathering` it, only the last second is kept, the second a hold the desk was
-        listening for opens with."""
-        self._heard += sound.heard
-        self._captured += sound.captured
-        # [LAW:dataflow-not-control-flow] every frame trims; gathering, it trims nothing.
-        cut = 0 if gathering else max(0, len(self._heard) - SECOND)
-        del self._heard[:cut]
-        del self._captured[:cut]
-
-    def clear(self) -> None:
-        self._heard.clear()
-        self._captured.clear()
-
-    @property
-    def sound(self) -> Sound:
-        return Sound(bytes(self._heard), bytes(self._captured))
 
 
 @dataclass(frozen=True)
@@ -274,7 +246,7 @@ class HoldOwner(FrameProcessor):
                 # From listening to arming, or back, the second the desk heard is kept: the turn's first words.
                 pass
         self._key = frame.key
-        sound = Sound(frame.audio, frame.captured)
+        sound = Sound(frame.audio, frame.captured, frame.played)
         # [LAW:no-ambient-temporal-coupling] a press is heard as speech from the start: nothing it hears is trimmed while
         # HOLD_SECONDS runs, however long.
         self._recording.add(sound, gathering=frame.key in ("arming", "down"))
@@ -399,6 +371,9 @@ class HoldOwner(FrameProcessor):
             annotate(listener=listener.name, hold=hold.number)
             async with asyncio.timeout(HEARING_SECONDS - (time.monotonic() - began.began)):
                 heard = await hearing()
+            # [LAW:nothing-unseen] who each speaker the listener told apart is, beside what cut: the cut is on words, and
+            # who said them is measured here, to fit the voiceprint's table on real use before it decides anything.
+            annotate(speakers=heard.speakers)
             # [LAW:single-enforcer] the one cut: words a listener heard while their hold is still open. Heard once it has
             # closed, they cut nothing, and the hold's own transcription says what it held. The check and the queueing are
             # one step, with nothing awaited between.

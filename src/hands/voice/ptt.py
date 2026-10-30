@@ -47,6 +47,9 @@ class KeyedAudio(InputAudioRawFrame):
     # The same sound as the microphone captured it, before the echo canceller and as long as `audio`, muted by the key
     # as it is; the phone is heard through no canceller, so there it is `audio` itself.
     captured: bytes
+    # What the desk's speaker was playing as it was captured, the echo canceller's reference, in the microphone's format
+    # and as long as `audio`; None at the phone, whose own canceller is told what it plays, and hands is not.
+    played: bytes | None
     key: Key
     # How many turns the gate has sent, and thrown away, by this frame.
     sent: int
@@ -147,10 +150,11 @@ class Gate:
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
-    def framed(self, audio: bytes, captured: bytes, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
-        """Audio captured at `place`, as the pipeline hears it and as the microphone `captured` it, tagged with this gate."""
+    def framed(self, audio: bytes, captured: bytes, played: bytes | None, sample_rate: int, num_channels: int, place: Place) -> KeyedAudio:
+        """Audio captured at `place`, as the pipeline hears it, as the microphone `captured` it, and what the speaker
+        `played` over it, tagged with this gate. What was played is not the microphone's, so the key mutes none of it."""
         return KeyedAudio(
-            audio=self.audible(audio), captured=self.audible(captured), sample_rate=sample_rate, num_channels=num_channels,
+            audio=self.audible(audio), captured=self.audible(captured), played=played, sample_rate=sample_rate, num_channels=num_channels,
             key=self.key, sent=self.sent, dropped=self.dropped, place=place, opened=self.opened,
         )
 

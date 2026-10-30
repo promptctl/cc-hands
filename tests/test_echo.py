@@ -33,7 +33,7 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
         start, end = index * chunk + (6 if index % 2 else 0), (index + 1) * chunk + (0 if index % 2 else 6)
         canceller.played(played_bytes[start:end], PLAYED_RATE, 1)
         buffer = echo[index * 320 : (index + 1) * 320].tobytes()
-        cleaned = canceller.heard(buffer, HEARD_RATE, 1)
+        cleaned = canceller.heard(buffer, HEARD_RATE, 1).heard
         assert len(cleaned) == len(buffer)
         if index >= 100:  # after two seconds to learn the room
             heard_raw, heard_clean = heard_raw + buffer, heard_clean + cleaned
@@ -43,7 +43,7 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
 def test_a_voice_with_nothing_playing_is_heard_as_it_was_said() -> None:
     canceller = EchoCanceller()
     voice = _noise(2.0, HEARD_RATE, seed=2).tobytes()
-    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1) for start in range(0, len(voice), 640))
+    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1).heard for start in range(0, len(voice), 640))
     assert abs(_power_db(cleaned[16000:]) - _power_db(voice[16000:])) < 3
 
 
@@ -56,7 +56,7 @@ def test_a_voice_after_the_speaker_stops_being_written_to_is_heard_as_it_was_sai
         canceller.played(buffer, HEARD_RATE, 1)
         canceller.heard(buffer, HEARD_RATE, 1)
     voice = _noise(2.0, HEARD_RATE, seed=2).tobytes()  # then the user, with nothing more written
-    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1) for start in range(0, len(voice), 640))
+    cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1).heard for start in range(0, len(voice), 640))
     assert abs(_power_db(cleaned[16000:]) - _power_db(voice[16000:])) < 3
 
 
@@ -68,7 +68,7 @@ def test_a_microphone_buffer_of_part_of_a_frame_is_refused() -> None:
 def test_a_stereo_microphone_is_heard_in_frames_of_both_channels() -> None:
     canceller = EchoCanceller()
     voice = np.repeat(_noise(1.0, HEARD_RATE, seed=3), 2).tobytes()  # each sample on both channels
-    cleaned = b"".join(canceller.heard(voice[start : start + 1280], HEARD_RATE, 2) for start in range(0, len(voice), 1280))
+    cleaned = b"".join(canceller.heard(voice[start : start + 1280], HEARD_RATE, 2).heard for start in range(0, len(voice), 1280))
     assert len(cleaned) == len(voice)
     assert canceller.counts()["heard"] == 100  # one second of 10 ms frames, not two
     assert abs(_power_db(cleaned[32000:]) - _power_db(voice[32000:])) < 3
@@ -94,3 +94,19 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
         canceller.played(bytes(640), HEARD_RATE, 1)
         canceller.heard(bytes(640), HEARD_RATE, 1)
     assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28}
+
+
+def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_it_in_the_microphones_format() -> None:
+    """What hands keeps of what it said over a hold: the reference frame each microphone frame was matched with, at the
+    microphone's rate, so the two line up sample for sample; silence where nothing was playing."""
+    canceller = EchoCanceller()
+    tone = (8000 * np.sin(2 * np.pi * 440 * np.arange(int(0.02 * PLAYED_RATE)) / PLAYED_RATE)).astype(np.int16)
+    canceller.heard(bytes(320), HEARD_RATE, 1)  # one frame before anything plays
+    canceller.played(tone.tobytes(), PLAYED_RATE, 1)
+    cancelled = canceller.heard(bytes(640), HEARD_RATE, 1)
+    played = np.frombuffer(cancelled.played, np.int16)
+    assert len(cancelled.played) == len(cancelled.heard) == 640
+    # The same 440 Hz tone, at the microphone's rate: each sample where the tone is at that instant, give or take one step.
+    expected = 8000 * np.sin(2 * np.pi * 440 * np.arange(320) / HEARD_RATE)
+    assert np.max(np.abs(played - expected)) < 8000 * 2 * np.pi * 440 / PLAYED_RATE
+    assert canceller.heard(bytes(320), HEARD_RATE, 1).played == bytes(320)  # nothing more played: silence

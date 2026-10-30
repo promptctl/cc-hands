@@ -380,7 +380,7 @@ async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it
         gate = Gate()
         for _ in range(3):
             for gate in (gate.after("start", "held key"), gate.after("start", "held key").after("stop", "held key")):
-                await run.worker.queue_frame(gate.framed(b"\x00\x00", b"\x00\x00", 16000, 1, "desk"))
+                await run.worker.queue_frame(gate.framed(b"\x00\x00", b"\x00\x00", None, 16000, 1, "desk"))
         async with asyncio.timeout(10):
             while len(told.holds) < 4:
                 await asyncio.sleep(0.01)

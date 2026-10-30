@@ -85,6 +85,12 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | engaged conversation | once the streaming recognizer hears words in it, while it is open |
 | a hold that holds no words | nothing, so nothing has to be undone |
 
+Who said the words is measured beside the cut and does not yet decide it: each `hearing` event
+carries every speaker the diarizer heard, identified by voiceprint against hands' own voice as a
+`Person`, `Hands`, `Unsure` or `Unheard` with the score that said so (`voice/voiceprints.py`), and
+each hold is kept with what hands was playing over it (`voice/recorder.py`), so the cut on a
+person's voice rather than any words can be fitted on real use first.
+
 **2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
 a barge-in. The guards on lines 733–737 say no in four cases:
 

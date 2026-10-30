@@ -28,6 +28,7 @@ import huggingface_hub.constants
 import mlx.core as mx
 import mlx_whisper
 import nltk
+import numpy as np
 import pytest
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
@@ -47,7 +48,7 @@ from hands.sessions.home import Home
 from hands.sessions.marketplace import render
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import streaming
+from hands.voice import streaming, voices
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -257,8 +258,8 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
 class Unspoken:
     """The run's streaming session of a pair that hears no speaker say a word in anything it is fed."""
 
-    def decoded(self, samples: streaming.Samples) -> streaming.Spoken:
-        return ()
+    def decoded(self, samples: streaming.Samples) -> streaming.Decoded:
+        return streaming.Decoded((), ())
 
     def closed(self) -> streaming.Closed:
         return streaming.Closed(frozenset(), ())
@@ -315,6 +316,17 @@ def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
         return Unspoken()
 
     monkeypatch.setattr(streaming, "load", unspoken)
+
+
+@pytest.fixture(autouse=True)
+def no_enrolment_speech(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building the voice makes hands' print from a second of noise, not from its TTS: Pocket TTS loading a model of its
+    own and saying ENROLMENT is a second or two that no test is about but the one that asks for it (test_voiceprints)."""
+
+    def noise(_voice: str, _text: str) -> streaming.Samples:
+        return np.random.default_rng(0).normal(0, 0.1, streaming.RATE).astype(np.float32)
+
+    monkeypatch.setattr(voices, "synthesized", noise)
 
 
 async def unprimed() -> None:

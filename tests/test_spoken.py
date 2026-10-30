@@ -361,13 +361,16 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda id: id, dict),
         prompt=unprimed,
+        holds=tmp_path / "holds",
         record=lambda _: None,
     )
     filters = given["text_filters"]
     assert isinstance(filters, list) and [type(one) for one in cast(list[object], filters)] == [SpokenForm]
     # And the model's reply reaches the filter in pieces a fenced block is never split across, past only where the
-    # player's lines enter, which lets it through.
-    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines and player.lines.next is voice.tts
+    # player's lines enter, which lets it through, and where hands' print of a voice changed to is made, which lets
+    # everything through.
+    assert isinstance(voice.llm.next, Pieces) and voice.llm.next.next is player.lines
+    assert isinstance(player.lines.next, voices.Enrolling) and player.lines.next.next is voice.tts
     assert isinstance(pieced["text_aggregator"], FenceAggregator)
 
 

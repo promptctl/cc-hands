@@ -1890,6 +1890,29 @@ its first work (`streaming.loaded`), so the voice starts without them and holds 
 are heard behind them; models that fail to load, or decoding that fails, fail the end of that
 hold and every hold's after it, with why.
 
+Each speaker in each hold is identified by their voice, measured beside the cut and not yet acting
+on it (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
+is active in at the threshold their stream is masked by, are read out of it as it takes each
+chunk, and the hold's samples in those frames, overlap included in both speakers, are that
+speaker's voice in the hold. At each hearing, every speaker who added words is scored with
+3D-Speaker's ERes2Net, run by sherpa-onnx on the CPU, on their latest 3 s against hands' own
+voiceprint: one per voice hands speaks in, made at the voice's build, and before a voice change
+reaches the TTS service, from hands' own Pocket TTS output (`voiceprints.enrolled`), never from a
+person. One table of score floors by length decides: under 1 s, `Unheard`; from 1 s under 0.25,
+from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
+otherwise `Unsure`. A person stays one for the hold; every speaker is identified afresh in each
+hold, since a diarizer's number is not an identity. Each hearing's `speakers` say who each was,
+with the score and seconds that said so, beside what cut. A voiceprint model that does not load
+(`voiceprints.loaded`) fails the voice's build, naming the file.
+
+Every hold of the key's is kept on disk by one more listener, the recorder
+(`hands.voice.recorder`), under `holds/<run>/` in the home: as the pipeline heard it, after the
+canceller; what the desk's speaker played over it, the canceller's own reference for each
+microphone frame, at the microphone's rate, so the two line up sample for sample (the phone has
+none); and what opened it and what the gate did with it. So real use is labelled data the
+voiceprint table is refitted on (`scripts/measure-voiceprints.py`). A hold that cannot be
+written fails its `hearing` event with why.
+
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed
 mid-stream, the microphone's callbacks simply stop, a write to the speaker blocks for

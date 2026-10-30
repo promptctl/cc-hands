@@ -523,7 +523,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         # [LAW:dataflow-not-control-flow] every buffer goes through the canceller, key up or down and at either place:
         # it keeps learning the room, and takes the speaker's sound in step with it.
         try:
-            cleaned = echo.heard(in_data, self._sample_rate, self._params.audio_in_channels)
+            cancelled = echo.heard(in_data, self._sample_rate, self._params.audio_in_channels)
         except Exception as error:
             # [LAW:no-silent-failure] PyAudio would abort the stream on a raise and say so only on stderr, leaving
             # hands running deaf; the pipeline is ended instead, and the run with it.
@@ -534,14 +534,14 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by an edge as by the hold owner: while hands is at the
         # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
-        overheard = cleaned if gate.hears("desk") else bytes(len(cleaned))
+        overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the hold owner; while hands is at the
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
             return None, pyaudio.paContinue
-        frame = gate.framed(cleaned, in_data, self._sample_rate, self._params.audio_in_channels, "desk")
+        frame = gate.framed(cancelled.heard, in_data, cancelled.played, self._sample_rate, self._params.audio_in_channels, "desk")
         asyncio.run_coroutine_threadsafe(self.push_audio_frame(frame), loop)
         return None, pyaudio.paContinue
 

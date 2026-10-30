@@ -120,7 +120,7 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, m
                 captured = room.heard(last - PERIOD // 3, last)
                 index = last - PERIOD // 3
                 raw[index : index + len(captured)] = captured
-                cleaned[index : index + len(captured)] = np.frombuffer(canceller.heard(captured.tobytes(), HEARD_RATE, 1), np.int16)
+                cleaned[index : index + len(captured)] = np.frombuffer(canceller.heard(captured.tobytes(), HEARD_RATE, 1).heard, np.int16)
             case _:
                 raise AssertionError(what)
     canceller.close()

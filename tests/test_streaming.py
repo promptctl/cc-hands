@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,10 +22,10 @@ from conftest import PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
-from hands.voice import engaged, streaming
+from hands.voice import engaged, streaming, voiceprints
 from hands.voice.holdowner import HoldOwner
-from hands.voice.holds import Fate, Hold, Sound
-from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Closed, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
+from hands.voice.holds import Fate, Hands, Hold, Person, Sound, Speaker, Unheard, Unsure, Who
+from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
 
@@ -49,12 +50,14 @@ class Scripted:
     failing: frozenset[int] = frozenset()
     closing: list[Closed] = field(default_factory=list[Closed])
     fed: list[Samples] = field(default_factory=list[Samples])
+    # Where the diarizer heard each speaker, a feed's at a time, as `spoken` is scripted.
+    active: list[tuple[Active, ...]] = field(default_factory=list[tuple[Active, ...]])
 
-    def decoded(self, samples: Samples) -> Spoken:
+    def decoded(self, samples: Samples) -> Decoded:
         self.fed.append(samples)
         if len(self.fed) - 1 in self.failing:
             raise RuntimeError("Metal ran out of memory")
-        return self.spoken.pop(0) if self.spoken else ()
+        return Decoded(self.spoken.pop(0) if self.spoken else (), self.active.pop(0) if self.active else ())
 
     def closed(self) -> Closed:
         return self.closing.pop(0) if self.closing else NOTHING_CLOSED
@@ -69,6 +72,11 @@ class Unused:
 
 def pcm(samples: Samples) -> bytes:
     return (samples * 32768).astype(np.int16).tobytes()
+
+
+def decoded_as_captured(samples: Samples) -> Samples:
+    """`samples` as a hold carries them: through 16-bit audio and back."""
+    return np.frombuffer(pcm(samples), np.int16).astype(np.float32) / np.float32(32768)
 
 
 # The samples of a diarizer's step after the run's first, which a hearing follows each of.
@@ -94,13 +102,13 @@ class Rig:
                 await self.owned._heard(self.listener, hold, hearing, begun())  # pyright: ignore[reportPrivateUsage, reportArgumentType]
 
     async def opened(self, hold: Hold, before: Samples) -> None:
-        await self.run(hold, self.listener.opened(hold, Sound(pcm(before), pcm(before))))
+        await self.run(hold, self.listener.opened(hold, Sound(pcm(before), pcm(before), None)))
 
     async def heard(self, hold: Hold, samples: Samples, frame: int = STEPPED) -> None:
         """`samples` of `hold`, given in frames of `frame` samples, and every hearing they bring run."""
         for start in range(0, len(samples), frame):
             piece = pcm(samples[start : start + frame])
-            await self.run(hold, self.listener.heard(Sound(piece, piece)))
+            await self.run(hold, self.listener.heard(Sound(piece, piece, None)))
 
     async def ended(self, hold: Hold, fate: Fate) -> None:
         await self.run(hold, self.listener.ended(hold, fate))
@@ -111,9 +119,14 @@ class Rig:
         return [(event.outcome, event.facts["heard"], event.facts.get("added", event.facts.get("words"))) for event in hearings(self.recorded)]
 
 
-def rigged(session: Session) -> Rig:
+def unheard(_voice: Samples, seconds: float) -> Who:
+    """Nobody identified: the tests of words alone."""
+    return Unheard(seconds)
+
+
+def rigged(session: Session, identify: Callable[[Samples, float], Who] = unheard) -> Rig:
     recorded: list[Entry] = []
-    listener = StreamingRecognizer(lambda _: session, recorded.append)
+    listener = StreamingRecognizer(lambda _: session, identify, recorded.append)
     return Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
 
 
@@ -262,6 +275,47 @@ async def test_decoding_that_fails_breaks_the_runs_stream_and_each_hold_from_it_
     assert len(session.fed) == 3
 
 
+async def test_each_speaker_is_identified_by_the_holds_own_samples_the_diarizer_heard_them_in_overlap_included() -> None:
+    scored: list[tuple[Samples, float]] = []
+
+    def identify(voice: Samples, seconds: float) -> Who:
+        scored.append((voice, seconds))
+        return Person(0.1, seconds) if len(scored) == 2 else Hands(0.9, seconds)
+
+    # Speaker 0 in the run's first two frames and the fourth, speaker 1 in the fourth and fifth: both in the fourth.
+    session = Scripted([(), (), said("is it", (1, "yes"))], active=[(), (Active(0, 0), Active(0, 1)), (Active(0, 3), Active(1, 3), Active(1, 4))])
+    rig = rigged(session, identify)
+    hold = (np.arange(2 * STEPPED) / (4 * STEPPED)).astype(np.float32)
+    await rig.opened(HELD, sound(0))
+    await rig.heard(HELD, hold)
+    frame = streaming.FRAME
+    # Each scored on exactly the samples of the frames they were active in, the overlap in both, as the hold's own audio
+    # came through the 16-bit frames a hold is captured in.
+    heard = decoded_as_captured(hold)
+    expected = [(np.concatenate([heard[: 2 * frame], heard[3 * frame : 4 * frame]]), 3 * frame / streaming.RATE), (heard[3 * frame : 5 * frame], 2 * frame / streaming.RATE)]
+    assert [(voice.tobytes(), seconds) for voice, seconds in scored] == [(voice.tobytes(), seconds) for voice, seconds in expected]
+    # [LAW:nothing-unseen] who each speaker is, on the hearing beside what cut: words cut as they always have.
+    [event] = hearings(rig.recorded)
+    assert (event.facts["speakers"], event.facts["cut"]) == (
+        (Speaker(0, "is it", Hands(0.9, 0.24)), Speaker(1, "yes", Person(0.1, 0.16))), False
+    )
+
+
+async def test_a_person_in_a_hold_stays_one_for_it_and_the_next_hold_identifies_its_speakers_afresh() -> None:
+    whos: list[Who] = [Person(0.1, 1.0), Hands(0.9, 3.0), Hands(0.9, 3.0)]
+    session = Scripted([(), (), said("stop"), said(" now"), (), (), said("go")], active=[(), (Active(0, 0),)])
+    rig = rigged(session, lambda _voice, _seconds: whos.pop(0))
+    await rig.opened(HELD, sound(0))
+    await rig.heard(HELD, sound(seconds(3 * STEPPED)))
+    await rig.ended(HELD, "sent")
+    second = Hold(2, "engaged conversation")
+    await rig.opened(second, sound(0))
+    await rig.heard(second, sound(seconds(2 * STEPPED)))
+    told = [tuple((speaker.number, speaker.who) for speaker in cast(tuple[Speaker, ...], event.facts["speakers"])) for event in hearings(rig.recorded)]
+    # Scored once in the first hold, and a person there to its end; then scored again in the second.
+    assert told == [((0, Person(0.1, 1.0)),), ((0, Person(0.1, 1.0)),), ((0, Person(0.1, 1.0)),), ((0, Hands(0.9, 3.0)),), ()]
+
+
 def loaded(recorded: list[Entry]) -> list[WideEvent]:
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "streaming.loaded"]
 
@@ -274,7 +328,7 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
         go.wait()
         return Scripted([(), said("hello")])
 
-    listener = StreamingRecognizer(slow, recorded.append)
+    listener = StreamingRecognizer(slow, unheard, recorded.append)
     rig = Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
     await rig.opened(HELD, sound(0))
     hearing = asyncio.create_task(rig.heard(HELD, sound(seconds(2 * STEPPED))))
@@ -299,7 +353,7 @@ async def test_models_that_fail_to_load_fail_each_hold_once_saying_why() -> None
     def unreachable(_gating: int) -> Session:
         raise OSError("the hub is unreachable")
 
-    listener = StreamingRecognizer(unreachable, recorded.append)
+    listener = StreamingRecognizer(unreachable, unheard, recorded.append)
     rig = Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
     for number in (1, 2):
         await rig.opened(Hold(number, "engaged conversation"), sound(0))
@@ -545,3 +599,62 @@ def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> N
         moved.append((steps(start + len(audio[start : start + 320])) > steps(start), state.frames_processed > committed))
     assert all(timed == stepped for timed, stepped in moved), [at for at, (timed, stepped) in enumerate(moved) if timed != stepped]
     assert sum(stepped for _, stepped in moved) > 5
+
+
+# hands' own voice through the room, uncancelled, and a person over it, recorded at the desk for promptctl-voice-i15t.99s.zoj:
+# hands_echo_uncancelled.flac is the MacBook's microphone, no canceller, as hands said eight sentences ('charles', its
+# default voice) out of its speakers, play starting at PLAYED; hands_and_another.flac is the same with a second voice
+# ('alba') saying four lines over hands from 1 s in, until about 14.3 s, and hands alone after. hands_tts.flac is hands' own
+# TTS output in that voice, the first three sentences, which the print is made from as hands makes its own.
+PLAYED = 0.5
+SENTENCES = (0.0, 4.92, 8.56, 12.04, 15.68, 19.56, 23.36, 26.52)
+OVER_HANDS, HANDS_ALONE = (0.0, 14.6), (15.0, 24.0)
+
+
+@pytest.fixture(scope="module")
+def hands_voice() -> voiceprints.HandsVoice:
+    """hands' print, made by the real model from hands' own TTS output."""
+    [said] = fixture_holds("hands_tts.flac")
+    return voiceprints.HandsVoice("charles", voiceprints.load(lambda _: None), lambda _voice, _text: said, lambda _: None)
+
+
+def identified(stream: streaming.Stream, hold: Samples) -> tuple[list[Speaker], Ended]:
+    """Every speaker each hearing of a hold identified, and the hold as it ended, fed in 20 ms frames as the listener is,
+    asked at every step of the diarizer's as a hearing asks."""
+    found = list[Speaker]()
+    fed = stream._fed  # pyright: ignore[reportPrivateUsage]
+    stream.opened(np.zeros(0, np.float32))
+    for start in range(0, len(hold), 320):
+        stream.heard(hold[start : start + 320])
+        found += stream.said() if steps(fed + start + 320) > steps(fed + start) else ()
+    stream.silence(through(stream._fed) - stream._fed)  # pyright: ignore[reportPrivateUsage]
+    return found, stream.ended()
+
+
+def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_at(paired: Session, hands_voice: voiceprints.HandsVoice) -> None:
+    [echo] = fixture_holds("hands_echo_uncancelled.flac")
+    stream = streaming.Stream(paired, hands_voice.identify)
+    # Each sentence its own hold, from its onset, so each is scored from its first second; then the whole as one hold.
+    starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
+    holds = [echo[start:end] for start, end in zip(starts, [*starts[1:], len(echo)])] + [echo]
+    heard = [identified(stream, hold) for hold in holds]
+    whos = [speaker.who for found, ended in heard for speaker in (*found, *ended.speakers)]
+    assert not [who for who in whos if isinstance(who, Person)], whos
+    # Scored at every length the table has a row for, and found to be hands once heard long enough.
+    scored = [who.seconds for who in whos if isinstance(who, Hands | Unsure)]
+    assert min(scored) < voiceprints.PERSON.seconds and max(scored) > voiceprints.HANDS.seconds, whos
+    assert all(isinstance(speaker.who, Hands) for speaker in heard[-1][1].speakers), heard[-1][1].speakers
+
+
+def test_a_second_voice_over_hands_is_a_person_and_hands_alone_after_it_is_hands(paired: Session, hands_voice: voiceprints.HandsVoice) -> None:
+    [mic] = fixture_holds("hands_and_another.flac")
+    stream = streaming.Stream(paired, hands_voice.identify)
+    over, alone = (mic[round(start * streaming.RATE) : round(end * streaming.RATE)] for start, end in (OVER_HANDS, HANDS_ALONE))
+    _, both = identified(stream, over)
+    # The second voice's lines are said by a person, whichever speaker the diarizer gave them.
+    theirs = [speaker for speaker in both.speakers if speaker.words and "second speaker" in speaker.words.lower()]
+    assert theirs and all(isinstance(speaker.who, Person) for speaker in theirs), both.speakers
+    # Identified afresh in the next hold, from its own audio: hands, whatever number it had in the last.
+    found, after = identified(stream, alone)
+    assert after.speakers and all(isinstance(speaker.who, Hands) for speaker in after.speakers), after.speakers
+    assert not [speaker for speaker in found if isinstance(speaker.who, Person)], found
