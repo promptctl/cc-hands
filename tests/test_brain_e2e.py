@@ -25,7 +25,7 @@ from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStar
 from conftest import RUN, located, running, unread
 from hands.brain import pinned
 from hands.brain.fork import REMINDER
-from hands.brain.stage import OWED, BrainStage
+from hands.brain.stage import ANSWERS, OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
 from hands.brain.process import BROKEN, STOPPED, starting_settings, workdir
@@ -415,3 +415,29 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
     assert held(hands) == ()
     await hands.say("say hello")
     await hands.until(lambda: "Hello." in "".join(hands.out.said()))
+
+
+async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_and_are_the_next_turn(mock_api: MockApi, hands: Hands) -> None:
+    """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
+    a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
+    turn, with no note (promptctl-barge-in-duao.51y)."""
+    mock_api.script("1-done", {"bodyContains": [TURN, RESULT], "lastUserContains": ["rename the module"]}, {"type": "text", "text": "Renamed it."})
+    mock_api.script("2-look", {"lastUserContains": ["rename the module"], "bodyContains": [TURN]}, {"type": "text", "text": "Let me look."}, {"type": "tool_use", "name": "Bash", "input": {"command": "sleep 3"}}, stop="tool_use")
+    mock_api.script("3-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
+    await connected(hands)
+    await hands.say("rename the module")
+    await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
+    assert "Let me look." in "".join(hands.out.said())
+    await hands.say("and check the logs too")
+    await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()))
+    said = "".join(hands.out.said())
+    # C2: the turn runs on to its end, heard, and the answer to the words comes after it.
+    assert said.index("Let me look.") < said.index("Renamed it.") < said.index("The logs are clean.")
+    first, second = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
+    # C1, C3: not a barge-in; the first turn is cut in on once, and nothing of it is said over the user.
+    assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"]) == (False, 1, "")
+    # C5: hands answers the words within about a second.
+    [(answer, waited_ms)] = first.facts["asides"]
+    assert answer in ANSWERS and waited_ms < 1000, first.facts["asides"]
+    # C4: the next turn carries the words, with no note.
+    assert second.facts["asked"].strip().endswith("and check the logs too") and "note" not in second.facts["asked"].lower(), second.facts["asked"]
