@@ -430,11 +430,13 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
     assert "Let me look." in "".join(hands.out.said())
     await hands.say("and check the logs too")
-    await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()))
+    turns = lambda: [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
+    # Each turn's event is written as its unit ends, after its last word is said.
+    await hands.until(lambda: len(turns()) == 2)
     said = "".join(hands.out.said())
     # C2: the turn runs on to its end, heard, and the answer to the words comes after it.
     assert said.index("Let me look.") < said.index("Renamed it.") < said.index("The logs are clean.")
-    first, second = [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
+    first, second = turns()
     # C1, C3: not a barge-in; the first turn is cut in on once, and nothing of it is said over the user.
     assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"]) == (False, 1, "")
     # C5: hands answers the words within about a second.
