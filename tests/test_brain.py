@@ -602,12 +602,30 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
 
 
+class _Pressed:
+    """A typist that notes each key as it goes, with whether `told` was set then: a key's order against a telling, read as
+    it is pressed rather than as the fake brain logs it."""
+
+    def __init__(self, typist: Typist, told: asyncio.Event) -> None:
+        self._typist = typist
+        self._told = told
+        self.pressed: list[tuple[Keystroke, bool]] = []
+
+    def type(self, text: PromptText) -> None:
+        self._typist.type(text)
+
+    def press(self, key: Keystroke) -> None:
+        self.pressed.append((key, self._told.is_set()))
+        self._typist.press(key)
+
+
 async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the_model_reads_ahead_of_its_telling(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
     # performed: the turn is over only once the telling is heard, under its id, and the stop's Ctrl-C goes only then.
     recorded: list[Entry] = []
     brain = await start(launch(tmp_path), recorded.append)
     performing = asyncio.Event()
+    typist = brain._typist = _Pressed(brain._typist, performing)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
@@ -623,20 +641,21 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
         assert brain.interrupt(brain.answering()) is True
         await until(brain._all_told)  # pyright: ignore[reportPrivateUsage]
         assert not asking.done()
-        # A Ctrl-C goes once Claude Code has acted on the Escape, as the model hears it: not while its telling waits.
-        assert [line[0] for line in typed(tmp_path)] == ["prompt", "escape"]
         performing.set()
         assert await asyncio.wait_for(asking, 10) == BrainStopped()
-        # The turn is answered by its telling; the stop's Ctrl-C, emptying the input, follows it.
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
+        # The stop's Ctrl-C, emptying the input, went once Claude Code had acted on the Escape, as the model heard it: after
+        # the telling, never while it waited, and before the turn was answered.
+        assert typist.pressed == [("escape", False), ("ctrl_c", True)]
     finally:
         performing.set()
         await brain.stop()
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
-    # [LAW:nothing-unseen] the stop is its own event: for a turn, and how long Claude Code took to stop what it ran.
-    [stop] = events(recorded, "brain.stop")
-    assert (stop.outcome, stop.facts["turn"]) == ("ok", True) and isinstance(stop.facts["stopped_in"], float)
+    # [LAW:nothing-unseen] the stop's clear is its own event: for a turn, no wait to space its Ctrl-C from one before, and
+    # how long Claude Code took to stop what it ran.
+    [clear] = events(recorded, "brain.clear")
+    assert (clear.outcome, clear.facts["for_turn"], clear.facts["spaced"]) == ("ok", True, 0.0)
+    assert isinstance(clear.facts["stopped_in"], float)
 
 
 async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_the_model_holds_and_what_it_showed(tmp_path: Path, fake_claude: Path) -> None:

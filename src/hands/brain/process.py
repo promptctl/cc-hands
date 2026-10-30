@@ -1051,9 +1051,10 @@ class Brain:
         untold before a turn is typed (`_taking`). It raises StopUnrecorded when Claude Code still holds what it stopped
         after INTERRUPT_SECONDS, and BrainGone when the brain exits first."""
         held = self._modelled()
-        # [LAW:nothing-unseen] each stop is one event: whose it was, and how long Claude Code took to stop what it ran.
-        with unit("brain.stop", self._record):
-            annotate(turn=turn is not None)
+        # [LAW:nothing-unseen] each clear is one event: whether it was for a turn, and how long Claude Code took to stop
+        # what it ran.
+        with unit("brain.clear", self._record):
+            annotate(for_turn=turn is not None)
             # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog
             # it holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether
             # it reaches Claude Code before the Escape or after it.
@@ -1063,6 +1064,14 @@ class Brain:
             escaped = loop.time()
             if turn is not None and (turn is not self._turn or not turn.stopped):
                 logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
+            # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
+            # prompt (its cancel pops the queue into the input), which the next turn typed would join; Ctrl-C clears it.
+            # On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes, whatever
+            # was typed between; so no two are pressed that close, counted from when each went and with room for Claude
+            # Code to read the first late. The spacing is waited out while Claude Code acts on the Escape.
+            spacing = self._cleared + EXIT_SECONDS - loop.time()
+            await asyncio.sleep(spacing)
+            annotate(spaced=round(max(spacing, 0.0), 3))
             # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
             # queue. The Escape alone stops it, in up to half a second on CI (promptctl-testing-px1f.6i5).
             # [LAW:no-silent-failure] still held past INTERRUPT_SECONDS, it was not stopped, and says what Claude Code
@@ -1075,15 +1084,11 @@ class Brain:
                 await asyncio.wait({waiting})
             if not waiting.cancelled():
                 waiting.result()
+                # Read once any spacing has passed: where `spaced` was the longer wait, Claude Code stopped sooner than this.
                 annotate(stopped_in=round(loop.time() - escaped, 3))
-                # [LAW:no-ambient-temporal-coupling] Escape puts a prompt stopped before any reply back in the input, and
-                # with it what was typed queued behind the prompt (its cancel pops the queue into the input), which the
-                # next turn typed would join; Ctrl-C clears it. It goes once Claude Code has acted on the Escape: a Ctrl-C
-                # a busy Claude Code reads in one chunk with the ESC is Alt+Ctrl-C, and neither key does anything. On an
-                # input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes, whatever
-                # was typed between; so no two are pressed that close, counted from when each went and with room for
-                # Claude Code to read the first late.
-                await asyncio.sleep(self._cleared + EXIT_SECONDS - loop.time())
+                # [LAW:no-ambient-temporal-coupling] the Ctrl-C goes once Claude Code has acted on the Escape, as the model
+                # reads it now, with nothing waited on between: a Ctrl-C a busy Claude Code reads in one chunk with the ESC
+                # is Alt+Ctrl-C, and neither key does anything.
                 await self._type(lambda typist: typist.press("ctrl_c"))
                 self._cleared = loop.time()
                 # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
