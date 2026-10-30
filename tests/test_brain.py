@@ -678,11 +678,11 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
         stopping.set()
         with pytest.raises(StopUnrecorded, match=rf"did not stop what hands pressed Escape for in {re.escape(f'{INTERRUPT_SECONDS:g}')}s: the model holds Session\(.*turn=Opened\(turn='p1'.*it showed:") as raised:
             await asyncio.wait_for(asking, 10)
+        # The stop's Ctrl-C went only once its time had passed, never while Claude Code might still read it with the ESC
+        # as one chord that does neither (promptctl-testing-px1f.6i5).
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
         await brain.stop()
-    # A Ctrl-C goes only once Claude Code has acted on the Escape: read with an ESC it has not, the two are one chord
-    # that does neither (promptctl-testing-px1f.6i5).
-    assert "ctrl_c" not in [line[0] for line in typed(tmp_path)]
     # The model's account says what it holds of the brain's dialogs: none, each refused as the stop went, and the stop
     # still ending what Claude Code runs.
     assert f"dialogs=(), ending=DenyAndInterrupt(message={STOPPED!r})" in str(raised.value)
@@ -690,10 +690,10 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
 
 
-async def test_a_stop_told_past_its_bound_leaves_its_ctrl_c_to_the_next_turn_which_empties_the_input_before_it_is_typed(tmp_path: Path, fake_claude: Path) -> None:
+async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_turn_is_not_typed_onto_its_prompt(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-silent-failure] Claude Code acts on the Escape and puts the stopped prompt back in its input, but the model
-    # hears it only after the stop's time has passed: the stop fails with no Ctrl-C pressed, and the next turn is not
-    # typed onto the prompt left in the input.
+    # hears it only after the stop's time has passed: the stop fails, and its Ctrl-C still empties the input, so the next
+    # turn is not typed onto the prompt the Escape put back.
     stopping, performing = asyncio.Event(), asyncio.Event()
 
     async def pause(seconds: float) -> None:
@@ -721,8 +721,7 @@ async def test_a_stop_told_past_its_bound_leaves_its_ctrl_c_to_the_next_turn_whi
     finally:
         performing.set()
         await brain.stop()
-    # The next turn's clear pressed the Ctrl-C the stop left, on the prompt the Escape put back, before it was typed.
-    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["escape", " wait"], ["ctrl_c", " wait"], ["prompt", " and now?"]]
+    assert typed(tmp_path) == [["prompt", " wait"], ["escape", ""], ["ctrl_c", " wait"], ["prompt", " and now?"]]
 
 
 class _Timed:
@@ -1967,7 +1966,7 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
         stopping.clear()
         # The next turn clears what still runs first, and waits for the clear to take: it never does, so nothing is typed.
         following = asyncio.ensure_future(brain.ask("write", unasked))
-        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "escape"])
+        await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c", "escape"])
         stopping.set()
         with pytest.raises(StopUnrecorded, match="did not stop what hands pressed Escape for"):
             await asyncio.wait_for(following, 10)
@@ -2109,7 +2108,7 @@ def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
     loop = asyncio.get_running_loop()
     keys = _Keys()
     brain._typist, brain._record, brain._typing, brain._input = keys, recorded.append, set(), asyncio.Lock()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
-    brain._exit, brain._cleared, brain._unemptied = loop.create_future(), float("-inf"), False  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._exit, brain._cleared = loop.create_future(), float("-inf")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
 
     async def never(_seconds: float) -> None:
         await loop.create_future()
