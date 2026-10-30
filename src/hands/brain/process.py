@@ -901,7 +901,7 @@ class Brain:
         and moved, as `_told` moves it, to the turn behind once its words are found still waiting."""
         return None if self._turn is None else self._turn.running
 
-    def interrupt(self, running: ClaudeTurn | None) -> bool:
+    def interrupt(self, running: ClaudeTurn | None, calling: bool = False) -> bool:
         """Stops `running`, the turn of Claude Code's whose work was shown, as Escape at the brain's keyboard stops it, and
         says whether there was one to stop: the turn in flight, where `running` answers it, or none Claude Code has yet;
         else one Claude Code opened itself, which no turn in flight waits on, while it is open.
@@ -911,7 +911,7 @@ class Brain:
         """
         turn = self._turn
         if turn is not None and not turn.answered.done() and turn.running is running:
-            self._keep(self._stop(turn), turn)
+            self._keep(self._stop(turn, calling), turn)
             return True
         if running is not None and running in self._claude_turns.opened_itself:
             self._keep(self._halt(running), None)
@@ -931,12 +931,12 @@ class Brain:
             else:
                 await self._clear(None)
 
-    async def _stopping(self, turn: _Turn) -> None:
+    async def _stopping(self, turn: _Turn, calling: bool = False) -> None:
         """Stops the taken `turn`, with the input held: it ends BrainStopped once Claude Code holds nothing of it."""
         # Whatever way Claude Code's turn ends from here, it was stopped: an Escape went for it.
         turn.stopped = True
         try:
-            await self._clear(turn)
+            await self._clear(turn, calling)
         except (BrainGone, StopUnrecorded) as error:
             self._over(turn, error)
             return
@@ -1047,7 +1047,7 @@ class Brain:
         if not pausing.cancelled():
             pausing.result()
 
-    async def _clear(self, turn: _Turn | None) -> None:
+    async def _clear(self, turn: _Turn | None, calling: bool = False) -> None:
         """Stops whatever Claude Code runs and empties its input, with the input held, for `turn`, and returns once the
         model holds nothing of what it stopped. Escape posts no hook for the turn it stops: the model hears it over from
         the transcript and Claude Code's status.
@@ -1062,7 +1062,7 @@ class Brain:
         self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
         # [LAW:one-source-of-truth] the wait is for a turn of Claude Code's that runs: with none running, the turn is typed
         # at once, as before, and the screen is not waited on.
-        if self._claude_turns.current is not None:
+        if calling:
             await self._counted()
         await self._type(lambda typist: typist.press("escape"))
         # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
@@ -1117,9 +1117,9 @@ class Brain:
         while COUNTER.search(self._claude.shown()) is None and loop.time() < until and not self._exit.done():
             await asyncio.sleep(0.05)
 
-    async def _stop(self, turn: _Turn) -> None:
+    async def _stop(self, turn: _Turn, calling: bool = False) -> None:
         try:
-            await self._escape(turn)
+            await self._escape(turn, calling)
         except Exception as error:
             # A stop that breaks is never pressed again: its keys may have gone, and a second Ctrl-C within Claude Code's
             # exit window ends it. The turn ends with what broke it, and `_broke` says it.
@@ -1133,7 +1133,7 @@ class Brain:
             if turn.broken is not None and not turn.answered.done():
                 self._over(turn, turn.broken)
 
-    async def _escape(self, turn: _Turn) -> None:
+    async def _escape(self, turn: _Turn, calling: bool = False) -> None:
         # [LAW:no-ambient-temporal-coupling] Escape goes once Claude Code has taken the turn, never before: until then
         # nothing of the turn's runs for it to stop.
         await asyncio.wait({turn.taken, turn.tried}, return_when=asyncio.FIRST_COMPLETED)
@@ -1145,7 +1145,7 @@ class Brain:
         # Held until the stop has taken, so nothing is typed into a Claude Code still running what was stopped.
         async with self._input:
             if self._turn is turn:
-                await self._stopping(turn)
+                await self._stopping(turn, calling)
 
     def hear(self, observed: Observed) -> None:
         """The brain's own requests, read from the wire: the tools its turn offered the model, and whether they reached hands'."""

@@ -191,7 +191,7 @@ class FakeBrain:
         asked = PermissionRequested(self.session, at=0.0, request=RequestId(f"r{self.held}"), on=permission, mode=None)
         return Asked(permission, asked.request, self.sessions.hold(asked), self.sessions, self.session)
 
-    def interrupt(self, running: ClaudeTurn | None) -> bool:
+    def interrupt(self, running: ClaudeTurn | None, calling: bool) -> bool:
         """Asked to stop a turn of Claude Code's, as the real brain is: whether there was one. The test ends it, as Escape would."""
         self.interrupts += 1
         self.stopped.append(running)

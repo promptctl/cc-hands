@@ -103,7 +103,7 @@ class Asking(Protocol):
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded: ...
 
-    def interrupt(self, running: ClaudeTurn | None) -> bool: ...
+    def interrupt(self, running: ClaudeTurn | None, calling: bool) -> bool: ...
 
     def current(self) -> ClaudeTurn | None: ...
 
@@ -1064,7 +1064,9 @@ class BrainStage(FrameProcessor):
                 # [LAW:one-source-of-truth] the turn of Claude Code's shown is the one stopped: for the turn asked, the one
                 # the brain says answers it, heard on the wire yet or not.
                 running = self._brain.answering() if facing is self._turn else facing.running
-                return Stopping() if self._brain.interrupt(running) else NotWorking()
+                # A call the turn's work shows as still running: Escape waits for Claude Code to show its counter (`_counted`).
+                calling = any(ran.answered is None for ran in facing.tools.values())
+                return Stopping() if self._brain.interrupt(running, calling) else NotWorking()
 
     def _called(self, tool: str) -> str:
         """A tool as the user knows it: one of hands' own by its own name, any other as the model called it."""
