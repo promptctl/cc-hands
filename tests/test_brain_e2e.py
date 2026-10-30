@@ -15,7 +15,7 @@ import os
 import pwd
 import subprocess
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -43,6 +43,8 @@ from hands.voice.conversation import UserWords
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.refocus import Refocus
 from hands.sessions.sentences import Sentences
+from hands.sessions.child import Ran
+from hands.sessions.tmux import ran_at
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Received, Spoken
@@ -152,8 +154,17 @@ HELD = [str(path) for path in POLICY if path.is_file()]
 pytestmark = pytest.mark.skipif(bool(HELD), reason=f"this machine's Claude Code policy reaches every Claude Code, the brain under test among them: {', '.join(HELD)}")
 
 
-def logged_in(brain: Path, mock_binary: Path) -> None:
-    """A brain directory logged in as the mock's account by the mock's own login, and the directory it works in trusted."""
+# The brain's keybindings, as docs/claude-code-screen.md's "Submitting the prompt with a chord no dialog binds" settles
+# them: Ctrl-Q submits the prompt, and Return is unbound from submitting it, without which the prompt never takes Ctrl-Q as
+# a submit. hands writes no keybindings yet, so only the tests that prove the chord give the brain these.
+BRAIN_KEYS = {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]}
+# BRAIN_KEYS' submit chord, as tmux names the key.
+SUBMIT = "C-q"
+
+
+def logged_in(brain: Path, mock_binary: Path, keys: Mapping[str, object] | None) -> None:
+    """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
+    its keybindings `keys`, or Claude Code's defaults as hands leaves them when None."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
@@ -164,6 +175,8 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     said = json.loads(settings.read_text())
     allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
+    if keys is not None:
+        (brain / "keybindings.json").write_text(json.dumps(keys))
 
 
 @dataclass(frozen=True)
@@ -250,9 +263,15 @@ def opened(pipe: Path) -> bool:
 
 
 @pytest.fixture
-async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
+def keys() -> Mapping[str, object] | None:
+    """The brain's keybindings.json: none, as hands starts the brain. A test that needs others parametrizes `keys`."""
+    return None
+
+
+@pytest.fixture
+async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch, keys: Mapping[str, object] | None) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
-    logged_in(brain, mock_binary)
+    logged_in(brain, mock_binary, keys)
     # Every start of a claude, the brain's, an aside's, a login's, runs the cached Claude Code, the pin itself, held
     # offline as the run is (conftest): a connection it or anything it starts makes around the mock is refused by the OS,
     # and one through its proxy is in the mock's log.
@@ -371,6 +390,26 @@ def held(hands: Hands) -> tuple[object, ...]:
     return () if session is None else session.dialogs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
 
+async def at_the_pane(hands: Hands, *command: str) -> None:
+    """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the pane,
+    and the pane's fritter forwards them to Claude Code byte for byte."""
+    claude = hands.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+    ran = await ran_at(claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    assert isinstance(ran, Ran) and ran.returncode == 0, ran
+
+
+async def keyed(hands: Hands, *keys: str) -> None:
+    """`keys`, as tmux's send-keys names them, typed into the brain's pane."""
+    claude = hands.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+    await at_the_pane(hands, "send-keys", "-t", claude._session, *keys)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+async def pasted(hands: Hands, text: str) -> None:
+    """`text` pasted into the brain's pane in one bracketed paste by tmux, its newlines kept."""
+    claude = hands.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+    await at_the_pane(hands, "set-buffer", "-b", "pasted", text, ";", "paste-buffer", "-p", "-r", "-d", "-b", "pasted", "-t", claude._session)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
 async def test_two_fetches_the_brain_asks_about_at_once_are_held_together_and_each_put_to_the_user_in_the_order_asked(mock_api: MockApi, hands: Hands) -> None:
     """Both hooks are open at once and both dialogs held in the brain's model; each is put to the user in turn, and each
     refusal goes to the dialog it answers."""
@@ -438,6 +477,52 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
     assert held(hands) == ()
     await hands.say("say hello")
     await hands.until(lambda: "Hello." in "".join(hands.out.said()))
+
+
+@pytest.mark.parametrize("keys", [BRAIN_KEYS])
+# What is typed before the chord, and what the screen shows once Claude Code has read it, so the chord arrives as a read
+# of its own, never in one with the words before it.
+@pytest.mark.parametrize(("before", "shows"), [([], "Do you want to proceed?"), ([("Tab",), ("-l", "use a copy instead")], "use a copy instead")], ids=["Yes focused", "Yes amended, its field holding words"])
+async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing(mock_api: MockApi, hands: Hands, before: list[tuple[str, ...]], shows: str) -> None:
+    """Ctrl-Q, bound to the prompt's submit, typed while a permission dialog is on the brain's screen: the dialog stays up
+    and the tool does not run, whether Yes or Yes's own text field has the focus. A Down typed after it moves the focus,
+    so once the screen shows it moved, Claude Code has read everything typed before it. That the chord arrives by this
+    path at all is the paste test's to show: here a chord lost on the way looks the same (promptctl-brain-z04s.ar0)."""
+    made = hands.workdir / "made"
+    mock_api.script("1-left", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "I left it unmade."})
+    mock_api.script("2-link", {"lastUserContains": ["link the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"ln -s target {made}"}}, stop="tool_use")
+    await connected(hands)
+    await hands.say("link the file")
+    await hands.until(lambda: len(held(hands)) == 1 and "Do you want to proceed?" in shown(hands))
+    for typed in before:
+        await keyed(hands, *typed)
+    await hands.until(lambda: shows in shown(hands))
+    await keyed(hands, SUBMIT)
+    await keyed(hands, "Down")
+    # The second option, whatever it says: a Bash dialog in default mode offers "Yes, and don't ask again" there.
+    await hands.until(lambda: "❯ 2." in shown(hands))
+    assert "Do you want to proceed?" in shown(hands)
+    assert len(held(hands)) == 1
+    assert not made.is_symlink()
+    await hands.until(lambda: any("Say yes to allow it." in said for said in hands.out.said()))
+    await hands.say("no")
+    await hands.until(lambda: "I left it unmade." in "".join(hands.out.said()))
+    assert not made.is_symlink()
+    [permission] = permissions(hands.recorded)
+    assert isinstance(permission.facts["decision"], Deny)
+
+
+@pytest.mark.parametrize("keys", [BRAIN_KEYS])
+async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(mock_api: MockApi, hands: Hands) -> None:
+    """A paste long enough that Claude Code folds it into a placeholder, then Ctrl-Q: the whole text is sent as a turn,
+    which hands speaks as any turn Claude Code opens (promptctl-brain-z04s.ar0)."""
+    words = "\n".join(f"line {line} of a long turn said to the brain" for line in range(1, 30)) + "\nand last, say you read it"
+    mock_api.script("1-read", {"lastUserContains": ["line 1 of a long turn", "line 29 of a long turn", "and last, say you read it"], "bodyContains": [TURN]}, {"type": "text", "text": "I read it."})
+    await connected(hands)
+    await pasted(hands, words)
+    await hands.until(lambda: "[Pasted text #1 +29 lines]" in shown(hands))
+    await keyed(hands, SUBMIT)
+    await hands.until(lambda: "I read it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
 
 
 async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_and_are_the_next_turn(mock_api: MockApi, hands: Hands) -> None:

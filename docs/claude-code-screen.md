@@ -6,7 +6,7 @@ hands types into the brain's terminal. Return in a dialog answers it, so hands t
 
 ## How to read this document
 
-Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression, written to match the source text as it is, and the script at the end of this section finds it: `node grep.mjs <binary> '<regex>'` prints every hit with the text around it. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
+Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run but what a fact says was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression, written to match the source text as it is, and the script at the end of this section finds it: `node grep.mjs <binary> '<regex>'` prints every hit with the text around it. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
 
 ```js
 // grep.mjs: search the binary's JS modules in memory. node grep.mjs <binary> <regex> [context] [max]
@@ -40,7 +40,7 @@ What the brain can reach follows from how `src/hands/brain/process.py` starts it
 
 **Feature gates in the brain.** Claude Code reads its GrowthBook gates through one call that returns the code's default when GrowthBook is off (chunk-dxcygj28.js, search `getFeatureValueWithSource\(e,n\)\{let r=this\.getEnvironmentOverrides\(\)`). GrowthBook is on only when `Bg()` holds (chunk-dxcygj28.js, search `isEnabled:\(\)=>Bg\(\)`, `function Bg\(\)\{return!a\.DISABLE_GROWTHBOOK&&F2\(\)\}`). `F2()` is false while telemetry is restricted (chunk-dxcygj28.js, search `function F2\(\)\{return!n_\(\)\}`; chunk-waz2w8jn.js, search `function n_\(\)\{return LU\(\)\|\|`), and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` restricts it (chunk-2y4p7633.js, search `function W6t\(\)\{if\(process\.env\.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\)return"essential-traffic"`). So in the brain every `k("tengu_…", default)` gate returns its default. A surface whose only way to open is a gate that defaults off cannot appear in the brain.
 
-**Settings the brain's home decides.** The permission mode, the `tui` setting (fullscreen or not), `editorMode`, a sandbox, extra MCP servers and the brain's own keybindings (a `keybindings.json` in its config directory loads over the defaults: chunk-vkjeenf8.js, search `KeybindingSetup initialized with`) are the brain home's to say. The brain home on the machine this spike ran on names `defaultMode: "auto"`, `skipDangerousModePermissionPrompt: true` and `tui: "fullscreen"`. Those are that home's values, not hands' launch.
+**Settings the brain's home decides.** The permission mode, the `tui` setting (fullscreen or not), `editorMode`, a sandbox and extra MCP servers are the brain home's to say. Its keybindings (a `keybindings.json` in its config directory loads over the defaults: chunk-vkjeenf8.js, search `KeybindingSetup initialized with`) are hands' to write ("Submitting the prompt with a chord no dialog binds"). The brain home on the machine this spike ran on names `defaultMode: "auto"`, `skipDangerousModePermissionPrompt: true` and `tui: "fullscreen"`. Those are that home's values, not hands' launch.
 
 ## How a key travels
 
@@ -387,6 +387,83 @@ So the brain's mode is its config directory's to say: `tui` in its settings.json
 
 - A pane in a tmux mode (copy mode, a person scrolling back) still captures Claude Code's grid, but `send-keys` keys go to the mode, not to Claude Code. tmux reports this as `#{pane_in_mode}`, not as text.
 - A person attached to the brain's session types into the same input. Nothing on screen says a person is typing.
+
+## Submitting the prompt with a chord no dialog binds
+
+Return is the yes key of every dialog. Ctrl-Q, bound to the prompt's submit in the brain's own keybindings, submits the prompt, and no dialog acts on it. A turn typed as a paste and this chord approves nothing, however slowly Claude Code reads keys or draws frames. Its words can still land in a dialog: a paste typed while an option's text field has the focus goes into that field, and the chord then leaves it there unsent. Settled for promptctl-brain-z04s.ar0 from the code, with the anchors below, and by runs. hands still ends a typed turn with Return (fritter appends it in `fritter/control.go`, `keys`, as `src/hands/sessions/typing.py` asks), and nothing writes the binding into the brain's home yet:
+
+- **The brain end to end** (`tests/test_brain_e2e.py`): `test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing`, and `test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord`. Only these two run with the binding.
+- **By hand**: the pinned Claude Code against mock-anthropic in a tmux pane. That machine's policy put it in auto mode, so its dialogs came from an `ask` rule.
+
+The binding:
+
+```json
+{"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": null}}]}
+```
+
+### Where Claude Code reads it
+
+- **Path.** `<config dir>/keybindings.json` (chunk-teh24f94.js, search `function San\(\)\{return Mn\(He\(\),"keybindings\.json"\)\}`), where the config directory is `CLAUDE_CONFIG_DIR` (chunk-jeerdqq6.js, search `function s\(\)\{return process\.env\.CLAUDE_CONFIG_DIR\}`). For the brain that is `~/.hands/brain/keybindings.json`. The user's `~/.claude/keybindings.json` never reaches it.
+- **When it is read.** Read unless `V()` holds (chunk-teh24f94.js, search `function V\(\)\{return!j7\(\)\|\|br\("keybindings"\)\}`). Its gate defaults on (chunk-teh24f94.js, search `function j7\(\)\{return k\("tengu_keybinding_customization_release",!0\)\}`), and the brain gets defaults ("Feature gates in the brain"). `br("keybindings")` holds only in a diskless launch or in safe mode (chunk-1z4h6nca.js, search `function br\(e,s\)\{if\(o\[e\]&&Z\(\)\)return!0;if\(xr\(\)&&!l\[e\]\)return!0`). Safe mode is `CLAUDE_CODE_SAFE_MODE` or `--safe-mode` (chunk-jeerdqq6.js, search `function xr\(\)\{return Fe\(process\.env\.CLAUDE_CODE_SAFE_MODE\)\|\|a\("--safe-mode"\)\}`). hands launches the brain in neither.
+- **Merging.** The file's bindings follow the defaults (chunk-teh24f94.js, search `n\.bindings=\[\.\.\.r,\.\.\.b\]`). For one chord in one context, the later binding wins (chunk-teh24f94.js, search `else if\(I\(y,h\.chord\)\)w=h`). Bindings to unknown actions are dropped (chunk-teh24f94.js, search `function j\(n\)\{return Dge\(fYs\(n\)\)\.filter`).
+- **A file Claude Code cannot parse** leaves the defaults alone (chunk-teh24f94.js, search `Failed to parse keybindings\.json`). Under the defaults Ctrl-Q does nothing, so turns are never sent, though nothing is answered either.
+- **Edits.** Edits made while Claude Code runs are reloaded (chunk-teh24f94.js, search `n\.watcher=gv\.watch\(r,`).
+
+### The chord reaches the prompt's submit only with Return unbound
+
+- **Registration.** The prompt registers its `chat:submit` handler as a single-key handler only when Return is not `chat:submit` in Chat (chunk-3ghxrna3.js, search `let kxt=AOo\(sne\("enter"\),"Chat",mg\.bindings\)==="chat:submit"`, `singleKey:!kxt`). For a single key press, the dispatcher skips a handler that is not single-key (chunk-vkjeenf8.js, search `if\(!H\.singleKey\|\|H\.fallback&&k\)continue`). So with the defaults' Return still bound, Ctrl-Q bound to `chat:submit` leaves the draft as it was (run by hand). `"enter": null` is what makes the chord submit.
+- **Return still sends at the prompt.** The text input sends on its own Return (chunk-prsva4j5.js, search `case"return":if\(c\.ctrl\)return;return sr\(c\)`, then `if\(n\)n\(b\.text\.slice\(D\.length\)\),nt=!0`).
+- **A folded paste is sent whole.** After a paste folded into `[Pasted text #1 +29 lines]`, the chord sends the whole text (end to end).
+- **The handler does not exist while a dialog is drawn.** It is registered only while no overlay but autocomplete is active and history search is closed (`Wo=ZY\(\)\|\|Rn`, above; chunk-09t8gemt.js, search `function Cur\(e\)\{for\(let t of e\)if\(!N\.has\(t\)\)return!0`). A select with a cancel, which every permission dialog has, is such an overlay (chunk-amjw57qh.js, search `va\("select",!!l&&!I\)`).
+
+### Nothing acts on the chord while a dialog is up
+
+The chord can trigger one action, `chat:submit`, and nothing else acts on its key. Along the path of "How a key travels":
+
+1. **Root capture.**
+   - A swallow-all scope takes the key and does nothing (chunk-vkjeenf8.js, search `if\(D\.swallowAll\.size>0\)`).
+   - Preemptive scopes resolve first (chunk-vkjeenf8.js, search `if\(D\.preemptiveScopes\.size>0&&!O\)`). No scope in 2.1.308 is preemptive: the scope component defaults to not preemptive (chunk-d8fzwfwq.js, search `preemptive:s=!1`), and no caller sets it.
+   - The scope chain is the focused element's `keybindingScope` ancestors (chunk-vkjeenf8.js, search `function eo\(o\)\{let i=\[\],a=fe\(o\);while\(a\)\{let r=a\.attributes\.keybindingScope`). Those are the root's Global and the Dialog frame's Confirmation (chunk-tbnp4j48.js, search `scope:"Confirmation",claimFocus:!0`). Neither binds Ctrl-Q.
+2. **Pre-dispatch.** These handlers come from `Kf` (chunk-cpb453mc.js, search `function Kf\(e,\{isActive:o=!0\}=\{\}\)`), which four modules call: chunk-3ghxrna3.js, chunk-3ncdx684.js, chunk-bj5jt8h4.js and chunk-vtbnqtw7.js. None of them takes Ctrl-Q:
+   - the selection's copy takes Ctrl-C, and the inline digit question takes Return;
+   - a focused plugin pane's keys apply only when a plugin provides panes, and plugin cues exclude Ctrl;
+   - AskUserQuestion takes Tab and Escape, and the survey and the gateway login take Escape;
+   - the resume picker takes Ctrl-C;
+   - the dialog host marks the person present and returns false (chunk-3ghxrna3.js, search `function \$Lo\(oo,io\)\{if\(!io\.wheelUp&&!io\.wheelDown\)Ha\.autoDenyPresence\.emit\(\);return!1\}`).
+3. **Registered handlers.** A handler runs only when the key resolves to its action, in its own context and the active ones (chunk-vkjeenf8.js, search `if\(L===H\.action\)`). No default binds Ctrl-Q, and the file binds it only to `chat:submit`, so Ctrl-Q resolves to `chat:submit` or to nothing. The prompt's handler is `chat:submit`'s only one, and it sends the draft. A dialog held back for typing or for the draft leaves the prompt taking keys ("The dialog store and its host"). The chord then sends the draft, and the turn is taken.
+4. **Focus.** A key no handler took goes to the focused element as name `q`, key `q`, Ctrl set:
+   - **The prompt's text input** maps Ctrl with a b c d e f h k n p u w y, and any other Ctrl letter does nothing (chunk-prsva4j5.js, search `if\(c\.ctrl\)return rr\(c\.key\)`, `let rr=Ut\(\[\["a",`, `var Er=\(\)=>\{\}`). A permission option's feedback field uses it too.
+   - **The other text input** switches on a e b f d h k u w y g c and returns on anything else (chunk-x2hxr175.js, search `if\(R\.ctrl\)\{switch\(R\.preventDefault\(\),R\.key\.toLowerCase\(\)\)`).
+   - **The shared select** acts on Ctrl only with n and p (chunk-amjw57qh.js, search `if\(f\.key==="down"\|\|f\.ctrl&&f\.key==="n"\)`).
+   - **The elicitation form and its buttons** take printable keys only without Ctrl (chunk-3ghxrna3.js, search `let xs=Sr\.key\.length===1&&Sr\.key!==" "&&!Sr\.ctrl&&!Sr\.meta`, `function __e\(h\)\{if\(h\.ctrl\|\|h\.meta\|\|h\.superKey\)return!1`).
+   - **"Ready to code?"** takes Ctrl+G and Shift-Tab (chunk-3ghxrna3.js, search `_r=\(ur\)=>\{if\(ur\.ctrl&&ur\.key==="g"\)`).
+   - **Across every module**, `(key|name|input)==="q"` finds two handlers, and both require Ctrl not held. `\.ctrl&&[A-Za-z$_]*\.(key|name)==="[a-z]"` finds none for q.
+
+**Presence.** Like any key, the chord counts as the person being there. The dialog host's presence signal fires on it, and an AFK countdown restarts (chunk-3ghxrna3.js, search `x=a\.CLAUDE_AFK_TIMEOUT_MS`).
+
+**Runs:**
+- **End to end:** a Bash permission dialog, once with Yes focused and once with Yes's text field holding words. The dialog stays up and the command does not run, and a Down typed after the chord moves the focus.
+- **By hand:** the same, plus AskUserQuestion with a listed option focused and with its free-text row holding words.
+- **Code alone:** the elicitation, the plan dialogs and the notices were read from code, not run.
+
+### The chord is Ctrl-Q
+
+- **The key.** Ctrl-Q is the one byte 0x11, so a read cannot split it. The parser takes a lone byte up to 0x1A as Ctrl and a letter (chunk-e4p6x208.js, search `else if\(n<="\\x1A"&&n\.length===1\)f\.name=String\.fromCharCode\(n\.charCodeAt\(0\)\+97-1\),f\.ctrl=!0`). The event's key is that letter (chunk-e4p6x208.js, search `if\(n\.ctrl\)return f;`).
+- **XON.** 0x11 is also XON, and a terminal with output flow control on (IXON) takes it as that and passes nothing on. Raw mode turns IXON off. Claude Code's terminal is raw while it draws its prompt, which is the only time the rule lets hands type, and the runs carry the byte through tmux, fritter and Claude Code's terminal there.
+- **The other Ctrl letters are out.**
+  - Ctrl-M, Ctrl-I, Ctrl-H and Ctrl-[ are the bytes of Return, Tab, Backspace and Escape (chunk-dg7g57st.js, search `key:"ctrl\+m",reason:"Cannot be rebound - identical to Enter`). Ctrl-J is a newline (chunk-dg7g57st.js, search `"ctrl\+j":"chat:newline"`).
+  - Ctrl-C and Ctrl-D are hard-wired, and Ctrl-Z and Ctrl-\ are signals.
+  - Every other Ctrl letter is bound by a default or edits a text field. Ctrl-Q is the only one that is neither.
+- **Alt chords are out.** An Alt chord is Escape then the key. Split across two reads, it arrives as Escape, which in a dialog denies and stops the turn.
+- **How the byte gets there.** fritter writes a key's bytes to the pty (`fritter/control.go`, `keystrokes`), and its map has no Ctrl-Q yet. The tests type it through tmux instead: `send-keys C-q` writes 0x11 to the pane, whose fritter forwards it to Claude Code.
+
+### The brain's keybindings.json is hands' to write
+
+The binding is half of a contract hands' typing depends on: the chord hands sends and the binding Claude Code resolves are one fact, and when the two halves disagree, the failure is silent.
+- **A file without `"enter": null`** leaves every turn unsent.
+- **A file that binds Ctrl-Q to `confirm:yes` or `select:accept`** makes hands' submit approve dialogs.
+
+So the whole file is hands' to write, from the same definition its typing sends the chord from, where it sets up the brain's config directory (`src/hands/brain/process.py`). `settings.json` is different: hands writes it once and leaves it to the person. Claude Code reloads the file on every edit ("Edits", above), so an edit made while the brain runs changes the chord's meaning at once, not at hands' next start.
 
 ## The rule
 
