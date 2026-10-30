@@ -19,4 +19,4 @@ runs:
     # PyAudio ships wheels only for Windows, so on a Mac it builds against Homebrew's PortAudio.
     - name: PortAudio
       shell: bash
-      run: brew install portaudio
+      run: brew install portaudio tmux

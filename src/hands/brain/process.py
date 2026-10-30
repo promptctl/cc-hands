@@ -17,8 +17,10 @@ what the login brings from the account.
 import asyncio
 import contextlib
 import glob
+import hashlib
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -48,7 +50,9 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
+from hands.sessions.child import Ran
+from hands.sessions.pseudoterminal import COLS, ROWS, ClaudeCode, on_terminal
+from hands.sessions.tmux import Unanswered, ran_at, socket_directory
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
@@ -324,9 +328,76 @@ def _cwd(config_dir: Path) -> Path:
     return config_dir / "cwd"
 
 
-async def spawn(station: Station, argv: Sequence[str]) -> ClaudeCode:
-    """Run a slim Claude Code's command on a terminal of hands' own, in its own directory and environment."""
-    return await on_terminal(argv, station.cwd, environment(station.config_dir, station.proxy_url, station.inherited))
+def brain_session(config_dir: Path) -> str:
+    """The tmux session the brain on `config_dir` runs in: one per brain, so a second hands on its own config directory
+    never touches the first one's, and `tmux attach -t hands-brain` reaches it by prefix."""
+    return f"hands-brain-{hashlib.sha256(str(config_dir).encode()).hexdigest()[:8]}"
+
+
+# What runs on hands' terminal exits with when the brain's pane ended with no status of fritter's: the session was
+# ended under it.
+PANE_ENDED = 129
+
+
+async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> ClaudeCode:
+    """Run a slim Claude Code's command in the brain's tmux session on the user's default tmux server, the one `tmux
+    attach` reaches, so a person can watch it and type into it.
+
+    [LAW:single-enforcer] the brain's lifetime is still hands' terminal's: on it runs the tmux client that made the
+    session, which is destroyed when that client goes unless a person is attached, and fritter is hung up with it. What
+    runs on hands' terminal exits with fritter's status, and what it showed last is the pane as that client drew it.
+    `workspace` is a private directory, new to each start, for the two scripts and the status: a pane's command goes
+    through tmux, which caps one near 16 KB, and the brain's instruction rides its argv."""
+    inherited = untapped(station.inherited)
+    tmux = shutil.which("tmux", path=inherited.get("PATH"))
+    if tmux is None:
+        raise Unstartable("no tmux is on the PATH to run the brain in")
+    socket = socket_directory(inherited) / "default"
+    socket.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    session = brain_session(station.config_dir)
+    # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
+    # was attached is ended first.
+    match await ran_at(tmux, socket, ("kill-session", "-t", f"={session}")):
+        case Ran(returncode=0):
+            logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
+        case Unanswered() as unanswered:
+            raise Unstartable(f"the brain's tmux server did not answer: {unanswered.reason}")
+        case Ran():
+            pass
+    status = workspace / "status"
+    pane = workspace / "pane.sh"
+    # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps out.
+    env = environment(station.config_dir, station.proxy_url, station.inherited)
+    pane.write_text(f'env -i {" ".join(shlex.quote(f"{name}={value}") for name, value in env.items())} TERM="$TERM" {shlex.join(argv)}\necho $? > {shlex.quote(str(status))}\n')
+    client = workspace / "client.sh"
+    # In hands' own environment, never the brain's: a server this client starts gives the user's own windows its environment.
+    client.write_text(
+        shlex.join([
+            tmux, "-S", str(socket),
+            "new-session", "-d", "-s", session, "-x", str(COLS), "-y", str(ROWS), "-c", str(station.cwd), "/bin/sh", str(pane), ";",
+            # Named plainly: tmux finds no session by =name in the command list that makes it.
+            # Said here, whatever the user's own tmux.conf says: the session's end, and so the brain's, rests on both.
+            # destroy-unattached only once this client is attached: a session told it while nobody is is destroyed then.
+            "set-hook", "-t", session, "client-attached", f"set-option -t {session} destroy-unattached on", ";",
+            "set-option", "-w", "-t", f"{session}:", "remain-on-exit", "off", ";",
+            "attach-session", "-t", session,
+        ])
+        + f'\nread -r code < {shlex.quote(str(status))} 2>/dev/null || exit {PANE_ENDED}\nexit "$code"\n'
+    )
+    return await on_terminal(["/bin/sh", str(client)], station.cwd, inherited)
+
+
+async def fritter_of(station: Station) -> int | None:
+    """The fritter running in the brain's pane, once tmux has made it."""
+    inherited = untapped(station.inherited)
+    tmux = shutil.which("tmux", path=inherited.get("PATH"))
+    if tmux is None:
+        return None
+    match await ran_at(tmux, socket_directory(inherited) / "default", ("display-message", "-p", "-t", f"={brain_session(station.config_dir)}:", "#{pane_pid}")):
+        case Ran(returncode=0, out=out) if out.strip():
+            return await asyncio.to_thread(_child_of, int(out))
+        case Ran() | Unanswered():
+            return None
 
 
 class BrainGone(Exception):
@@ -818,6 +889,7 @@ class Brain:
     def __init__(
         self,
         claude: ClaudeCode,
+        fritter: int,
         session: SessionId,
         typist: Typist,
         listener: web.AppRunner,
@@ -829,6 +901,7 @@ class Brain:
         pause: Callable[[float], Awaitable[None]],
     ) -> None:
         self._claude = claude
+        self._fritter = fritter
         self._config_dir = config_dir
         self.session = session
         self._typist = typist
@@ -870,7 +943,8 @@ class Brain:
 
     @property
     def pid(self) -> int:
-        return self._claude.pid
+        """The brain's fritter."""
+        return self._fritter
 
     async def ask(self, text: str, asks: Callable[[Asked], None]) -> BrainEnded:
         """One turn of the brain's, from its typing to its end; `asks` is told of each permission the turn holds for the user."""
@@ -1501,7 +1575,7 @@ class Brain:
 
 
 async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitable[None]] = asyncio.sleep) -> Brain:
-    """Start the brain under fritter on a terminal of hands' own, on the login its backend was parsed with; `pause` is how
+    """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; `pause` is how
     the time a typed turn has to be taken passes."""
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
@@ -1533,9 +1607,10 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
         running: ClaudeCode | None = None
         try:
             try:
-                running = await spawn(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)])
-                annotate(pid=running.pid)
-                typist = await _typist(running, sockets, launch.session)
+                running = await in_tmux(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+                annotate(tmux_session=brain_session(station.config_dir))
+                typist, wrapper = await _typist(running, station, sockets, launch.session)
+                annotate(pid=wrapper)
             except Unstartable:
                 # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
                 # Claude Code keeps its transcript (it exits "No conversation found" on one it cannot read).
@@ -1553,7 +1628,7 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    brain = Brain(running, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, pause)
+    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, pause)
     posting.set_result(brain.posted)
     return brain
 
@@ -1581,9 +1656,9 @@ async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapp
     return runner, f"http://{host}:{port}"
 
 
-async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typist:
+async def _typist(running: ClaudeCode, station: Station, sockets: Path, session: SessionId) -> tuple[Typist, int]:
     """The brain as fritter types into it, once its input is up: the socket fritter opened under `sockets`, and the claude
-    it started.
+    it started; and that fritter's pid.
 
     [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
     its input, not a guess at how long that takes: a
@@ -1592,19 +1667,25 @@ async def _typist(running: ClaudeCode, sockets: Path, session: SessionId) -> Typ
     waiting = "fritter had not started the brain and opened its socket"
     while asyncio.get_running_loop().time() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
-        child = await asyncio.to_thread(_child_of, running.pid)
-        if found and child is not None:
+        wrapper = await fritter_of(station)
+        child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
+        if found and wrapper is not None and child is not None:
             typist = Typist(session, found[0], child)
             try:
                 await asyncio.to_thread(typist.pasting)
-                return typist
+                return typist, wrapper
             except Untyped as error:
                 waiting = f"the brain had not turned its input on ({error})"
         await asyncio.sleep(0.05)
     # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
     if running.exit.done():
-        raise Unstartable(f"fritter exited ({running.exit.result()}) while {waiting}; it showed:\n{running.shown()}")
+        raise Unstartable(f"{exited(running.exit.result())} while {waiting}; it showed:\n{running.shown()}")
     raise Unstartable(f"{waiting} after {START_SECONDS:.0f}s; it showed:\n{running.shown()}")
+
+
+def exited(code: int) -> str:
+    """How the brain's fritter ended, as the exit `code` of what ran on hands' terminal says it."""
+    return f"the brain's tmux session was ended under it ({code})" if code == PANE_ENDED else f"fritter exited ({code})"
 
 
 def _child_of(pid: int) -> int | None:
