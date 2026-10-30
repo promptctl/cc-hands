@@ -758,19 +758,24 @@ class Fed:
         return found, self.stream.ended()
 
 
+# Each test below decodes the whole echo once, about half the per-test timeout on CI; one decoding it twice overran it.
 def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_at(paired: Session, hands_print: HandsPrint) -> None:
     [echo] = fixture_holds("hands_echo_uncancelled.flac")
     fed = Fed(streaming.Stream(paired))
-    # Each sentence its own hold, from its onset, so each is scored from its first second; then the whole as one hold.
+    # Each sentence its own hold, from its onset, so each is scored from its first second.
     starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
-    holds = [echo[start:end] for start, end in zip(starts, [*starts[1:], len(echo)])] + [echo]
-    heard = [fed.held(hold) for hold in holds]
+    heard = [fed.held(echo[start:end]) for start, end in zip(starts, [*starts[1:], len(echo)])]
     whos = [hands_print.who(voiced) for found, ended in heard for voiced in (*found, *ended.voices)]
     assert not [who for who in whos if isinstance(who, voiceprints.Person)], whos
     # Scored at every length the table has a row for, and found to be hands once heard long enough.
     scored = [who.seconds for who in whos if isinstance(who, voiceprints.Hands | voiceprints.Unsure)]
     assert min(scored) < voiceprints.PERSON.seconds and max(scored) > voiceprints.HANDS.seconds, whos
-    whole = [hands_print.who(voiced) for voiced in heard[-1][1].voices]
+
+
+def test_hands_own_echo_heard_whole_as_one_hold_is_hands(paired: Session, hands_print: HandsPrint) -> None:
+    [echo] = fixture_holds("hands_echo_uncancelled.flac")
+    _, ended = Fed(streaming.Stream(paired)).held(echo)
+    whole = [hands_print.who(voiced) for voiced in ended.voices]
     assert whole and all(isinstance(who, voiceprints.Hands) for who in whole), whole
 
 
