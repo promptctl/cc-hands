@@ -6,6 +6,7 @@ import json
 import shutil
 import threading
 import tracemalloc
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -428,7 +429,7 @@ def test_hands_log_says_how_many_lines_it_had_to_print_first_and_where_following
     def interrupted(_: float) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
     assert cli.main(["--home", str(tmp_path), "log", "-n", "2"]) == 0
     [command] = [line for line in lines(home.audit) if line.get("event") == "hands.command"]
     assert (command["facts"]["tailed"], command["facts"]["followed_from"]) == (2, 24)
@@ -443,7 +444,7 @@ def test_hands_log_prints_a_line_holding_a_line_separator_as_one_line(
     def interrupted(_: float) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
     assert cli.main(["--home", str(tmp_path), "log", "-n", "1"]) == 0
     [printed] = capsys.readouterr().out.splitlines()
     assert json.loads(printed)["text"] == "a\u2028b\u2029c\x85d"
@@ -507,7 +508,7 @@ def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Pat
     def interrupted(_: float) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
     assert cli.main(["--home", str(tmp_path), "log", "-n", "2"]) == 0
     assert capsys.readouterr().out == "b\nc\n"
 
@@ -906,7 +907,7 @@ def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "LOG_POLL_SECONDS", 0)
-    monkeypatch.setattr(cli.time, "sleep", interrupted)
+    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
     assert cli.main(["--home", str(tmp_path), "log"]) == 0
     printed = capsys.readouterr().out
     assert printed == '{"t": "a\\u009b2J\\u007f\\u202eb\\u001b"}\n'

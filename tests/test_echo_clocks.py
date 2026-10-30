@@ -32,7 +32,7 @@ NOISE = 33.0  # the room's floor, about -60 dBFS
 class Speaker(Protocol):
     """Hands' side of a speaker device: written to by the pipeline, taken from by the device's callback."""
 
-    def write(self, audio: bytes) -> None: ...
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None: ...
     def take(self, frames: int) -> bytes: ...
 
 
@@ -47,8 +47,8 @@ class Playing:
         self._pull = pull
         return self
 
-    def write(self, audio: bytes) -> None:
-        self.playout.write(audio)
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+        self.playout.write(audio, voices)
 
     def take(self, frames: int) -> bytes:
         assert self._pull is not None
@@ -110,7 +110,7 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, m
         tick, _, what, chunk = heapq.heappop(events)
         match what:
             case "write":
-                playing.write(chunk)
+                playing.write(chunk, ())
             case "speaker":
                 buffer = np.frombuffer(playing.take(PERIOD // 2), np.int16)
                 start = (tick + SPEAKER_LATENCY) // 2
@@ -120,7 +120,7 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, m
                 captured = room.heard(last - PERIOD // 3, last)
                 index = last - PERIOD // 3
                 raw[index : index + len(captured)] = captured
-                cleaned[index : index + len(captured)] = np.frombuffer(canceller.heard(captured.tobytes(), HEARD_RATE, 1), np.int16)
+                cleaned[index : index + len(captured)] = np.frombuffer(canceller.heard(captured.tobytes(), HEARD_RATE, 1).heard, np.int16)
             case _:
                 raise AssertionError(what)
     canceller.close()

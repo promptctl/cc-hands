@@ -64,6 +64,19 @@ class Home:
         return self.root / "wake-word"
 
     @property
+    def holds(self) -> Path:
+        """Each hold the desk or the phone heard, as hands heard it and with what hands was playing over it, one
+        directory for each run, written by the daemon alone (hands.voice.recorder): the labelled data its voiceprint
+        thresholds are fitted on."""
+        return self.root / "holds"
+
+    @property
+    def voiceprints(self) -> Path:
+        """hands' voiceprint of each voice it has spoken in, made by hands from its own TTS and never from a person's
+        voice, one file for each voice and model revision, written by the daemon alone (hands.voice.voiceprints)."""
+        return self.root / "voiceprints"
+
+    @property
     def focus(self) -> Path:
         """The session the user is talking to when they name none, written by the daemon alone; absent for none."""
         return self.root / "focus"

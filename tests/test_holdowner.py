@@ -16,7 +16,7 @@ from hands.sessions.audit import Entry, Levels
 from hands.sessions.wide import WideEvent
 from hands.voice import holdowner
 from hands.voice.holdowner import HoldOwner
-from hands.voice.holds import Fate, Heard, Hearing, Hearings, Hold, Sound
+from hands.voice.holds import Fate, Heard, Hearing, Hearings, Hold, Recording, Reference, Sound
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Edge
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed, Words
@@ -43,8 +43,8 @@ class Heeding:
         assert self._open is not None
         return self.hearings(self._open, sound)
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        self.given.append(("ended", (hold, fate)))
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+        self.given.append(("ended", (hold, fate, sound)))
         return self.after(hold, fate)
 
 
@@ -98,7 +98,7 @@ class Rig:
 
     async def frame(self, gate: Gate, sound: bytes, by: Edge = "held key") -> None:
         self.gate = gate
-        await self.run.worker.queue_frame(gate.framed(sound, sound, 16000, 1, "desk"))
+        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound), 16000, 1, "desk"))
 
     async def held(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Edge = "engaged conversation") -> None:
         """A hold opened by `by`, a frame of each sound captured while it is open, then sent or thrown away."""
@@ -129,6 +129,11 @@ def frame_of(n: int) -> bytes:
     return n.to_bytes(2, "little") * 320
 
 
+def played_with(sound: bytes) -> tuple[Reference, ...]:
+    """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound."""
+    return tuple(Reference(sound[start : start + 320], 16000, 1, ()) for start in range(0, len(sound), 320))
+
+
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_hold_kept_from_before_it_included() -> None:
     first, second = Heeding("first"), Heeding("second")
     async with rigged(Scripted([None]), (first, second)) as rig:
@@ -143,12 +148,30 @@ async def test_every_listener_is_given_the_same_samples_in_capture_order_what_th
         await rig.frame(down.after("stop", "engaged conversation"), frame_of(5))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
     hold = Hold(1, "engaged conversation")
+    def sound(*levels: int) -> Sound:
+        audio = b"".join(map(frame_of, levels))
+        return Sound(audio, audio, played_with(audio))
+
+    # And as it ends, the whole of it, with what the speaker played over every 10 ms of it.
     assert first.given == second.given == [
-        ("opened", (hold, Sound(frame_of(1) + frame_of(2), frame_of(1) + frame_of(2)))),
-        ("heard", Sound(frame_of(3), frame_of(3))),
-        ("heard", Sound(frame_of(4), frame_of(4))),
-        ("ended", (hold, "sent")),
+        ("opened", (hold, sound(1, 2))),
+        ("heard", sound(3)),
+        ("heard", sound(4)),
+        ("ended", (hold, "sent", sound(1, 2, 3, 4))),
     ]
+
+
+def test_the_second_a_hold_keeps_from_before_it_keeps_what_was_played_over_that_second_and_no_more() -> None:
+    recording = Recording()
+    for level in range(60):
+        audio = frame_of(level)
+        recording.add(Sound(audio, audio, played_with(audio)), gathering=False)
+    # 60 frames of 20 ms, the last 50 kept: one second, and a reference for each 10 ms of it.
+    kept = b"".join(map(frame_of, range(10, 60)))
+    assert recording.sound == Sound(kept, kept, played_with(kept))
+    # A frame the phone heard has nothing of the desk's speaker under it: the recording says nothing was referenced.
+    recording.add(Sound(frame_of(1), frame_of(1), None), gathering=True)
+    assert recording.sound.played is None
 
 
 async def test_the_transcribers_words_go_on_in_the_order_the_holds_ended_and_a_typed_hold_waits_its_turn() -> None:
@@ -285,7 +308,7 @@ async def test_a_hearing_is_bounded_from_when_its_listener_returned_it_so_one_qu
 
 
 def at_48k(gate: Gate) -> Frame:
-    return gate.framed(frame_of(3), frame_of(3), 48_000, 1, "desk")
+    return gate.framed(frame_of(3), frame_of(3), None, 48_000, 1, "desk")
 
 
 def unkeyed(_gate: Gate) -> Frame:
@@ -320,7 +343,7 @@ async def test_a_hold_dropped_by_a_move_to_the_phone_is_measured_over_its_own_au
         down = rig.gate.after("start", "held key")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
-        await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), 16000, 1, "phone"))
+        await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
         await rig.until(lambda: len(rig.events("hold")) == 1)
         [hold] = rig.events("hold")
         assert (hold.facts["fate"], hold.facts["seconds"], hold.facts["levels"]) == ("dropped", 0.04, Levels(-6.0, -6.0))

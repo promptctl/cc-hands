@@ -9,6 +9,8 @@ the whole variability of the pipeline as data.
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 
 from pipecat.pipeline.pipeline import Pipeline
@@ -16,10 +18,10 @@ from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
-from pipecat.services.pocket_tts.tts import PocketTTSService
 from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from hands.voice.voices import SaidInTTS
 from hands.voice.transcript import TranscriptObserver
 from hands.voice.wakeword import Pretrained, Word
 from hands.voice.floor import Floor
@@ -33,7 +35,8 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import EdgeTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import conversation, loads, streaming, voices
+from hands.voice import conversation, loads, streaming, voiceprints, voices
+from hands.voice.recorder import Recorder
 from hands.sessions.wide import annotate
 from hands.voice.holdowner import HoldOwner
 from hands.voice.whisper import Whisper
@@ -61,15 +64,27 @@ class Voice:
     phone: Phone
     stt: HoldOwner
     llm: FrameProcessor
-    tts: PocketTTSService
+    tts: SaidInTTS
     user_turns: conversation.UserTurns
     assistant_turns: conversation.AssistantTurns
+    recorder: Recorder
 
 
 def build_voice(
-    config: VoiceConfig, llm: FrameProcessor, key: PushToTalk, player: Player, floor: Floor, prompt: Callable[[], Awaitable[str | None]], record: Record
+    config: VoiceConfig,
+    llm: FrameProcessor,
+    key: PushToTalk,
+    player: Player,
+    floor: Floor,
+    prompt: Callable[[], Awaitable[str | None]],
+    prints: voiceprints.Voiceprints,
+    holds: Path,
+    record: Record,
 ) -> Voice:
-    """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers."""
+    """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer and the recorder
+    listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each speaker the
+    streaming recognizer hears is identified by `prints`, and each hold the recorder hears is kept under `holds`, in a
+    directory of this build's own."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and the hold owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
@@ -90,13 +105,19 @@ def build_voice(
         # own reply alike, so this is the one place all of them meet before they are heard.
         # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
         # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
-        tts = PocketTTSService(settings=PocketTTSService.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
+        tts = SaidInTTS(settings=SaidInTTS.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
+    # hands' own print of the voice it speaks in, made on the voiceprints' own threads: nothing here waits on it.
+    prints.speaking_in(voices.source(config.voice))
     # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
-    # who said it: nothing the owner does waits on it, its models' load included.
-    stt = HoldOwner(Whisper(prompt=prompt, record=record), (streaming.StreamingRecognizer(streaming.load, record),), record)
+    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each hold, and
+    # each echo span the run overhears (`Voice.recorder`), in a directory of the run's own, named by when the voice was
+    # built: a hold's number is the run's.
+    recorder = Recorder(holds, datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
+    listeners = (streaming.StreamingRecognizer(streaming.load, prints, record), recorder)
+    stt = HoldOwner(Whisper(prompt=prompt, record=record), listeners, record)
 
     start = EdgeTurnStart(record)
     turns = UserTurnStrategies(
@@ -127,5 +148,6 @@ def build_voice(
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator
+        worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator,
+        recorder=recorder,
     )

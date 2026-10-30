@@ -21,12 +21,13 @@ from pathlib import Path
 import httpx
 import huggingface_hub.constants
 import pytest
+from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
 from huggingface_hub.errors import RevisionResolutionError
 from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
-from hands.voice import engaged, streaming
+from hands.voice import engaged, streaming, voiceprints
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
@@ -102,6 +103,8 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
         # its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
         fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(get_model_path, repo, revision=revision))
+    # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
+    fetching(write, f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION))
     fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(fetches.wake_word, word)))

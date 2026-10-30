@@ -110,7 +110,7 @@ def test_a_library_voice_not_in_the_cache_while_offline_is_unreachable_not_missi
 
 async def test_a_bare_name_in_the_library_is_not_offered_by_search_since_no_choice_can_make_it(tmp_path: Path) -> None:
     files = ["Charles.wav", "vctk/p225_023_enhanced.wav"]
-    found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(files))).search("", 10)
+    found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(files)), lambda _voice: None).search("", 10)
     assert found.names == ("vctk/p225_023_enhanced",)
 
 
@@ -154,10 +154,12 @@ async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_star
 async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), EntryNotFoundError("no such file"))
     home = Home(tmp_path)
-    voices_owner = Voices(home, IdentityFilter(), voices.fetched, Library(listing([])))
+    speaking: list[str] = []
+    voices_owner = Voices(home, IdentityFilter(), voices.fetched, Library(listing([])), speaking.append)
     with pytest.raises(Rejected):
         await voices_owner.use(LibraryVoice("vctk/nobody"))
-    assert not home.voice.exists()
+    # Neither kept nor spoken in, so no print of it is made either.
+    assert not home.voice.exists() and speaking == []
 
 
 # --- the start: a kept library voice is checked the same way the choice was ---------------------------------------------
@@ -225,7 +227,7 @@ async def test_a_failed_listing_is_not_kept_so_the_next_search_lists_again() -> 
 
 async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tmp_path: Path) -> None:
     recorded: list[Any] = []
-    owner = Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(LIBRARY_FILES), clock=lambda: 7.0))
+    owner = Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(LIBRARY_FILES), clock=lambda: 7.0), lambda _voice: None)
     tools = {tool.name: audited(tool, recorded.append) for tool in voice_tools(owner)}
     assert await tools["find_voices"].body(query="casual") == {"voices": ["alba-mackenna/casual"], "listed_at": 7.0, "from_cache": False}
 

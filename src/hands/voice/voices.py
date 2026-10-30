@@ -7,15 +7,19 @@ each change goes to the file and to the service together; nothing else holds a c
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
-from typing import NewType
+from typing import NewType, cast
 
+import numpy as np
+import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
-from pipecat.frames.frames import TTSSpeakFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.services.pocket_tts.tts import PocketTTSSettings, language_to_pocket_tts_language
+from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
+from pipecat.utils.types import require_given
+from pocket_tts import TTSModel
 from pocket_tts.models.tts_model import CONFIGS_DIR, DEFAULT_LANGUAGE
 from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
@@ -24,7 +28,9 @@ from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.voice.holds import RATE, Samples
 from hands.voice.library import Found, Library, address
+from hands.voice.voiceprints import Synthesize
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
 Voice = NewType("Voice", str)
@@ -158,11 +164,14 @@ class Voices:
     drops only the speech, so a hearing cut short still ends back in the chosen voice.
     """
 
-    def __init__(self, home: Home, lines: FrameProcessor, fetch: Fetch, library: Library) -> None:
+    def __init__(self, home: Home, lines: FrameProcessor, fetch: Fetch, library: Library, speaking: Callable[[str], None]) -> None:
         self._home = home
         self._lines = lines
         self._fetch = fetch
         self._library = library
+        # Told of each voice hands speaks in from now, as the TTS service is handed it (`source`), as its own print of
+        # it is made from (`hands.voice.voiceprints`): never of a voice only heard as a sample.
+        self._speaking = speaking
         # [LAW:no-ambient-temporal-coupling] the one owner of a change of voice: Pipecat runs a reply's calls side by
         # side, and a hearing and a choice interleaved would leave a sample in another's voice, or the speaker in a
         # voice the file does not hold. Each runs whole, one after another.
@@ -198,6 +207,45 @@ class Voices:
             await asyncio.to_thread(self._fetch, voice)
             await asyncio.to_thread(keep, self._home, voice)
             await self._speak_in(voice)
+            self._speaking(source(voice))
 
     async def _speak_in(self, voice: Chosen) -> None:
         await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(voice))))
+
+
+@dataclass
+class SpeakingIn(DataFrame):
+    """The voice the audio behind it, to the next of these, was made in, as the TTS service was handed it (`source`):
+    sent by hands' TTS ahead of each utterance, and queued by Pipecat's sender in line with the audio, so the speaker
+    knows the voice of each chunk it plays."""
+
+    voice: str
+
+
+class SaidInTTS(PocketTTSService):
+    """Pocket TTS, saying ahead of each utterance which voice it is made in.
+
+    [LAW:one-source-of-truth] the voice is read as the utterance is made, where the state it is made from is derived: an
+    utterance is made whole within the one call that processes its text, and a voice change is processed in its own
+    call, so no change falls between the two. Nothing reads the service's voice after the fact."""
+
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
+        yield SpeakingIn(require_given(self._settings.voice, "Pocket TTS voice"))
+        # Pipecat's tracing decorator leaves the method untyped.
+        said = cast(Callable[[str, str], AsyncGenerator[Frame | None, None]], super().run_tts)  # pyright: ignore[reportUnknownMemberType]
+        async for frame in said(text, context_id):
+            yield frame
+
+
+def pocket() -> Synthesize:
+    """Pocket TTS, hands' own TTS, saying any text in any of its voices, as the TTS service is handed them (`source`), at
+    RATE, on a model of its own loaded here and let go of with what this returns: a Pocket TTS model generates for one
+    caller at a time, and the TTS service's is the speaker's."""
+    model = TTSModel.load_model(language=language_to_pocket_tts_language(LANGUAGE))
+
+    def said(voice: str, text: str) -> Samples:
+        state = model.get_state_for_audio_prompt(voice)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (pocket_tts types its state as a bare dict)
+        audio = model.generate_audio(state, text).numpy().astype(np.float32)  # pyright: ignore[reportUnknownMemberType]
+        return soxr.resample(audio, model.sample_rate, RATE).astype(np.float32)
+
+    return said

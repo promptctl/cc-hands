@@ -35,7 +35,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import events, model_facts, patiently, running, unprimed
+from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -137,7 +137,7 @@ async def until(out: Recorded, what: Callable[[], bool]) -> None:
 class NoSpeech(FrameProcessor):
     """Stands in for pocket-tts, which loads its weights when it is made."""
 
-    Settings = built.PocketTTSService.Settings
+    Settings = built.SaidInTTS.Settings
 
     def __init__(self, **_: object) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -156,19 +156,19 @@ class Streamed:
     def __post_init__(self) -> None:
         self.flowing.set()
 
-    def decoded(self, samples: streaming.Samples) -> streaming.Spoken:
+    def decoded(self, samples: streaming.Samples) -> streaming.Decoded:
         assert self.flowing.wait(timeout=60), "the test never let the words through"
         try:
             text = self.said.get_nowait()
         except queue.Empty:
-            return ()
+            return streaming.Decoded((), ())
         match text:
             case Exception() as failure:
                 raise failure
             case str():
-                return (streaming.Said(0, text),)
+                return streaming.Decoded((streaming.Said(0, text),), ())
             case streaming.Said():
-                return (text,)
+                return streaming.Decoded((text,), ())
 
     def closed(self) -> streaming.Closed:
         """No stream to close: every word is decoded as it is said."""
@@ -231,13 +231,13 @@ class Rig:
                 case _:
                     pass
             self.gate = replace(self.gate, key="up" if held == "dropped" else held, opened=by)
-            frames.append(self.gate.framed(sound, sound if captured is None else captured, 16000, 1, place_of(by)))
+            frames.append(self.gate.framed(sound, sound if captured is None else captured, None, 16000, 1, place_of(by)))
         await self.worker.queue_frames(frames)
 
     async def capture(self, gate: Gate, sound: bytes) -> None:
         """A frame captured under `gate`, as it stands after whatever moves made it."""
         self.gate = gate
-        await self.worker.queue_frame(gate.framed(sound, sound, 16000, 1, gate.place))
+        await self.worker.queue_frame(gate.framed(sound, sound, None, 16000, 1, gate.place))
 
     async def until(self, what: Callable[[], bool]) -> None:
         await until(self.out, what)
@@ -271,7 +271,7 @@ async def rigged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, behind: list[FrameProcessor], watching: Sequence[BaseObserver] = ()
 ) -> AsyncGenerator[Rig]:
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
-    monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
+    monkeypatch.setattr(built, "SaidInTTS", NoSpeech)
     recorded: list[Entry] = []
     primed: list[None] = []
     streamed = Streamed()
@@ -291,6 +291,8 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
         prompt=vocabulary,
+        prints=stood_in(tmp_path / "voiceprints"),
+        holds=tmp_path / "holds",
         record=recorded.append,
     )
     out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
@@ -781,7 +783,7 @@ def play_out[S, E](
                     case move:
                         moves.append(move)
                         gate = gate.after(move, by)
-        frames.append(gate.framed(SPEECH, SPEECH, 16000, 1, place_of(by)))
+        frames.append(gate.framed(SPEECH, SPEECH, None, 16000, 1, place_of(by)))
     return Timeline(frames, moves)
 
 
@@ -1125,7 +1127,7 @@ async def test_the_hold_owner_hears_only_the_keyed_microphone() -> None:
 
 async def test_the_hold_owner_hears_only_mono_audio_at_the_rate_every_model_hears() -> None:
     with pytest.raises(ValueError, match="48000 Hz"):
-        await owned()._captured(Gate().framed(b"\x00\x00", b"\x00\x00", 48000, 1, "desk"))  # pyright: ignore[reportPrivateUsage]
+        await owned()._captured(Gate().framed(b"\x00\x00", b"\x00\x00", None, 48000, 1, "desk"))  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_over_many_turns_each_is_sent_as_its_own_words_and_neither_side_keeps_any_of_them(rig: Rig) -> None:

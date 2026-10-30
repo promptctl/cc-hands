@@ -25,6 +25,7 @@ from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import PAIRS, events, hearing_with, running
+from listening import unidentified
 from test_streaming import NOT_SPEECH, READER, fixture_holds, hearings, pcm
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
@@ -92,8 +93,8 @@ class Counted:
     def heard(self, sound: Sound) -> Hearings:
         return self._counted(self.recognizer.heard(sound))
 
-    def ended(self, hold: Hold, fate: Fate) -> Hearings:
-        return self._counted(self.recognizer.ended(hold, fate))
+    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+        return self._counted(self.recognizer.ended(hold, fate, sound))
 
     def _counted(self, hearings: Hearings) -> Hearings:
         self.returned += [self.captured()] * len(hearings)
@@ -209,7 +210,7 @@ async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
     whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
     does."""
     record = Recorded(asyncio.get_running_loop())
-    recognizer = streaming.StreamingRecognizer(lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
+    recognizer = streaming.StreamingRecognizer(lambda gating: PAIRS.loaded(lambda: nemotron(gating)), unidentified, record)
     await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     return recognizer, record
 
@@ -233,7 +234,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
-            await run.worker.queue_frame(gate.gate.framed(audio, audio, RATE, 1, "desk"))
+            await run.worker.queue_frame(gate.gate.framed(audio, audio, None, RATE, 1, "desk"))
             # The owner tells its listeners of a frame before it passes it on, so once the frame has passed, every
             # hearing it returned is counted.
             await downstream.reached(captured)

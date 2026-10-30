@@ -343,6 +343,26 @@ So that in conversation hands can tell the owner from another person, and from i
   then FEE013's gives most of FEE016's words to FEE013's speaker, and one more hold of FEE013
   first gives each her own.
   Built: tests/test_streaming.py; not verified live.
+- **hands' own voice told from a person's** (`promptctl-voice-i15t.8vg.di1`). Each speaker in
+  each hold is scored against hands' own voiceprints with 3D-Speaker's ERes2Net on the CPU, on
+  the frames the diarizer heard them in. The prints are made once ever per voice from its Pocket
+  TTS output, never from a person, and kept in the home. A speaker is `Person`, `Hands`,
+  `Unsure` or `Unheard` by one table of score floors by how much of them was heard
+  (`hands.voice.voiceprints.FLOORS`), or `Unidentified` with why when there is nothing to score
+  against for a voice hands speaks in or played over them. It is measured, not yet acted on: a
+  `voiceprints.identified` event says who each speaker was as they reach each row and as their
+  hold ends, and the cut is on words as before. Fitted on one room and one voice
+  (`scripts/measure-voiceprints.py`, zoj's recordings): hands' echo, uncancelled, scored at least
+  0.37 at 1 s, 0.64 at 1.5 s and 0.74 at 3 s, a person alone at most 0.21, a person over hands at
+  most 0.66 at 1.5 s (only one line ran 3 s, at 0.36).
+  Built: tests/test_voiceprints.py, tests/test_streaming.py (the real model, on recorded echo
+  and a second voice over it: the echo is never a person); not verified live.
+- **Each hold, and hands' own echo, kept as labelled data.** The recorder keeps every hold
+  under `holds/<run>/` in the home, as heard after the canceller and beside what hands was
+  playing over it and in which voices. It also keeps each echo span, what the desk heard while
+  hands spoke with no hold open, identified as it ends. The store is kept under 2 GB, oldest runs
+  first, so the voiceprint table is refitted on held-key use. Built: tests/test_recorder.py,
+  tests/test_microphone.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)
 
