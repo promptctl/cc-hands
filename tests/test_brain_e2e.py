@@ -13,7 +13,6 @@ from hands.core.attention import Attention
 import os
 import pwd
 import subprocess
-import shlex
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
@@ -162,7 +161,7 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     # how hands puts one to the user is test_permissions'.
     settings = brain / "settings.json"
     said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)", "Bash(sh:*)"]
+    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
 
 
@@ -458,22 +457,23 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     assert isinstance(second.facts["queued_ms"], int | float) and isinstance(second.facts["waited_ms"], int | float), second.facts
 
 
-async def test_a_background_call_ends_its_voice_turn_at_once_and_the_work_it_started_runs_on(mock_api: MockApi, hands: Hands, tmp_path: Path) -> None:
-    """A command the brain starts in the background returns at once, so its turn ends while the command still runs; the
-    command then runs on to its end (promptctl-latency-3fui.h2r). The command waits on a gate file the test creates, so
-    the order is what is proven: no clock, and no sleep left running after the test."""
-    gate, done = tmp_path / "gate", tmp_path / "done"
-    command = f"sh -c {shlex.quote(f'until [ -f {gate} ]; do sleep 0.1; done; touch {done}')}"
-    mock_api.script("1-background", {"lastUserContains": ["start it in the background"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": command, "run_in_background": True}}, stop="tool_use")
-    mock_api.script("2-after", {"bodyContains": [RESULT, TURN]}, {"type": "text", "text": "Started it."})
+async def test_a_background_command_s_turn_ends_while_it_runs_and_its_end_opens_a_turn_hands_speaks(mock_api: MockApi, hands: Hands) -> None:
+    """A command the brain starts in the background returns at once, so its turn ends while the command still runs: a turn
+    held for a background call ran its whole length (promptctl-latency-3fui.h2r). The command's end is news Claude Code
+    opens a turn of its own for, and hands speaks that turn and ends it."""
+    # The command runs until the test ends it: a read of a named pipe in the brain's workdir, so the turn reaches its end
+    # while the command provably still runs, however slow the run is.
+    pipe = hands.workdir / "go"
+    os.mkfifo(pipe)
+    # Tried in name order: the notification's turn, whose history holds the launch's result too, ahead of the launch's end.
+    mock_api.script("1-finished", {"lastUserContains": ["<task-notification>"], "bodyContains": [TURN]}, {"type": "text", "text": "It finished."})
+    mock_api.script("2-started", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Started it."})
+    mock_api.script("3-background", {"lastUserContains": ["start it in the background"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"cat {pipe}", "run_in_background": True}}, stop="tool_use")
     await connected(hands)
-    try:
-        await hands.say("start it in the background")
-        await hands.until(lambda: "Started it." in "".join(hands.out.said()))
-        await hands.until(lambda: hands.stage.work() == Idle())
-        # The turn is over while the work it started has not finished.
-        assert not done.exists()
-    finally:
-        # Opened on every path, so a failed wait never leaves the command polling.
-        gate.touch()
-    await hands.until(lambda: done.exists())
+    await hands.say("start it in the background")
+    await hands.until(lambda: "Started it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
+    # Opening the pipe for writing waits for the command's read, off the loop; writing and closing it ends the command.
+    await asyncio.to_thread(pipe.write_text, "go")
+    await hands.until(lambda: "It finished." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
+    asked, told = events(hands.recorded, "voice.turn")
+    assert (asked.facts["origin"], told.facts["origin"], told.facts["opener"]) == ("awaited", "unawaited", "notified")
