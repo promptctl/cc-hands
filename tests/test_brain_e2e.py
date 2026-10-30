@@ -7,6 +7,7 @@ the tests run on a machine with none, as CI's is. The pinned Claude Code, from n
 before the run, into pytest's cache (conftest). What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
+import errno
 import json
 
 from hands.core.attention import Attention
@@ -225,6 +226,29 @@ async def connected(hands: Hands) -> None:
     await hands.until(lambda: any(isinstance(entry, WideEvent) and entry.event == "mcp.request" and entry.facts.get("method") == "tools/list" for entry in hands.recorded))
 
 
+def gate(hands: Hands) -> Path:
+    """A named pipe in the brain's workdir: a command the brain runs that reads it runs until the test opens it, so what
+    the test says happens while the command runs happens then, however slow the run is."""
+    pipe = hands.workdir / "go"
+    os.mkfifo(pipe)
+    return pipe
+
+
+def opened(gate: Path) -> bool:
+    """Whether the gate opened: written and closed once a command has it open to read. It never blocks, so a wait on it is
+    `Hands.until`'s, and a command that never came to read it fails the test there with what hands saw, not as a hang."""
+    try:
+        end = os.open(gate, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as error:
+        # ENXIO is the one answer that means nothing reads it yet; every other error is the test's own fault, and raised.
+        if error.errno != errno.ENXIO:
+            raise
+        return False
+    with open(end, "w") as written:
+        written.write("go")
+    return True
+
+
 @pytest.fixture
 async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
@@ -420,10 +444,7 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     """docs/barge-in.md's S2, against the real brain: words said while a call runs and everything said has played are not
     a barge-in. hands answers them within about a second, the turn runs on to its end heard, and the words are the next
     turn, with no note (promptctl-barge-in-duao.51y)."""
-    # The call runs until the test ends it: a read of a named pipe in the brain's workdir, which returns once the test
-    # writes to it, so the words are said while it runs however slow the run is.
-    pipe = hands.workdir / "go"
-    os.mkfifo(pipe)
+    pipe = gate(hands)
     # Tried in name order: the second turn, whose history holds the first's result too, ahead of the first's end.
     mock_api.script("1-logs", {"lastUserContains": ["check the logs too"], "bodyContains": [TURN]}, {"type": "text", "text": "The logs are clean."})
     mock_api.script("2-done", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Renamed it."})
@@ -435,8 +456,7 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     # hands' answer is said while the call still runs.
     await hands.until(lambda: any(answer in "".join(hands.out.said()) for answer in ANSWERS))
     assert "Renamed it." not in "".join(hands.out.said())
-    # Opening the pipe for writing waits for the call's read, off the loop; writing and closing it ends the call.
-    await asyncio.to_thread(pipe.write_text, "go")
+    await hands.until(lambda: opened(pipe))
     await hands.until(lambda: "The logs are clean." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
     said = "".join(hands.out.said())
     first, second = events(hands.recorded, "voice.turn")
@@ -461,19 +481,19 @@ async def test_a_background_command_s_turn_ends_while_it_runs_and_its_end_opens_
     """A command the brain starts in the background returns at once, so its turn ends while the command still runs: a turn
     held for a background call ran its whole length (promptctl-latency-3fui.h2r). The command's end is news Claude Code
     opens a turn of its own for, and hands speaks that turn and ends it."""
-    # The command runs until the test ends it: a read of a named pipe in the brain's workdir, so the turn reaches its end
-    # while the command provably still runs, however slow the run is.
-    pipe = hands.workdir / "go"
-    os.mkfifo(pipe)
+    pipe = gate(hands)
     # Tried in name order: the notification's turn, whose history holds the launch's result too, ahead of the launch's end.
+    # The launch is answered only as Claude Code answers a command it backgrounded; any other result has no answer, and
+    # the mock's fault check fails the test on it.
     mock_api.script("1-finished", {"lastUserContains": ["<task-notification>"], "bodyContains": [TURN]}, {"type": "text", "text": "It finished."})
-    mock_api.script("2-started", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "Started it."})
+    mock_api.script("2-started", {"bodyContains": [TURN, "Command running in background with ID"]}, {"type": "text", "text": "Started it."})
     mock_api.script("3-background", {"lastUserContains": ["start it in the background"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"cat {pipe}", "run_in_background": True}}, stop="tool_use")
     await connected(hands)
     await hands.say("start it in the background")
-    await hands.until(lambda: "Started it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
-    # Opening the pipe for writing waits for the command's read, off the loop; writing and closing it ends the command.
-    await asyncio.to_thread(pipe.write_text, "go")
-    await hands.until(lambda: "It finished." in "".join(hands.out.said()) and len(events(hands.recorded, "voice.turn")) == 2)
+    # The asked turn is over, spoken and recorded, while the command it started still runs.
+    await hands.until(lambda: "Started it." in "".join(hands.out.said()) and hands.stage.work() == Idle() and len(events(hands.recorded, "voice.turn")) == 1)
+    assert "It finished." not in "".join(hands.out.said())
+    await hands.until(lambda: opened(pipe))
+    await hands.until(lambda: "It finished." in "".join(hands.out.said()) and hands.stage.work() == Idle() and len(events(hands.recorded, "voice.turn")) == 2)
     asked, told = events(hands.recorded, "voice.turn")
-    assert (asked.facts["origin"], told.facts["origin"], told.facts["opener"]) == ("awaited", "unawaited", "notified")
+    assert (asked.facts["origin"], asked.facts["opener"], told.facts["origin"], told.facts["opener"]) == ("awaited", "typed", "unawaited", "notified")
