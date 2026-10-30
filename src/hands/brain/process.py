@@ -106,7 +106,7 @@ DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elici
 # What the brain posts to hands, each to its own path: a typed turn taken, a turn ended, a turn the API failed, and a
 # dialog about to open. Escape ends a turn with none of them, so a turn told to stop is over when
 # it is told.
-HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation", "PreToolUse")
+HOOKS = ("UserPromptSubmit", "Stop", "StopFailure", "PermissionRequest", "Elicitation")
 # A paste of four lines or more, as a UserPromptSubmit hook's `prompt` holds it: what was pasted, with a line end added
 # where it had none, inside a tag pair.
 PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\1">\n', re.DOTALL)
