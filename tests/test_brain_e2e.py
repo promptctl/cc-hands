@@ -2,8 +2,9 @@
 model's replies scripted by the mock of Anthropic's API. No login, no subscription, and no network while a test runs: the
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
 login is one the mock accepts. The OS holds the brain to it: the run, and every Claude Code hands starts in it, runs in
-a sandbox whose only connections are to loopback (conftest). A machine's Claude Code policy reaches every Claude Code, so
-the tests run on a machine with none, as CI's is. The pinned Claude Code, from npm's registry, and the mock are fetched
+a sandbox whose only connections are to loopback (conftest). A machine's Claude Code policy reaches every Claude Code,
+the brain under test among them, and neither a setting, a variable nor the sandbox keeps it out (px1f.6os): a policy
+that changes what the brain does fails these tests, and they run all the same. The pinned Claude Code, from npm's registry, and the mock are fetched
 before the run, into pytest's cache (conftest). What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
@@ -12,7 +13,6 @@ import json
 
 from hands.core.attention import Attention
 import os
-import pwd
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
@@ -122,36 +122,6 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
 def claude_code(pytestconfig: pytest.Config) -> Path:
     """The brain's pinned Claude Code, as the run fetched it from npm's registry, against its checksum, into pytest's cache."""
     return pytestconfig.stash[RUN].claude_code
-
-
-def drop_ins(directory: Path) -> list[Path]:
-    """The files of a policy drop-in directory Claude Code reads: each `*.json` whose name does not start with a dot."""
-    try:
-        return sorted(path for path in directory.iterdir() if path.name.endswith(".json") and not path.name.startswith("."))
-    except FileNotFoundError:
-        # No directory is no policy, as Claude Code reads it; one it cannot list fails the collection, loudly.
-        return []
-
-
-# Where the pinned Claude Code (2.1.308 when this was read from it) reads a machine's policy on macOS, which outranks
-# every setting of the brain's own and which no process may opt out of: a settings file and its drop-ins, an MCP config
-# that takes every MCP server over, and an MDM profile, the account's or the machine's. A release that reads another is
-# read here when the pin moves.
-MANAGED = Path("/Library/Application Support/ClaudeCode")
-PREFERENCES = Path("/Library/Managed Preferences")
-POLICY = [
-    MANAGED / "managed-settings.json",
-    *drop_ins(MANAGED / "managed-settings.d"),
-    MANAGED / "managed-mcp.json",
-    PREFERENCES / pwd.getpwuid(os.getuid()).pw_name / "com.anthropic.claudecode.plist",
-    PREFERENCES / "com.anthropic.claudecode.plist",
-]
-HELD = [str(path) for path in POLICY if path.is_file()]
-
-# A brain on the machine's policy is not the brain these tests prove: this Mac's, for one, names plugin marketplaces on
-# GitHub the brain clones at its start, and runs it in auto mode with the person's hooks. Skipped before any fixture is
-# built, and in CI a skip fails the run (conftest).
-pytestmark = pytest.mark.skipif(bool(HELD), reason=f"this machine's Claude Code policy reaches every Claude Code, the brain under test among them: {', '.join(HELD)}")
 
 
 # The brain's keybindings, as docs/claude-code-screen.md's "Submitting the prompt with a chord no dialog binds" settles
