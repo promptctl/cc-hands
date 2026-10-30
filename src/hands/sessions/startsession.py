@@ -35,6 +35,10 @@ SESSION_GIVEN = (
     "CLAUDE_CODE_TMUX_TRUECOLOR",
 )
 
+# What a terminal outside any session is not handed: SESSION_GIVEN, and hands' own Hugging Face token, which the daemon's
+# environment holds for the voice library's fetches. The brain types into and reads these windows, so the token stays out.
+TERMINAL_WITHHELD = (*SESSION_GIVEN, "HF_TOKEN")
+
 # The settings a started session is launched with. Claude Code's dialog for a project's new MCP servers holds the session
 # before its first hook, so it never joins: hands trusts them as the dialog's "use this and all future MCP servers in this
 # project" does, and one the user turned down stays down, since that is read first.
@@ -74,14 +78,14 @@ class _Window:
 
 def as_from_a_terminal(environment: Mapping[str, str]) -> dict[str, str]:
     """`environment` as a terminal outside any session has it: no tap, and nothing else of a session it may be inside."""
-    return {name: value for name, value in untapped(environment).items() if name not in SESSION_GIVEN}
+    return {name: value for name, value in untapped(environment).items() if name not in TERMINAL_WITHHELD}
 
 
 def as_from_a_terminal_script(claude: Path) -> str:
     """as_from_a_terminal, as sh run in the environment to clean, from the same names, ending by running `claude` with the
     script's arguments."""
     # [LAW:one-source-of-truth] the same names as as_from_a_terminal.
-    return f'{untap_script()}unset {shlex.join(SESSION_GIVEN)}\nexec {shlex.quote(str(claude))} "$@"\n'
+    return f'{untap_script()}unset {shlex.join(TERMINAL_WITHHELD)}\nexec {shlex.quote(str(claude))} "$@"\n'
 
 
 def joined(members: Iterable[Membership], root: int, table: Mapping[int, Process]) -> Membership | None:

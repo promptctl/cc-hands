@@ -66,6 +66,8 @@ def test_a_folder_that_is_not_there_is_a_symlink_loop_or_is_not_a_whole_path_is_
 def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_own_setup() -> None:
     inside = {
         **{name: "given" for name in SESSION_GIVEN},
+        # hands' own Hugging Face token is withheld too: the brain reads these windows.
+        "HF_TOKEN": "a-hub-token",
         # fritter's tap of the session hands was started in, and the proxy it replaced.
         "FRITTER_TAP": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "FRITTER_OUTER_HTTPS_PROXY": "http://proxy.lan:3128",
     }

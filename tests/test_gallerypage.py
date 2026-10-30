@@ -16,6 +16,8 @@ from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level
 from hands.voice.gallerypage import Gallery, gallery_routes
+from hands.voice.library import Found
+from hands.voice.voices import Chosen
 from hands.voice.trigger import described
 from hands.voice.voices import VOICES, Voice
 from hands.voice.wakeword import Pretrained
@@ -30,23 +32,26 @@ MODELS = ("claude-sonnet-5-5", "claude-opus-5-5")
 class Voicing:
     """The voices as the test sets them: the one spoken, and what each call was asked."""
 
-    spoken: Voice = Voice("charles")
-    heard_asked: list[tuple[Voice, ...]] = field(default_factory=list[tuple[Voice, ...]])
-    used_asked: list[Voice] = field(default_factory=list[Voice])
+    spoken: Chosen = Voice("charles")
+    heard_asked: list[tuple[Chosen, ...]] = field(default_factory=list[tuple[Chosen, ...]])
+    used_asked: list[Chosen] = field(default_factory=list[Chosen])
     failure: Exception | None = None
 
-    async def speaking_in(self) -> Voice:
+    async def speaking_in(self) -> Chosen:
         return self.spoken
 
-    async def hear(self, voices: tuple[Voice, ...]) -> Voice:
+    async def hear(self, voices: tuple[Chosen, ...]) -> Chosen:
         self.heard_asked.append(voices)
         if self.failure is not None:
             raise self.failure
         return self.spoken
 
-    async def use(self, voice: Voice) -> None:
+    async def use(self, voice: Chosen) -> None:
         self.used_asked.append(voice)
         self.spoken = voice
+
+    async def search(self, query: str, limit: int) -> Found:
+        return Found(tuple(name for name in ("vctk/p225", "alba-mackenna/casual") if query in name)[:limit], 3.0, True)
 
 
 @dataclass
@@ -172,10 +177,10 @@ async def test_hearing_a_voice_says_it_once_and_names_the_voice_in_the_event(pag
     assert (hear.outcome, hear.facts["heard"], hear.facts["speaking_in"]) == ("ok", "bill_boerst", "charles")
 
 
-async def test_a_voice_hands_has_not_is_refused_and_nothing_is_heard(page: Page) -> None:
-    response = await page.client.post("/gallery/hear", headers=KEYED, json={"voice": "Zed"})
+async def test_a_voice_name_hands_cannot_read_is_refused_and_nothing_is_heard(page: Page) -> None:
+    response = await page.client.post("/gallery/hear", headers=KEYED, json={"voice": "Zed!"})
     assert response.status == 400
-    assert "hands has no voice called 'Zed'" in await response.text()
+    assert "hands has no voice called 'Zed!'" in await response.text()
     assert page.voices.heard_asked == []
     assert [hear.outcome for hear in page.events("gallery.hear")] == ["failed"]
 
@@ -284,11 +289,18 @@ async def test_a_model_the_machine_cannot_keep_is_a_503_and_says_why(page: Page)
     assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
 
 
+async def test_the_library_search_returns_matches_and_records_the_listing(page: Page) -> None:
+    response = await page.client.get("/gallery/library?q=vctk&limit=5", headers=KEYED)
+    assert await response.json() == {"voices": ["vctk/p225"], "listed_at": 3.0, "from_cache": True}
+    [search] = page.events("gallery.library")
+    assert (search.outcome, search.facts["query"], search.facts["matches"], search.facts["from_cache"]) == ("ok", "vctk", 1, True)
+
+
 def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS)
     routes: list[Any] = [route for route in gallery_routes(gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
-        "GET /gallery", "GET /gallery/state", "POST /gallery/hear", "POST /gallery/use",
+        "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
         "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
     ])

@@ -91,7 +91,7 @@ def check(home: Home, path: str, granted: bool, reached: Finding, running: Findi
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), installed(path), shim(home, path), plugin(path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), tmux(path), installed(path), shim(home, path), plugin(path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -114,6 +114,14 @@ def portaudio() -> Finding:
     except ImportError as error:
         return Missing("PortAudio missing", f"PyAudio cannot load PortAudio ({error}), so hands cannot open the microphone", "`brew install portaudio`, with Homebrew from https://brew.sh")
     return Ready("PortAudio", f"PortAudio is there for the microphone: {pyaudio.get_portaudio_version_text()}")
+
+
+def tmux(path: str) -> Finding:
+    """Whether this PATH has the tmux the brain runs in."""
+    found = shutil.which("tmux", path=path)
+    if found is None:
+        return Missing("tmux missing", "this PATH has no tmux, so the brain cannot start: it runs in a tmux session of its own", "`brew install tmux`")
+    return Ready("tmux", f"tmux is there for the brain to run in: {found}")
 
 
 def installed(path: str) -> Finding:
