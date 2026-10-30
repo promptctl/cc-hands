@@ -44,7 +44,7 @@ class VoiceConfig:
     """Everything that varies between two runs of the pipeline."""
 
     llm: ClaudeCodeBackend
-    voice: voices.Voice
+    voice: voices.Chosen
     # How the model comes across, in the user's words; None is hands' own.
     personality: str | None = None
     # What the desk listens for at its wake word level.
@@ -84,13 +84,13 @@ def build_voice(
     # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is, and made before
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading("tts.loaded", record):
-        annotate(voice=config.voice)
+        annotate(voice=str(config.voice))
         # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
         # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
         # own reply alike, so this is the one place all of them meet before they are heard.
         # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
         # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
-        tts = PocketTTSService(settings=PocketTTSService.Settings(voice=config.voice, language=voices.LANGUAGE), text_filters=[SpokenForm()])
+        tts = PocketTTSService(settings=PocketTTSService.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

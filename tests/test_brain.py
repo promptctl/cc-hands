@@ -310,6 +310,12 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" not in env and env["CLAUDE_CODE_DISABLE_CRON"] == "1"
 
 
+def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None:
+    # Set for the voice library's fetches, and inherited by whatever the brain runs: the brain has no use for it.
+    inherited = {"PATH": "/usr/bin:/bin", "HF_TOKEN": "a-hub-token"}
+    assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
+
+
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
 async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp_path: Path, given: dict[str, str]) -> None:
     # The brain is run in its tmux session; `hands login` and the brain's
