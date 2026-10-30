@@ -4,6 +4,7 @@ and its signal are the whole process's, and its thread method ends the process i
 
 import ast
 from pathlib import Path
+from typing import cast
 from xml.etree import ElementTree
 
 import pytest
@@ -117,9 +118,26 @@ def test_overruns_its_own_bound(shared):
 """
 
 
+# A failed setup's report outlasts the test's own bound: once the suite's bound has fired on a shared setup, the test's
+# stays spent, as pytest-timeout's single timer would, so nothing fires while pytest builds the report. pytest-timeout
+# cancels the test's timer once the report is built.
+SLOW_REPORT = """
+import time
+import pytest
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if report.when == "setup" and report.failed:
+        time.sleep(1.5)
+    return report
+"""
+
+
 @pytest.fixture
 def suite(pytester: pytest.Pytester) -> pytest.Pytester:
     """A run's directory holding the plugin, as it is loaded by name, and each suite above as a module of its own."""
+    pytester.makeconftest(SLOW_REPORT)
     pytester.makepyfile(
         timeouts=Path(timeouts.__file__).read_text(),
         test_shared=SHARED,
@@ -133,6 +151,12 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
     return pytester
 
 
+def rescoped(suite: pytest.Pytester) -> list[timeouts.Rescoping]:
+    """Each rescoping the run's report.xml records, in the order its tests ran."""
+    properties = ElementTree.parse(suite.path / "report.xml").iterfind(".//property")
+    return [cast(timeouts.Rescoping, ast.literal_eval(p.attrib["value"])) for p in properties if p.attrib["name"] == timeouts.RESCOPED]
+
+
 def run(suite: pytest.Pytester, method: str, *args: str) -> pytest.RunResult:
     # A timer the plugin never restored hangs the run: the run's own bound ends it, failing this test.
     return suite.runpytest_subprocess("-p", "timeouts", *BOUND, f"--timeout-method={method}", *args, timeout=60)
@@ -140,8 +164,12 @@ def run(suite: pytest.Pytester, method: str, *args: str) -> pytest.RunResult:
 
 def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_bounded_by_its_own_work(suite: pytest.Pytester) -> None:
     # -vv: the summary's lines whole, not cut to the terminal's width.
-    ran = run(suite, "signal", "-vv", "test_shared.py", "test_async_shared.py", "test_marked.py", "test_late.py", "test_hangs.py", "test_overruns.py")
+    ran = run(
+        suite, "signal", "-vv", "--junitxml=report.xml", "test_shared.py", "test_async_shared.py", "test_marked.py", "test_late.py", "test_hangs.py", "test_overruns.py"
+    )
     ran.assert_outcomes(passed=3, failed=2, errors=1)
+    # The suite's bound fired on the hung setup alone, so it alone left its test's bound spent.
+    assert [(r["fixture"], r["phase"]) for r in rescoped(suite) if r["fired"]] == [("shared_never_returns", "setup")]
     ran.stdout.fnmatch_lines_random(
         [
             "ERROR test_hangs.py::test_after_a_shared_setup_that_hangs - Failed: Timeout (>2.0s)*",
@@ -154,11 +182,9 @@ def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_b
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
     run(suite, "signal", "--junitxml=report.xml", "test_shared.py").assert_outcomes(passed=1)
-    properties = ElementTree.parse(suite.path / "report.xml").iterfind(".//property")
-    rescoped = [ast.literal_eval(p.attrib["value"]) for p in properties if p.attrib["name"] == timeouts.RESCOPED]
     # pytest-asyncio's session-scoped fixtures are rescoped too.
-    recorded = [r for r in rescoped if r["fixture"] == "shared"]
-    assert [(r["phase"], r["bound"]) for r in recorded] == [("setup", 2.0), ("teardown", 2.0)]
+    recorded = [r for r in rescoped(suite) if r["fixture"] == "shared"]
+    assert [(r["phase"], r["bound"], r["fired"]) for r in recorded] == [("setup", 2.0, False), ("teardown", 2.0, False)]
     # Each took its 1.3 s outside the test's bound, which at teardown had what setup left it less the call's own 1.3 s.
     assert all(r["seconds"] >= 1.3 for r in recorded)
     setup, teardown = recorded

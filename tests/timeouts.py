@@ -7,10 +7,10 @@ import time
 from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import TypedDict, cast
 
 import pytest
-from pytest_timeout import Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
+from pytest_timeout import PYTEST_FAILURE_MESSAGE, Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
 
 
 @dataclass(frozen=True)
@@ -68,21 +68,43 @@ def shared(config: pytest.Config, phase: str, fixture: str) -> Generator[None]:
     # A suite with no bound gives its shared fixtures none.
     if bound:
         config.hook.pytest_timeout_set_timer(item=armed.item, settings=suite)
+    fired = False
     try:
         yield
+    except pytest.fail.Exception as failed:
+        # The suite's bound fired on the work: the failure pytest-timeout raises, by the message it builds.
+        fired = str(failed) == PYTEST_FAILURE_MESSAGE % bound
+        raise
     finally:
         config.hook.pytest_timeout_cancel_timer(item=armed.item)
-        # [LAW:nothing-unseen] the bound the work ran under, how long it took, and what the test had left: a timeout
-        # reported after it names that remainder, not the test's configured bound. Recorded before the re-arm, which a
-        # spent bound fires at once.
+        # [LAW:nothing-unseen] the bound the work ran under, how long it took, what the test had left, and whether the
+        # suite's bound fired: a timeout reported after it names that remainder, not the test's configured bound, unless
+        # the suite's fired. Recorded before the re-arm, which a spent bound fires at once.
         armed.item.user_properties.append(
-            (RESCOPED, {"phase": phase, "fixture": fixture, "bound": bound, "seconds": round(time.monotonic() - started, 3), "left": round(left, 3)})
+            (RESCOPED, Rescoping(phase=phase, fixture=fixture, bound=bound, seconds=round(time.monotonic() - started, 3), left=round(left, 3), fired=fired))
         )
-        config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(left, SPENT)))
+        # A test's timer fires once, as pytest-timeout arms it: once the suite's bound has fired in the test, the test's
+        # stays spent, and nothing fires again while pytest reports the failure.
+        if not fired:
+            config.hook.pytest_timeout_set_timer(item=armed.item, settings=armed.settings._replace(timeout=max(left, SPENT)))
 
 
 # The name a rescoping is recorded under on a test's report.
 RESCOPED = "timeouts.shared"
+
+
+class Rescoping(TypedDict):
+    """One shared fixture's setup or teardown, as a test's report records it."""
+
+    phase: str
+    fixture: str
+    # The suite's bound the work ran under, None when the suite has none.
+    bound: float | None
+    seconds: float
+    # What the test's own bound had left as the work began.
+    left: float
+    # Whether the suite's bound fired on the work, leaving the test's own spent.
+    fired: bool
 
 
 @pytest.hookimpl(wrapper=True)
