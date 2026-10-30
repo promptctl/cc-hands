@@ -26,6 +26,7 @@ where the user is.
 import asyncio
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -51,10 +52,11 @@ from hands.voice.coreaudio import DefaultDevices, default_devices
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, count, unit
-from hands.voice.echo import COUNTS, SAMPLE_BYTES, Echo, EchoCanceller, frame_bytes
+from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
 from hands.voice.phone import Phone
 from hands.voice.ptt import PushToTalk
 from hands.voice.turnstop import TurnOpened
+from hands.voice.voices import SpeakingIn
 from hands.threads import SerialThread, off_loop
 
 Instant = float  # seconds on the monotonic clock
@@ -78,6 +80,17 @@ PLAYOUT_COUNTS = ("pulled", "unwritten", "underflowed")
 REOPEN_DEADLINE = timedelta(seconds=10)
 
 
+@dataclass(frozen=True)
+class Overheard:
+    """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
+    speaker played over it; whether the desk is where hands is, the gate's say, the desk heard as silence where not; and
+    whether a press of the key was arming or holding as it was captured, the gate's say too."""
+
+    cancelled: Cancelled
+    desk: bool
+    held: bool
+
+
 class Stream(Protocol):
     """What is used of a PyAudio stream, which is untyped."""
 
@@ -89,7 +102,7 @@ class Stream(Protocol):
 class Playback(Stream, Protocol):
     """A stream the speaker writes to."""
 
-    def write(self, audio: bytes) -> None: ...
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None: ...
     def counts(self) -> dict[str, int]: ...
 
 
@@ -119,14 +132,17 @@ class Playout:
         # [LAW:no-shared-mutable-globals] written by the speaker's writer thread, taken by the device's callback, under
         # the one condition, which wakes a waiting write as the device takes sound and as the stream stops.
         self._waiting = bytearray()
+        # The voices of hands' TTS in what is waiting, in order: how many bytes of it each run of voices is.
+        self._voiced: deque[tuple[int, tuple[str, ...]]] = deque()
         self._room = threading.Condition()
         self._stopped = False
         # [LAW:nothing-unseen] read onto the speaker's event as it is let go of; written by the device's callback alone.
         self._counts: dict[str, int] = dict.fromkeys(PLAYOUT_COUNTS, 0)
         self._stream = opening(self._pull)
 
-    def write(self, audio: bytes) -> None:
-        """Queue sound behind what is waiting, as there is room for it. A stopped stream refuses it, as PortAudio's does."""
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+        """Queue sound behind what is waiting, as there is room for it, with the `voices` of hands' TTS in it. A stopped
+        stream refuses it, as PortAudio's does."""
         with self._room:
             while audio:
                 self._room.wait_for(lambda: self._stopped or len(self._waiting) < self._ahead_bytes)
@@ -134,6 +150,7 @@ class Playout:
                     raise OSError("the speaker stream is stopped")
                 room = self._ahead_bytes - len(self._waiting)
                 self._waiting += audio[:room]
+                self._voiced.append((len(audio[:room]), voices))
                 audio = audio[room:]
 
     def counts(self) -> dict[str, int]:
@@ -160,10 +177,11 @@ class Playout:
         with self._room:
             taken = bytes(self._waiting[:size])
             del self._waiting[:size]
+            voices = self._taken_voices(len(taken))
             self._room.notify_all()
         played = taken + bytes(size - len(taken))
         try:
-            self._echo.played(played, self._rate, self._channels)
+            self._echo.played(played, self._rate, self._channels, voices)
         except Exception as error:
             # [LAW:no-silent-failure] PyAudio would abort the stream and say so only on stderr, leaving hands mute.
             self._failed(error)
@@ -172,6 +190,20 @@ class Playout:
         self._counts["unwritten"] += (size - len(taken)) // self._frame_bytes
         self._counts["underflowed"] += bool(status & pyaudio.paOutputUnderflow)
         return played, pyaudio.paContinue
+
+    def _taken_voices(self, taken: int) -> tuple[str, ...]:
+        """The voices in the `taken` bytes just taken from what is waiting, let go of from its runs; under the condition."""
+        voices = dict[str, None]()
+        while taken:
+            length, run = self._voiced.popleft()
+            voices |= dict.fromkeys(run)
+            match length > taken:
+                case True:
+                    self._voiced.appendleft((length - taken, run))
+                    taken = 0
+                case False:
+                    taken -= length
+        return tuple(voices)
 
 
 class NoInput:
@@ -246,6 +278,11 @@ class Speaker(LocalAudioOutputTransport):
         self._speaking: set[Literal["hands", "user"]] = set()
         self.quiet = asyncio.Event()
         self.quiet.set()
+        # [LAW:one-source-of-truth] the voice hands' TTS said its last utterance in, as the TTS said so ahead of its
+        # audio (`hands.voice.voices.SpeakingIn`), and the voices of the next chunk written: Pipecat's sender joins
+        # utterances into its chunks, so the first chunk after a new one may hold the end of the one before.
+        self._voice: str | None = None
+        self._chunk_voices: tuple[str, ...] = ()
 
     @property
     def hands_speaking(self) -> bool:
@@ -340,6 +377,9 @@ class Speaker(LocalAudioOutputTransport):
                 self._speaking.add("user")
             case UserStoppedSpeakingFrame():
                 self._speaking.discard("user")
+            case SpeakingIn(voice=voice):
+                self._chunk_voices = tuple(dict.fromkeys((*self._chunk_voices, voice)))
+                self._voice = voice
             case _:
                 pass
         if self._speaking:
@@ -351,6 +391,7 @@ class Speaker(LocalAudioOutputTransport):
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
         # the place the user has moved to. The phone's earbuds keep its microphone clear, so the canceller is not told.
+        voices, self._chunk_voices = self._chunk_voices, () if self._voice is None else (self._voice,)
         match self._key.gate.place:
             case "phone":
                 if frame.audio.count(0) != len(frame.audio):
@@ -358,9 +399,9 @@ class Speaker(LocalAudioOutputTransport):
                 await self._phone.play(frame.audio)
                 return True
             case "desk":
-                return await self._write_here(frame)
+                return await self._write_here(frame, voices)
 
-    async def _write_here(self, frame: OutputAudioRawFrame) -> bool:
+    async def _write_here(self, frame: OutputAudioRawFrame, voices: tuple[str, ...]) -> bool:
         # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
@@ -371,7 +412,7 @@ class Speaker(LocalAudioOutputTransport):
             # interruption cancels the await, but the chunk already handed to that thread plays out all the same.
             if frame.audio.count(0) != len(frame.audio):
                 self.sounded_at = self._clock()
-            stream.write(frame.audio)
+            stream.write(frame.audio, voices)
 
         await self._writes.run(write)
         return True
@@ -402,7 +443,7 @@ class Speaker(LocalAudioOutputTransport):
                 def write() -> None:
                     # A stream a reopen has stopped refuses the write; the writer thread says so and carries on.
                     self.sounded_at = self._clock()
-                    stream.write(audio)
+                    stream.write(audio, ())
 
                 self._writes.give(write)
                 return "desk"
@@ -424,7 +465,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self.opened: Input | None = None
         # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
         # replaced whole on the event loop, read whole on the capture thread.
-        self._overhearing: tuple[asyncio.Queue[bytes], ...] = ()
+        self._overhearing: tuple[asyncio.Queue[Overheard], ...] = ()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -490,10 +531,22 @@ class KeyedMicrophone(LocalAudioInputTransport):
     async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
         """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
         says, and silent while hands is at the phone: what an edge listens to for when to open and close the turn."""
-        heard: asyncio.Queue[bytes] = asyncio.Queue()
+        async with self.echoes() as echoes:
+
+            async def buffers() -> AsyncIterator[bytes]:
+                async for each in echoes:
+                    yield each.cancelled.heard if each.desk else bytes(len(each.cancelled.heard))
+
+            yield buffers()
+
+    @asynccontextmanager
+    async def echoes(self) -> AsyncGenerator[AsyncIterator[Overheard]]:
+        """Every buffer the desk's microphone captures while open, as `overheard`, with what the speaker played over it
+        and where the gate stood as it was captured."""
+        heard: asyncio.Queue[Overheard] = asyncio.Queue()
         self._overhearing = (*self._overhearing, heard)
 
-        async def buffers() -> AsyncIterator[bytes]:
+        async def buffers() -> AsyncIterator[Overheard]:
             while True:
                 yield await heard.get()
 
@@ -534,7 +587,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by an edge as by the hold owner: while hands is at the
         # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
-        overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
+        overheard = Overheard(cancelled, gate.hears("desk"), gate.key in ("arming", "down"))
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the hold owner; while hands is at the

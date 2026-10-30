@@ -8,7 +8,7 @@ import numpy as np
 from hands.voice import engaged, streaming
 from hands.voice.holds import Hold
 from hands.voice.voiceprints import Voiced
-from hands.voice.streaming import RATE, Closed, Decoded, Ended, Said, Samples, Session, Spoken, steps, through
+from hands.voice.streaming import RATE, Closed, Decoded, Ended, Samples, Session, Spoken, steps, through
 
 # A turn's hold opens LEAD before its first word and ends `after` past its last, in one of the two shapes a hold takes:
 # the held key, let go RELEASE after it, or engaged conversation, closed on the STOP_SECS of silence after it.
@@ -46,8 +46,17 @@ class Gridded:
         return self.session.closed()
 
 
-def unidentified(_hold: Hold, _voiced: tuple[Voiced, ...]) -> None:
+class Unidentifying:
     """Nobody identified: what a test of the words alone measures is the words."""
+
+    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+        pass
+
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+        pass
+
+
+unidentified = Unidentifying()
 
 
 class Live:
@@ -60,9 +69,9 @@ class Live:
 
     def spoken(self, samples: Samples) -> tuple[Spoken, Ended]:
         """A hold of `samples`: each speaker's words heard while it was open, and the hold as it ended."""
-        self.stream.opened(np.zeros(0, np.float32), self.session.fed)
+        self.stream.opened(np.zeros(0, np.float32), self.session.fed, ())
         for start in range(0, len(samples), 320):
-            self.stream.heard(samples[start : start + 320])
-        live = tuple(Said(voiced.speaker, voiced.words) for voiced in self.stream.said() if voiced.words)
+            self.stream.heard(samples[start : start + 320], ())
+        live = self.stream.said().added
         self.stream.silence(through(self.session.fed) - self.session.fed)
         return live, self.stream.ended()

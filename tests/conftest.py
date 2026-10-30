@@ -318,9 +318,9 @@ def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(streaming, "load", unspoken)
 
 
-def stood_in() -> voiceprints.Voiceprints:
+def stood_in(kept: Path) -> voiceprints.Voiceprints:
     """hands' voiceprints where no test is about them: a model that prints every voice alike, and a TTS that says
-    anything as a second of silence. The real model is test_voiceprints' and test_streaming's."""
+    anything as a second of silence, its prints kept in `kept`. The real model is test_voiceprints' and test_streaming's."""
 
     def model() -> voiceprints.Embed:
         return lambda _voice: np.ones(2, np.float32) / np.sqrt(np.float32(2))
@@ -328,7 +328,7 @@ def stood_in() -> voiceprints.Voiceprints:
     def speech() -> voiceprints.Synthesize:
         return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
 
-    return voiceprints.Voiceprints(model, speech, lambda _: None)
+    return voiceprints.Voiceprints(model, speech, kept, lambda _entry: None)
 
 
 async def unprimed() -> None:

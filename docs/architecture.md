@@ -1893,31 +1893,51 @@ hold and every hold's after it, with why.
 Each speaker in each hold is identified by their voice, measured beside the cut and not yet acting
 on it (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
 is active in at the threshold their stream is masked by, are read out of it as it takes each
-chunk, and the hold's samples in those frames, overlap included in both speakers, are that
-speaker's voice in the hold. At each hearing, once its words have gone out, every speaker who
-added words is handed to the voiceprint lane (`Voiceprints`, a thread of its own), which scores
-them with 3D-Speaker's ERes2Net, run by sherpa-onnx on the CPU, on their latest 3 s against hands'
-own voiceprints, and says who each was, with the score and seconds that said so, on one
-`voiceprints.identified` unit per hearing; no hearing's words wait on it. hands keeps the
-voiceprint of the voice it speaks in and of the one before the last change, whose echo may still
-be in the room; a voice only sampled gets none. Each is made from hands' own Pocket TTS output,
-never from a person, on an enrolment thread with its own Pocket TTS model, loaded once for the run
-(`enrolment.loaded`), so a voice change passes at once and nothing hands says waits on it; each
-print made, or not, is a `voiceprints.enrolled` unit. One table of score floors by length decides:
-under 1 s, `Unheard`; from 1 s under 0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`;
-from 3 s at or over it, `Hands`; otherwise `Unsure`. A person stays one for the hold; every speaker
-is identified afresh in each hold, since a diarizer's number is not an identity. The model loads on
-the lane as its first work (`voiceprints.loaded`), off the voice's build; a model that does not
-load, a print not made yet, or one that failed leaves every speaker `Unidentified`, saying why,
-never scored against what is not there.
+chunk, and the hold's samples in those frames are that speaker's voice in the hold; a frame two
+speakers share is in both, and counted as shared. A speaker is handed to the voiceprint lane
+(`Voiceprints`, a thread of its own) once as their heard seconds first reach each row of the
+table, and once more as the hold ends, after the hearing's words have gone out, so no words wait
+on it. The lane scores their latest 3 s with 3D-Speaker's ERes2Net, run by sherpa-onnx on the
+CPU, against hands' own voiceprints, and says who each was on a `voiceprints.identified` unit:
+the score, the seconds heard, and the window scored with how much of it was shared, the input a
+refit fits on. One table of score floors by length decides: under 1 s, `Unheard`; from 1 s under
+0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
+otherwise `Unsure`. A person stays one for the rest of their hold, kept by hold number, since a
+hold's end can be identified after the next hold opens.
 
-Every hold of the key's is kept on disk by one more listener, the recorder
-(`hands.voice.recorder`), under `holds/<run>/` in the home: as the pipeline heard it, after the
-canceller; what the desk's speaker played over it, the canceller's own reference for each 10 ms,
-kept as the speaker played it and put in the hold's format only as the hold is written, so the two
-line up sample for sample (the phone has none); and what opened it and what the gate did with it. So real use is labelled data the
-voiceprint table is refitted on (`scripts/measure-voiceprints.py`). A hold that cannot be
-written fails its `hearing` event with why.
+hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
+enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
+and let go of after (`enrolment.loaded`, `voiceprints.enrolled`). The print is kept in
+`voiceprints/<revision>/` in the home and read back by later runs (`voiceprints.recalled`).
+Choosing a voice passes at once. hands holds the print of the voice it speaks in and of the
+one before the last change. The model loads on the lane as its first work (`voiceprints.loaded`),
+off the voice's build.
+
+hands knows which voice it played under each 10 ms of what the microphone heard. Its TTS
+(`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each utterance's audio.
+Pipecat's sender queues that frame in line with the audio chunks, and the speaker labels each
+chunk it writes with the voice. The playout carries the label to the echo canceller, which puts
+it on each 10 ms reference. A speaker is `Unidentified` with the reason when nothing can score
+them against every voice they may be: the model did not load, there is no print yet of the voice
+hands speaks in, or hands played a voice over them that it holds no print of.
+
+Every hold is kept on disk by one more listener, the recorder (`hands.voice.recorder`), in a
+directory of the run's own under `holds/` in the home, claimed so two runs started in the same
+second never share one. Each hold is kept as the pipeline heard it, after the canceller, with
+what the desk's speaker played over it. That is the canceller's own reference, kept as the
+speaker played it and put in the hold's format only as the hold is written, so the two line up
+sample for sample; the phone has none. Beside them go what opened the hold, what the gate did
+with it, and every voice hands played over it.
+
+The recorder also keeps hands' echo as labelled data. While the speaker says hands is speaking at
+the desk, and no press of the key is arming or held (the gate's say, read as each buffer was
+captured), what the microphone overhears is nobody's but hands'. Each stretch of it is an echo
+span, `echo-<span>.*` in the same directory, its `.json` saying no hold was open. It is
+identified as one voice at its end, on a `voiceprints.identified` unit carrying the span number.
+A press ends the span it opens in. The store is kept under 2 GB by deleting whole runs, oldest
+first and never the current one (`holds.pruned`). So held-key use is the data the voiceprint
+table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A hold
+that cannot be written fails its `hearing` event with why, and a span its `echo.kept` event.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed

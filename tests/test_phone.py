@@ -493,7 +493,7 @@ class Desk:
     def __init__(self) -> None:
         self.written: list[bytes] = []
 
-    def write(self, audio: bytes) -> None:
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
         self.written.append(audio)
 
     def get_output_latency(self) -> float:

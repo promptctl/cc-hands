@@ -59,7 +59,7 @@ class Cancelled:
 class Echo(Protocol):
     """What the transport asks of an echo canceller: told what the speaker plays, it cleans what the microphone hears."""
 
-    def played(self, audio: bytes, sample_rate: int, channels: int) -> None: ...
+    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None: ...
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled: ...
     def counts(self) -> dict[str, int]: ...
     def close(self) -> None: ...
@@ -81,12 +81,13 @@ class EchoCanceller:
 
     def __init__(self) -> None:
         self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
-        # The speaker's audio short of a whole frame, carried to its next buffer. The speaker's device callback alone
-        # touches it.
+        # The speaker's audio short of a whole frame, carried to its next buffer, with the voices in it. The speaker's
+        # device callback alone touches them.
         self._unplayed = b""
+        self._unplayed_voices: tuple[str, ...] = ()
         # [LAW:no-shared-mutable-globals] written by the speaker's device callback, taken by the microphone's capture
         # thread, under the one lock; a ring buffer, so the oldest goes first when nothing takes it.
-        self._held: deque[rtc.AudioFrame] = deque(maxlen=_HELD_FRAMES)
+        self._held: deque[tuple[rtc.AudioFrame, tuple[str, ...]]] = deque(maxlen=_HELD_FRAMES)
         self._holding = threading.Lock()
         # The fewest frames left held after a microphone frame took one, over the window so far, and the frames taken
         # in it. The capture thread alone touches them, under the lock.
@@ -98,13 +99,19 @@ class EchoCanceller:
         # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` and `slipped` under the lock.
         self._counts: dict[str, int] = dict.fromkeys(COUNTS, 0)
 
-    def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
-        """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo."""
+    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
+        """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo,
+        each frame with the `voices` of hands' TTS in the buffer it came from, and the first with those carried into it."""
         size = frame_bytes(sample_rate, channels)
         pending = self._unplayed + audio
         whole = len(pending) - len(pending) % size
-        frames = [rtc.AudioFrame(pending[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND) for start in range(0, whole, size)]
+        carried = tuple(dict.fromkeys((*self._unplayed_voices, *voices))) if self._unplayed else voices
+        frames = [
+            (rtc.AudioFrame(pending[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND), carried if start == 0 else voices)
+            for start in range(0, whole, size)
+        ]
         self._unplayed = pending[whole:]
+        self._unplayed_voices = carried if whole == 0 else voices
         with self._holding:
             self._counts["dropped"] += max(0, len(self._held) + len(frames) - _HELD_FRAMES)
             self._held.extend(frames)
@@ -120,10 +127,10 @@ class EchoCanceller:
         cleaned, played = bytearray(), list[Reference]()
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference.
-            reference = self._next_played()
+            reference, voices = self._next_played()
             self._apm.process_reverse_stream(reference)
             # Kept as given: the capture thread does no more for what hands played than copy it.
-            played.append(Reference(bytes(reference.data.cast("B")), reference.sample_rate, reference.num_channels))
+            played.append(Reference(bytes(reference.data.cast("B")), reference.sample_rate, reference.num_channels, voices))
             frame = rtc.AudioFrame(audio[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
             self._apm.process_stream(frame)  # in place
             cleaned += frame.data.cast("B")
@@ -142,17 +149,17 @@ class EchoCanceller:
         """
         self._apm._ffi_handle.dispose()  # pyright: ignore[reportPrivateUsage]  (LiveKit gives the module no close of its own)
 
-    def _next_played(self) -> rtc.AudioFrame:
+    def _next_played(self) -> tuple[rtc.AudioFrame, tuple[str, ...]]:
         with self._holding:
             taken = self._held.popleft() if self._held else None
             self._slip()
             rate, channels = self._format
         match taken:
-            case rtc.AudioFrame():
+            case (rtc.AudioFrame(), _):
                 return taken
             case None:
                 self._counts["unplayed"] += 1
-                return rtc.AudioFrame.create(rate, channels, rate // _FRAMES_PER_SECOND)
+                return rtc.AudioFrame.create(rate, channels, rate // _FRAMES_PER_SECOND), ()
 
     def _slip(self) -> None:
         # [LAW:dataflow-not-control-flow] every window ends in a slip; with nothing surplus, it slips no frames.

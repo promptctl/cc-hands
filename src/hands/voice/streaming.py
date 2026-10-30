@@ -18,6 +18,7 @@ batch models measured beside it), so the transcriber (`hands.voice.whisper`) say
 """
 
 import math
+from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -27,10 +28,10 @@ from loguru import logger
 
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
-from hands.voice import loads
+from hands.voice import loads, voiceprints
 from hands.threads import SerialThread
 from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Samples, Sound, decoded
-from hands.voice.voiceprints import WINDOW, Voiced
+from hands.voice.voiceprints import WINDOW, Identifier, Voiced
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
 MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
@@ -148,15 +149,29 @@ def joined(texts: Iterable[str | None]) -> str | None:
     return " ".join(text for text in texts if text) or None
 
 
+# A 10 ms slot of a hold: the unit the speaker's reference, and so the voices hands played, come in.
+SLOT = RATE // 100
+
+# The voices of hands' TTS played over each 10 ms of a stretch of a hold, in order.
+type Played = tuple[tuple[str, ...], ...]
+
+
+def played(sound: Sound) -> Played:
+    """The voices hands played over each 10 ms of `sound`; none known at the phone."""
+    return tuple(reference.voices for reference in sound.played or ())
+
+
 class _Tape:
-    """The hold open's samples, from where the run was when it opened: grown in place, so a frame of it is a slice."""
+    """The hold open's samples, from where the run was when it opened, and the voices hands played over each 10 ms of
+    them: grown in place, so a frame of it is a slice."""
 
     def __init__(self, start: int) -> None:
         self.start = start
         self._samples = np.zeros(RATE, np.float32)
+        self._played = list[tuple[str, ...]]()
         self.length = 0
 
-    def add(self, samples: Samples) -> None:
+    def add(self, samples: Samples, played: Played) -> None:
         wanted = self.length + len(samples)
         if wanted > len(self._samples):
             # Doubled as it fills: a hold of any length is copied a few times, not at every frame.
@@ -164,27 +179,46 @@ class _Tape:
             grown[: self.length] = self._samples[: self.length]
             self._samples = grown
         self._samples[self.length : wanted] = samples
+        # One slot for each 10 ms, none played over where nothing says what was.
+        slots = -(-len(samples) // SLOT)
+        self._played += [*played[:slots], *[()] * (slots - len(played))]
         self.length = wanted
 
-    def frame(self, frame: int) -> Samples:
-        """The samples of the run's encoder frame `frame` that are the hold's: none for a frame before it opened or in
-        the silence after it."""
+    def frame(self, frame: int) -> tuple[Samples, tuple[str, ...]]:
+        """The samples of the run's encoder frame `frame` that are the hold's, none for a frame before it opened or in
+        the silence after it, and every voice hands played over them."""
         start = min(max(frame * FRAME - self.start, 0), self.length)
-        return self._samples[start : min(max((frame + 1) * FRAME - self.start, 0), self.length)]
+        end = min(max((frame + 1) * FRAME - self.start, 0), self.length)
+        voices = dict.fromkeys(voice for slot in self._played[start // SLOT : -(-end // SLOT)] for voice in slot)
+        return self._samples[start:end], tuple(voices)
 
 
 @dataclass
 class _Voice:
-    """One speaker of the hold open: the latest WINDOW of where the diarizer heard them, overlap included, and how many
-    seconds of them in all."""
+    """One speaker of the hold open: the latest WINDOW of where the diarizer heard them, overlap included, each frame
+    of it with whether another speaker was heard in it too; how many seconds of them in all; every voice hands played
+    over them; and how many rows of the table they have been handed to be identified at."""
 
-    latest: Samples
-    seconds: float
+    latest: deque[tuple[Samples, bool]] = field(default_factory=deque[tuple[Samples, bool]])
+    seconds: float = 0.0
+    played: dict[str, None] = field(default_factory=dict[str, None])
+    reached: int = 0
 
+    def add(self, heard: Samples, shared: bool, played: tuple[str, ...]) -> None:
+        self.latest.append((heard, shared))
+        while sum(len(samples) for samples, _ in self.latest) - len(self.latest[0][0]) >= round(WINDOW * RATE):
+            self.latest.popleft()
+        self.seconds += len(heard) / RATE
+        self.played |= dict.fromkeys(played)
 
-def _unheard() -> _Voice:
-    """A speaker before the diarizer has marked them in any of the hold's own frames."""
-    return _Voice(np.zeros(0, np.float32), 0.0)
+    def voiced(self, speaker: int) -> Voiced:
+        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared."""
+        window = round(WINDOW * RATE)
+        voice = np.concatenate([samples for samples, _ in self.latest])
+        # The oldest frame kept is cut to the window, and its share with it.
+        cut = max(0, len(voice) - window)
+        shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
+        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played))
 
 
 @dataclass
@@ -198,6 +232,15 @@ class _Held:
     said: dict[int, int] = field(default_factory=dict[int, int])
     voices: dict[int, _Voice] = field(default_factory=dict[int, _Voice])
     closed: Closed = Closed(frozenset(), ())
+
+
+@dataclass(frozen=True)
+class Since:
+    """What a hearing of the hold open found since the last: the words each speaker added, and each speaker who has
+    reached a row of the voiceprint table they had not, to be identified at it."""
+
+    added: Spoken
+    reached: tuple[Voiced, ...]
 
 
 @dataclass(frozen=True)
@@ -225,15 +268,15 @@ class Stream:
         self._session = session
         self._held = _Held(_Tape(0))
 
-    def opened(self, samples: Samples, start: int) -> None:
+    def opened(self, samples: Samples, start: int, played: Played) -> None:
         """A hold opens, `start` samples into the run, with `samples`, what it kept from before it opened: its words start
         with what they decode to."""
         self._held = _Held(_Tape(start))
-        self.heard(samples)
+        self.heard(samples, played)
 
-    def heard(self, samples: Samples) -> None:
-        """More of the hold open."""
-        self._held.tape.add(samples)
+    def heard(self, samples: Samples, played: Played) -> None:
+        """More of the hold open, and the voices hands played over it."""
+        self._held.tape.add(samples, played)
         self._decoded(samples)
 
     def silence(self, samples: int) -> None:
@@ -246,38 +289,41 @@ class Stream:
     def _decoded(self, samples: Samples) -> None:
         decoded = self._session.decoded(samples)
         self._added(decoded.words)
+        speakers = Counter(active.frame for active in decoded.active)
         for active in decoded.active:
-            self._voiced(active)
+            self._voiced(active, speakers[active.frame] > 1)
 
     def _added(self, spoken: Spoken) -> None:
         for said in spoken:
             self._held.text[said.speaker] = self._held.text.get(said.speaker, "") + said.text
 
-    def _voiced(self, active: Active) -> None:
-        """A frame more of a speaker's voice, where it falls in the hold: none of it before the hold or after it."""
-        heard = self._held.tape.frame(active.frame)
-        voice = self._held.voices.setdefault(active.speaker, _unheard())
-        voice.latest = np.concatenate([voice.latest, heard])[-round(WINDOW * RATE) :]
-        voice.seconds += len(heard) / RATE
+    def _voiced(self, active: Active, shared: bool) -> None:
+        """A frame more of a speaker's voice, where it falls in the hold: a frame with none of the hold's samples in it,
+        before the hold or in the silence after it, is none of anyone's voice."""
+        heard, played = self._held.tape.frame(active.frame)
+        if len(heard):
+            self._held.voices.setdefault(active.speaker, _Voice()).add(heard, shared, played)
 
-    def _voice(self, speaker: int, words: str | None) -> Voiced:
-        voice = self._held.voices.get(speaker, _unheard())
-        return Voiced(speaker, words, voice.latest, voice.seconds)
-
-    def said(self) -> tuple[Voiced, ...]:
-        """The words each speaker added to the hold open since this was last asked, each with their voice in it so far."""
-        held, added = self._held, list[Voiced]()
+    def said(self) -> Since:
+        """The words each speaker added to the hold open since this was last asked, and each speaker who has reached a
+        row of the table since: [LAW:single-enforcer] a speaker is handed on once for each row, here alone."""
+        held, added, reached = self._held, list[Said](), list[Voiced]()
         for speaker, text in held.text.items():
             known = words(text) or ""
             new, held.said[speaker] = words(known[held.said.get(speaker, 0) :]), len(known)
-            added += [self._voice(speaker, new)] if new else []
-        return tuple(added)
+            added += [Said(speaker, new)] if new else []
+        for speaker, voice in held.voices.items():
+            rows = voiceprints.reached(voice.seconds)
+            if rows > voice.reached:
+                voice.reached = rows
+                reached.append(voice.voiced(speaker))
+        return Since(tuple(added), tuple(reached))
 
     def ended(self) -> Ended:
-        """The hold open, heard to the silence after it."""
+        """The hold open, heard to the silence after it, with every speaker heard in it."""
         held = self._held
         spoken = tuple(Said(speaker, said) for speaker, text in held.text.items() if (said := words(text)))
-        voices = tuple(self._voice(speaker, words(held.text.get(speaker, ""))) for speaker in {**held.text, **held.voices})
+        voices = tuple(voice.voiced(speaker) for speaker, voice in held.voices.items())
         return Ended(spoken, round(held.tape.length / RATE, 3), held.closed, voices)
 
 
@@ -289,18 +335,18 @@ class Broken:
 
     error: str
 
-    def opened(self, samples: Samples, start: int) -> None:
+    def opened(self, samples: Samples, start: int, played: Played) -> None:
         """A hold no model hears."""
 
-    def heard(self, samples: Samples) -> None:
+    def heard(self, samples: Samples, played: Played) -> None:
         """Samples no model hears."""
 
     def silence(self, samples: int) -> None:
         """Silence no model hears."""
 
-    def said(self) -> tuple[Voiced, ...]:
-        """No word, which the hold's end says why of."""
-        return ()
+    def said(self) -> Since:
+        """No word, and nobody, which the hold's end says why of."""
+        return Since((), ())
 
     def ended(self) -> Ended:
         raise RuntimeError(self.error)
@@ -320,7 +366,7 @@ class StreamingRecognizer:
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, model: Callable[[int], Session], identify: Callable[[Hold, tuple[Voiced, ...]], None], record: Record) -> None:
+    def __init__(self, model: Callable[[int], Session], identify: Identifier, record: Record) -> None:
         self._record = record
         self._identify = identify
         # The models load on the thread first, so holds spoken while they load wait behind them, and nothing else does.
@@ -353,15 +399,15 @@ class StreamingRecognizer:
 
     def opened(self, hold: Hold, before: Sound) -> Hearings:
         """`hold` opens: what it kept from before it opened is the start of its words."""
-        samples, start = decoded(before.heard), self._fed
+        samples, start, voices = decoded(before.heard), self._fed, played(before)
         self._hold = hold
-        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start)))
+        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start, voices)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
         """More of the hold open, decoded on the thread behind everything given before it."""
-        samples = decoded(sound.heard)
-        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples)))
+        samples, voices = decoded(sound.heard), played(sound)
+        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples, voices)))
         return self._fed_with(len(samples))
 
     def _moved(self, move: Callable[[Stream | Broken], None]) -> None:
@@ -380,14 +426,6 @@ class StreamingRecognizer:
         self._moved(lambda stream: stream.silence(silence))
         return self._stream.ended()
 
-    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        """Hand the speakers a hearing found on to be identified; a hearing that found none hands on nothing."""
-        match voiced:
-            case ():
-                pass
-            case _:
-                self._identify(hold, voiced)
-
     def _fed_with(self, samples: int) -> Hearings:
         """A hearing of the hold open where `samples` more complete a step of the diarizer's, and none where they do not:
         only a step committed decodes a word."""
@@ -400,12 +438,14 @@ class StreamingRecognizer:
                 said, hold = self._thread.settles(lambda: self._stream.said()), self._hold
 
                 async def hear() -> Heard:
-                    added = await said
+                    since = await said
                     # [LAW:nothing-unseen] the words each speaker added in this hearing: the hold's whole is on its end's.
-                    annotate(added=tuple(Said(voiced.speaker, voiced.words) for voiced in added if voiced.words))
-                    # Who said them is worked out on the voiceprints' own lane: the words go out without waiting on it.
-                    self._identified(hold, added)
-                    return Heard(joined(voiced.words for voiced in added))
+                    annotate(added=since.added)
+                    # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its
+                    # table: the words go out without waiting on it.
+                    if since.reached:
+                        self._identify.identify(hold, since.reached)
+                    return Heard(joined(each.text for each in since.added))
 
                 return (hear,)
 
@@ -423,7 +463,7 @@ class StreamingRecognizer:
             heard = await ended
             # [LAW:nothing-unseen] the close's words are among the hold's, told apart: what the floor decoded, not the feed.
             annotate(words=heard.words, seconds=heard.seconds, closed=heard.closed.speakers, closing=heard.closed.words)
-            self._identified(hold, heard.voices)
+            self._identify.ended(hold, heard.voices)
             return Heard(joined(said.text for said in heard.words))
 
         return (settle,)
@@ -451,9 +491,14 @@ class _Paired:
         """Hear each chunk's speakers as the session takes it.
 
         [LAW:locality-or-seam] exception: mlx-audio thresholds the diarizer's probabilities as it masks each chunk and
-        keeps the decision nowhere, so this wraps the session's own step that takes the chunks, here alone, on the version
-        pyproject pins exactly, and thresholds the same probabilities with the session's own function, factor and
-        threshold, so the frames a speaker is active in are those their stream heard."""
+        keeps the decision nowhere: in 0.6.2, speaker_streaming.py line 176, `activity = speaker_activity(...)` is a
+        local of `_push_features`, handed on only to `mask_features` and the gate history's `mx.any`, module functions
+        every session in the process shares, so it cannot be taken as it is computed without replacing those for all
+        of them (promptctl-voice-i15t.qg8.35b proposes the session say it upstream). So this wraps the session's own step
+        that takes the chunks, here alone, on the version pyproject pins exactly, and thresholds the same probabilities
+        with the session's own function, factor and threshold. Thresholding every chunk taken at once is the same as one
+        by one: a chunk is a whole number of factor frames (line 104, `chunk_mel = (...) * self.factor`), so no average
+        spans two chunks, and the frames a speaker is active in are those their stream heard."""
         import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
         from mlx_audio.stt.models.nemotron_asr.speaker_streaming import speaker_activity  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 

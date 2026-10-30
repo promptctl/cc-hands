@@ -137,7 +137,7 @@ async def until(out: Recorded, what: Callable[[], bool]) -> None:
 class NoSpeech(FrameProcessor):
     """Stands in for pocket-tts, which loads its weights when it is made."""
 
-    Settings = built.PocketTTSService.Settings
+    Settings = built.SaidInTTS.Settings
 
     def __init__(self, **_: object) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -271,7 +271,7 @@ async def rigged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, llm: FrameProcessor, behind: list[FrameProcessor], watching: Sequence[BaseObserver] = ()
 ) -> AsyncGenerator[Rig]:
     """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
-    monkeypatch.setattr(built, "PocketTTSService", NoSpeech)
+    monkeypatch.setattr(built, "SaidInTTS", NoSpeech)
     recorded: list[Entry] = []
     primed: list[None] = []
     streamed = Streamed()
@@ -291,7 +291,7 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict),
         prompt=vocabulary,
-        prints=stood_in(),
+        prints=stood_in(tmp_path / "voiceprints"),
         holds=tmp_path / "holds",
         record=recorded.append,
     )

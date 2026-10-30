@@ -71,6 +71,12 @@ class Home:
         return self.root / "holds"
 
     @property
+    def voiceprints(self) -> Path:
+        """hands' voiceprint of each voice it has spoken in, made by hands from its own TTS and never from a person's
+        voice, one file for each voice and model revision, written by the daemon alone (hands.voice.voiceprints)."""
+        return self.root / "voiceprints"
+
+    @property
     def focus(self) -> Path:
         """The session the user is talking to when they name none, written by the daemon alone; absent for none."""
         return self.root / "focus"

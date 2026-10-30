@@ -17,13 +17,15 @@ words it is about have gone out, so no hearing's words ever wait on a voiceprint
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, Protocol, cast
+from urllib.parse import quote
 
 import numpy as np
 import numpy.typing as npt
 
 from hands.sessions.audit import Record
-from hands.sessions.wide import Begun, annotate, begun, ended
+from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
 from hands.voice.holds import RATE, Hold, Samples
@@ -49,11 +51,22 @@ def score(a: Print, b: Print) -> float:
 
 
 @dataclass(frozen=True)
+class Window:
+    """What a speaker's score was taken on: `seconds` of their latest voice, `shared` of them in frames the diarizer
+    heard another speaker in too, so a refit is fitted on the very input the table is applied to."""
+
+    seconds: float
+    shared: float
+
+
+@dataclass(frozen=True)
 class Person:
-    """A speaker who is not hands: their voice scored `score` against hands' own voiceprint, on `seconds` of it."""
+    """A speaker who is not hands: their voice scored `score` against hands' own voiceprint, on `window` of it, with
+    `seconds` of them heard in all."""
 
     score: float
     seconds: float
+    window: Window
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,7 @@ class Hands:
 
     score: float
     seconds: float
+    window: Window
 
 
 @dataclass(frozen=True)
@@ -71,6 +85,7 @@ class Unsure:
 
     score: float
     seconds: float
+    window: Window
 
 
 @dataclass(frozen=True)
@@ -82,8 +97,8 @@ class Unheard:
 
 @dataclass(frozen=True)
 class Unidentified:
-    """A speaker nothing could be scored for, and why: the model did not load, or hands has no voiceprint yet of the
-    voice it speaks in."""
+    """A speaker nothing could be scored for, and why: the model did not load, or hands holds no voiceprint of the
+    voice it speaks in, or of one it played over them."""
 
     seconds: float
     why: str
@@ -102,50 +117,58 @@ class Floor:
     score: float
 
 
-# [LAW:one-source-of-truth] the one table a speaker is decided by, fitted where it is applied, on windows of each length
-# from a speech onset (scripts/measure-voiceprints.py on zoj's captured.wav and mic2.wav, and dp5's people): from 1.0 s,
-# people alone scored at most 0.19 and hands' echo at least 0.37; from 1.5 s, people over hands at most 0.66 but mostly
-# far under, and the echo at least 0.64; from 3 s the echo at least 0.74, and the one line of a person over hands that
-# long 0.36. Under a second nothing is decided: at 0.8 s the echo scored as low as 0.19, a person alone as high as 0.21.
-# One room, one voice: hands records each hold it hears (`hands.voice.recorder`) so the table is refitted on real use.
+# [LAW:one-source-of-truth] the one table a speaker is decided by, fitted where it is applied. A first estimate, from
+# contiguous clean windows from a speech onset, not from the diarizer's frames a speaker is scored on here
+# (scripts/measure-voiceprints.py on zoj's captured.wav and mic2.wav, and dp5's people): from 1.0 s, people alone scored
+# at most 0.19 and hands' echo at least 0.37; from 1.5 s, people over hands at most 0.66 but mostly far under, and the
+# echo at least 0.64; from 3 s the echo at least 0.74, and the one line of a person over hands that long 0.36. Under a
+# second nothing is decided: at 0.8 s the echo scored as low as 0.19, a person alone as high as 0.21. One room, one
+# voice: hands records each hold it hears (`hands.voice.recorder`), and each identification says the window it scored,
+# so the table is refitted on real use (promptctl-voice-i15t.8vg.xvr).
 FLOORS = (Floor(1.0, 0.25), Floor(1.5, 0.55), Floor(3.0, 0.70))
 ALONE, PERSON, HANDS = FLOORS
 
 # The most of a speaker's voice, their latest, a score is taken on: the table's longest row, past which nothing was
-# measured, and the bound on what scoring costs, about 18 ms for each second scored, at every hearing.
+# measured, and the bound on what scoring costs, about 18 ms for each second scored.
 WINDOW = HANDS.seconds
 
 
-def decided(scored: float, seconds: float) -> Who:
-    """Who a speaker is whose latest voice scored `scored` against hands', `seconds` of them heard in all.
-    [LAW:dataflow-not-control-flow] one row of the table decides, the longest the speaker has reached."""
+def reached(seconds: float) -> int:
+    """How many rows of the table `seconds` of a speaker has reached: a speaker is scored as they reach each."""
+    return sum(row.seconds <= seconds for row in FLOORS)
+
+
+def decided(scored: float, seconds: float, window: Window) -> Who:
+    """Who a speaker is whose latest voice, `window` of it, scored `scored` against hands', `seconds` of them heard in
+    all. [LAW:dataflow-not-control-flow] one row of the table decides, the longest the speaker has reached."""
     floor = next(row for row in reversed(FLOORS) if row.seconds <= seconds)
     match scored < floor.score, seconds >= HANDS.seconds:
         case True, _:
-            return Person(scored, seconds)
+            return Person(scored, seconds, window)
         case False, True:
-            return Hands(scored, seconds)
+            return Hands(scored, seconds, window)
         case False, False:
-            return Unsure(scored, seconds)
+            return Unsure(scored, seconds, window)
 
 
 @dataclass(frozen=True)
 class Voiced:
-    """One speaker in a hold, as a hearing found them: their number in the run, the words they added, None for none,
-    the latest WINDOW of their voice in the hold, and how many seconds of them it has in all."""
+    """One speaker in a hold, as the stream heard them: their number in the run, the latest WINDOW of their voice in
+    the hold, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
+    and every voice of hands' TTS played over any of them."""
 
     speaker: int
-    words: str | None
     voice: Samples
     seconds: float
+    shared: float
+    played: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class Speaker:
-    """One speaker in a hold, identified: their number in the run, the words they added, and who they are."""
+    """One speaker in a hold, identified: their number in the run, and who they are."""
 
     number: int
-    words: str | None
     who: Who
 
 
@@ -156,7 +179,16 @@ def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced) -> Who:
             return Unheard(voiced.seconds)
         case False:
             voiceprint = embed(voiced.voice)
-            return decided(max(score(voiceprint, each) for each in prints), voiced.seconds)
+            window = Window(round(len(voiced.voice) / RATE, 3), round(voiced.shared, 3))
+            return decided(max(score(voiceprint, each) for each in prints), voiced.seconds, window)
+
+
+class Identifier(Protocol):
+    """What identifies the speakers the stream hears: each as they reach a row of the table, and every one at the end
+    of their hold."""
+
+    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
 
 
 # What hands says to make its own voiceprint in a voice: about twelve seconds of the kind of thing it says, never played.
@@ -175,7 +207,7 @@ class Unloaded:
 
 @dataclass(frozen=True)
 class Unprinted:
-    """A voice hands has no voiceprint of, and why: not made yet, or its enrolment failed."""
+    """A voice hands holds no voiceprint of, and why."""
 
     why: str
 
@@ -184,34 +216,55 @@ def failure(error: Exception) -> str:
     return f"{type(error).__name__}: {error}"
 
 
+def stored(directory: Path, voice: str) -> Path:
+    """Where hands keeps its voiceprint of `voice`: one file for each voice, in a directory for each revision of the
+    model, since a print is only comparable with another of the same model."""
+    return directory / REVISION / f"{quote(voice, safe='')}.npy"
+
+
+def kept(path: Path, voiceprint: Print) -> None:
+    """`voiceprint` written whole to `path`, or not at all."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".partial")
+    with partial.open("wb") as out:
+        np.save(out, voiceprint)
+    partial.replace(path)
+
+
 class Voiceprints:
     """hands' voiceprint lane: the model, hands' own prints, and every identification, on a thread of their own, and
     hands' TTS for its prints on another, so neither a hearing's words nor anything hands says waits on them.
 
-    hands keeps the voiceprint of the voice it speaks in now, and of the one before the last change, whose echo may
-    still be in the room; a voice only sampled is never one hands speaks in (`hands.voice.voices.Voices.hear`), and no
-    voiceprint is kept on disk: each run makes its own from the TTS it runs.
+    Each voice is enrolled once ever: its print, made by hands from its own TTS and never from a person's voice, is
+    kept in `kept`, read back from there each run it is spoken in, and never made again, so choosing a voice hands has
+    a print of, the one it speaks in included, makes nothing. Enrolment loads a Pocket TTS model of its own for each
+    print it makes, and lets it go once made. hands holds in memory the print of the voice it speaks in now, and of the
+    one before the last change, whose echo may still be in the room; a voice only sampled is never one hands speaks
+    in (`hands.voice.voices.Voices.hear`).
 
-    [LAW:no-shared-mutable-globals] the model, the prints, the voices hands speaks in, and who was a person in the hold
-    are the lane's alone, read and written only by the work given to it, in order; the TTS is the enrolment thread's.
-    [LAW:no-silent-failure] a model that does not load, or a voiceprint that cannot be made, fails its own unit with
-    why, and every speaker identified after is Unidentified with that why, never scored against what is not there.
+    [LAW:no-shared-mutable-globals] the model, the prints, the voices hands speaks in, and who was a person in each
+    hold are the lane's alone, read and written only by the work given to it, in order.
+    [LAW:no-silent-failure] a model that does not load, or a voiceprint that cannot be made or kept, fails its own
+    unit with why, and every speaker it leaves nothing to score against is Unidentified with that why.
     """
 
-    def __init__(self, load: Callable[[], Embed], speech: Callable[[], Synthesize], record: Record) -> None:
+    def __init__(self, load: Callable[[], Embed], speech: Callable[[], Synthesize], kept: Path, record: Record) -> None:
+        self._speech = speech
+        self._kept_in = kept
         self._record = record
         self._lane = SerialThread("Voiceprints")
-        self._enrolling = SerialThread("Enrolment")
-        # Set by each thread's first work, and read only by the work behind it on the same thread.
+        self._enrolment = SerialThread("Enrolment")
+        # Set by the lane's first work, and read only by the work behind it.
         self._embed: Embed | Unloaded
-        self._say: Synthesize | Unloaded
         self._prints: dict[str, Print | Unprinted] = {}
+        # The voices whose print the enrolment thread is making.
+        self._enrolling: set[str] = set()
         # The voice before the last change, and the one now: at most two, the last the one hands speaks in.
         self._speaking: tuple[str, ...] = ()
-        # The hold the people below were found in, and each speaker found a person in it, which they stay for it.
-        self._people: tuple[int, dict[int, Person]] = (0, {})
+        # [LAW:one-source-of-truth] each speaker found a person in each hold, which they stay for it, by the hold's
+        # number: a hold's last identification, at its end, may come after the next hold's first.
+        self._people: dict[int, dict[int, Person]] = {}
         self._lane.give(lambda: self._loaded(load))
-        self._enrolling.give(lambda: self._speech_loaded(speech))
 
     def _loaded(self, load: Callable[[], Embed]) -> None:
         """[LAW:nothing-unseen] the model's load is a unit of its own, as each speech model's is."""
@@ -222,67 +275,126 @@ class Voiceprints:
         except Exception as error:
             self._embed = Unloaded(f"the voiceprint model did not load: {failure(error)}")
 
-    def _speech_loaded(self, speech: Callable[[], Synthesize]) -> None:
-        """hands' TTS for its prints, one model loaded once for the run: a unit of its own."""
-        try:
-            with loads.loading("enrolment.loaded", self._record):
-                self._say = speech()
-        except Exception as error:
-            self._say = Unloaded(f"hands' TTS for its prints did not load: {failure(error)}")
-
     def speaking_in(self, voice: str) -> None:
-        """hands speaks in `voice` from now: its voiceprint is made, off everything hands says, and until it is, every
-        speaker is Unidentified. Returns at once, and cannot fail: a voiceprint not made fails its own unit."""
+        """hands speaks in `voice` from now: its voiceprint is read back, or made, off everything hands says, and until
+        it is, every speaker is Unidentified. Returns at once, and cannot fail: a print not made fails its own unit."""
         began = begun()
-        self._lane.give(lambda: self._spoken_in(voice))
-        self._enrolling.give(lambda: self._enrol(voice, began))
+        self._lane.give(lambda: self._spoken_in(voice, began))
 
-    def _spoken_in(self, voice: str) -> None:
+    def _spoken_in(self, voice: str, began: Begun) -> None:
         # The voice now, behind whichever other one hands spoke in last; the prints of every other voice let go of.
         self._speaking = (*[each for each in self._speaking if each != voice][-1:], voice)
         self._prints = {each: voiceprint for each, voiceprint in self._prints.items() if each in self._speaking}
+        match self._prints.get(voice):
+            case np.ndarray():
+                return
+            case _ if voice in self._enrolling:
+                return
+            case _:
+                pass
+        path = stored(self._kept_in, voice)
+        if path.exists() and self._recalled(voice, path):
+            return
+        match self._embed:
+            case Unloaded(why=why):
+                ended("voiceprints.enrolled", self._record, began, RuntimeError(why), voice=voice)
+                self._prints[voice] = Unprinted(f"hands' voiceprint of {voice} could not be made: {why}")
+            case _:
+                self._enrolling.add(voice)
+                self._enrolment.give(lambda: self._enrol(voice, began))
+
+    def _recalled(self, voice: str, path: Path) -> bool:
+        """`voice`'s print read back from where hands keeps it; one that cannot be read fails its unit, and is made
+        again."""
+        try:
+            with unit("voiceprints.recalled", self._record):
+                annotate(voice=voice, file=path)
+                self._prints[voice] = np.load(path).astype(np.float32)
+        except Exception:
+            return False
+        return True
 
     def _enrol(self, voice: str, began: Begun) -> None:
-        """ENROLMENT said in `voice`, on the enrolment thread; its voiceprint made on the lane."""
+        """ENROLMENT said in `voice`, on the enrolment thread, by a Pocket TTS model loaded for it and let go of after;
+        its voiceprint made on the lane."""
         said: Samples | Exception
-        match self._say:
-            case Unloaded(why=why):
-                said = RuntimeError(why)
-            case say:
-                try:
-                    said = say(voice, ENROLMENT)
-                except Exception as error:
-                    said = error
+        try:
+            with loads.loading("enrolment.loaded", self._record):
+                annotate(voice=voice)
+                say = self._speech()
+            said = say(voice, ENROLMENT)
+        except Exception as error:
+            said = error
         self._lane.give(lambda: self._enrolled(voice, said, began))
 
     def _enrolled(self, voice: str, said: Samples | Exception, began: Begun) -> None:
-        """[LAW:nothing-unseen] each voiceprint made, or not, is one `voiceprints.enrolled` unit: which voice, how long the
-        speech it was made from, and why where it failed."""
+        """[LAW:nothing-unseen] each voiceprint made, or not, is one `voiceprints.enrolled` unit: which voice, how long
+        the speech it was made from, where it is kept, and why where it failed. A print made and not kept is still
+        held for the run."""
+        self._enrolling.discard(voice)
+        path = stored(self._kept_in, voice)
         made: Print | Unprinted
         raised: Exception | None = None
         try:
-            match said, self._embed:
-                case Exception() as error, _:
-                    raise error
-                case _, Unloaded(why=why):
-                    raise RuntimeError(why)
-                case samples, embed:
-                    made = embed(samples)
+            made = self._made(said)
         except Exception as error:
             made, raised = Unprinted(f"hands' voiceprint of {voice} could not be made: {failure(error)}"), error
+        else:
+            try:
+                kept(path, made)
+            except Exception as error:
+                raised = error
         seconds = None if isinstance(said, Exception) else round(len(said) / RATE, 3)
-        ended("voiceprints.enrolled", self._record, began, raised, voice=voice, seconds=seconds)
-        self._prints = {each: voiceprint for each, voiceprint in {**self._prints, voice: made}.items() if each in self._speaking}
+        ended("voiceprints.enrolled", self._record, began, raised, voice=voice, seconds=seconds, file=path)
+        if voice in self._speaking:
+            self._prints[voice] = made
+
+    def _made(self, said: Samples | Exception) -> Print:
+        match said, self._embed:
+            case Exception() as error, _:
+                raise error
+            case _, Unloaded(why=why):
+                raise RuntimeError(why)
+            case samples, embed:
+                return embed(samples)
 
     def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        """Who each speaker in `voiced` is, worked out on the lane and told as one `voiceprints.identified` unit, which
-        hangs off the unit open here. Returns at once."""
+        """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
+        `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
         began = begun()
         self._lane.give(lambda: self._identified(hold, voiced, began))
 
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+        """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
+        remembered."""
+        began = begun()
+
+        def last() -> None:
+            self._identified(hold, voiced, began)
+            self._people.pop(hold.number, None)
+
+        self._lane.give(last)
+
+    def spanned(self, span: int, voiced: Voiced) -> None:
+        """Who the one voice of echo span `span` is (`hands.voice.recorder`), hands' echo heard with no hold open,
+        worked out on the lane and told as a `voiceprints.identified` unit of the span's. Returns at once."""
+        began = begun()
+
+        def identified() -> None:
+            try:
+                speakers = (Speaker(voiced.speaker, self._judged(voiced)),)
+            except Exception as error:
+                ended("voiceprints.identified", self._record, began, error, span=span)
+                return
+            ended("voiceprints.identified", self._record, began, None, span=span, speakers=speakers)
+
+        self._lane.give(identified)
+
     def _identified(self, hold: Hold, voiced: tuple[Voiced, ...], began: Begun) -> None:
+        if not voiced:
+            return
         try:
-            speakers = tuple(Speaker(each.speaker, each.words, self._who(hold, each)) for each in voiced)
+            speakers = tuple(Speaker(each.speaker, self._who(hold, each)) for each in voiced)
         except Exception as error:
             ended("voiceprints.identified", self._record, began, error, hold=hold.number)
             return
@@ -290,23 +402,21 @@ class Voiceprints:
 
     def _who(self, hold: Hold, voiced: Voiced) -> Who:
         """[LAW:single-enforcer] once a person in a hold, a speaker is one for the rest of it."""
-        number, people = self._people
-        people = people if number == hold.number else {}
+        people = self._people.setdefault(hold.number, {})
         match people.get(voiced.speaker):
             case Person() as known:
-                who: Who = known
+                return known
             case None:
                 who = self._judged(voiced)
-        match who:
-            case Person():
-                people = {**people, voiced.speaker: who}
-            case _:
-                pass
-        self._people = (hold.number, people)
-        return who
+                match who:
+                    case Person():
+                        people[voiced.speaker] = who
+                    case _:
+                        pass
+                return who
 
     def _judged(self, voiced: Voiced) -> Who:
-        match self._embed, self._kept():
+        match self._embed, self._against(voiced.played):
             case Unloaded(why=why), _:
                 return Unidentified(voiced.seconds, why)
             case _, Unprinted(why=why):
@@ -314,17 +424,23 @@ class Voiceprints:
             case embed, tuple() as prints:
                 return scored(embed, prints, voiced)
 
-    def _kept(self) -> tuple[Print, ...] | Unprinted:
-        """Every voiceprint hands keeps, so long as it has the one of the voice it speaks in now."""
-        match self._speaking:
-            case (*_, now):
-                match self._prints.get(now, Unprinted(f"no print yet of {now}")):
-                    case Unprinted() as missing:
-                        return missing
-                    case _:
-                        return tuple(voiceprint for voiceprint in self._prints.values() if not isinstance(voiceprint, Unprinted))
-            case _:
-                return Unprinted("hands speaks in no voice yet")
+    def _against(self, played: tuple[str, ...]) -> tuple[Print, ...] | Unprinted:
+        """Every voiceprint hands holds, so long as it holds the one of the voice it speaks in now and of each voice it
+        played over the speaker: a speaker is never scored against prints that leave out a voice they may be."""
+        needed = tuple(dict.fromkeys((*self._speaking[-1:], *played)))
+        if not needed:
+            return Unprinted("hands speaks in no voice yet")
+        for voice in needed:
+            match self._prints.get(voice):
+                case np.ndarray():
+                    pass
+                case Unprinted() as missing:
+                    return missing
+                case None if voice in self._enrolling or voice in self._speaking:
+                    return Unprinted(f"no print yet of {voice}")
+                case None:
+                    return Unprinted(f"hands played {voice} over them and holds no print of it")
+        return tuple(voiceprint for voiceprint in self._prints.values() if isinstance(voiceprint, np.ndarray))
 
 
 def load() -> Embed:

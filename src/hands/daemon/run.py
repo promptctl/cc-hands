@@ -281,7 +281,7 @@ async def run(
         # or a choice on one never interleaves with the other's in the speaker.
         # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks in,
         # the chooser each one it changes to. Its models load on threads of their own, so nothing waits on them.
-        prints = Voiceprints(voiceprints.load, voices.pocket, record)
+        prints = Voiceprints(voiceprints.load, voices.pocket, home.voiceprints, record)
         voice_choices = voices.Voices(home, player.lines, voices.fetched, prints.speaking_in)
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
@@ -304,9 +304,7 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                # Each run's holds in a directory of their own, named by when the voice was built: a hold's number is the run's.
-                held_since = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, prints, home.holds / held_since, record), "the voice load"), heart, sessions.live_count, degraded, stop)
+                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
@@ -464,6 +462,14 @@ async def converse(
     cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
     cueing.add_done_callback(stop_if_failed)
     background.append(cueing)
+    async def keep_echoes_once_started() -> None:
+        # As for the talk key: the desk is overheard once the pipeline has opened its streams.
+        await pipeline.started.wait()
+        await voice.recorder.overhear(voice.audio.input().echoes, lambda: voice.audio.output().hands_speaking)
+
+    echoes = asyncio.create_task(keep_echoes_once_started(), name="the echo spans")
+    echoes.add_done_callback(stop_if_failed)
+    background.append(echoes)
     talk_key = asyncio.create_task(drive_desk_once_started(), name="the desk's trigger")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)

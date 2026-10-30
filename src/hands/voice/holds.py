@@ -76,11 +76,13 @@ def decoded(audio: bytes) -> Samples:
 @dataclass(frozen=True)
 class Reference:
     """10 ms of what the desk's speaker played, as the echo canceller was given it: 16-bit at the speaker's own rate and
-    channels, which are not a hold's."""
+    channels, which are not a hold's; and each voice of hands' own TTS in it, as the TTS made it, none for silence or a
+    cue."""
 
     audio: bytes
     rate: int
     channels: int
+    voices: tuple[str, ...]
 
 
 @dataclass(frozen=True)

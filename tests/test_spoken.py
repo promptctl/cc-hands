@@ -334,7 +334,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     class Recorded(FrameProcessor):
         """Enough of a processor for the pipeline to link, and nothing that needs model weights."""
 
-        Settings = built.PocketTTSService.Settings
+        Settings = built.SaidInTTS.Settings
 
         def __init__(self, **kwargs: object) -> None:
             given.update(kwargs)
@@ -349,7 +349,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
             pieced.update(kwargs)
             super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
-    monkeypatch.setattr(built, "PocketTTSService", Recorded)
+    monkeypatch.setattr(built, "SaidInTTS", Recorded)
     monkeypatch.setattr(built, "LLMTextProcessor", Pieces)
     voice = built.build_voice(
         built.VoiceConfig(
@@ -361,7 +361,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda id: id, dict),
         prompt=unprimed,
-        prints=stood_in(),
+        prints=stood_in(tmp_path / "voiceprints"),
         holds=tmp_path / "holds",
         record=lambda _: None,
     )

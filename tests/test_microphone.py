@@ -28,11 +28,12 @@ from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.holds import Hold
 from hands.voice.turnstop import TurnOpened
+from hands.voice.voices import SpeakingIn
 
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 CLEANED = b"\x01\x00" * 320  # what the room's canceller makes of anything the microphone hears
-PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1),) * 2  # what it matched each buffer's two frames with
+PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, ("alba",)),) * 2  # what it matched each buffer's two frames with
 
 
 def _phone() -> Phone:
@@ -43,13 +44,13 @@ class Room:
     """An echo canceller that keeps what the speaker played and cleans every microphone buffer to CLEANED."""
 
     def __init__(self, log: list[str] | None = None, name: str = "canceller") -> None:
-        self.plays: list[tuple[bytes, int, int]] = []
+        self.plays: list[tuple[bytes, int, int, tuple[str, ...]]] = []
         self.hears: list[bytes] = []
         self.log = [] if log is None else log
         self.name = name
 
-    def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
-        self.plays.append((audio, sample_rate, channels))
+    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
+        self.plays.append((audio, sample_rate, channels, voices))
 
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled:
         self.hears.append(audio)
@@ -106,12 +107,14 @@ class SimpleStream:
     def __init__(self) -> None:
         self.blocking = False
         self.written: list[bytes] = []
+        self.voiced: list[tuple[str, ...]] = []
 
-    def write(self, audio: bytes) -> None:
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
         # A blocking write returns when the device has taken the chunk, about when it has played.
         while self.blocking:
             time.sleep(0.001)
         self.written.append(audio)
+        self.voiced.append(voices)
 
     def get_output_latency(self) -> float:
         return 0.0
@@ -216,7 +219,7 @@ class LostStream:
         self.name = name
         self.stopped = threading.Event()
 
-    def write(self, audio: bytes) -> None:
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
         self.stopped.wait()
         self.log.append(f"write returned from {self.name}")
         raise OSError(-9986, "Internal PortAudio error")
@@ -481,7 +484,7 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     written = devices.stream.write
 
-    def stopped(audio: bytes) -> None:
+    def stopped(audio: bytes, voices: tuple[str, ...]) -> None:
         raise OSError("Stream is stopped")
 
     devices.stream.write = stopped
@@ -490,6 +493,54 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
     devices.stream.write = written
     await devices.play(LOUD, at=1.0)
     assert devices.stream.written == [LOUD]
+
+
+async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_cue_with_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    devices = Rig()
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+
+    async def passed(_self: object, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        pass
+
+    monkeypatch.setattr(LocalAudioOutputTransport, "push_frame", passed)
+    await devices.play(LOUD, at=1.0)  # before the TTS says any voice: none
+    await devices.speaker.push_frame(SpeakingIn("alba"))
+    await devices.play(LOUD, at=1.02)
+    await devices.play(LOUD, at=1.04)
+    await devices.speaker.push_frame(SpeakingIn("mary"))
+    # Pipecat's sender joins utterances into its chunks: the first after the change may end alba's last.
+    await devices.play(LOUD, at=1.06)
+    await devices.play(LOUD, at=1.08)
+    devices.speaker.cue(OPENED)
+    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    assert devices.stream.voiced == [(), ("alba",), ("alba",), ("alba", "mary"), ("mary",), ()]
+
+
+def test_the_canceller_is_given_the_voices_in_each_buffer_the_device_takes() -> None:
+    room, device = Room(), Device()
+    playout = Playout(device.open, room, 16000, 1, _unfailing)
+    playout.write(LOUD[:400], ("alba",))
+    playout.write(LOUD[:400], ("mary",))
+    device.take()  # 640 bytes: all of alba's, and 240 of mary's
+    device.take()  # the rest of mary's, then silence
+    device.take()  # silence
+    assert [voices for *_, voices in room.plays] == [("alba", "mary"), ("mary",), ()]
+
+
+async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood() -> None:
+    devices = Rig()
+    async with devices.microphone.echoes() as echoes:
+        await devices.capture(at=1.0)  # key up
+        devices.key.move("start", "held key")
+        await devices.capture(at=1.02)  # a hold open
+        devices.key.go("phone")
+        await devices.capture(at=1.04)  # hands at the phone
+        heard = [await anext(echoes) for _ in range(3)]
+    assert [(each.cancelled, each.desk, each.held) for each in heard] == [
+        (Cancelled(CLEANED, PLAYED), True, False),
+        (Cancelled(CLEANED, PLAYED), True, True),
+        (Cancelled(CLEANED, PLAYED), False, False),
+    ]
 
 
 async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue() -> None:
@@ -563,10 +614,10 @@ def test_the_canceller_is_given_what_the_device_takes_as_it_takes_it_silence_inc
     room, device = Room(), Device()
     playout = Playout(device.open, room, 16000, 1, _unfailing)
     taken = [device.take()]  # nothing written yet: the device plays silence, and the canceller is given it
-    playout.write(LOUD[:400])  # a reading's first chunk, ending partway through the device's next buffer
+    playout.write(LOUD[:400], ())  # a reading's first chunk, ending partway through the device's next buffer
     taken += [device.take(), device.take()]
     assert [audio for audio, _ in taken] == [QUIET, LOUD[:400] + bytes(240), QUIET]
-    assert room.plays == [(audio, 16000, 1) for audio, _ in taken]
+    assert room.plays == [(audio, 16000, 1, ()) for audio, _ in taken]
     # Three 20 ms buffers, two 10 ms frames each; the frames wholly of silence are the ones nothing was written for.
     assert playout.counts() == {"pulled": 6, "unwritten": 4, "underflowed": 0}
 
@@ -583,8 +634,8 @@ def test_a_callback_portaudio_says_came_too_late_is_counted() -> None:
 def test_a_write_waits_until_the_write_ahead_has_room_for_all_of_it_and_goes_on_as_the_device_takes_sound() -> None:
     device = Device()
     playout = Playout(device.open, Room(), 16000, 1, _unfailing)
-    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2))  # a write-ahead full but for one sample
-    writing = threading.Thread(target=playout.write, args=(LOUD,))
+    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2), ())  # a write-ahead full but for one sample
+    writing = threading.Thread(target=playout.write, args=(LOUD, ()))
     writing.start()
     writing.join(0.05)
     assert writing.is_alive()  # waits, as a blocking stream's write does on a buffer without room for it
@@ -597,12 +648,12 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     """What lets a reopen go on when the device is gone and takes nothing more."""
     device = Device()
     playout = Playout(device.open, Room(), 16000, 1, _unfailing)
-    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2))
+    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2), ())
     refused: list[OSError] = []
 
     def write() -> None:
         try:
-            playout.write(LOUD)
+            playout.write(LOUD, ())
         except OSError as error:
             refused.append(error)
 
@@ -616,7 +667,7 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
 
 
 class Deafened(Room):
-    def played(self, audio: bytes, sample_rate: int, channels: int) -> None:
+    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
         raise RuntimeError("the audio processing module refused the frame")
 
 

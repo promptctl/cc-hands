@@ -131,7 +131,7 @@ def frame_of(n: int) -> bytes:
 
 def played_with(sound: bytes) -> tuple[Reference, ...]:
     """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound."""
-    return tuple(Reference(sound[start : start + 320], 16000, 1) for start in range(0, len(sound), 320))
+    return tuple(Reference(sound[start : start + 320], 16000, 1, ()) for start in range(0, len(sound), 320))
 
 
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_hold_kept_from_before_it_included() -> None:
