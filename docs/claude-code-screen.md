@@ -6,7 +6,7 @@ hands types into the brain's terminal. Return in a dialog answers it, so hands t
 
 ## How to read this document
 
-Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression, written to match the source text as it is, and the script at the end of this section finds it: `node grep.mjs <binary> '<regex>'` prints every hit with the text around it. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
+Everything here was read from the bundled JavaScript of that release's binary, in memory, through `readGraphFromFile` in `~/code/cc-extra/src/bun-graph.js`. Nothing was run but what a fact says was run, and nobody logged in. The code is minified React on a fork of Ink, so names are mangled and change between releases. Each fact names the module (chunk) it was read from and a search string. The search string is a JavaScript regular expression, written to match the source text as it is, and the script at the end of this section finds it: `node grep.mjs <binary> '<regex>'` prints every hit with the text around it. The source keeps non-ASCII text as escapes: `…` on screen is the six characters `\u2026` in the source, matched by `\\u2026`. Where this document quotes on-screen text, it shows the characters the terminal draws.
 
 ```js
 // grep.mjs: search the binary's JS modules in memory. node grep.mjs <binary> <regex> [context] [max]
@@ -457,7 +457,7 @@ The chord can trigger one action, `chat:submit`, and nothing else acts on its ke
 - **Alt chords are out.** An Alt chord is Escape then the key. Split across two reads, it arrives as Escape, which in a dialog denies and stops the turn.
 - **How the byte gets there.** fritter writes a key's bytes to the pty (`fritter/control.go`, `keystrokes`), and its map has no Ctrl-Q yet. The tests type it through tmux instead: `send-keys C-q` writes 0x11 to the pane, whose fritter forwards it to Claude Code.
 
-### hands owns the brain's keybindings.json
+### The brain's keybindings.json is hands' to write
 
 The binding is half of a contract hands' typing depends on: the chord hands sends and the binding Claude Code resolves are one fact, and when the two halves disagree, the failure is silent.
 - **A file without `"enter": null`** leaves every turn unsent.

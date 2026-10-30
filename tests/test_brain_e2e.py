@@ -480,8 +480,10 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
 
 
 @pytest.mark.parametrize("keys", [BRAIN_KEYS])
-@pytest.mark.parametrize("before", [[], [("Tab",), ("-l", "use a copy instead")]], ids=["Yes focused", "Yes amended, its field holding words"])
-async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing(mock_api: MockApi, hands: Hands, before: list[tuple[str, ...]]) -> None:
+# What is typed before the chord, and what the screen shows once Claude Code has read it, so the chord arrives as a read
+# of its own, never in one with the words before it.
+@pytest.mark.parametrize(("before", "shows"), [([], "Do you want to proceed?"), ([("Tab",), ("-l", "use a copy instead")], "use a copy instead")], ids=["Yes focused", "Yes amended, its field holding words"])
+async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing(mock_api: MockApi, hands: Hands, before: list[tuple[str, ...]], shows: str) -> None:
     """Ctrl-Q, bound to the prompt's submit, typed while a permission dialog is on the brain's screen: the dialog stays up
     and the tool does not run, whether Yes or Yes's own text field has the focus. A Down typed after it moves the focus,
     so once the screen shows it moved, Claude Code has read everything typed before it. That the chord arrives by this
@@ -494,6 +496,7 @@ async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answ
     await hands.until(lambda: len(held(hands)) == 1 and "Do you want to proceed?" in shown(hands))
     for typed in before:
         await keyed(hands, *typed)
+    await hands.until(lambda: shows in shown(hands))
     await keyed(hands, SUBMIT)
     await keyed(hands, "Down")
     # The second option, whatever it says: a Bash dialog in default mode offers "Yes, and don't ask again" there.
