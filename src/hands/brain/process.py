@@ -333,7 +333,7 @@ def _cwd(config_dir: Path) -> Path:
 def brain_session(config_dir: Path) -> str:
     """The tmux session the brain on `config_dir` runs in: one per brain, so a second hands on its own config directory
     never touches the first one's, and `tmux attach -t hands-brain` reaches it by prefix."""
-    return f"hands-brain-{hashlib.sha256(str(config_dir).encode()).hexdigest()[:8]}"
+    return f"hands-brain-{hashlib.sha256(str(config_dir.resolve()).encode()).hexdigest()[:8]}"
 
 
 # The brain's exit code when its pane ended without fritter's status: the session was ended under it, or the pane's
@@ -384,8 +384,12 @@ class InTmux:
             return PANE_ENDED
 
     async def stop(self) -> None:
-        """End the session, which hangs up fritter, and wait for its status; the pane's processes are killed once it has
-        not ended within STOP_SECONDS."""
+        """Stop hands' client, then end the session, which hangs up fritter, and wait for its status; the pane's
+        processes are killed once it has not ended within STOP_SECONDS.
+
+        [LAW:no-ambient-temporal-coupling] the client first: a client stopped while it is still making the session
+        would otherwise make it after the session was ended, and leave the brain running in it."""
+        await self._client.stop()
         await self.end_session()
         try:
             await asyncio.wait_for(asyncio.shield(self.exit), STOP_SECONDS)
@@ -394,7 +398,6 @@ class InTmux:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(shell, signal.SIGKILL)
                 logger.info(f"killed the brain's pane ({shell}): it had not ended {STOP_SECONDS:.0f}s after its session was")
-            await self._client.stop()
             await asyncio.shield(self.exit)
 
     async def end_session(self) -> None:
@@ -431,19 +434,24 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
     # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
     # out. Its own TMUX and TMUX_PANE name the brain's pane, never the one hands was started in.
     env = {name: value for name, value in environment(station.config_dir, station.proxy_url, station.inherited).items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
-    quoted = " ".join(shlex.quote(f"{name}={value}") for name, value in env.items())
+    # Read from a file only hands can read, never put on a command line, which anyone on the machine can read with ps.
+    (workspace / "env").touch(mode=0o600)
+    (workspace / "env").write_text("".join(f"export {shlex.quote(name)}={shlex.quote(value)}\n" for name, value in env.items()))
     (workspace / "pane.sh").write_text(
         f"echo $$ > {shlex.quote(str(pid))}\n"
         # A hangup reaches only the pane's shell, its session's leader, on macOS: passed on to fritter, which the
         # shell waits on for its status. Run in the background so the wait can be broken by the hangup, with the
         # pane's terminal for its input, which a background command is otherwise not given.
         'trap \'kill -HUP "$fritter" 2>/dev/null\' HUP\n'
-        f'env -i {quoted} TERM="$TERM" TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" {shlex.join(argv)} <&0 &\n'
+        f'env -i TERM="$TERM" TMUX="$TMUX" TMUX_PANE="$TMUX_PANE" /bin/sh -c \'. "$0"; exec "$@"\' {shlex.quote(str(workspace / "env"))} {shlex.join(argv)} <&0 &\n'
         "fritter=$!\n"
+        # A wait the hangup broke off says 128+HUP; fritter is waited on again until the shell has its status, which a
+        # wait for a child already collected answers 127 to.
         'wait "$fritter"; code=$?\n'
-        'while kill -0 "$fritter" 2>/dev/null; do wait "$fritter"; code=$?; done\n'
+        'while [ "$code" -gt 128 ]; do wait "$fritter"; again=$?; [ "$again" -eq 127 ] && break; code=$again; done\n'
         # What the pane showed as fritter ended, kept past the pane: what hands' client drew is tmux's repaint of it.
-        f'{shlex.quote(tmux)} -S {shlex.quote(str(socket))} capture-pane -p -t "$TMUX_PANE" > {shlex.quote(str(workspace / "shown"))}\n'
+        # Kept only when it was read: a pane already gone leaves what hands' client drew as the word.
+        f'{shlex.quote(tmux)} -S {shlex.quote(str(socket))} capture-pane -p -J -t "$TMUX_PANE" > {shlex.quote(str(workspace / "shown.new"))} && mv {shlex.quote(str(workspace / "shown.new"))} {shlex.quote(str(workspace / "shown"))}\n'
         f"echo $code > {shlex.quote(str(status))}\n"
         f'{shlex.quote(tmux)} -S {shlex.quote(str(socket))} kill-session -t "$TMUX_PANE"\n'
     )
@@ -462,7 +470,7 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
             "set-option", "-t", session, "detach-on-destroy", "on",
         ])
         # Attached again while the brain runs: a person may detach every other client.
-        + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -t ={session}; done\n"
+        + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -t ={session} || sleep 0.2; done\n"
     )
     client = await on_terminal(["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
     return InTmux(client, tmux, socket, session, workspace)
@@ -1020,7 +1028,7 @@ class Brain:
         while self._turn is not None:
             await asyncio.wait({self._turn.answered})
         if self._exit.done():
-            raise BrainGone(f"the brain had exited ({self._exit.result()}) before it was asked")
+            raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
         loop = asyncio.get_running_loop()
         # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
         turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, Text(pasted(text)).typed)
@@ -1324,9 +1332,9 @@ class Brain:
             code = await asyncio.shield(self._claude.exit)
             annotate(pid=self.pid, code=code, shown=self._claude.shown())
             # Nothing is left to interrupt, and every dialog it held is answered all the same.
-            self._sessions.hear(Ending(self.session, DenyAndInterrupt(f"the brain exited ({code})")))
+            self._sessions.hear(Ending(self.session, DenyAndInterrupt(f"the brain ended: {exited(code)}")))
             # [LAW:no-silent-failure] a turn that can never end is said to have failed, not left waiting.
-            gone = f"the brain exited ({code}) before it answered"
+            gone = f"the brain ended before it answered: {exited(code)}"
             self._claude_turns.failed(BrainGone(gone))
             if self._turn is not None:
                 self._over(self._turn, BrainGone(gone))

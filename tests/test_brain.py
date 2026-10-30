@@ -1295,12 +1295,12 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    running = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
-        running = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
         # A person attaches, as `tmux attach -t hands-brain` does, on a terminal of their own.
-        person = await on_terminal(["tmux", "attach-session", "-t", "hands-brain"], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         await running._client.stop()  # pyright: ignore[reportPrivateUsage]
         # hands' client is gone; the brain keeps running while someone is attached.
@@ -1310,22 +1310,24 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
         # Its fritter was hung up with the session.
         assert await running.exit == 128 + signal.SIGHUP
     finally:
+        await running.stop()
         shutil.rmtree(workspace)
 
 
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
+    assert await (await in_tmux(station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
+    (workspace / "status").unlink()
+    (workspace / "pane").unlink()
+    ended = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
     try:
-        assert await (await in_tmux(station, ["/bin/sh", "-c", "exit 3"], workspace)).exit == 3
-        (workspace / "status").unlink()
-        (workspace / "pane").unlink()
-        ended = await in_tmux(station, ["/bin/sh", "-c", "sleep 60"], workspace)
         await until(lambda: tmux_at("has-session", "-t", f"={brain_session(station.config_dir)}").returncode == 0)
         tmux_at("kill-session", "-t", f"={brain_session(station.config_dir)}")
         # The pane's shell outlives the hangup to say how fritter ended.
         assert await ended.exit == 128 + signal.SIGHUP
     finally:
+        await ended.stop()
         shutil.rmtree(workspace)
 
 
@@ -1333,13 +1335,13 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     go = tmp_path / "go"
+    running = await in_tmux(station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
     try:
-        running = await in_tmux(station, ["/bin/sh", "-c", f"while [ ! -e {go} ]; do sleep 0.05; done; exit 5"], workspace)
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
         # A person attaches as `tmux attach -d` does, detaching every other client: hands' attaches again, and the brain
         # is not taken for ended.
-        person = await on_terminal(["tmux", "attach-session", "-d", "-t", "hands-brain"], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         assert not running.exit.done()
         # A window opened beside it does not keep the session once fritter ends.
@@ -1349,6 +1351,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
         await person.exit
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode != 0)
     finally:
+        await running.stop()
         shutil.rmtree(workspace)
 
 

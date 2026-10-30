@@ -99,7 +99,7 @@ from hands.voice.tools import audited, close_session_tool, cued, intermediary_to
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.brain.asides import AsideKind, Asides
 from hands.brain.fork import Newest
-from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, start as start_brain, workdir
+from hands.brain.process import Brain, Launch, Station, Unstartable, conversation, exited, start as start_brain, workdir
 from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
@@ -213,7 +213,7 @@ async def mind(
 async def outlived(brain: Brain) -> None:
     # [LAW:no-silent-failure] a brain that ends while hands runs leaves every question unanswered, so it stops the run.
     code = await brain.exited()
-    raise RuntimeError(f"the brain exited ({code}) while hands was running")
+    raise RuntimeError(f"the brain ended while hands was running: {exited(code)}")
 
 
 async def run(
