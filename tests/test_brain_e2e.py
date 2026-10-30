@@ -18,6 +18,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
@@ -430,7 +431,9 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     await hands.until(lambda: isinstance(work := hands.stage.work(), Working) and [call.tool for call in work.calls] == ["Bash"])
     assert "Let me look." in "".join(hands.out.said())
     await hands.say("and check the logs too")
-    turns = lambda: [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
+    def turns() -> list[WideEvent]:
+        return [entry for entry in hands.recorded if isinstance(entry, WideEvent) and entry.event == "voice.turn"]
+
     # Each turn's event is written as its unit ends, after its last word is said.
     await hands.until(lambda: len(turns()) == 2)
     said = "".join(hands.out.said())
@@ -440,7 +443,8 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
     # C1, C3: not a barge-in; the first turn is cut in on once, and nothing of it is said over the user.
     assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"]) == (False, 1, "")
     # C5: hands answers the words within about a second.
-    [(answer, waited_ms)] = first.facts["asides"]
+    [(answer, waited_ms)] = cast(tuple[tuple[str, float], ...], first.facts["asides"])
     assert answer in ANSWERS and waited_ms < 1000, first.facts["asides"]
     # C4: the next turn carries the words, with no note.
-    assert second.facts["asked"].strip().endswith("and check the logs too") and "note" not in second.facts["asked"].lower(), second.facts["asked"]
+    asked = cast(str, second.facts["asked"])
+    assert asked.strip().endswith("and check the logs too") and "note" not in asked.lower(), asked
