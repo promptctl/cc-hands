@@ -21,7 +21,7 @@ import aiohttp
 
 # [LAW:one-source-of-truth] the pin: the version, and the SHA-256 Anthropic's manifest for it gives each macOS build
 # (the manifest of the release VERSION names). Moving the pin is one commit that changes both, after
-# measuring again what the comments that name the old version say.
+# measuring again what docs/claude-code-behavior.md and the comments that name the old version say.
 VERSION = "2.1.308"
 CHECKSUMS = {
     "darwin-arm64": "ca923c86ac84b30574a82331a05b6e066c27477a926ceaffe46a845a33e4dd37",

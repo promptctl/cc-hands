@@ -256,6 +256,10 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **stage:** Claude Code keeps a reply the API broke off after a block finished out of the brain's history, and the turn ends in StopFailure (hands-wire-6ic.6dz) (measured on 2.1.285)
 - **fake claude login:** the fake records login, onboarding, and API-key approval for claude.ai and api_key auth the way Claude Code writes them (measured on 2.1.289)
 - **brain skills:** the brain's skills are installed, listed, changed, and removed in its own config directory, not the user's [ref: hands-brain-d8g.33b] (measured on 2.1.288)
+- **machine policy folder:** Claude Code reads a machine's policy from /Library/Application Support/ClaudeCode, and runs as with no policy when those reads and tests of existence answer ENOENT (measured on 2.1.308)
+- **machine policy plists:** Claude Code also reads its policy from the com.anthropic.claudecode plists under /Library/Managed Preferences, the machine's and each account's; read out of the bundle, and CI's run holds a policy in both from the brain, which shows the hide and not the read (measured on 2.1.308)
+- **unreadable machine policy:** an interactive Claude Code stops at a blocking Settings Error dialog when those reads answer EPERM (measured on 2.1.308)
+- **machine policy allow:** a policy allowing WebFetch has Claude Code fetch with no permission dialog; an allow of Fetch(*) changes nothing (measured on 2.1.308)
 
 ## Fritter (terminal input)
 
