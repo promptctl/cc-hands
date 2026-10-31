@@ -12,13 +12,12 @@ import threading
 import time
 import traceback
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from types import AsyncGeneratorType, CoroutineType, FrameType, GeneratorType
 from typing import Any, cast
 
 import pytest
-from _pytest.capture import CaptureManager
 from pytest_timeout import Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
 
 
@@ -70,23 +69,27 @@ def pytest_timeout_set_timer(item: pytest.Item, settings: Settings) -> Generator
 
 
 def saying_where(item: pytest.Item, fires: Callable[[int, FrameType | None], Any]) -> Callable[[int, FrameType | None], None]:
-    """`fires`, pytest-timeout's handler, saying where everything was. Its failure's traceback ends where the signal landed:
-    in an async test the loop's select, which names no await."""
+    """`fires`, pytest-timeout's handler, saying first where everything was. Its failure's traceback ends where the signal
+    landed: in an async test the loop's select, which names no await."""
 
     def saying(signum: int, frame: FrameType | None) -> None:
         __tracebackhide__ = True
-        where = f"{item.nodeid} timed out:\n{''.join(traceback.format_stack(frame))}\n{stalled()}"
-        # [LAW:nothing-unseen] past the capture, flushed, and before anything can be raised: CI keeps only its log, and a
-        # job cancelled at its limit never prints the session's failures.
-        terminal = item.config.get_terminal_writer()
-        with cast(CaptureManager, item.config.pluginmanager.getplugin("capturemanager")).global_and_fixture_disabled():
-            terminal.line(where)
-            terminal.flush()
+        # [LAW:nothing-unseen] a report that fails is chained onto the timeout, never in its place: the timer fires once, so
+        # a test that caught the report's error would run on with no bound.
         try:
+            where = f"{item.nodeid} timed out:\n{''.join(traceback.format_stack(frame))}\n{stalled()}"
+            # A section, so the failure says it and the summary's one line stays one. Named for the firing, which is no one
+            # phase: the timer does not know which it landed in.
+            item.add_report_section("fired", "timeout", where)
+            # [LAW:nothing-unseen] past the capture, flushed, and before anything can be raised: CI keeps only its log, and
+            # a job cancelled at its limit never prints the session's failures.
+            terminal = item.config.get_terminal_writer()
+            capture = item.config.pluginmanager.get_plugin("capturemanager")
+            with capture.global_and_fixture_disabled() if capture else nullcontext():
+                terminal.line(f"\n{where}")
+                terminal.flush()
+        finally:
             fires(signum, frame)
-        except pytest.fail.Exception as timeout:
-            timeout.add_note(where)
-            raise
 
     return saying
 
@@ -235,7 +238,7 @@ async def _held() -> AsyncGenerator[None]:
     yield
 
 
-# The steps `async for`, anext() and an asynccontextmanager await on an async generator, typed by a generator never
+# The steps `async for`, a one-argument anext() and an asynccontextmanager await on an async generator, typed by a generator never
 # started: 3.12 names neither type, and neither has an attribute leading to its generator.
 _never_started = _held()
 ASend, AThrow = type(_never_started.asend(None)), type(_never_started.athrow(GeneratorExit))
