@@ -569,6 +569,13 @@ def test_a_run_begun_afresh_keeps_nothing_of_one_stopped_part_way_through_a_step
     assert not np.any(session.fed[0])
 
 
+def test_a_hold_closed_short_of_a_step_fails_rather_than_carrying_its_samples_into_the_next() -> None:
+    paired = streaming._Paired(Stepped())  # pyright: ignore[reportPrivateUsage]
+    paired.decoded(np.ones(320, np.float32))
+    with pytest.raises(AssertionError, match="ends every hold on a step"):
+        paired.closed()
+
+
 # Holds of one LibriVox reader (The Invisible Man, read solo; public domain), 20 to 30 dB down: utterances of 0.8 to 2 s,
 # cut from the reading wherever it paused, so a hold can begin or end inside a phrase. One reader is one speaker, the
 # first the run heard.
