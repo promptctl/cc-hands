@@ -1,0 +1,36 @@
+name: measure-ue0
+on:
+  pull_request:
+    branches: [master]
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4]
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - name: The speech models' pinned revisions
+        id: speech
+        run: |
+          revisions=""
+          for pin in streaming.py:REVISION streaming.py:DIARIZATION_REVISION engaged.py:SMART_TURN_REVISION voiceprints.py:REVISION; do
+            file=${pin%%:*} name=${pin#*:}
+            revision=$(sed -n "s/^$name = \"\([0-9a-f]*\)\"$/\1/p" "src/hands/voice/$file")
+            test -n "$revision" || { echo "$file pins no $name this step can read" >&2; exit 1; }
+            revisions="$revisions-$revision"
+          done
+          echo "revisions=$revisions" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: speech${{ steps.speech.outputs.revisions }}
+      - name: Install the locked environment
+        run: uv sync --locked
+      - name: Measure
+        run: uv run python scripts/measure_ue0.py
