@@ -13,7 +13,7 @@ import pytest
 def test_skipped_in_its_body():
     pytest.skip("no jq on this machine")
 
-@pytest.mark.skipif(True, reason="a policy on this machine")
+@pytest.mark.skipif(True, reason="no ffmpeg on this machine")
 def test_skipped_by_its_mark():
     pass
 
@@ -44,7 +44,7 @@ def test_a_test_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pyt
     ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     # A mark skips as the test is set up, so its failure is counted as an error.
     ran.assert_outcomes(failed=1, errors=1, xfailed=1, passed=1)
-    ran.stdout.fnmatch_lines_random(["*Skipped: no jq on this machine, in CI, where every test runs*", "*Skipped: a policy on this machine, in CI, where every test runs*"])
+    ran.stdout.fnmatch_lines_random(["*Skipped: no jq on this machine, in CI, where every test runs*", "*Skipped: no ffmpeg on this machine, in CI, where every test runs*"])
 
 
 def test_a_module_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:

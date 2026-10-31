@@ -1,7 +1,8 @@
 """[LAW:single-enforcer] the one owner of the hold that keeps a test run off the network and the machine's Claude Code
-policy out of it: the profile, the first macOS whose sandbox applies it faithfully, and applying it. hands' run takes it from here (conftest) once its fetches are
-done; wake-training's suite loads this file by path; fritter's Go tests read the profile and SANDBOXED_MACOS from here.
-Standard library and pytest only, so any of the repository's Python suites can load it."""
+policy out of it: the profile, the first macOS whose sandbox applies it faithfully, and applying it. hands' run takes it
+from here (conftest) once its fetches are done; wake-training's suite loads this file by path; fritter's Go tests read
+the profile and SANDBOXED_MACOS from here. Standard library and pytest only, so any of the repository's Python suites
+can load it."""
 
 import ctypes
 import errno
@@ -45,7 +46,7 @@ def hold() -> str:
     its own conftest starts one, is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process
     held already.
     [LAW:no-silent-failure] a run that is not so held stops before any test, with the OS's reason, whether the run was in
-    a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, and which half of the promise failed."""
+    a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, and which part of the promise failed."""
     sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
     sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
     sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
@@ -61,13 +62,23 @@ def hold() -> str:
 
 
 def policy_found() -> list[str]:
-    """Each place this process finds the machine's Claude Code policy, every account's plist among them, as the profile
-    hides every account's. glob still lists a plist the profile hides, so exists() is what keeps it out of the answer. A
-    sandbox that refuses a read, as one the run started in may, raises from exists() on the fixed places and from glob on
-    a refused MANAGED_PREFERENCES: the policy is there, unread here but not in every Claude Code that asks. glob finds
-    nothing in an account's folder refused it."""
-    places = (POLICY_FOLDER, MANAGED_PREFERENCES / POLICY_PLIST, *MANAGED_PREFERENCES.glob(f"*/{POLICY_PLIST}"))
-    return [str(path) for path in places if path.exists()]
+    """Each place the machine's Claude Code policy lives that does not answer this process "no such file", every account's
+    plist among them, as the profile hides every account's. A refused read, as a sandbox the run started in may answer, is
+    found: the policy is unread here but not in every Claude Code that asks. os.walk lists a plist the profile hides, so
+    the look is what keeps it out of the answer, and lists nothing in a folder refused it, so the machine's plist is looked
+    at whatever os.walk lists, and that look finds a refused MANAGED_PREFERENCES. These are os.walk and stat because they
+    answer alike on every Python the project allows, where 3.13's glob and 3.14's exists() hide a refused read."""
+    listed = {Path(folder, POLICY_PLIST) for folder, _, files in os.walk(MANAGED_PREFERENCES) if POLICY_PLIST in files}
+    return sorted(str(path) for path in {POLICY_FOLDER, MANAGED_PREFERENCES / POLICY_PLIST} | listed if not _absent(path))
+
+
+def _absent(path: Path) -> bool:
+    """Whether a look at `path` answers "no such file", as on a machine that has no policy."""
+    try:
+        path.stat()
+    except OSError as failed:
+        return failed.errno == errno.ENOENT
+    return False
 
 
 def _refused() -> bool:

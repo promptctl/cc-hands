@@ -56,7 +56,7 @@ def entered(monkeypatch: pytest.MonkeyPatch, names: Mapping[str, str]) -> None:
 
 
 _machine = pytest.StashKey[dict[str, str]]()
-# How the run is held offline, as the hold says.
+# How the run is held, as the hold says.
 _held = pytest.StashKey[str]()
 
 

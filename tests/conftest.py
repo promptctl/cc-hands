@@ -523,7 +523,7 @@ def entered(monkeypatch: pytest.MonkeyPatch, machine: dict[str, str], tools: str
 def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     """[LAW:single-enforcer] the run's environment, and every fetch the run makes, before any test and in a process of
     its own (fetches.py): so no test's timeout counts a download. Then the run goes offline, so no test, nor anything one
-    starts, reaches past loopback.
+    starts, reaches past loopback or finds the machine's Claude Code policy.
 
     The environment is entered first, so the fetches run as the tests do, with no credential of the developer's: the hub
     took its token's path from the developer's HOME as it was imported, so it is pointed under the run's own HOME. Then

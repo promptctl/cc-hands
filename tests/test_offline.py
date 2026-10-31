@@ -2,6 +2,8 @@
 past loopback, and loopback is as open as it was; and the machine's Claude Code policy is nowhere either looks."""
 
 import errno
+import os
+import re
 import socket
 import subprocess
 import sys
@@ -10,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import offline
-from offline import POLICY_FOLDER, UNROUTED, policy_found, sandboxable
+from offline import MANAGED_PREFERENCES, POLICY_FOLDER, POLICY_PLIST, UNROUTED, policy_found, sandboxable
 
 
 def test_a_connection_a_test_makes_past_loopback_is_refused_by_the_os() -> None:
@@ -38,9 +40,43 @@ def test_loopback_is_reachable_by_address_and_by_localhost() -> None:
 
 
 def test_the_machine_s_claude_code_policy_is_not_found_by_a_test_or_its_child() -> None:
-    # CI writes a policy into POLICY_FOLDER before the run, so each run shows the profile hides one that is there.
     assert policy_found() == []
+    assert not os.access(POLICY_FOLDER, os.F_OK)
     assert subprocess.run(["test", "-e", str(POLICY_FOLDER)], timeout=30).returncode == 1
+    # CI writes a policy into both places before the run, so there each run shows the profile hides one that is there:
+    # the folders that hold them still list them, as the profile leaves a listing alone.
+    if os.environ.get("CI") == "true":
+        assert POLICY_FOLDER.name in os.listdir(POLICY_FOLDER.parent)
+        assert POLICY_PLIST in os.listdir(MANAGED_PREFERENCES)
+
+
+def test_a_policy_in_any_of_its_places_is_found_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder, preferences = tmp_path / "ClaudeCode", tmp_path / "Managed Preferences"
+    monkeypatch.setattr(offline, "POLICY_FOLDER", folder)
+    monkeypatch.setattr(offline, "MANAGED_PREFERENCES", preferences)
+    assert policy_found() == []
+    plists = [preferences / POLICY_PLIST, preferences / "an account" / POLICY_PLIST]
+    (preferences / "an account").mkdir(parents=True)
+    folder.mkdir()
+    for plist in plists:
+        plist.touch()
+    assert policy_found() == sorted(map(str, [folder, *plists]))
+
+
+def test_a_place_that_refuses_the_look_is_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(offline, "POLICY_FOLDER", tmp_path / "refused" / "ClaudeCode")
+    monkeypatch.setattr(offline, "MANAGED_PREFERENCES", tmp_path / "Managed Preferences")
+    (tmp_path / "refused").mkdir(mode=0)
+    try:
+        assert policy_found() == [str(tmp_path / "refused" / "ClaudeCode")]
+    finally:
+        (tmp_path / "refused").chmod(0o700)
+
+
+def test_a_run_that_finds_a_policy_stops_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(offline, "POLICY_FOLDER", tmp_path)
+    with pytest.raises(pytest.UsageError, match=re.escape(f"Claude Code policy found: {[str(tmp_path)]}")):
+        offline.hold()
 
 
 @pytest.mark.parametrize("release", ["15.0", "15.7.9", "26.5.2"])

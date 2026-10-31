@@ -12,6 +12,6 @@
 (deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
 ; On the machine: no Claude Code policy. Claude Code reads one (its settings and their drop-ins, its MCP config, its MDM
 ; profiles) into every Claude Code, the brain under test among them, and no setting or variable keeps it out. The run
-; finds none, as on a machine that has none: a read answers "no such file", where "not permitted" would stop Claude
-; Code at a dialog asking what to do with a policy it cannot read.
-(deny file-read* (subpath "/Library/Application Support/ClaudeCode") (regex #"^/Library/Managed Preferences/(.+/)?com\.anthropic\.claudecode\.plist$") (with errno ENOENT))
+; finds none, as on a machine that has none: a read, or a test that it exists, answers "no such file", where "not
+; permitted" would stop Claude Code at a dialog asking what to do with a policy it cannot read.
+(deny file-read* file-test-existence (subpath "/Library/Application Support/ClaudeCode") (regex #"^/Library/Managed Preferences/(.+/)?com\.anthropic\.claudecode\.plist$") (with errno ENOENT))

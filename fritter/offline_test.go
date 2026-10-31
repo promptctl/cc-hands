@@ -17,9 +17,9 @@ import (
 )
 
 // The repository's one owner of the hold a test run is kept to, off the network and away
-// from the machine's Claude Code policy, and the profile it holds runs to, each a link to the repository's tests/: go test runs a
-// package's tests in its own directory, and rechecks no file outside the module before it
-// reports a pass it cached.
+// from the machine's Claude Code policy, and the profile it holds runs to, each a link to
+// the repository's tests/: go test runs a package's tests in its own directory, and
+// rechecks no file outside the module before it reports a pass it cached.
 const (
 	holds   = "testdata/offline.py"
 	profile = "testdata/offline.sb"
