@@ -204,7 +204,7 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
             assert caller.wait(timeout=30) in (0, -signal.SIGKILL)
         else:
             # A terminal the restart does not end has the update's exit once hands is back, and both its lines.
-            assert caller.wait(timeout=60) == 0
+            assert caller.wait(timeout=60) == 0, said.read_text()
 
         event = waited_for(home)
 
