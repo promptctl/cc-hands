@@ -30,9 +30,9 @@ hands = "hands.daemon.cli:entry"
 
 [dependency-groups]
 # [LAW:locality-or-seam] exception: tests/timeouts.py reads the suite's settings through pytest-timeout's
-# `get_env_settings`, outside its `__all__`, and wraps the SIGALRM handler it installs, so a major version that moves
-# either is taken on purpose. It also writes past the capture through pytest's `global_and_fixture_disabled`, not public
-# API, which uv.lock pins and tests/test_timeouts.py fails on a move of.
+# `get_env_settings`, outside its `__all__`, and wraps the SIGALRM handler it installs and the `pytest.fail.Exception` that
+# raises, so a major version that moves either is taken on purpose. It also writes past the capture through pytest's
+# `global_and_fixture_disabled`, not public API, which uv.lock pins and tests/test_timeouts.py fails on a move of.
 dev = ["nltk>=3.10", "pyright>=1.1", "pytest>=8", "pytest-asyncio>=0.24", "pytest-timeout>=2.3,<3", "soundfile>=0.13"]
 
 [build-system]

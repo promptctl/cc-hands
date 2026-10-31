@@ -69,29 +69,38 @@ def pytest_timeout_set_timer(item: pytest.Item, settings: Settings) -> Generator
 
 
 def saying_where(item: pytest.Item, fires: Callable[[int, FrameType | None], Any]) -> Callable[[int, FrameType | None], None]:
-    """`fires`, pytest-timeout's handler, saying first where everything was. Its failure's traceback ends where the signal
-    landed: in an async test the loop's select, which names no await."""
+    """`fires`, pytest-timeout's handler, saying where everything was if it ends the test: under a debugger it returns, and
+    nothing timed out. Its failure's traceback ends where the signal landed: in an async test the loop's select, which names
+    no await."""
 
     def saying(signum: int, frame: FrameType | None) -> None:
         __tracebackhide__ = True
-        # [LAW:nothing-unseen] a report that fails is chained onto the timeout, never in its place: the timer fires once, so
-        # a test that caught the report's error would run on with no bound.
         try:
-            where = f"{item.nodeid} timed out:\n{''.join(traceback.format_stack(frame))}\n{stalled()}"
-            # A section, so the failure says it and the summary's one line stays one. Named for the firing, which is no one
-            # phase: the timer does not know which it landed in.
-            item.add_report_section("fired", "timeout", where)
-            # [LAW:nothing-unseen] past the capture, flushed, and before anything can be raised: CI keeps only its log, and
-            # a job cancelled at its limit never prints the session's failures.
-            terminal = item.config.get_terminal_writer()
-            capture = item.config.pluginmanager.get_plugin("capturemanager")
-            with capture.global_and_fixture_disabled() if capture else nullcontext():
-                terminal.line(f"\n{where}")
-                terminal.flush()
-        finally:
             fires(signum, frame)
+        except pytest.fail.Exception as timeout:
+            # [LAW:nothing-unseen] a report that fails is chained onto the timeout, never in its place: the timer fires once,
+            # so a test that caught the report's error would run on with no bound.
+            try:
+                say_where(item, frame)
+            finally:
+                raise timeout
 
     return saying
+
+
+def say_where(item: pytest.Item, frame: FrameType | None) -> None:
+    """Where everything was as `item`'s bound ended it, said before the failure leaves the signal's handler: on the failure,
+    and past the capture, flushed, because CI keeps only its log, a job cancelled at its limit never prints the session's
+    failures, and a task's step can swallow the failure itself."""
+    where = f"{item.nodeid} timed out:\n{''.join(traceback.format_stack(frame))}\n{stalled()}"
+    # A section, so the failure says it and the summary's one line stays one. Named for the firing, which is no one phase:
+    # the timer does not know which it landed in.
+    item.add_report_section("fired", "timeout", where)
+    terminal = item.config.get_terminal_writer()
+    capture = item.config.pluginmanager.get_plugin("capturemanager")
+    with capture.global_and_fixture_disabled() if capture else nullcontext():
+        terminal.line(f"\n{where}")
+        terminal.flush()
 
 
 @pytest.hookimpl(wrapper=True)
