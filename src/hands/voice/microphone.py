@@ -347,7 +347,7 @@ class Speaker(LocalAudioOutputTransport):
         return None if self._out_stream is None else self.opened
 
     async def let_go(self, opened: Attached) -> None:
-        """Stop a detached stream, wait out the writes already given to it, then close it and end its writer."""
+        """Stop a detached stream, end its writer once the writes already given to it have run, then close it."""
         # [LAW:nothing-unseen] one event for each stream let go of, carrying what its device took over its life.
         with unit("speaker.let_go", self._record, PLAYOUT_COUNTS):
             annotate(device=opened.device)
@@ -426,16 +426,16 @@ class Speaker(LocalAudioOutputTransport):
         # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
-        stream = cast(Playback, self._out_stream)
+        opened = cast(Attached, self.opened)
 
         def write() -> None:
             # [LAW:no-ambient-temporal-coupling] on the writer thread, behind a turn's cue queued ahead of it. An
             # interruption cancels the await, but the chunk already handed to that thread plays out all the same.
             if frame.audio.count(0) != len(frame.audio):
                 self.sounded_at = self._clock()
-            stream.write(frame.audio, voices)
+            opened.stream.write(frame.audio, voices)
 
-        await cast(Attached, self.opened).writes.run(write)
+        await opened.writes.run(write)
         return True
 
     def cue(self, cue: Cue) -> Played:
@@ -458,15 +458,15 @@ class Speaker(LocalAudioOutputTransport):
                 logger.warning(f"no speaker is attached; the tone for {cue.line!r} is not played")
                 return "unattached"
             case "desk", True:
-                stream = cast(Playback, self._out_stream)
+                opened = cast(Attached, self.opened)
                 audio = sound(cue, self.sample_rate, self._params.audio_out_channels)
 
                 def write() -> None:
                     # A stream a reopen has stopped refuses the write; the writer thread says so and carries on.
                     self.sounded_at = self._clock()
-                    stream.write(audio, ())
+                    opened.stream.write(audio, ())
 
-                cast(Attached, self.opened).writes.give(write)
+                opened.writes.give(write)
                 return "desk"
 
 

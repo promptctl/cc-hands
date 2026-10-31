@@ -528,7 +528,7 @@ class _Paired:
             taken = session._mel_offset - first
             match taken:
                 case 0:
-                    # Most feeds complete no chunk: nothing to threshold.
+                    # A feed that completes no chunk: nothing to threshold.
                     return updates
                 case _:
                     heard = mx.concatenate([pending, probs], axis=0)[:taken]
@@ -540,9 +540,11 @@ class _Paired:
 
     def decoded(self, samples: Samples) -> Decoded:
         self._pending.append(samples)
-        # [LAW:one-source-of-truth] the run's position is the count the session keeps. Every feed of the session reads
-        # the GPU synchronously, once per diarizer speaker (sortformer's `_preds_to_segments`), and one short of a step
-        # can decode nothing, so it is put off: over a paravirtual GPU those reads were a third of the decoding.
+        # [LAW:one-source-of-truth] the run's position is the count the session keeps.
+        # [LAW:locality-or-seam] exception: mlx-audio keeps that count only on its private frontend, read here alone, on
+        # the version pyproject pins exactly. Every feed of the session reads the GPU synchronously for each diarizer
+        # speaker (sortformer's `_preds_to_segments`), and one short of a step can decode nothing, so it is put off: over
+        # a paravirtual GPU those reads were a third of the decoding.
         fed = self.session._frontend.total_samples
         match steps(fed + sum(map(len, self._pending))) - steps(fed):
             case 0:

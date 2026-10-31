@@ -60,7 +60,7 @@ class SerialThread:
         self._queue.put(work)
 
     async def close(self) -> None:
-        """Once everything given before this has run and the thread has ended; a second close returns at once."""
+        """Once everything given before this has run and the thread has ended, whichever close asked first."""
         self._closed = True
         self._queue.put(None)
         await off_loop(self._thread.join, f"ending {self._name}")

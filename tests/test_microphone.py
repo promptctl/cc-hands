@@ -18,6 +18,8 @@ from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFra
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from conftest import speaker_writers
+
 from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
@@ -409,15 +411,11 @@ async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_
     await devices.speaker.let_go(old)
 
 
-def writers() -> list[threading.Thread]:
-    return [thread for thread in threading.enumerate() if thread.name == "speaker writes"]
-
-
 async def test_a_reopen_ends_the_writer_of_the_stream_it_left_and_starts_the_new_ones(lost: Lost) -> None:
     transport = lost([])
-    left = writers()
+    left = speaker_writers()
     await transport.reopen()
-    assert len(left) == 1 and writers() != left and len(writers()) == 1
+    assert len(left) == 1 and speaker_writers() != left and len(speaker_writers()) == 1
 
 
 async def test_a_reopen_after_the_pipeline_cleaned_up_lets_go_of_the_same_stream_again_and_the_new_stream_plays(lost: Lost) -> None:
