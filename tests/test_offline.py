@@ -43,11 +43,11 @@ def test_the_machine_s_claude_code_policy_is_not_found_by_a_test_or_its_child() 
     assert policy_found() == []
     assert not os.access(POLICY_FOLDER, os.F_OK)
     assert subprocess.run(["test", "-e", str(POLICY_FOLDER)], timeout=30).returncode == 1
-    # CI writes a policy into both places before the run, so there each run shows the profile hides one that is there:
-    # the folders that hold them still list them, as the profile leaves a listing alone.
+    # CI writes a policy into its folder and both plists before the run, so there each run shows the profile hides one
+    # that is there: the folders that hold them still list them, as the profile leaves a listing alone.
     if os.environ.get("CI") == "true":
         assert POLICY_FOLDER.name in os.listdir(POLICY_FOLDER.parent)
-        assert POLICY_PLIST in os.listdir(MANAGED_PREFERENCES)
+        assert len([folder for folder, _, files in os.walk(MANAGED_PREFERENCES) if POLICY_PLIST in files]) == 2
 
 
 def test_a_policy_in_any_of_its_places_is_found_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,6 +71,19 @@ def test_a_place_that_refuses_the_look_is_found(tmp_path: Path, monkeypatch: pyt
         assert policy_found() == [str(tmp_path / "refused" / "ClaudeCode")]
     finally:
         (tmp_path / "refused").chmod(0o700)
+
+
+@pytest.mark.parametrize("account", ["", "an account"])
+def test_a_folder_of_managed_preferences_that_refuses_the_look_is_found(account: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(offline, "POLICY_FOLDER", tmp_path / "ClaudeCode")
+    monkeypatch.setattr(offline, "MANAGED_PREFERENCES", tmp_path / "Managed Preferences")
+    refused = tmp_path / "Managed Preferences" / account
+    refused.mkdir(parents=True)
+    refused.chmod(0)
+    try:
+        assert policy_found() == [str(refused)]
+    finally:
+        refused.chmod(0o700)
 
 
 def test_a_run_that_finds_a_policy_stops_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

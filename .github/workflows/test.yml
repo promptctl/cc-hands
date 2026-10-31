@@ -116,9 +116,10 @@ jobs:
           policy='{"permissions": {"allow": ["WebFetch"]}}'
           settings="/Library/Application Support/ClaudeCode/managed-settings.d"
           preferences="/Library/Managed Preferences"
-          sudo mkdir -p "$settings" "$preferences/$USER"
+          account="$preferences/$(id -un)"
+          sudo mkdir -p "$settings" "$account"
           echo "$policy" | sudo tee "$settings/10-machine.json"
-          for plists in "$preferences" "$preferences/$USER"; do
+          for plists in "$preferences" "$account"; do
             echo "$policy" | sudo plutil -convert xml1 -o "$plists/com.anthropic.claudecode.plist" -
           done
       # [LAW:one-source-of-truth] the suite is the Makefile's check.

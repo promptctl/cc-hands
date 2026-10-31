@@ -65,17 +65,20 @@ def policy_found() -> list[str]:
     """Each place the machine's Claude Code policy lives that does not answer this process "no such file", every account's
     plist among them, as the profile hides every account's. A refused read, as a sandbox the run started in may answer, is
     found: the policy is unread here but not in every Claude Code that asks. os.walk lists a plist the profile hides, so
-    the look is what keeps it out of the answer, and lists nothing in a folder refused it, so the machine's plist is looked
-    at whatever os.walk lists, and that look finds a refused MANAGED_PREFERENCES. These are os.walk and stat because they
-    answer alike on every Python the project allows, where 3.13's glob and 3.14's exists() hide a refused read."""
-    listed = {Path(folder, POLICY_PLIST) for folder, _, files in os.walk(MANAGED_PREFERENCES) if POLICY_PLIST in files}
-    return sorted(str(path) for path in {POLICY_FOLDER, MANAGED_PREFERENCES / POLICY_PLIST} | listed if not _absent(path))
+    the look is what keeps it out of the answer, and each folder it cannot list gets the same look, so a refused one is
+    found and a missing MANAGED_PREFERENCES is not. These are os.walk and open because they answer alike on every Python
+    the project allows, where 3.13's glob and 3.14's exists() hide a refused read."""
+    unlisted: list[OSError] = []
+    listed = [Path(folder, POLICY_PLIST) for folder, _, files in os.walk(MANAGED_PREFERENCES, onerror=unlisted.append) if POLICY_PLIST in files]
+    places = [POLICY_FOLDER, *listed, *(Path(failed.filename) for failed in unlisted)]
+    return sorted(str(path) for path in places if not _absent(path))
 
 
 def _absent(path: Path) -> bool:
-    """Whether a look at `path` answers "no such file", as on a machine that has no policy."""
+    """Whether a read of `path` answers "no such file", as on a machine that has no policy. A folder that is there
+    answers that it is a folder."""
     try:
-        path.stat()
+        path.open().close()
     except OSError as failed:
         return failed.errno == errno.ENOENT
     return False
