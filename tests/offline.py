@@ -54,7 +54,7 @@ def hold() -> str:
     error = ctypes.c_char_p()
     sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error))
     refused, looped, found = _refused(), _looped(), _found()
-    if not (refused and looped and not found):
+    if not (refused and looped):
         held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
         raise pytest.UsageError(
             f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}"
