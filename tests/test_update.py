@@ -190,6 +190,8 @@ sys.exit(cli.main(["--home", home, "update"]))
 @pytest.mark.parametrize("killed", [True, False], ids=["brain", "terminal"])
 def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not_its_caller_is_killed(killed: bool, tmp_path: Path) -> None:
     home, log, said = Home(tmp_path / "home"), tmp_path / "commands", tmp_path / "said"
+    # The finally reads it however early this test fails.
+    said.touch()
     daemon = subprocess.Popen([sys.executable, STANDIN, str(home.root)], stdin=subprocess.DEVNULL)
     # The brain: a process group of its own, as hands starts it, which the update is run from.
     brain = subprocess.Popen(["sleep", "60"], process_group=0)
@@ -226,6 +228,8 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
         assert restarted.startswith(f"hands restarted: pid {daemon.pid} is running again after ")
         assert restarted.endswith(f", with 0 live sessions. It runs master at {SHA}.")
     finally:
+        # pytest's captured output of a failed test: the update's own words, whichever way this test failed.
+        print(said.read_text())
         brain.kill()
         brain.wait()
         daemon.terminate()
