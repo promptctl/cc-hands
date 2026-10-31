@@ -168,7 +168,6 @@ def test_that_skips(skips):
     pass
 """
 
-# pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
 # The bound is driven by its signal, with the main thread in the loop's select where a stuck async test sits, so what is
 # reported depends on no clock.
 AWAITS = """
@@ -198,22 +197,37 @@ async def test_that_awaits():
     await outermost()
 """
 
+# One frame of each stack: a report short of the stdout file's buffer, which only a flush gets out of a run ended early.
 BLOCKS = """
 import signal
+import sys
 
 def test_that_blocks():
+    sys.tracebacklimit = 1
     signal.raise_signal(signal.SIGALRM)
 """
 
-# A run ended before the session reports its failures, as a job cancelled at its limit is.
+# A run ended before pytest reports anything of the failure, as a job cancelled at its limit is. Ending it at the report's
+# logging would be too late: pytest flushes each test's outcome there, and with it whatever the timeout left unflushed.
 ENDED_BEFORE_ITS_REPORT = """
 import os
 
-def pytest_runtest_logreport(report):
-    if report.failed:
+def pytest_runtest_makereport(call):
+    if call.excinfo:
         os._exit(99)
 """
 
+# A report that cannot be made.
+UNREPORTABLE = """
+import timeouts
+
+def stalled():
+    raise RuntimeError("no report")
+
+timeouts.stalled = stalled
+"""
+
+# pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
 SLOW_REPORTING = """
 import time
 import pytest
@@ -288,26 +302,44 @@ def outermost_first(said: str) -> bool:
     return said.index("in test_that_awaits") < said.index("in outermost") < said.index("in deepest")
 
 
-def test_under_a_signal_a_timeouts_failure_says_where_each_task_waited(suite: pytest.Pytester) -> None:
-    ran = run(suite, "signal", *UNFIRED, "test_awaits.py")
-    ran.assert_outcomes(failed=1)
+def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_summary_stays_one_line(suite: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CI: pytest's summary then carries a failure's whole message, not the terminal's width of it.
+    monkeypatch.setenv("CI", "true")
+    ran = run(suite, "signal", *UNFIRED, "test_awaits.py", "test_blocks.py")
+    ran.assert_outcomes(failed=2)
     said = ran.stdout.str()
-    assert outermost_first(said[said.index("FAILURES") :])
+    failures, summary = said[said.index("FAILURES") :].split("short test summary info")
+    assert outermost_first(failures)
+    assert "in test_that_blocks" in failures and "no event loop is running on this thread" in failures
+    assert "timed out" not in summary
 
 
 def test_under_a_signal_a_timeout_says_where_each_task_waited_in_a_run_ended_before_its_report(suite: pytest.Pytester) -> None:
     suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
     said = run(suite, "signal", *UNFIRED, "test_awaits.py").stdout.str()
     assert "FAILURES" not in said
-    assert outermost_first(said[said.index("test_awaits.py::test_that_awaits timed out") :])
+    assert outermost_first(said[said.index("\ntest_awaits.py::test_that_awaits timed out") :])
 
 
 def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_that_no_loop_runs(suite: pytest.Pytester) -> None:
     suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
     said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
     assert "FAILURES" not in said
-    where = said[said.index("test_blocks.py::test_that_blocks timed out") :]
+    where = said[said.index("\ntest_blocks.py::test_that_blocks timed out") :]
     assert "in test_that_blocks" in where and "no event loop is running on this thread" in where
+
+
+def test_under_a_signal_a_timeout_says_where_everything_was_with_capture_off(suite: pytest.Pytester) -> None:
+    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
+    said = run(suite, "signal", *UNFIRED, "-p", "no:capture", "test_blocks.py").stdout.str()
+    assert "test_blocks.py::test_that_blocks timed out" in said
+
+
+def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: pytest.Pytester) -> None:
+    suite.makeconftest(UNREPORTABLE)
+    ran = run(suite, "signal", *UNFIRED, "test_blocks.py")
+    ran.assert_outcomes(failed=1)
+    ran.stdout.fnmatch_lines(["*RuntimeError: no report", "FAILED test_blocks.py::test_that_blocks - Failed: Timeout*"])
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
