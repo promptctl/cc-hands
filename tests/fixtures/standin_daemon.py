@@ -35,7 +35,7 @@ def main() -> None:
         sessions = Sessions(clock=time.monotonic, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
-        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heartbeat.HEARTBEAT.total_seconds()))
+        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds()))
         # As hands' run is once its pipeline has started.
         run_start.ended(audit.record, None)
         await stop.wait()

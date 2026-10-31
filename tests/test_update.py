@@ -194,8 +194,8 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
     # The brain: a process group of its own, as hands starts it, which the update is run from.
     brain = subprocess.Popen(["sleep", "60"], process_group=0)
     try:
-        before = up(home)
         with said.open("w") as out:
+            before = up(home)
             caller = subprocess.Popen([sys.executable, "-c", CALLER, str(home.root), str(tools_of_this_hands(tmp_path)), SHA, str(log)], stdout=out, stderr=subprocess.STDOUT, process_group=brain.pid)
         if killed:
             # The restart ends the brain, and hands kills everything in its process group.
@@ -204,7 +204,7 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
             assert caller.wait(timeout=30) in (0, -signal.SIGKILL)
         else:
             # A terminal the restart does not end has the update's exit once hands is back, and both its lines.
-            assert caller.wait(timeout=60) == 0, said.read_text()
+            assert caller.wait(timeout=60) == 0
 
         event = waited_for(home)
 
@@ -226,6 +226,8 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
         assert restarted.startswith(f"hands restarted: pid {daemon.pid} is running again after ")
         assert restarted.endswith(f", with 0 live sessions. It runs master at {SHA}.")
     finally:
+        # pytest's captured output of a failed test: the update's own words, whichever way this test failed.
+        print(said.read_text())
         brain.kill()
         brain.wait()
         daemon.terminate()
