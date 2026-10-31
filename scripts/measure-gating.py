@@ -81,7 +81,7 @@ def measured(gating: int, meetings: list[list[tuple[tuple[str, ...], dict[str, n
         total = Counter[str]()
         for holds in meetings:
             # A run per meeting, as hands has one: its session afresh, nobody heard yet, as the real-pair tests reset it.
-            pair.session.reset()
+            pair.reset()
             run = Live(pair)
             for words, hold in holds:
                 total += scored(words, run.spoken(hold[shape])[1])

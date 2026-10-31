@@ -83,7 +83,7 @@ def through(samples: int) -> int:
     last = (samples - 1 + N_FFT // 2) // MEL_HOP
     committed = (last // CHUNK + 1) * CHUNK
     step = -(-committed // STEP)
-    return max(samples, (STEP * step + AHEAD - 1) * MEL_HOP + N_FFT // 2)
+    return (STEP * step + AHEAD - 1) * MEL_HOP + N_FFT // 2
 
 
 @dataclass(frozen=True)
@@ -493,12 +493,15 @@ def speaker(label: str) -> int:
 
 @dataclass
 class _Paired:
-    """The run's session of the pair, mlx-audio's own: fed any partition of the run, it decodes every chunk the diarizer
-    has committed, and says where the diarizer heard each speaker in it."""
+    """The run's session of the pair, mlx-audio's own: given any partition of the run, it holds the samples back until
+    they complete a diarizer step, decodes every chunk the diarizer has committed, and says where the diarizer heard each
+    speaker in it."""
 
     session: Any
     # The frames the diarizer marked a speaker in, since the last feed returned.
     _active: list[Active] = field(default_factory=list[Active])
+    # What the session has not been fed yet, all of it short of a step.
+    _pending: list[Samples] = field(default_factory=list[Samples])
 
     def __post_init__(self) -> None:
         """Hear each chunk's speakers as the session takes it.
@@ -524,7 +527,7 @@ class _Paired:
             taken = session._mel_offset - first
             match taken:
                 case 0:
-                    # Most feeds complete no chunk: nothing to threshold.
+                    # A feed that completes no chunk: nothing to threshold.
                     return updates
                 case _:
                     heard = mx.concatenate([pending, probs], axis=0)[:taken]
@@ -535,9 +538,26 @@ class _Paired:
         session._push_features = pushed
 
     def decoded(self, samples: Samples) -> Decoded:
-        words = tuple(Said(speaker(delta.speaker), delta.text) for delta in self.session.feed(samples))
-        active, self._active = tuple(self._active), []
-        return Decoded(words, active)
+        self._pending.append(samples)
+        # [LAW:one-source-of-truth] the run's position is the count the session keeps.
+        # [LAW:locality-or-seam] exception: mlx-audio keeps that count only on its private frontend, read here alone, on
+        # the version pyproject pins exactly. Every feed of the session reads the GPU synchronously for each diarizer
+        # speaker (mlx-audio's sortformer.py), and one short of a step can decode nothing, so it is put off: over a
+        # paravirtual GPU those reads were a third of the decoding.
+        fed = self.session._frontend.total_samples
+        match steps(fed + sum(map(len, self._pending))) - steps(fed):
+            case 0:
+                return Decoded((), ())
+            case _:
+                whole, self._pending = np.concatenate(self._pending), []
+                words = tuple(Said(speaker(delta.speaker), delta.text) for delta in self.session.feed(whole))
+                active, self._active = tuple(self._active), []
+                return Decoded(words, active)
+
+    def reset(self) -> None:
+        """The session afresh, as a run begins one, with nothing kept of a run that stopped part way through a step."""
+        self.session.reset()
+        self._active, self._pending = [], []
 
     def closed(self) -> Closed:
         """Every speaker's stream given a chunk of silence as its last and ended, its last token decoded, and the gate
@@ -549,6 +569,7 @@ class _Paired:
         promptctl-voice-i15t.qg8.35b proposes the close upstream."""
         import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
+        assert not self._pending, "`through` ends every hold on a step: samples left over would land in the next hold"
         session, last = self.session, list[Said]()
         speakers, config = frozenset[int](session._encoders), session.model.preprocessor_config
         # [LAW:one-source-of-truth] silence as the model's frontend hears it, the log of zero power plus its guard (the

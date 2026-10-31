@@ -342,6 +342,19 @@ async def unprimed() -> None:
     """Whisper's prompt where no test is about its vocabulary: none, so it transcribes unprimed."""
 
 
+def speaker_writers() -> set[threading.Thread]:
+    return {thread for thread in threading.enumerate() if thread.name == "speaker writes"}
+
+
+@pytest.fixture(autouse=True)
+def no_speaker_writer_left() -> Generator[None]:
+    """[LAW:verifiable-goals] a speaker's writer ends with its stream, and letting go of the stream has joined it by
+    then: one left running here is a stream the test attached and never let go of."""
+    before = speaker_writers()
+    yield
+    assert speaker_writers() <= before, "the test left a stream attached: let go of it, or clean its speaker up"
+
+
 # Stays until it is killed, or for two minutes, as the `sleep 120` it stands in for did: a test killed before it kills
 # its own leaves no process behind for good. Given --moves, a directory and a descriptor, it first moves to the
 # directory and writes a "." to the descriptor, as a session moves into a worktree; given --moves any other way, it ends.

@@ -6,6 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Any, cast
+from collections.abc import AsyncGenerator, Callable
 
 import pyaudio
 import pytest
@@ -17,13 +18,15 @@ from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFra
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
+from conftest import speaker_writers
+
 from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.holds import Played, Reference
 from hands.voice.coreaudio import DefaultDevices
-from hands.voice.microphone import WRITE_AHEAD_SECS, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
+from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.holds import Hold
@@ -102,10 +105,22 @@ class Rig:
         self.now = at
         await self.speaker.write_audio_frame(TTSAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1, context_id="reply"))
 
+    async def written(self) -> None:
+        """Once the speaker's writer has done everything given to it."""
+        await cast(Attached, self.speaker.opened).writes.run(lambda: None)
+
     async def capture(self, at: float) -> None:
         self.now = at
         self.microphone._captured(self.room, LOUD, 320, {}, 0)  # pyright: ignore[reportPrivateUsage]
         await asyncio.sleep(0.01)
+
+
+@pytest.fixture
+async def devices() -> AsyncGenerator[Rig, None]:
+    """The rig, its speaker cleaned up as the test ends, which ends its stream's writer."""
+    rig = Rig()
+    yield rig
+    await rig.speaker.cleanup()
 
 
 class SimpleStream:
@@ -132,8 +147,7 @@ class SimpleStream:
     def close(self) -> None: ...
 
 
-async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_key_is_down() -> None:
-    devices = Rig()
+async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_key_is_down(devices: Rig) -> None:
     await devices.capture(at=1.0)  # key up
     devices.key.move("start", "held key")
     await devices.capture(at=1.02)
@@ -145,16 +159,14 @@ async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
 
 
-async def test_the_canceller_hears_the_desk_microphone_while_hands_is_at_the_phone() -> None:
-    devices = Rig()
+async def test_the_canceller_hears_the_desk_microphone_while_hands_is_at_the_phone(devices: Rig) -> None:
     devices.key.go("phone")
     await devices.capture(at=1.0)
     assert devices.pushed == []  # the phone's microphone is the pipeline's
     assert devices.room.hears == [LOUD]  # and the canceller takes the speaker's sound in step all the same
 
 
-async def test_an_edge_overhears_the_desk_cleaned_whatever_the_key_says_and_only_while_it_listens() -> None:
-    devices = Rig()
+async def test_an_edge_overhears_the_desk_cleaned_whatever_the_key_says_and_only_while_it_listens(devices: Rig) -> None:
     async with devices.microphone.overheard() as heard:
         await devices.capture(at=1.0)  # key up: the pipeline hears silence, the edge hears the room
         devices.key.go("phone")
@@ -169,8 +181,7 @@ class Refusing(Room):
         raise RuntimeError("the audio processing module refused the frame")
 
 
-async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_deaf() -> None:
-    devices = Rig()
+async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_deaf(devices: Rig) -> None:
     errors: list[str] = []
     pushed: list[tuple[Frame, FrameDirection]] = []
 
@@ -189,30 +200,27 @@ async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leavi
     assert devices.pushed == []
 
 
-async def test_a_press_while_the_reply_plays_is_heard_at_once() -> None:
-    devices = Rig()
+async def test_a_press_while_the_reply_plays_is_heard_at_once(devices: Rig) -> None:
     await devices.play(LOUD, at=1.0)
     devices.key.move("start", "held key")
     await devices.capture(at=1.0)  # the reply still in the room, and a word over it
     assert devices.pushed == [CLEANED]
 
 
-async def test_silence_given_to_the_speaker_is_no_sound_for_the_heartbeat() -> None:
-    devices = Rig()
+async def test_silence_given_to_the_speaker_is_no_sound_for_the_heartbeat(devices: Rig) -> None:
     await devices.play(QUIET, at=1.0)
     assert devices.stream.written == [QUIET]
     assert devices.speaker.sounded_at is None  # silence padding is no sound for the heartbeat
 
 
-async def test_a_chunk_whose_write_an_interruption_cancels_is_still_played() -> None:
-    devices = Rig()
+async def test_a_chunk_whose_write_an_interruption_cancels_is_still_played(devices: Rig) -> None:
     devices.stream.blocking = True
     devices.now = 1.0
     writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
     await asyncio.sleep(0.01)
     writing.cancel()  # the barge-in; PortAudio's thread plays the chunk out regardless
     devices.stream.blocking = False
-    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    await devices.written()
     assert devices.stream.written == [LOUD]
 
 
@@ -293,9 +301,26 @@ def lost_transport(log: list[str], events: list[Entry] | None = None) -> KeyedAu
     return transport
 
 
-async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_as_they_are_now() -> None:
+Lost = Callable[..., KeyedAudioTransport]
+
+
+@pytest.fixture
+async def lost() -> AsyncGenerator[Lost, None]:
+    """`lost_transport`, each one built cleaned up as the test ends, which ends its stream's writer."""
+    built: list[KeyedAudioTransport] = []
+
+    def building(log: list[str], events: list[Entry] | None = None) -> KeyedAudioTransport:
+        built.append(lost_transport(log, events))
+        return built[-1]
+
+    yield building
+    for transport in built:
+        await transport.output().cleanup()
+
+
+async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_as_they_are_now(lost: Lost) -> None:
     log: list[str] = []
-    transport = lost_transport(log)
+    transport = lost(log)
     speaker = transport.output()
     frame = OutputAudioRawFrame(audio=LOUD, sample_rate=24000, num_channels=1)
     stuck = asyncio.create_task(speaker.write_audio_frame(frame))  # the reply playing when the headset went
@@ -316,10 +341,10 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert speaker.is_usable
 
 
-async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_old_streams_lives() -> None:
+async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_old_streams_lives(lost: Lost) -> None:
     log: list[str] = []
     events: list[Entry] = []
-    transport = lost_transport(log, events)
+    transport = lost(log, events)
     old = transport.input().opened
     assert old is not None
     old.echo.heard(LOUD, 16000, 1)  # a buffer heard on the old devices
@@ -344,9 +369,9 @@ class RefusingPortAudio(FreshPortAudio):
         raise OSError(-9996, "Invalid input device")
 
 
-async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_made_for_them() -> None:
+async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_made_for_them(lost: Lost) -> None:
     log: list[str] = []
-    transport = lost_transport(log)
+    transport = lost(log)
     setattr(transport, "_portaudio", lambda: RefusingPortAudio(log))
     with pytest.raises(OSError, match="Invalid input device"):
         await transport.reopen()
@@ -362,28 +387,69 @@ class MicrophoneRefusingPortAudio(FreshPortAudio):
         return super().open(**settings)
 
 
-async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started_before_letting_go_of_the_canceller() -> None:
+async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started_before_letting_go_of_the_canceller(lost: Lost) -> None:
     log: list[str] = []
-    transport = lost_transport(log)
+    transport = lost(log)
     setattr(transport, "_portaudio", lambda: MicrophoneRefusingPortAudio(log))
     with pytest.raises(OSError, match="Invalid input device"):
         await transport.reopen()
     assert log[log.index("open speaker") :] == ["open speaker", "stop new speaker", "close new speaker", "close canceller 2"]
 
 
-async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream() -> None:
-    rig = Rig()
-    rig.speaker.detach()
-    rig.now = 1.0
-    writing = asyncio.create_task(rig.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
+async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream(devices: Rig) -> None:
+    old = devices.speaker.detach()
+    devices.now = 1.0
+    writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
     await asyncio.sleep(0.01)
     assert not writing.done()
-    assert rig.speaker.sounded_at is None  # nothing has sounded yet
+    assert devices.speaker.sounded_at is None  # nothing has sounded yet
     reopened = SimpleStream()
-    rig.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(reopened, "AirPods", rig.room))
+    devices.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(reopened, "AirPods", devices.room))
     assert await writing is True
     assert reopened.written == [LOUD]
-    assert rig.speaker.sounded_at == 1.0
+    assert devices.speaker.sounded_at == 1.0
+    await devices.speaker.let_go(old)
+
+
+async def test_a_reopen_ends_the_writer_of_the_stream_it_left_and_starts_the_new_ones(lost: Lost) -> None:
+    transport = lost([])
+    left = speaker_writers()
+    await transport.reopen()
+    assert len(left) == 1 and speaker_writers() != left and len(speaker_writers()) == 1
+
+
+async def test_a_reopen_after_the_pipeline_cleaned_up_lets_go_of_the_same_stream_again_and_the_new_stream_plays(lost: Lost) -> None:
+    transport = lost([])
+    speaker = transport.output()
+    speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    await speaker.cleanup()
+    await transport.reopen()
+    assert speaker.cue(OPENED) == "desk"
+
+
+async def test_a_cleanup_still_letting_go_as_a_reopen_attaches_leaves_the_new_streams_writer_open(lost: Lost) -> None:
+    transport = lost([])
+    speaker = transport.output()
+    speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    entered, released = threading.Event(), threading.Event()
+    stream = cast(LostStream, cast(Attached, speaker.opened).stream)
+    stop = stream.stop_stream
+
+    def stalled() -> None:
+        # The first stop stands still; the reopen's own stop of the same stream, behind it, does not.
+        stream.stop_stream = stop
+        entered.set()
+        released.wait()
+        stop()
+
+    stream.stop_stream = stalled
+    cleaning = asyncio.create_task(speaker.cleanup())
+    while not entered.is_set():
+        await asyncio.sleep(0)
+    await transport.reopen()
+    released.set()
+    await cleaning
+    assert speaker.cue(OPENED) == "desk"
 
 
 async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
@@ -391,14 +457,16 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
     ours, pipecats = FreshPortAudio([]), FreshPortAudio([])
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
+    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).output()
     for portaudio, output, input_ in (
-        (ours, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).output(), KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).input()),
+        (ours, speaker, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).input()),
         (pipecats, LocalAudioOutputTransport(cast(pyaudio.PyAudio, pipecats), params), LocalAudioInputTransport(cast(pyaudio.PyAudio, pipecats), params)),
     ):
         setattr(output, "_py_audio", portaudio)
         setattr(input_, "_py_audio", portaudio)
         await output.setup(setup)
         await input_.setup(setup)
+    await speaker.cleanup()
     assert len(ours.opened) == 2
     # The one difference is chosen: the speaker's period, which Pipecat leaves to the device's low-latency default.
     speaker, microphone = ours.opened
@@ -415,9 +483,9 @@ class DeafPortAudio(FreshPortAudio):
         raise OSError("No Default Input Device Available")  # as PyAudio raises it: the words alone, no errno
 
 
-async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_it_cannot_hear() -> None:
+async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_it_cannot_hear(lost: Lost) -> None:
     log: list[str] = []
-    transport = lost_transport(log)
+    transport = lost(log)
     setattr(transport, "_portaudio", lambda: DeafPortAudio(log))
     assert not transport.deaf
 
@@ -459,33 +527,30 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
         default_input(cast(PortAudio, refusing))
 
 
-async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard() -> None:
-    devices = Rig()
+async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
     devices.key.move("start", "held key")
     devices.now = 1.0
     devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue
-    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    await devices.written()
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
     assert devices.pushed == [CLEANED]  # the word said over it, through the canceller
     assert devices.speaker.sounded_at == 1.0
 
 
-async def test_a_cue_never_holds_the_talk_key_on_the_speaker() -> None:
-    devices = Rig()
+async def test_a_cue_never_holds_the_talk_key_on_the_speaker(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     devices.stream.blocking = True  # a write stuck on a device that is going
     assert devices.speaker.cue(OPENED) == "desk"
-    devices.speaker.detach()  # a reopen under way
+    detached = devices.speaker.detach()  # a reopen under way
     assert devices.speaker.cue(OPENED) == "unattached"  # said, so a cue for silence is never recorded as heard
     devices.stream.blocking = False
-    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    await devices.speaker.let_go(detached)
     assert devices.stream.written == [sound(OPENED, 16000, 1)]
 
 
-async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
-    devices = Rig()
+async def test_a_tone_that_fails_to_play_loses_only_the_tone(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     written = devices.stream.write
 
@@ -494,14 +559,13 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone() -> None:
 
     devices.stream.write = stopped
     devices.speaker.cue(OPENED)
-    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    await devices.written()
     devices.stream.write = written
     await devices.play(LOUD, at=1.0)
     assert devices.stream.written == [LOUD]
 
 
-async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_cue_with_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    devices = Rig()
+async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_cue_with_none(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
 
     async def passed(_self: object, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
@@ -518,7 +582,7 @@ async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_
     await devices.tts(LOUD, at=1.06)
     await devices.tts(LOUD, at=1.08)
     devices.speaker.cue(OPENED)
-    await devices.speaker._writes.run(lambda: None)  # pyright: ignore[reportPrivateUsage]
+    await devices.written()
     assert devices.stream.voiced == [(), ("alba",), (), ("alba",), ("alba", "mary"), ("mary",), ()]
 
 
@@ -533,8 +597,7 @@ def test_the_canceller_is_given_the_voices_in_each_buffer_the_device_takes() -> 
     assert [voices for *_, voices in room.plays] == [("alba", "mary"), ("mary",), ()]
 
 
-async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood() -> None:
-    devices = Rig()
+async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood(devices: Rig) -> None:
     async with devices.microphone.echoes() as echoes:
         await devices.capture(at=1.0)  # the off level, no press
         devices.key.move("listen", "wake word")
@@ -552,8 +615,7 @@ async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_sto
     ]
 
 
-async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue() -> None:
-    devices = Rig()
+async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     devices.stream.blocking = True
     devices.speaker.cue(OPENED)  # the barge-in's tone, still going to the device
@@ -564,8 +626,7 @@ async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue() -> None:
     assert devices.stream.written == [sound(OPENED, 16000, 1), LOUD]  # the order the room hears them, and the canceller with it
 
 
-async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking(monkeypatch: pytest.MonkeyPatch) -> None:
-    devices = Rig()
+async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
     pushed: list[Frame] = []
 
     async def passed(_self: object, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
@@ -680,8 +741,7 @@ class Deafened(Room):
         raise RuntimeError("the audio processing module refused the frame")
 
 
-async def test_a_playout_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_mute() -> None:
-    devices = Rig()
+async def test_a_playout_the_canceller_fails_ends_the_pipeline_rather_than_leaving_hands_mute(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     errors: list[str] = []
     pushed: list[tuple[Frame, FrameDirection]] = []
