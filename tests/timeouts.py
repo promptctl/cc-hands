@@ -1,14 +1,21 @@
 """pytest-timeout's bound, scoped to the work it bounds: a fixture wider than one function is set up inside whichever test
 first asks for it and torn down inside the last, yet it is the work of every test that shares it, so its setup and its
 teardown run under the suite's bound and the test's own bound resumes with what it had left; and the test's bound runs
-only inside its phases, never while pytest reports one. A plugin of its own, so a run in another process can load it by name with
-`-p timeouts`; conftest registers it for the suite."""
+only inside its phases, never while pytest reports one; and a bound that fires says where everything was. A plugin of its own, so a
+run in another process can load it by name with `-p timeouts`; conftest registers it for the suite."""
 
+import asyncio
+import gc
+import signal
+import sys
+import threading
 import time
-from collections.abc import Generator
-from contextlib import ExitStack, contextmanager
+import traceback
+from collections.abc import AsyncGenerator, Callable, Generator, Iterator
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
-from typing import cast
+from types import AsyncGeneratorType, CoroutineType, FrameType, GeneratorType
+from typing import Any, cast
 
 import pytest
 from pytest_timeout import Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
@@ -50,12 +57,50 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_timeout_set_timer(item: pytest.Item, settings: Settings) -> Generator[None, object, object]:
-    """[LAW:single-enforcer] pytest-timeout arms every timer, the ones this plugin asks for among them; this only reads
-    off what it armed, once it has: the deadline never comes before the timer's own, so a bound with nothing left by it
-    has expired."""
+    """[LAW:single-enforcer] pytest-timeout arms every timer, the ones this plugin asks for among them; this reads off what
+    it armed, once it has: the deadline never comes before the timer's own, so a bound with nothing left by it has
+    expired. The signal it armed then says where everything was; the thread method's timer has no signal."""
     armed = yield
     item.config.stash[BOUND] = Armed(item, settings, time.monotonic() + settings.timeout)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]  (untyped in pytest-timeout)
+    fires = signal.getsignal(signal.SIGALRM)
+    if callable(fires):
+        signal.signal(signal.SIGALRM, saying_where(item, fires))
     return armed
+
+
+def saying_where(item: pytest.Item, fires: Callable[[int, FrameType | None], Any]) -> Callable[[int, FrameType | None], None]:
+    """`fires`, pytest-timeout's handler, saying where everything was if it ends the test: under a debugger it returns, and
+    nothing timed out. Its failure's traceback ends where the signal landed: in an async test the loop's select, which names
+    no await."""
+
+    def saying(signum: int, frame: FrameType | None) -> None:
+        __tracebackhide__ = True
+        try:
+            fires(signum, frame)
+        except pytest.fail.Exception as timeout:
+            # [LAW:nothing-unseen] a report that fails is chained onto the timeout, never in its place: the timer fires once,
+            # so a test that caught the report's error would run on with no bound.
+            try:
+                say_where(item, frame)
+            finally:
+                raise timeout
+
+    return saying
+
+
+def say_where(item: pytest.Item, frame: FrameType | None) -> None:
+    """Where everything was as `item`'s bound ended it, said before the failure leaves the signal's handler: on the failure,
+    and past the capture, flushed, because CI keeps only its log, a job cancelled at its limit never prints the session's
+    failures, and a task's step can swallow the failure itself."""
+    where = f"{item.nodeid} timed out:\n{''.join(traceback.format_stack(frame))}\n{stalled()}"
+    # A section, so the failure says it and the summary's one line stays one. Named for the firing, which is no one phase:
+    # the timer does not know which it landed in.
+    item.add_report_section("fired", "timeout", where)
+    terminal = item.config.get_terminal_writer()
+    capture = item.config.pluginmanager.get_plugin("capturemanager")
+    with capture.global_and_fixture_disabled() if capture else nullcontext():
+        terminal.line(f"\n{where}")
+        terminal.flush()
 
 
 @pytest.hookimpl(wrapper=True)
@@ -179,3 +224,52 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Generator[None, None, None]:
     return (yield from phase(item))
+
+
+def stalled() -> str:
+    """Where everything was as a wait stalled or a bound fired: each other thread's stack, by the thread's name, and each pending task's
+    whole await chain, from its coroutine down to the one waiting. The loop's own thread is the stalled wait itself, which
+    its task's chain shows. Task.print_stack stops at the task's own coroutine on 3.12, above the wait
+    (asyncio.format_call_graph walks the chain from 3.14)."""
+    names = {thread.ident: thread.name for thread in threading.enumerate()}
+    threads = [f"thread {names.get(ident, ident)}:\n{''.join(traceback.format_stack(frame))}" for ident, frame in sys._current_frames().items() if ident != threading.get_ident()]  # pyright: ignore[reportPrivateUsage]  (sys documents it, the one view of every thread's frame)
+    try:
+        pending = asyncio.all_tasks()
+    except RuntimeError:
+        # [LAW:nothing-unseen] no loop to ask is a different fact from a loop with nothing pending, which prints nothing.
+        tasks = ["no event loop is running on this thread"]
+    else:
+        tasks = [f"{task!r}:\n{''.join(traceback.StackSummary.extract((frame, frame.f_lineno) for frame in awaits(task.get_coro())).format())}" for task in pending]
+    return "\n".join(threads + tasks)
+
+
+async def _held() -> AsyncGenerator[None]:
+    yield
+
+
+# The steps `async for`, a one-argument anext() and an asynccontextmanager await on an async generator, typed by a generator never
+# started: 3.12 names neither type, and neither has an attribute leading to its generator.
+_never_started = _held()
+ASend, AThrow = type(_never_started.asend(None)), type(_never_started.athrow(GeneratorExit))
+del _never_started
+
+
+def awaits(awaited: object) -> Iterator[FrameType]:
+    """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first."""
+    while True:
+        match awaited:
+            case CoroutineType(cr_frame=FrameType() as frame):
+                yield frame
+                awaited = awaited.cr_await
+            case GeneratorType(gi_frame=FrameType() as frame):
+                yield frame
+                awaited = cast(object, awaited.gi_yieldfrom)
+            case AsyncGeneratorType(ag_frame=FrameType() as frame):
+                yield frame
+                awaited = awaited.ag_await
+            case ASend() | AThrow():
+                # Only the garbage collector's view reaches the step's generator on 3.12, beside any async generator it
+                # sends: its own is the one running the step.
+                [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType) and held.ag_running]
+            case _:
+                return
