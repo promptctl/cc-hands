@@ -59,8 +59,8 @@ import timeouts
 def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
     """A skip in CI as a failure, with the skip's own reason: CI provisions every tool and machine a test needs, so a skip
     there is one of them gone missing. An expected failure is not a skip."""
-    # [LAW:no-silent-failure] a runner image that drops jq, or gains a Claude Code policy, would otherwise pass the run
-    # with the tests that needed it never run, and nothing in the log but a count.
+    # [LAW:no-silent-failure] a runner image that drops jq would otherwise pass the run with the tests that needed it
+    # never run, and nothing in the log but a count.
     if os.environ.get("CI") == "true" and report.skipped and not hasattr(report, "wasxfail"):
         assert isinstance(report.longrepr, tuple), report.longrepr
         report.outcome = "failed"
@@ -556,7 +556,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
-    write(f"offline: nothing past loopback from here ({offline.hold()})\n")
+    write(f"offline: nothing past loopback and no Claude Code policy from here ({offline.hold()})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 

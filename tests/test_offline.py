@@ -1,5 +1,5 @@
 """The run is offline once its fetches are done (conftest, offline.py): nothing a test does, nor anything a test starts, connects
-past loopback, and loopback is as open as it was."""
+past loopback, and loopback is as open as it was; and the machine's Claude Code policy is nowhere either looks."""
 
 import errno
 import socket
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import offline
-from offline import UNROUTED, sandboxable
+from offline import POLICY_FOLDER, UNROUTED, policy_found, sandboxable
 
 
 def test_a_connection_a_test_makes_past_loopback_is_refused_by_the_os() -> None:
@@ -35,6 +35,12 @@ def test_loopback_is_reachable_by_address_and_by_localhost() -> None:
         port = server.getsockname()[1]
         for host in ("127.0.0.1", "localhost"):
             socket.create_connection((host, port), timeout=5).close()
+
+
+def test_the_machine_s_claude_code_policy_is_not_found_by_a_test_or_its_child() -> None:
+    # CI writes a policy into POLICY_FOLDER before the run, so each run shows the profile hides one that is there.
+    assert policy_found() == []
+    assert subprocess.run(["test", "-e", str(POLICY_FOLDER)], timeout=30).returncode == 1
 
 
 @pytest.mark.parametrize("release", ["15.0", "15.7.9", "26.5.2"])

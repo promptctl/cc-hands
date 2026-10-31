@@ -1,5 +1,5 @@
-"""[LAW:single-enforcer] the one owner of the hold that keeps a test run off the network: the profile, the first macOS
-whose sandbox applies it faithfully, and applying it. hands' run takes it from here (conftest) once its fetches are
+"""[LAW:single-enforcer] the one owner of the hold that keeps a test run off the network and the machine's Claude Code
+policy out of it: the profile, the first macOS whose sandbox applies it faithfully, and applying it. hands' run takes it from here (conftest) once its fetches are
 done; wake-training's suite loads this file by path; fritter's Go tests read the profile and SANDBOXED_MACOS from here.
 Standard library and pytest only, so any of the repository's Python suites can load it."""
 
@@ -16,6 +16,12 @@ OFFLINE = Path(__file__).with_name("offline.sb")
 # The first macOS whose sandbox holds a run to OFFLINE without refusing loopback: on macOS 14, CI's macos-14 refused
 # some ten tests' binds and connects on 127.0.0.1 with EPERM on every run, under this profile and under Bazel's.
 SANDBOXED_MACOS = 15
+# Where Claude Code reads a machine's policy on macOS (docs/claude-code-behavior.md, machine policy): the folder of its
+# settings, their drop-ins and its MCP config, and its MDM plists, the machine's and each account's. OFFLINE has each read
+# as absent.
+POLICY_FOLDER = Path("/Library/Application Support/ClaudeCode")
+MANAGED_PREFERENCES = Path("/Library/Managed Preferences")
+POLICY_PLIST = "com.anthropic.claudecode.plist"
 # TEST-NET-1 (RFC 5737), routed nowhere: outside the sandbox a connection to it times out, inside it the OS refuses it
 # at once.
 UNROUTED = ("192.0.2.1", 443)
@@ -30,13 +36,14 @@ def sandboxable(release: str) -> None:
 
 def hold() -> str:
     """The calling process in the OFFLINE sandbox, which every process it starts inherits and none can leave, so a
-    connection a test, or any child of one, makes past loopback is refused by the OS before a packet leaves; and how it
-    is held. It is macOS's sandbox_init, the call sandbox-exec makes, on the run's own process, as Bazel's macOS sandbox
-    holds a test with the network denied.
+    connection a test, or any child of one, makes past loopback is refused by the OS before a packet leaves, and the
+    machine's Claude Code policy is nowhere it looks; and how it is held. It is macOS's sandbox_init, the call sandbox-exec
+    makes, on the run's own process, as Bazel's macOS sandbox holds a test with the network denied.
 
-    [LAW:single-enforcer] what is proven is what the profile promises, a connection past loopback refused and loopback
-    open, not that this call applied it: a run started inside a held one, as wake-training's test of its own conftest
-    starts one, is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process held already.
+    [LAW:single-enforcer] what is proven is what the profile promises, a connection past loopback refused, loopback
+    open and no policy found, not that this call applied it: a run started inside a held one, as wake-training's test of
+    its own conftest starts one, is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process
+    held already.
     [LAW:no-silent-failure] a run that is not so held stops before any test, with the OS's reason, whether the run was in
     a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, and which half of the promise failed."""
     sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
@@ -44,11 +51,23 @@ def hold() -> str:
     sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     error = ctypes.c_char_p()
     sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error))
-    refused, looped = _refused(), _looped()
-    if not (refused and looped):
+    refused, looped, found = _refused(), _looped(), policy_found()
+    if not (refused and looped and not found):
         held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
-        raise pytest.UsageError(f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; past loopback refused: {refused}; loopback open: {looped}")
+        raise pytest.UsageError(
+            f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}"
+        )
     return f"{OFFLINE}" if error.value is None else f"{OFFLINE}, by the sandbox the run started in: sandbox_init said {error.value.decode()!r}"
+
+
+def policy_found() -> list[str]:
+    """Each place this process finds the machine's Claude Code policy, every account's plist among them, as the profile
+    hides every account's. glob still lists a plist the profile hides, so exists() is what keeps it out of the answer. A
+    sandbox that refuses a read, as one the run started in may, raises from exists() on the fixed places and from glob on
+    a refused MANAGED_PREFERENCES: the policy is there, unread here but not in every Claude Code that asks. glob finds
+    nothing in an account's folder refused it."""
+    places = (POLICY_FOLDER, MANAGED_PREFERENCES / POLICY_PLIST, *MANAGED_PREFERENCES.glob(f"*/{POLICY_PLIST}"))
+    return [str(path) for path in places if path.exists()]
 
 
 def _refused() -> bool:

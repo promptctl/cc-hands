@@ -26,7 +26,8 @@ def _loaded(path: Path) -> ModuleType:
     return module
 
 
-# [LAW:one-source-of-truth] the hold hands' run is kept off the network by, its profile and the macOS it needs.
+# [LAW:one-source-of-truth] the hold hands' run is kept to, off the network and away from the machine's Claude Code
+# policy, its profile and the macOS it needs.
 offline = _loaded(Path(__file__).parents[2] / "tests" / "offline.py")
 
 # The names a test takes from the machine as they are: macOS's per-user temporary directory, and CI's word that the run
@@ -83,7 +84,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_report_header(config: pytest.Config) -> str:
-    return f"offline: nothing past loopback ({config.stash[_held]})"
+    return f"offline: nothing past loopback and no Claude Code policy ({config.stash[_held]})"
 
 
 @pytest.fixture(scope="session")
