@@ -116,6 +116,71 @@ def test_overruns_its_own_bound(shared):
     time.sleep(60)
 """
 
+# Each phase's report takes longer to build than its test has left, as on a loaded machine: a shared setup that raises
+# after the test's own setup spent 1.3 s of its 2, a test that fails after 1.3 s of its 2, and a test that passes though
+# pytest's logging of its start alone takes longer than its whole bound.
+REPORTED = """
+import time
+import pytest
+
+@pytest.fixture(scope="session")
+def shared_raises():
+    raise RuntimeError("the shared setup failed")
+
+@pytest.fixture
+def first(request):
+    time.sleep(1.3)
+    request.getfixturevalue("shared_raises")
+
+def test_after_a_shared_setup_that_raises(first):
+    pass
+
+def test_that_fails():
+    time.sleep(1.3)
+    assert False
+
+@pytest.mark.timeout(0.5)
+def test_that_passes():
+    pass
+"""
+
+# Skipped as its setup runs, after a fixture whose teardown never returns and with a shared one torn down after it.
+SKIPS = """
+import time
+import pytest
+
+@pytest.fixture(scope="module")
+def shared():
+    yield
+
+@pytest.fixture
+def never_torn_down(shared):
+    yield
+    time.sleep(60)
+
+@pytest.fixture
+def skips(never_torn_down):
+    pytest.skip("skipped as its setup runs")
+
+def test_that_skips(skips):
+    pass
+"""
+
+# pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
+SLOW_REPORTING = """
+import time
+import pytest
+
+def pytest_runtest_logstart(nodeid, location):
+    time.sleep(0.8)
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    time.sleep(0.8)
+    return report
+"""
+
 
 @pytest.fixture
 def suite(pytester: pytest.Pytester) -> pytest.Pytester:
@@ -129,6 +194,8 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_hangs=HANGS,
         test_overruns=OVERRUNS,
         test_rearmed=REARMED,
+        test_reported=REPORTED,
+        test_skips=SKIPS,
     )
     return pytester
 
@@ -147,9 +214,25 @@ def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_b
             "ERROR test_hangs.py::test_after_a_shared_setup_that_hangs - Failed: Timeout (>2.0s)*",
             # What the test had left once its own setup had run.
             "FAILED test_late.py::test_overruns_with_its_own_setup - Failed: Timeout (>0.*s)*",
-            "FAILED test_overruns.py::test_that_never_returns - Failed: Timeout (>2.0s)*",
+            "FAILED test_overruns.py::test_that_never_returns - Failed: Timeout (>1.*s)*",
         ]
     )
+
+
+def test_under_a_signal_no_timer_runs_while_a_phase_is_reported(suite: pytest.Pytester) -> None:
+    # pytest-timeout's one timer spans the whole protocol, reporting and all, so a timer that fires while pytest logs or
+    # reports fires inside pytest's own code, and the run ends in INTERNALERROR with outcomes uncounted.
+    suite.makeconftest(SLOW_REPORTING)
+    ran = run(suite, "signal", "test_hangs.py", "test_reported.py")
+    ran.assert_outcomes(passed=1, failed=1, errors=2)
+    assert "INTERNALERROR" not in ran.stdout.str()
+
+
+def test_under_a_signal_a_test_skipped_in_its_setup_is_bounded_through_its_teardown(suite: pytest.Pytester) -> None:
+    # The bound fires once: the shared teardown after it re-arms nothing, so the error is the one timeout, not a group.
+    ran = run(suite, "signal", "-rsE", "test_skips.py")
+    ran.assert_outcomes(skipped=1, errors=1)
+    ran.stdout.fnmatch_lines_random(["ERROR test_skips.py::test_that_skips - Failed: Timeout (>1.*s)*"])
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
