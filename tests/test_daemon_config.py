@@ -31,6 +31,7 @@ from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
 from hands.voice.wakeword import Pretrained, Trained
+from hands.voice.devicechoice import Auto, Choices, Named
 from hands.voice.backends import Account, ClaudeCodeBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
@@ -70,6 +71,21 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
     assert config.parse('[talk]\nwake_word = " Hey   Computer "\nwake_word_model = "/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path("/wake/hey_computer.onnx"))
 
 
+def test_the_file_names_the_audio_devices_each_auto_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
+    # Left out, each side follows the system's default, as auto does, however it is capitalised.
+    assert config.parse("").devices == Choices(Auto(), Auto())
+    assert config.parse('[audio]\ninput_device = "Auto"\noutput_device = "auto"\n').devices == Choices(Auto(), Auto())
+    # Any other text is a device's name, as the system gives it, matched as written: off is a name like any other.
+    named = config.parse('[audio]\ninput_device = " MacBook Pro Microphone "\noutput_device = "off"\n').devices
+    assert named == Choices(Named("MacBook Pro Microphone"), Named("off"))
+    assert config.parse('[audio]\noutput_device = "MacBook Pro Speakers"\n').devices == Choices(Auto(), Named("MacBook Pro Speakers"))
+    # And the voice is built on them.
+    home = Home(tmp_path / ".hands")
+    onboard(home.brain)
+    home.config.write_text('[audio]\ninput_device = "MacBook Pro Microphone"\n')
+    assert run.configured_from(home, config.load(home), os.environ).voice.devices == Choices(Named("MacBook Pro Microphone"), Auto())
+
+
 @pytest.mark.parametrize(
     ("text", "said"),
     [
@@ -94,6 +110,10 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
         ('[talk]\nwake_word_model = "/models/hey_computer.onnx"\n', "wake_word_model needs wake_word"),
         ('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "models/hey_computer.onnx"\n', "is not a full path to an ONNX model"),
         ('[talk]\nwake_word = "Hey Computer"\nwake_word_model = "/models/hey_computer.tflite"\n', "is not a full path to an ONNX model"),
+        ('[audio]\nmicrophone = "MacBook Pro Microphone"\n', "[audio] has no 'microphone'; it takes input_device, output_device"),
+        ('[audio]\ninput_device = " "\n', "[audio] input_device should be a non-empty string"),
+        ("[audio]\noutput_device = false\n", "[audio] output_device should be a non-empty string, got False"),
+        ('audio = "off"\n', "audio should be a table"),
     ],
 )
 def test_a_file_that_does_not_parse_is_refused_saying_what_is_wrong(text: str, said: str) -> None:
@@ -315,7 +335,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
     heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
     sessions = new_sessions(clock=SYSTEM)
-    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
+    config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")), devices=Choices(Named("MacBook Pro Microphone"), Auto()))
     return Home(tmp_path), sessions, heart, config
 
 
@@ -344,18 +364,19 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     assert await starting == config
     # The start's event says which file the settings came from, the collector they name, which server and
     # model the run reaches and on what account, the voice it speaks in, the personality it comes across in, and the
-    # wake word it listens for, with the model of the user's own it is heard with.
+    # wake word it listens for, with the model of the user's own it is heard with, and the devices config.toml chooses.
     recorded: list[Entry] = []
     run_start.ended(recorded.append, None)
     [event] = recorded
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
     # How big hands was as its start ended.
     assert isinstance(event.facts["footprint_mb"], float) and event.facts["footprint_mb"] > 0
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model", "input_device", "output_device")}
     assert chosen == {
         "settings": home.config, "collector": "http://otel.example:4318",
         "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
+        "input_device": Named("MacBook Pro Microphone"), "output_device": Auto(),
     }
 
 

@@ -195,6 +195,10 @@ collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTT
 [talk]
 personality = "Dry and wry, with a bit of wit."   # how hands comes across, in your own words
 wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level
+
+[audio]
+input_device = "MacBook Pro Microphone"   # auto (the default) or a device's name
+output_device = "MacBook Pro Speakers"
 ```
 
 `personality` changes hands' tone and choice of words, and nothing else: replies stay short and
@@ -204,6 +208,12 @@ spoken, and hands does only what you tell it to. Leave it out and hands talks in
 any other phrase, train an ONNX model on it with `uv run --project wake-training train-wake-word "Hey Computer"`
 ([docs/wake-word-training.md](docs/wake-word-training.md)), and name it beside the phrase:
 `wake_word_model = "~/wake/hey_computer.onnx"`.
+
+`input_device` and `output_device` choose the microphone and speaker hands uses at the Mac. `auto`, the default,
+follows the system's default device as it changes. A device's name, as macOS shows it in Sound settings, keeps hands on
+that device whatever the default is, so music can play through AirPlay or headphones while hands listens and speaks on
+the Mac's own. While a named device is missing hands uses the default, says so, and goes back to the named one when it
+returns. The phone is unaffected by either.
 
 hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
 playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control

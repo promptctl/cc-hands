@@ -24,6 +24,7 @@ from hands.clock import Clock
 from hands.voice.voices import SaidInTTS
 from hands.voice.transcript import TranscriptObserver
 from hands.voice.wakeword import Pretrained, Word
+from hands.voice.devicechoice import Choices
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.utterance import Audible
@@ -52,6 +53,8 @@ class VoiceConfig:
     personality: str | None = None
     # What the desk listens for at its wake word level.
     wake: Word = Pretrained()
+    # The audio devices the desk hears and speaks on.
+    devices: Choices = Choices()
 
 
 @dataclass(frozen=True)
@@ -96,7 +99,7 @@ def build_voice(
     params = PipelineParams(enable_metrics=True)
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(clock, key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
-    transport = KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
+    transport = KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record, choices=config.devices)
     # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is, and made before
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading(clock, "tts.loaded", record):

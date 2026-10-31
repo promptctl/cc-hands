@@ -17,7 +17,7 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.clock import Clock
 from hands.sessions.audit import Announced, Record
-from hands.voice.microphone import Devices
+from hands.voice.microphone import Devices, HeardOn, Instead, PlayedOn
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.core.stopfailure import StopFailed
@@ -51,7 +51,8 @@ class TurnTimedOut:
 
 @dataclass(frozen=True)
 class AudioMoved:
-    """The system's default devices changed, and the transport was reopened on these."""
+    """Where config.toml puts the streams changed, a default moved or a device it names came or went, and the
+    transport was reopened on these."""
 
     devices: Devices
 
@@ -61,9 +62,9 @@ SystemFact = Started | ModelUnreachable | ModelFailed | ModelReplyEmpty | ModelU
 
 def system_text(fact: SystemFact) -> str:
     match fact:
-        case Started(after_crash=after_crash, devices=Devices(input=input_)):
+        case Started(after_crash=after_crash, devices=Devices(input=input_, output=output)):
             up = "hands is back after a crash" if after_crash else "hands is up"
-            return f"{up}." if input_ is not None else f"{up}, but there is no microphone, so it cannot hear you."
+            return f"{up}{_started_hearing(input_)}{_instead(', speaking on', output)}."
         case ModelUnreachable():
             return "The language model is unreachable."
         case ModelFailed(category=category):
@@ -88,11 +89,42 @@ def system_text(fact: SystemFact) -> str:
             return "There is no microphone, so hands cannot hear you."
         case TurnTimedOut():
             return f"That turn ran {TURN_LIMIT_SECONDS / 60:.0f} minutes, so hands sent it and stopped recording."
-        case AudioMoved(devices=Devices(input=None, output=output)):
+        case AudioMoved(devices=Devices(input=None | Instead(device=None) as input_, output=output)):
             # [LAW:no-silent-failure] said on whatever speaker is left, since nothing will be heard until a microphone is back.
-            return f"No microphone: hands cannot hear you. Speaking on {output}."
+            missing = f"{input_.missing} is missing, so " if isinstance(input_, Instead) else ""
+            return f"No microphone: {missing}hands cannot hear you. {_on('Speaking on', output)}."
         case AudioMoved(devices=Devices(input=input_, output=output)):
-            return f"Audio moved: listening on {input_}, speaking on {output}."
+            return f"Audio moved: {_on('listening on', input_)}, {_on('speaking on', output)}."
+
+
+def _started_hearing(heard: HeardOn) -> str:
+    """What a start says of the microphone, after "hands is up": nothing where it is on the device it was chosen on."""
+    match heard:
+        case None:
+            return ", but there is no microphone, so it cannot hear you"
+        case Instead(missing=missing, device=None):
+            return f", but {missing} is missing and there is no other microphone, so it cannot hear you"
+        case str() | Instead():
+            return _instead(", listening on", heard)
+
+
+def _on(doing: str, device: HeardOn | PlayedOn) -> str:
+    """What a side is `doing` on its device; nothing for a microphone on none."""
+    match device:
+        case str():
+            return f"{doing} {device}"
+        case _:
+            return _instead(doing, device)
+
+
+def _instead(doing: str, device: HeardOn | PlayedOn) -> str:
+    """What a side is `doing` on the default in place of the device config.toml names, which is missing; nothing for
+    a side on any other."""
+    match device:
+        case Instead(missing=missing, device=str(opened)):
+            return f"{doing} {opened} in place of the missing {missing}"
+        case _:
+            return ""
 
 
 def _fault(fact: SystemFact) -> str:
@@ -269,9 +301,9 @@ def told(move: Move, devices: Devices) -> tuple[NoMicrophone | TurnTimedOut, ...
     turn will answer since no frame reaches the clip owner, and a turn sent for being open too long, since the user may still be
     talking into a microphone that has closed; with no microphone it recorded nothing, and nobody was heard to be cut off."""
     match move, devices:
-        case "start" | "listen", Devices(input=None):
+        case "start" | "listen", Devices(input=None | Instead(device=None)):
             return (NoMicrophone(),)
-        case "timeout", Devices(input=None):
+        case "timeout", Devices(input=None | Instead(device=None)):
             return ()
         case "timeout", _:
             return (TurnTimedOut(),)

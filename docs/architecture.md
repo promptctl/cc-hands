@@ -1980,7 +1980,11 @@ did, even when the run was stopping meanwhile.
 The next turn ran end to end on the built-in devices. Every step that touches a device runs off the event loop.
 A reopen that takes longer than 10 s, or one that fails, stops the run, which reads as down, and the next
 `hands run` opens on whatever devices there are. The same path follows a headset plugged in, or a default changed in
-Control Center. A Mac with no built-in microphone (a mini, a Studio) can
+Control Center. A side `[audio]` names a device for keeps to it: the follower compares where the sides are wanted
+(`hands.voice.devicechoice.placed`, from the defaults and the names of the devices CoreAudio lists) with where they
+were as they opened, so a default that moves under a named side reopens nothing. A named device missing at an open is
+replaced by the default, and the start or the move says so (`… in place of the missing …`); the listener also hears
+the device list change, so the device going reopens its side on the default, and its return reopens it there again. A Mac with no built-in microphone (a mini, a Studio) can
 lose its only input device. Then the microphone holds a stream of nothing (`NoInput`),
 which is opened, started, stopped, and closed like any other. The move is said as
 `No microphone: hands cannot hear you. Speaking on …`. A daemon that starts that way
@@ -2551,6 +2555,8 @@ variant with a real alternative or it does not exist. The fields:
 | `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
 | `[talk] wake_word` | what the `wake word` trigger listens for: one of openWakeWord's own (Hey Jarvis, the default, Hey Mycroft, Hey Rhasspy, Alexa), or with `wake_word_model` the phrase the user's model was trained on |
 | `[talk] wake_word_model` | the full path of an ONNX model the user trained with openWakeWord; checked as the trigger is switched to, as openWakeWord's own are fetched then |
+| `[audio] input_device` | the microphone the desk hears on: `auto`, the default, follows the system's default; a device's name, as the system gives it, keeps to that device whatever the default is, on the default while it is missing |
+| `[audio] output_device` | the speaker the desk plays on, chosen the same way |
 
 The voice is not a setting: the user chooses it by voice while hands runs, and it is
 kept in the home's `voice` file. The model is a setting the user may also choose by

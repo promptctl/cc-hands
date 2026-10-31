@@ -1,4 +1,4 @@
-"""Following the system's default audio devices, with the reopen and the saying replaced."""
+"""Following the audio devices, with the reopen and the saying replaced."""
 
 import asyncio
 from contextlib import suppress
@@ -10,17 +10,22 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from conftest import events, patiently
-from hands.voice.coreaudio import DefaultDevices
+from hands.voice.devicechoice import Auto, Choices, DefaultDevices, Hardware, Named, OnDefault, OnNamed, Placement, placed
 from hands.voice.devices import follow
-from hands.voice.microphone import Devices
+from hands.voice.microphone import Devices, Instead
 from hands.voice.system import AudioMoved, SystemFact, system_text
 
 HEADSET = Devices(input="headset", output="headset")
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
 
 
+def on(device: int) -> Placement:
+    """Both sides on the defaults, which are the one device."""
+    return Placement(OnDefault(device), OnDefault(device))
+
+
 class Notices(asyncio.Event):
-    """The default-device notices, which also tell when the follower has settled: waiting on them, none pending."""
+    """The device notices, which also tell when the follower has settled: waiting on them, none pending."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -37,8 +42,8 @@ class Notices(asyncio.Event):
 
 
 class Follower:
-    def __init__(self, *opened: Devices) -> None:
-        self.defaults = DefaultDevices(input=1, output=1)
+    def __init__(self, *opened: Devices, at: Placement = on(1)) -> None:
+        self.defaults = at
         self.opened_on = self.defaults
         self.changes = Notices()
         self.opened = list(opened)
@@ -64,13 +69,16 @@ class Follower:
         self.devices = self.opened.pop(0)
         return self.devices
 
-    async def current(self) -> DefaultDevices:
+    async def current(self) -> Placement:
+        return self.defaults
+
+    def wanted(self) -> Placement:
         return self.defaults
 
     async def say(self, fact: SystemFact) -> None:
         self.said.append(fact)
 
-    def notice(self, defaults: DefaultDevices) -> None:
+    def notice(self, defaults: Placement) -> None:
         self.defaults = defaults
         self.changes.set()
 
@@ -99,17 +107,17 @@ async def test_a_change_of_defaults_reopens_the_transport_and_says_where_the_aud
     follower.release.clear()
     await follower.settled()
     # An unplugged headset changes the default input and output together, as two notices, one while the reopen runs.
-    follower.notice(DefaultDevices(input=2, output=2))
+    follower.notice(on(2))
     await follower.until(follower.reopening)
-    follower.notice(DefaultDevices(input=2, output=2))
+    follower.notice(on(2))
     follower.release.set()
     await follower.settled()
     await follower.stop()
     assert follower.reopens == 1
     assert follower.said == [AudioMoved(BUILT_IN)]
     [move] = follower.moves
-    moved = DefaultDevices(input=2, output=2)
-    assert (move.outcome, move.facts) == ("ok", {"before": HEADSET, "defaults": moved, "after": BUILT_IN, "opened_on": moved})
+    moved = on(2)
+    assert (move.outcome, move.facts) == ("ok", {"before": HEADSET, "wanted": moved, "after": BUILT_IN, "opened_on": moved})
 
 
 async def test_a_change_that_comes_while_the_transport_reopens_is_followed_too() -> None:
@@ -117,9 +125,9 @@ async def test_a_change_that_comes_while_the_transport_reopens_is_followed_too()
     follower.devices = BUILT_IN
     follower.release.clear()
     await follower.settled()
-    follower.notice(DefaultDevices(input=2, output=2))  # plugged in
+    follower.notice(on(2))  # plugged in
     await follower.until(follower.reopening)
-    follower.notice(DefaultDevices(input=1, output=1))  # and pulled out again before the first reopen finished
+    follower.notice(on(1))  # and pulled out again before the first reopen finished
     follower.release.set()
     await follower.settled()
     await follower.stop()
@@ -142,7 +150,7 @@ async def test_a_notice_that_leaves_the_defaults_where_they_were_reopens_nothing
 
 async def test_a_headset_unplugged_before_the_pipeline_started_is_followed_once_it_has() -> None:
     follower = Follower(BUILT_IN)
-    follower.defaults = DefaultDevices(input=2, output=2)  # moved while the models loaded, after PortAudio listed the old ones
+    follower.defaults = on(2)  # moved while the models loaded, after PortAudio listed the old ones
     await follower.settled()
     await follower.stop()
     assert follower.said == [AudioMoved(BUILT_IN)]
@@ -152,7 +160,7 @@ async def test_a_follower_stopped_during_a_reopen_waits_for_it_to_finish() -> No
     follower = Follower(BUILT_IN)
     follower.release.clear()
     await follower.settled()
-    follower.notice(DefaultDevices(input=2, output=2))
+    follower.notice(on(2))
     await follower.until(follower.reopening)
     follower.task.cancel()
     await asyncio.sleep(0.01)
@@ -173,7 +181,7 @@ async def test_a_reopen_that_fails_while_the_follower_is_stopped_fails_its_move(
     follower.failing = OSError("no default output device")
     follower.release.clear()
     await follower.settled()
-    follower.notice(DefaultDevices(input=2, output=2))
+    follower.notice(on(2))
     await follower.until(follower.reopening)
     follower.task.cancel()
     await asyncio.sleep(0.01)
@@ -190,10 +198,55 @@ async def test_a_reopen_that_fails_stops_the_follower_and_its_move_is_failed() -
     follower = Follower(BUILT_IN)
     follower.failing = OSError("no default output device")
     await follower.settled()
-    follower.notice(DefaultDevices(input=2, output=2))
+    follower.notice(on(2))
     await asyncio.wait({follower.task})
     with pytest.raises(OSError):
         follower.task.result()
     [move] = follower.moves
-    assert (move.outcome, move.error, move.facts) == ("failed", "OSError: no default output device", {"before": HEADSET, "defaults": DefaultDevices(input=2, output=2)})
+    assert (move.outcome, move.error, move.facts) == ("failed", "OSError: no default output device", {"before": HEADSET, "wanted": on(2)})
     assert follower.said == []
+
+
+DISPLAY = Choices(Named("Studio Display Microphone"), Named("Studio Display Speakers"))
+ON_DISPLAY = Devices(input="Studio Display Microphone", output="Studio Display Speakers")
+
+
+def plugged(default: int, *names: str) -> Hardware:
+    """The Mac's own microphone and speakers, the headset, and the devices `names`, on `default`."""
+    return Hardware(DefaultDevices(default, default), frozenset({"MacBook Pro Microphone", "headset", *names}), frozenset({"MacBook Pro Speakers", "headset", *names}))
+
+
+def test_auto_follows_the_defaults_and_a_named_device_keeps_to_itself_while_it_is_there() -> None:
+    there = plugged(1, "Studio Display Microphone", "Studio Display Speakers")
+    assert placed(Choices(), there) == Placement(OnDefault(1), OnDefault(1))
+    assert placed(DISPLAY, there) == Placement(OnNamed("Studio Display Microphone"), OnNamed("Studio Display Speakers"))
+    # Missing, a named device puts its side on the default until it is back; a microphone is no speaker.
+    assert placed(DISPLAY, plugged(3)) == Placement(OnDefault(3), OnDefault(3))
+    assert placed(Choices(Auto(), Named("MacBook Pro Microphone")), there).output == OnDefault(1)
+
+
+async def test_a_default_that_moves_under_named_devices_reopens_nothing() -> None:
+    follower = Follower(at=placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers")))
+    await follower.settled()
+    follower.notice(placed(DISPLAY, plugged(2, "Studio Display Microphone", "Studio Display Speakers")))  # a headset plugged in, the new default
+    await follower.settled()
+    await follower.stop()
+    assert (follower.reopens, follower.said) == (0, [])
+
+
+async def test_a_named_device_that_goes_is_left_for_the_default_said_so_and_returned_to_once_it_is_back() -> None:
+    instead = Devices(input=Instead("Studio Display Microphone", "MacBook Pro Microphone"), output=Instead("Studio Display Speakers", "MacBook Pro Speakers"))
+    follower = Follower(instead, ON_DISPLAY, at=placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers")))
+    follower.devices = ON_DISPLAY
+    await follower.settled()
+    follower.notice(placed(DISPLAY, plugged(1)))  # the display unplugged: no default moved, the device list did
+    await follower.settled()
+    assert follower.said == [AudioMoved(instead)]
+    follower.notice(placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers")))  # and plugged in again
+    await follower.settled()
+    await follower.stop()
+    assert follower.said == [AudioMoved(instead), AudioMoved(ON_DISPLAY)]
+    assert [system_text(fact) for fact in follower.said] == [
+        "Audio moved: listening on MacBook Pro Microphone in place of the missing Studio Display Microphone, speaking on MacBook Pro Speakers in place of the missing Studio Display Speakers.",
+        "Audio moved: listening on Studio Display Microphone, speaking on Studio Display Speakers.",
+    ]

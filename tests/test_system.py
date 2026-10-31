@@ -48,7 +48,7 @@ from hands.voice.system import (
 )
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip
-from hands.voice.microphone import Devices
+from hands.voice.microphone import Devices, Instead
 from hands.voice.ptt import Gate
 from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words
@@ -56,6 +56,8 @@ from hands.voice.turnstop import TurnResolved, Words
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
 DEAF = Devices(input=None, output="Mac mini Speakers")
+# The devices config.toml names are missing, so each side is on the default instead.
+STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=Instead("MacBook Pro Speakers", "AirPods"))
 
 
 @pytest.mark.parametrize(
@@ -66,6 +68,11 @@ DEAF = Devices(input=None, output="Mac mini Speakers")
         (Started(after_crash=False, devices=DEAF), "hands is up, but there is no microphone, so it cannot hear you."),
         (Started(after_crash=True, devices=DEAF), "hands is back after a crash, but there is no microphone, so it cannot hear you."),
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
+        (Started(after_crash=False, devices=STAND_INS), "hands is up, listening on AirPods in place of the missing MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
+        (Started(after_crash=False, devices=Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "hands is up, speaking on AirPods in place of the missing MacBook Pro Speakers."),
+        (Started(after_crash=False, devices=Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers")), "hands is up, but MacBook Pro Microphone is missing and there is no other microphone, so it cannot hear you."),
+        (AudioMoved(Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "Audio moved: listening on MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
+        (AudioMoved(Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers")), "No microphone: MacBook Pro Microphone is missing, so hands cannot hear you. Speaking on Mac mini Speakers."),
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
@@ -96,6 +103,8 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
         ("start", BUILT_IN, ()),
         ("timeout", BUILT_IN, (TurnTimedOut(),)),
         ("timeout", DEAF, ()),
+        ("start", Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers"), (NoMicrophone(),)),
+        ("start", STAND_INS, ()),
     ],
 )
 def test_a_move_the_tone_alone_would_leave_unexplained_is_said(move: Move, devices: Devices, said: tuple[SystemFact, ...]) -> None:
