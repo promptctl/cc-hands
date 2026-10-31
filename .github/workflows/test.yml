@@ -107,6 +107,12 @@ jobs:
           # The lit tests skip without a lit on PATH: a lit put anywhere but where the next step looks fails here.
           "$GOBIN/lit" version
           echo "$GOBIN" >> "$GITHUB_PATH"
+      # A Claude Code policy, as a developer's Mac or a managed one has: the run's sandbox must keep it from every Claude
+      # Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
+      - name: A machine's Claude Code policy
+        run: |
+          sudo mkdir -p "/Library/Application Support/ClaudeCode/managed-settings.d"
+          echo '{"env": {"HANDS_POLICY": "the machine'"'"'s, never a test'"'"'s"}}' | sudo tee "/Library/Application Support/ClaudeCode/managed-settings.d/10-machine.json"
       # [LAW:one-source-of-truth] the suite is the Makefile's check.
       - name: make check
         run: make check

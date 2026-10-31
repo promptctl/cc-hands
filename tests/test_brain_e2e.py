@@ -2,9 +2,8 @@
 model's replies scripted by the mock of Anthropic's API. No login, no subscription, and no network while a test runs: the
 mock is the upstream hands' proxy forwards to, and the brain's way to every other host Claude Code calls, and its OAuth
 login is one the mock accepts. The OS holds the brain to it: the run, and every Claude Code hands starts in it, runs in
-a sandbox whose only connections are to loopback (conftest). A machine's Claude Code policy reaches every Claude Code,
-the brain under test among them, and neither a setting, a variable nor the sandbox keeps it out (px1f.6os): a policy
-that changes what the brain does fails these tests, and they run all the same. The pinned Claude Code, from npm's registry, and the mock are fetched
+a sandbox whose only connections are to loopback (conftest). The same sandbox has a machine's Claude Code policy read as
+absent (offline.sb), so the brain runs as on a machine with none. The pinned Claude Code, from npm's registry, and the mock are fetched
 before the run, into pytest's cache (conftest). What each test proves is what hands does with the replies it scripts, the same on every run."""
 
 import asyncio
