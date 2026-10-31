@@ -202,8 +202,16 @@ BLOCKS = """
 import signal
 import sys
 
-def test_that_blocks():
-    sys.tracebacklimit = 1
+def test_that_blocks(monkeypatch):
+    monkeypatch.setattr(sys, "tracebacklimit", 1, raising=False)
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+DEBUGGED = """
+import signal
+
+def test_under_a_debugger(request):
+    request.config.hook.pytest_enter_pdb(config=request.config, pdb=None)
     signal.raise_signal(signal.SIGALRM)
 """
 
@@ -259,6 +267,7 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_skips=SKIPS,
         test_awaits=AWAITS,
         test_blocks=BLOCKS,
+        test_debugged=DEBUGGED,
     )
     return pytester
 
@@ -333,6 +342,12 @@ def test_under_a_signal_a_timeout_says_where_everything_was_with_capture_off(sui
     suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
     said = run(suite, "signal", *UNFIRED, "-p", "no:capture", "test_blocks.py").stdout.str()
     assert "test_blocks.py::test_that_blocks timed out" in said
+
+
+def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_out(suite: pytest.Pytester) -> None:
+    ran = run(suite, "signal", *UNFIRED, "test_debugged.py")
+    ran.assert_outcomes(passed=1)
+    assert "timed out" not in ran.stdout.str()
 
 
 def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: pytest.Pytester) -> None:
