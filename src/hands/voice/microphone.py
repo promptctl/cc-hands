@@ -234,6 +234,17 @@ class Output:
 
 
 @dataclass(frozen=True)
+class Attached(Output):
+    """A speaker stream as attached, with the writer of everything played on it.
+
+    [LAW:one-source-of-truth] a stream and its writer are one value, so letting go of one ends the other whichever
+    stream the speaker has attached by then.
+    """
+
+    writes: SerialThread
+
+
+@dataclass(frozen=True)
 class Input:
     """A microphone stream as opened, with the name of its device, and the canceller its every buffer is heard through;
     no name, and a NoInput stream, when there is none."""
@@ -267,11 +278,8 @@ class Speaker(LocalAudioOutputTransport):
         self._clock = clock
         # When sound was last handed to the speaker, for the heartbeat; None before the first.
         self.sounded_at: Instant | None = None
-        # [LAW:single-enforcer] every write to the stream goes through this one thread, in place of Pipecat's executor,
-        # whose thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
-        self._writes = SerialThread("speaker writes")
         # What the attached stream was opened on; None until setup opens the first.
-        self.opened: Output | None = None
+        self.opened: Attached | None = None
         # Set while a stream is attached; a write waits on it through a reopen.
         self._attached = asyncio.Event()
         # Who is speaking, as the frames passing out of the pipeline say: hands as its sender starts and stops, the user
@@ -320,11 +328,13 @@ class Speaker(LocalAudioOutputTransport):
 
     def attach(self, py_audio: PortAudio, opened: Output) -> None:
         self._py_audio = cast(pyaudio.PyAudio, py_audio)
-        self.opened = opened
+        # [LAW:single-enforcer] every write to the stream goes through one thread, in place of Pipecat's executor, whose
+        # thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
+        self.opened = Attached(opened.stream, opened.device, opened.echo, SerialThread("speaker writes"))
         self._out_stream = opened.stream
         self._attached.set()
 
-    def detach(self) -> Output:
+    def detach(self) -> Attached:
         """Take the stream away: a write from here on waits for the next one to be attached."""
         opened = self._held()
         assert opened is not None, "the speaker stream opens in setup"
@@ -332,21 +342,21 @@ class Speaker(LocalAudioOutputTransport):
         self._out_stream = None
         return opened
 
-    def _held(self) -> Output | None:
+    def _held(self) -> Attached | None:
         # As for the microphone: `_out_stream` says a stream is attached; `opened` outlives a detach.
         return None if self._out_stream is None else self.opened
 
-    async def let_go(self, opened: Output) -> None:
-        """Stop a detached stream, wait out the writes already given to it, then close it."""
+    async def let_go(self, opened: Attached) -> None:
+        """Stop a detached stream, wait out the writes already given to it, then close it and end its writer."""
         # [LAW:nothing-unseen] one event for each stream let go of, carrying what its device took over its life.
         with unit("speaker.let_go", self._record, PLAYOUT_COUNTS):
             annotate(device=opened.device)
             try:
                 # [LAW:no-ambient-temporal-coupling] closing frees the stream, so it waits until no write is inside it.
                 # Stopping is what releases a write blocked on a lost device, and every write handed over before the
-                # detach has returned once the writer thread reaches the empty work queued behind them.
+                # detach has returned once the writer thread has ended.
                 await off_loop(lambda: _letting_go(opened.stream.stop_stream), "stopping the speaker")
-                await self._writes.run(lambda: None)
+                await opened.writes.close()
                 await off_loop(opened.stream.close, "closing the speaker")
             finally:
                 count(**opened.stream.counts())
@@ -425,7 +435,7 @@ class Speaker(LocalAudioOutputTransport):
                 self.sounded_at = self._clock()
             stream.write(frame.audio, voices)
 
-        await self._writes.run(write)
+        await cast(Attached, self.opened).writes.run(write)
         return True
 
     def cue(self, cue: Cue) -> Played:
@@ -456,7 +466,7 @@ class Speaker(LocalAudioOutputTransport):
                     self.sounded_at = self._clock()
                     stream.write(audio, ())
 
-                self._writes.give(write)
+                cast(Attached, self.opened).writes.give(write)
                 return "desk"
 
 

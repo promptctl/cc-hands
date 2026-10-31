@@ -83,7 +83,7 @@ def through(samples: int) -> int:
     last = (samples - 1 + N_FFT // 2) // MEL_HOP
     committed = (last // CHUNK + 1) * CHUNK
     step = -(-committed // STEP)
-    return max(samples, (STEP * step + AHEAD - 1) * MEL_HOP + N_FFT // 2)
+    return (STEP * step + AHEAD - 1) * MEL_HOP + N_FFT // 2
 
 
 @dataclass(frozen=True)
@@ -493,12 +493,16 @@ def speaker(label: str) -> int:
 
 @dataclass
 class _Paired:
-    """The run's session of the pair, mlx-audio's own: fed any partition of the run, it decodes every chunk the diarizer
-    has committed, and says where the diarizer heard each speaker in it."""
+    """The run's session of the pair, mlx-audio's own: given any partition of the run, it feeds the session what the
+    next diarizer step commits, decodes every chunk the diarizer has committed, and says where the diarizer heard each
+    speaker in it."""
 
     session: Any
     # The frames the diarizer marked a speaker in, since the last feed returned.
     _active: list[Active] = field(default_factory=list[Active])
+    # What the session has not been fed yet, all of it short of a step. `through` ends every hold on a step, so nothing
+    # is here when a hold closes.
+    _pending: list[Samples] = field(default_factory=list[Samples])
 
     def __post_init__(self) -> None:
         """Hear each chunk's speakers as the session takes it.
@@ -535,9 +539,24 @@ class _Paired:
         session._push_features = pushed
 
     def decoded(self, samples: Samples) -> Decoded:
-        words = tuple(Said(speaker(delta.speaker), delta.text) for delta in self.session.feed(samples))
-        active, self._active = tuple(self._active), []
-        return Decoded(words, active)
+        self._pending.append(samples)
+        # [LAW:one-source-of-truth] the run's position is the count the session keeps. Every feed of the session reads
+        # the GPU synchronously, once per diarizer speaker (sortformer's `_preds_to_segments`), and one short of a step
+        # can decode nothing, so it is put off: over a paravirtual GPU those reads were a third of the decoding.
+        fed = self.session._frontend.total_samples
+        match steps(fed + sum(map(len, self._pending))) - steps(fed):
+            case 0:
+                return Decoded((), ())
+            case _:
+                joined, self._pending = np.concatenate(self._pending), []
+                words = tuple(Said(speaker(delta.speaker), delta.text) for delta in self.session.feed(joined))
+                active, self._active = tuple(self._active), []
+                return Decoded(words, active)
+
+    def reset(self) -> None:
+        """The session afresh, as a run begins one, with nothing kept of a run that stopped part way through a step."""
+        self.session.reset()
+        self._active, self._pending = [], []
 
     def closed(self) -> Closed:
         """Every speaker's stream given a chunk of silence as its last and ended, its last token decoded, and the gate

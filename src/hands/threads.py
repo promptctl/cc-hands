@@ -38,13 +38,15 @@ class SerialThread:
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._queue: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
-        threading.Thread(target=self._serve, name=name, daemon=True).start()
+        self._queue: queue.SimpleQueue[Callable[[], None] | None] = queue.SimpleQueue()
+        self._closed = False
+        self._thread = threading.Thread(target=self._serve, name=name, daemon=True)
+        self._thread.start()
 
     def _serve(self) -> None:
-        while True:
+        while (work := self._queue.get()) is not None:
             try:
-                self._queue.get()()
+                work()
             except Exception:
                 # [LAW:single-enforcer] work given without a waiter fails here, said, and the thread outlives it:
                 # everything queued behind it, and everything given later, still runs.
@@ -52,7 +54,16 @@ class SerialThread:
 
     def give(self, work: Callable[[], None]) -> None:
         """Queue work behind everything given before it, and return without waiting for it to run."""
+        if self._closed:
+            # [LAW:no-silent-failure] queued behind the end of the thread, it would never run, and a waiter never wake.
+            raise RuntimeError(f"{self._name} is closed")
         self._queue.put(work)
+
+    async def close(self) -> None:
+        """Once everything given before this has run and the thread has ended; a second close returns at once."""
+        self._closed = True
+        self._queue.put(None)
+        await off_loop(self._thread.join, f"ending {self._name}")
 
     async def run[T](self, work: Callable[[], T]) -> T:
         """The result of work, once everything given before it has finished and it has run."""

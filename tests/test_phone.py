@@ -507,8 +507,10 @@ class Desk:
     def close(self) -> None: ...
 
 
-def a_transport(call: Call) -> tuple[KeyedAudioTransport, Desk, list[bytes]]:
-    """The keyed transport on the call's gate and phone, its desk stream kept and its pushed audio kept."""
+@pytest.fixture
+async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, Desk, list[bytes]], None]:
+    """The keyed transport on the call's gate and phone, its desk stream kept and its pushed audio kept, and cleaned up
+    as the test ends, which ends its stream's writer."""
     echo = EchoCanceller()
     transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone, lambda _: None, echo=lambda: echo)
     desk, pushed = Desk(), list[bytes]()
@@ -521,11 +523,12 @@ def a_transport(call: Call) -> tuple[KeyedAudioTransport, Desk, list[bytes]]:
 
     microphone.push_audio_frame = push_audio_frame
     microphone.get_event_loop = asyncio.get_running_loop
-    return transport, desk, pushed
+    yield transport, desk, pushed
+    await transport.output().cleanup()
 
 
-async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call) -> None:
-    transport, desk, pushed = a_transport(call)
+async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk, list[bytes]]) -> None:
+    transport, desk, pushed = a_transport
     echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
     call.key.move("start", "held key")  # a turn opened at the desk takes hands there...
     assert call.key.gate.place == "desk"

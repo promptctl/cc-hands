@@ -5,6 +5,7 @@ conversation would close, none in noise, and each word from the speaker who said
 import asyncio
 import contextlib
 import dataclasses
+import itertools
 import re
 import threading
 from dataclasses import dataclass, field
@@ -506,7 +507,7 @@ def pair() -> Any:
 @pytest.fixture
 def paired(pair: Any) -> Any:
     """The pair's session as a run begins it: nothing heard, nobody numbered."""
-    pair.session.reset()
+    pair.reset()
     return pair
 
 
@@ -522,6 +523,50 @@ def fixture_holds(name: str) -> list[Samples]:
 def spoken_words(spoken: Spoken) -> list[tuple[int, str]]:
     """Each word each speaker said, in lower case, with no punctuation."""
     return [(said.speaker, word) for said in spoken for word in re.findall(r"[\w']+", said.text.lower())]
+
+
+class Stepped:
+    """mlx-audio's session as `_Paired` reads it: what it was fed, feed by feed, and the count of it the session keeps."""
+
+    def __init__(self) -> None:
+        self.fed: list[Samples] = []
+        self._frontend = SimpleNamespace(total_samples=0)
+        self._push_features = None
+
+    def feed(self, samples: Samples) -> list[Any]:
+        self.fed.append(samples)
+        self._frontend.total_samples += len(samples)
+        return []
+
+    def reset(self) -> None:
+        self.fed = []
+        self._frontend.total_samples = 0
+
+
+def test_the_session_is_fed_nothing_until_a_feed_completes_a_step_and_then_all_of_it_in_order() -> None:
+    session = Stepped()
+    paired = streaming._Paired(session)  # pyright: ignore[reportPrivateUsage]
+    # Each diarizer step costs the session a feed, and a feed reads the GPU, so 20 ms frames between steps must not.
+    run = np.arange(32000, dtype=np.float32)
+    frames = [run[start : start + 320] for start in range(0, len(run), 320)]
+    told = [paired.decoded(frame) for frame in frames]
+    ends = [len(frame) + index * 320 for index, frame in enumerate(frames)]
+    completing = [end for end, before in zip(ends, [0, *ends]) if steps(end) > steps(before)]
+    assert list(itertools.accumulate(map(len, session.fed))) == completing
+    assert np.array_equal(np.concatenate(session.fed), run[: completing[-1]])
+    assert all(decoded == Decoded((), ()) for decoded in told)
+
+
+def test_a_run_begun_afresh_keeps_nothing_of_one_stopped_part_way_through_a_step() -> None:
+    session = Stepped()
+    paired = streaming._Paired(session)  # pyright: ignore[reportPrivateUsage]
+    paired.decoded(np.ones(320, np.float32))
+    paired.reset()
+    first = next(samples for samples in range(320, 32000, 320) if steps(samples) > 0)
+    for _ in range(first // 320):
+        paired.decoded(np.zeros(320, np.float32))
+    assert [len(fed) for fed in session.fed] == [first]
+    assert not np.any(session.fed[0])
 
 
 # Holds of one LibriVox reader (The Invisible Man, read solo; public domain), 20 to 30 dB down: utterances of 0.8 to 2 s,
@@ -583,8 +628,6 @@ def test_each_word_is_the_speaker_who_said_it_and_each_hold_closes_its_own_speak
     # A hold where one person speaks closes their stream alone: one made from gate history carried across the close
     # before it would show here. In holds 4 and 5 the diarizer also marks, for a moment, a speaker who decodes no word.
     assert [hold.closed.speakers for hold in ended] == [{0}, {0}, {0}, {0, 1}, {0, 2}, {0}]
-    # [LAW:one-source-of-truth] `steps` is what times a hearing: no word comes out on a feed it says no step completed.
-    assert live.session.off_grid == 0
 
 
 @dataclass
@@ -620,7 +663,7 @@ def test_two_people_in_one_hold_come_out_as_each_persons_words(paired: Any, alon
     for number in alone:
         live.spoken(np.concatenate([holds[number - 1], STOP]))
     first, second = holds[joined[0] - 1], holds[joined[1] - 1]
-    opened, heard = live.session.fed, len(timed.tokens)
+    opened, heard = live.fed, len(timed.tokens)
     _, whole = live.spoken(np.concatenate([first, second, STOP]))
     # hands gives each person's words as theirs, each the speaker numbered by when the run first heard her, in the order
     # each was first heard in the hold.
@@ -758,7 +801,8 @@ class Fed:
         return found, self.stream.ended()
 
 
-# Each test below decodes the whole echo once, about half the per-test timeout on CI; one decoding it twice overran it.
+# Each test below decodes the whole echo once, the longest decoding in this file; one decoding it twice overran the
+# per-test timeout on CI.
 def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_at(paired: Session, hands_print: HandsPrint) -> None:
     [echo] = fixture_holds("hands_echo_uncancelled.flac")
     fed = Fed(streaming.Stream(paired))
