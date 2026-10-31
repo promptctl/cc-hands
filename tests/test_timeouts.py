@@ -12,6 +12,8 @@ import timeouts
 
 # Each unit sleeps longer than half the bound, so two of them together overrun it and either alone does not.
 BOUND = ["--timeout=2"]
+# A bound past any setup, for a run whose firing the test drives itself.
+UNFIRED = ["--timeout=30"]
 
 SHARED = """
 import time
@@ -167,6 +169,51 @@ def test_that_skips(skips):
 """
 
 # pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
+# The bound is driven by its signal, with the main thread in the loop's select where a stuck async test sits, so what is
+# reported depends on no clock.
+AWAITS = """
+import asyncio
+import signal
+import sys
+import threading
+import time
+
+import pytest
+
+def fire_in_select():
+    main = threading.main_thread().ident
+    while sys._current_frames()[main].f_code.co_name != "select":
+        time.sleep(0.001)
+    signal.pthread_kill(main, signal.SIGALRM)
+
+async def deepest():
+    threading.Thread(target=fire_in_select, daemon=True).start()
+    await asyncio.Event().wait()
+
+async def outermost():
+    await deepest()
+
+@pytest.mark.asyncio
+async def test_that_awaits():
+    await outermost()
+"""
+
+BLOCKS = """
+import signal
+
+def test_that_blocks():
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+# A run ended before the session reports its failures, as a job cancelled at its limit is.
+ENDED_BEFORE_ITS_REPORT = """
+import os
+
+def pytest_runtest_logreport(report):
+    if report.failed:
+        os._exit(99)
+"""
+
 SLOW_REPORTING = """
 import time
 import pytest
@@ -196,6 +243,8 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_rearmed=REARMED,
         test_reported=REPORTED,
         test_skips=SKIPS,
+        test_awaits=AWAITS,
+        test_blocks=BLOCKS,
     )
     return pytester
 
@@ -233,6 +282,32 @@ def test_under_a_signal_a_test_skipped_in_its_setup_is_bounded_through_its_teard
     ran = run(suite, "signal", "-rsE", "test_skips.py")
     ran.assert_outcomes(skipped=1, errors=1)
     ran.stdout.fnmatch_lines_random(["ERROR test_skips.py::test_that_skips - Failed: Timeout (>1.*s)*"])
+
+
+def outermost_first(said: str) -> bool:
+    return said.index("in test_that_awaits") < said.index("in outermost") < said.index("in deepest")
+
+
+def test_under_a_signal_a_timeouts_failure_says_where_each_task_waited(suite: pytest.Pytester) -> None:
+    ran = run(suite, "signal", *UNFIRED, "test_awaits.py")
+    ran.assert_outcomes(failed=1)
+    said = ran.stdout.str()
+    assert outermost_first(said[said.index("FAILURES") :])
+
+
+def test_under_a_signal_a_timeout_says_where_each_task_waited_in_a_run_ended_before_its_report(suite: pytest.Pytester) -> None:
+    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
+    said = run(suite, "signal", *UNFIRED, "test_awaits.py").stdout.str()
+    assert "FAILURES" not in said
+    assert outermost_first(said[said.index("test_awaits.py::test_that_awaits timed out") :])
+
+
+def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_that_no_loop_runs(suite: pytest.Pytester) -> None:
+    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
+    said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
+    assert "FAILURES" not in said
+    where = said[said.index("test_blocks.py::test_that_blocks timed out") :]
+    assert "in test_that_blocks" in where and "no event loop is running on this thread" in where
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
