@@ -2,9 +2,9 @@
 and end-of-turn detection closes it, with the models engaged conversation hears with (`hands.voice.engaged`).
 
 The word is config.toml's (`hands.daemon.config`): one of openWakeWord's own, "Hey Jarvis" unless another is named, or
-one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It is
-half-duplex: while hands speaks the detector is given silence in place of the room, because a microphone open in a room
-with speakers hears the pipeline's own voice. The desk listens for as long as the level is the wake word's, so the hold owner keeps
+one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It hears
+what engaged conversation hears, the room with hands' own voice taken out by the echo canceller, while hands speaks as
+much as while it is quiet: the wake word said over a reply opens a turn that cuts it off. The desk listens for as long as the level is the wake word's, so the hold owner keeps
 the second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
 """
 
@@ -109,26 +109,25 @@ async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[Wid
 
 
 def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes, bool], Awaitable[bool]]:
-    """Whether each buffer of the desk's microphone ends with the wake word, deaf while hands speaks, and heard afresh
-    from a buffer the wake word's level `begun` with, with nothing of the room before it."""
+    """Whether each buffer of the desk's microphone ends with the wake word, heard afresh from a buffer the wake word's
+    level `begun` with, with nothing of the room before it."""
 
     async def woken(audio: bytes, begun: bool) -> bool:
+        # Read with the buffer, not after the hops off the loop below, by which time a reply may have stopped.
+        while_speaking = speaking()
         if begun:
             await asyncio.to_thread(word.reset)
-        # [LAW:dataflow-not-control-flow] the detector hears every buffer at its level; while hands speaks, what it
-        # hears is silence.
-        muted = speaking()
-        count(muted=int(muted))
-        score = await asyncio.to_thread(word.score, bytes(len(audio)) if muted else audio)
+        score = await asyncio.to_thread(word.score, audio)
         if score < THRESHOLD:
             return False
         # Off the loop as scoring is: forgetting refills the model with seconds of features.
         await asyncio.to_thread(word.reset)
         count(heard=1)
-        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was; whether it opened a turn is
-        # the desk's to say, as its count of starts.
+        # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and whether hands was speaking:
+        # a wake on hands' own voice, left over from the echo canceller, reads as one heard while it spoke. Whether it
+        # opened a turn is the desk's to say, as its count of starts.
         with unit("desk.wake_word_heard", emit):
-            annotate(score=score, threshold=THRESHOLD)
+            annotate(score=score, threshold=THRESHOLD, while_speaking=while_speaking)
         return True
 
     return woken

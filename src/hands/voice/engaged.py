@@ -178,7 +178,7 @@ _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
     *(f"by_{edge.replace(' ', '_')}" for edge in get_args(Edge)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
-    "held_open", "ended_on_silence", "heard", "muted",
+    "held_open", "ended_on_silence", "heard",
 )
 
 # Whether a buffer of the desk's microphone ends with the wake word (`hands.voice.wake`), heard afresh from it when its

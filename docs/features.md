@@ -296,21 +296,19 @@ Need 8. Where the microphone is.
   talk after disengaging opens no turn.
 - **Wake word.** Saying "Hey Jarvis", or the wake word config.toml names, opens
   a turn with no key at all, and end-of-turn detection closes it as in an engaged
-  conversation. openWakeWord's pretrained model, or one the user trained, listens to the echo-cancelled desk microphone, and hears silence
-  while hands speaks. Done when, with speakers on, a turn completes with no key and
+  conversation. openWakeWord's pretrained model, or one the user trained, listens to the echo-cancelled desk microphone, while hands speaks
+  as while it is quiet. Done when, with speakers on, a turn completes with no key and
   none of hands' own words in its transcript, and room talk without the wake word
   opens no turn.
 - **Phone over WebRTC.** A hold-to-talk page served over HTTPS on the LAN and the
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with
   earbuds and the transcript contains no words from the reply.
-- **Wake word with VAD stop, half-duplex.** The `wake word` edge opens the gate on
-  the wake word and closes it when Silero reports the configured silence; the
-  detector is deaf while the output transport plays. Done when a turn completes
+- **Wake word with VAD stop.** The `wake word` edge opens the gate on
+  the wake word and closes it when Silero reports the configured silence. Done when a turn completes
   with no button and no own-voice words in the transcript, speakers on.
 - **Acoustic echo cancellation.** WebRTC's AEC3 takes the speaker's echo out of
-  every desk microphone buffer, lifting the half-duplex mute and closing the own-voice
-  bleed bug. Done when barge-in with speakers on yields a clean transcript.
+  every desk microphone buffer, closing the own-voice bleed bug. Done when barge-in with speakers on yields a clean transcript.
 
 ## Speaker diarization (`promptctl-diarization-lkvp`)
 

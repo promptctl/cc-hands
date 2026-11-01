@@ -29,7 +29,7 @@ def turn_start(opener: Opener) -> TurnStart:
     Sound the desk heard can be nobody: hands' own reply left over from the echo canceller, a cough, a door. So a turn the
     voice opens cuts only once a listener hears words in it (`hands.voice.streaming`). One the user's hand opens cuts at once, since holding a key or a
     button and letting go with nothing said is how the user stops hands; and so does one the wake word opens, said on
-    purpose, whose detector hears nothing while hands speaks. Words typed and sent are as deliberate as a press, and are
+    purpose, and heard through the echo canceller while hands speaks as the voice is. Words typed and sent are as deliberate as a press, and are
     words already.
     """
     match opener:
@@ -79,6 +79,6 @@ def described(level: Level, word: Word) -> str:
         case "off":
             return f"The microphone is off between turns. {held} Triple tap Right Command for the wake word, or Right Shift for engaged conversation."
         case "wake word":
-            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. It cannot hear the wake word while it speaks. {held} Triple tap Right Command to turn the microphone off."
+            return f"The wake word: say {word.phrase}, then what you want; hands answers when you finish. {held} Triple tap Right Command to turn the microphone off."
         case "engaged":
             return f"Engaged conversation: just talk; hands answers when you finish, and listens again. {held} Triple tap Right Shift to turn the microphone off."
