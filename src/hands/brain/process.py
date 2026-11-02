@@ -1211,7 +1211,7 @@ class Brain:
 
     async def _taking(self, turn: _Turn) -> None:
         """Types `turn`, with the input held, behind nothing, once the brain's screen shows its prompt within a pause of
-        `turn.take`, and waits out another for it to be taken, or to end: Untaken if either runs out. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
+        `turn.take`, and waits out another for it to be taken, or to end: Untaken if either runs out, the second ended here and its words cleared. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
         turn is typed, so the turn is Claude Code's next and runs alone."""
         # [LAW:no-ambient-temporal-coupling] typed at once, never held behind a turn Claude Code opened itself: Claude Code
@@ -1246,13 +1246,15 @@ class Brain:
             # thread, as a turn nobody waits on.
             await self._type(lambda typist: typist.type(turn.typed, SUBMIT))
             await asyncio.wait({turn.taken, turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
+            # The screen is read before the take is judged again: Claude Code may take the turn as it is read.
+            shown = None if turn.taken.done() or turn.answered.done() else await self._shown()
             if not (turn.taken.done() or turn.answered.done()):
                 # [LAW:no-silent-failure] the screen says why, read with the input still held: words left at the prompt
                 # are a submit chord that no longer sends it, as an edit to the brain's keybindings.json leaves it; an
                 # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
                 # The turn ends Untaken first: its asker hears so without waiting on the clear, and words Claude Code takes
                 # late, as the clear goes, are no turn's (`_took`), so the clear stops them and answers nobody with them.
-                self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}"))
+                self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{shown}"))
                 # [LAW:single-enforcer] the words this turn typed are stopped and cleared by the one stop, before the
                 # input is let go: left at the prompt, the next turn's paste would join them, and Claude Code would send
                 # both as one prompt. The screen cannot say whether they are there (capture-pane drops the dim of
