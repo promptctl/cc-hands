@@ -2,11 +2,14 @@
 the log the real plugin writes, so a release of it that changes a record's shape fails here."""
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
-from costs import report
+from costs import REPORT_LOG, report
+
+ROOT = Path(__file__).parents[1]
 
 SUITE = """
 def test_passes():
@@ -67,6 +70,11 @@ def test_a_run_stopped_before_any_test_reports_none() -> None:
 def test_a_finished_line_that_is_no_record_is_loud() -> None:
     with pytest.raises(json.JSONDecodeError):
         report(STARTED + "not a record\n" + FINISHED)
+
+
+def test_the_suite_writes_the_log_the_report_reads() -> None:
+    addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["addopts"]
+    assert f"--report-log={REPORT_LOG}" in addopts
 
 
 def test_the_plugins_own_log_reads_as_a_report(pytester: pytest.Pytester, tmp_path: Path) -> None:

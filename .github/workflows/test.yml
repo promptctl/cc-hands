@@ -130,4 +130,4 @@ jobs:
       # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed.
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
-        run: uv run python tests/costs.py .pytest_cache/report-log.jsonl
+        run: uv run python tests/costs.py

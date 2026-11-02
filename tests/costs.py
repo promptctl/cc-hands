@@ -2,15 +2,17 @@
 then each test, slowest first. CI prints this into the job's log, so `gh run view <id> --log` reads any run's, cancelled or
 red ones too, and reading it starts nothing.
 
-    uv run python tests/costs.py .pytest_cache/report-log.jsonl
+    uv run python tests/costs.py
 """
 
 import json
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# [LAW:one-source-of-truth] where the suite writes its log. pyproject's addopts spells this path, and test_costs.py holds the two to each other.
+REPORT_LOG = Path(".pytest_cache/report-log.jsonl")
 
 
 @dataclass(frozen=True)
@@ -59,4 +61,4 @@ def report(log: str) -> str:
 
 
 if __name__ == "__main__":
-    print(report(Path(sys.argv[1]).read_text()), end="")
+    print(report(REPORT_LOG.read_text()), end="")
