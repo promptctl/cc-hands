@@ -3,6 +3,7 @@ against none of them, and each test's own work stays bounded by its own. In anot
 and its signal are the whole process's, and its thread method ends the process it fires in."""
 
 import ast
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -224,6 +225,21 @@ def test_that_waits_on_a_thread():
     signal.raise_signal(signal.SIGALRM)
 """
 
+# A sync wait on a task whose loop is stopped between its runs, as a module-scoped loop is between async tests.
+STOPPED = """
+import asyncio
+import signal
+
+async def left_on_a_stopped_loop():
+    await asyncio.Event().wait()
+
+def test_that_waits_on_a_stopped_loop():
+    loop = asyncio.new_event_loop()
+    task = loop.create_task(left_on_a_stopped_loop())
+    loop.run_until_complete(asyncio.sleep(0))
+    signal.raise_signal(signal.SIGALRM)
+"""
+
 DEBUGGED = """
 import signal
 
@@ -285,6 +301,7 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_awaits=AWAITS,
         test_blocks=BLOCKS,
         test_elsewhere=ELSEWHERE,
+        test_stopped=STOPPED,
         test_debugged=DEBUGGED,
     )
     return pytester
@@ -338,7 +355,7 @@ def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_sum
     failures, summary = said[said.index("FAILURES") :].split("short test summary info")
     assert outermost_first(failures)
     assert "  awaiting <" in failures
-    assert "in test_that_blocks" in failures and "no task is pending on a running loop" in failures
+    assert "in test_that_blocks" in failures and "no task is pending" in failures
     assert "timed out" not in summary
 
 
@@ -354,12 +371,25 @@ def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_t
     said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
     assert "FAILURES" not in said
     where = said[said.index("\ntest_blocks.py::test_that_blocks timed out") :]
-    assert "in test_that_blocks" in where and "no task is pending on a running loop" in where
+    assert "in test_that_blocks" in where and "no task is pending" in where
 
 
 def test_under_a_signal_a_timeout_says_where_a_task_on_another_threads_loop_waited(suite: pytest.Pytester) -> None:
     said = run(suite, "signal", *UNFIRED, "test_elsewhere.py").stdout.str()
     assert "in parked_off_the_main_thread" in said[said.index("parked_off_the_main_thread() running at") :]
+
+
+def test_under_a_signal_a_timeout_says_where_a_task_on_a_stopped_loop_waited(suite: pytest.Pytester) -> None:
+    said = run(suite, "signal", *UNFIRED, "test_stopped.py").stdout.str()
+    chain = said[said.index("left_on_a_stopped_loop() running at") :]
+    assert chain.index("running=False") < chain.index("in left_on_a_stopped_loop")
+
+
+def test_a_step_whose_async_generator_is_no_longer_running_ends_its_chain() -> None:
+    async def generator() -> AsyncGenerator[None]:
+        yield
+
+    assert [line.strip().split()[:2] for line in timeouts.awaits(generator().asend(None))] == [["awaiting", "<async_generator_asend"]]
 
 
 def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_out(suite: pytest.Pytester) -> None:
