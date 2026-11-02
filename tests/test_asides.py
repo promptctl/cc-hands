@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import cast
 
 import pytest
-from loguru import logger
 from aiohttp import web
+from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork

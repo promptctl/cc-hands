@@ -792,3 +792,5 @@ async def test_a_4xx_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
         logger.remove(sink)
     exchange = only_exchange(wire).exchange
     assert [error.replace(exchange, "req-1", 1)[: len(told or "")] for error in errors] == ([] if told is None else [told])
+    # A refusal that names no message is not given one.
+    assert all(("is role" in error) == ("is role" in (told or "")) for error in errors)
