@@ -61,4 +61,8 @@ def report(log: str) -> str:
 
 
 if __name__ == "__main__":
-    print(report(REPORT_LOG.read_text()), end="")
+    # A run that ended before pytest started writes no log; the report names that rather than failing the step that reads it.
+    if REPORT_LOG.exists():
+        print(report(REPORT_LOG.read_text()), end="")
+    else:
+        print(f"no report log at {REPORT_LOG}: the run wrote none")

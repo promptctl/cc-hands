@@ -2,6 +2,8 @@
 the log the real plugin writes, so a release of it that changes a record's shape fails here."""
 
 import json
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -70,6 +72,11 @@ def test_a_run_stopped_before_any_test_reports_none() -> None:
 def test_a_finished_line_that_is_no_record_is_loud() -> None:
     with pytest.raises(json.JSONDecodeError):
         report(STARTED + "not a record\n" + FINISHED)
+
+
+def test_a_run_that_wrote_no_log_says_so(tmp_path: Path) -> None:
+    told = subprocess.run([sys.executable, str(ROOT / "tests" / "costs.py")], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert told.stdout == f"no report log at {REPORT_LOG}: the run wrote none\n"
 
 
 def test_the_suite_writes_the_log_the_report_reads() -> None:
