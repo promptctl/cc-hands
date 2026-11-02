@@ -44,7 +44,7 @@ def test_a_turn_does_not_go_into_the_prompt(shown: str) -> None:
 
 def test_the_box_is_what_settles_while_a_turn_draws_above_it() -> None:
     box = f"{RULE}\n❯{NBSP}\n{RULE}\n  esc to interrupt"
-    assert typable(f"✻ Thinking… (3s)\n● streamed\n{box}") == typable(f"✽ Thinking… (4s)\n● streamed more\n{box}") == Box(box, drafted=False)
+    assert typable(f"✻ Thinking… (3s)\n● streamed\n{box}") == typable(f"✽ Thinking… (4s)\n● streamed more\n{box}") == Box(box, 1, drafted=False)
 
 
 DIM, INVERSE, RESET = "\x1b[2m", "\x1b[7m", "\x1b[0m"
@@ -63,6 +63,7 @@ def _boxed(*rows: str) -> str:
         pytest.param(f"❯{NBSP}{INVERSE} {RESET}", id="the cursor alone"),
         pytest.param(f"❯{NBSP}", id="nothing drawn"),
         pytest.param(f"❯{NBSP}\x1b[38;2;2;7;2m{DIM}Try{RESET}", id="a colour whose numbers read as dim and inverse"),
+        pytest.param(f"❯{NBSP}\x1b[58:5:3;2mTry{RESET}", id="dim behind a colon-joined colour"),
     ],
 )
 def test_an_empty_input_holds_no_words(row: str) -> None:
@@ -78,6 +79,7 @@ def test_an_empty_input_holds_no_words(row: str) -> None:
         pytest.param([f"❯{NBSP}{INVERSE}a{RESET}"], id="one character, the cursor on it"),
         pytest.param([f"❯{NBSP}", f"  second line{INVERSE} {RESET}"], id="words on a later row only"),
         pytest.param([f"❯{NBSP}\x1b[38;5;2mcoloured{RESET}"], id="words in a colour"),
+        pytest.param([f"❯{NBSP}", f"  ─── notes", f"  words{INVERSE} {RESET}"], id="a draft row that starts with a rule"),
     ],
 )
 def test_words_in_the_input_are_drafted(rows: list[str]) -> None:
@@ -88,3 +90,8 @@ def test_words_in_the_input_are_drafted(rows: list[str]) -> None:
 def test_the_box_s_rows_are_plain_text() -> None:
     box = typable(_boxed(f"❯{NBSP}{DIM}Try{RESET}"))
     assert box is not None and "\x1b" not in box.rows and plain(f"{DIM}a{RESET}b") == "ab"
+
+
+def test_the_box_counts_the_rows_its_input_fills() -> None:
+    box = typable(_boxed(f"❯{NBSP}one", "  ─── two", "  three"))
+    assert box is not None and box.input == 3

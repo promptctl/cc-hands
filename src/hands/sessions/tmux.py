@@ -234,6 +234,7 @@ KEYS: Mapping[Keystroke, str] = {
     "ctrl_c": "C-c",
     "ctrl_e": "C-e",
     "ctrl_h": "C-h",
+    "ctrl_k": "C-k",
     "ctrl_u": "C-u",
     "ctrl_q": "C-q",
     "up": "Up",

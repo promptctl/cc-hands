@@ -893,11 +893,11 @@ while True:
             # Done with what this Return sent: each hook it posted was answered, so hands has heard them all.
             with open(os.environ["ANSWERED"], "a") as answered:
                 answered.write("\\n")
-        # The text input's own editing keys, with the cursor at the draft's end, where the fake keeps it: Ctrl-E moves
-        # nowhere, Ctrl-U deletes back to the start of the line, Ctrl-H the character before.
-        elif pending[:1] in (b"\\x05", b"\\x15", b"\\x08"):
+        # The text input's own editing keys, with the cursor at the draft's end, where the fake keeps it: Ctrl-E and
+        # Ctrl-K act on nothing after it, Ctrl-U deletes back to the start of the line, Ctrl-H the character before.
+        elif pending[:1] in (b"\\x05", b"\\x15", b"\\x0b", b"\\x08"):
             key, pending = pending[:1], pending[1:]
-            typed([{{b"\\x05": "ctrl_e", b"\\x15": "ctrl_u", b"\\x08": "ctrl_h"}}[key], box])
+            typed([{{b"\\x05": "ctrl_e", b"\\x15": "ctrl_u", b"\\x0b": "ctrl_k", b"\\x08": "ctrl_h"}}[key], box])
             if key == b"\\x15":
                 box = box[:box.rfind("\\n") + 1]
             elif key == b"\\x08":

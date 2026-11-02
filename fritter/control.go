@@ -44,6 +44,7 @@ var keystrokes = map[string][]byte{
 	"ctrl_c": {0x03},
 	"ctrl_e": {0x05},
 	"ctrl_h": {0x08},
+	"ctrl_k": {0x0b},
 	"ctrl_u": {0x15},
 	// Ctrl-Q is XON: it reaches a child whose terminal is raw, as Claude Code's is while it
 	// draws its prompt. The brain binds it to submitting its prompt, a chord no dialog binds.

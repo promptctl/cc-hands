@@ -363,7 +363,7 @@ These run before the REPL mounts, one after another (chunk-njr2st7n.js), so no p
 
 ## What `capture-pane` returns
 
-hands reads the pane with `tmux capture-pane -p -t <pane>` and strips the trailing whitespace of the whole text, not of each row (`src/hands/sessions/tmux.py`). Without `-e` the text carries no colour or attributes; without `-J` a row the terminal wrapped comes back as two lines; without `-S`/`-E` only the visible rows come back, never the pane's history; without `-a` or `-M` it is the grid the pane shows now, whichever screen (main or alternate) is active.
+hands reads a working session's pane with `tmux capture-pane -p -t <pane>`, and the brain's with `-p -e`, and strips the trailing whitespace of the whole text, not of each row (`src/hands/sessions/tmux.py`). Without `-e` the text carries no colour or attributes, so it cannot tell the dim placeholder from words (`src/hands/core/screen.py`); without `-J` a row the terminal wrapped comes back as two lines; without `-S`/`-E` only the visible rows come back, never the pane's history; without `-a` or `-M` it is the grid the pane shows now, whichever screen (main or alternate) is active.
 
 ### Fullscreen or inline
 

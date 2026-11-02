@@ -20,11 +20,12 @@ _SGR = re.compile("\x1b\\[([0-9;:]*)m")
 
 @dataclass(frozen=True)
 class Box:
-    """Claude Code's input box as the screen shows it: its rows as text, from its top rule down, and whether its input
-    holds words. [LAW:types-are-the-program] `drafted` is read off the attributes, which `rows` has none of: the empty
-    input shows its placeholder, text that is not words."""
+    """Claude Code's input box as the screen shows it: its rows as text, from its top rule down, how many of them the
+    input fills, and whether it holds words. [LAW:types-are-the-program] `drafted` is read off the attributes, which
+    `rows` has none of: the empty input shows its placeholder, text that is not words."""
 
     rows: str
+    input: int
     drafted: bool
 
 
@@ -53,11 +54,12 @@ def _drafted(row: str) -> bool:
 
 def _styled(parameters: str, dim: bool, inverse: bool) -> tuple[bool, bool]:
     """Dim and inverse once the SGR with `parameters` is applied: a colour's own parameters (38, 48 and 58, `;5;n` or
-    `;2;r;g;b`, or `:`-joined) are skipped, so none of their numbers reads as an attribute."""
-    codes = [code.split(":")[0] for code in parameters.split(";")]
+    `;2;r;g;b`, or `:`-joined) are skipped, so none of their numbers reads as an attribute. A `:`-joined colour carries
+    its own parameters, so the `;`-separated one after it is the next attribute."""
+    codes = parameters.split(";")
     at = 0
     while at < len(codes):
-        match codes[at]:
+        match codes[at].split(":")[0]:
             case "" | "0":
                 dim = inverse = False
             case "2":
@@ -68,7 +70,7 @@ def _styled(parameters: str, dim: bool, inverse: bool) -> tuple[bool, bool]:
                 inverse = True
             case "27":
                 inverse = False
-            case "38" | "48" | "58" if at + 1 < len(codes):
+            case "38" | "48" | "58" if ":" not in codes[at] and at + 1 < len(codes):
                 at += {"5": 2, "2": 4}.get(codes[at + 1], 0)
             case _:
                 pass
@@ -92,8 +94,10 @@ def typable(shown: str) -> Box | None:
     at, pointer = found[-1]
     if pointer != "❯" or at == 0 or not rows[at - 1].lstrip(" ").startswith("─") or any(_TAKEN.match(row) for row in rows[at + 1:]):
         return None
-    # The input's rows run from the prompt row to the box's closing rule.
-    end = next((below for below in range(at + 1, len(rows)) if rows[below].lstrip(" ").startswith("─")), len(rows))
+    # The input's rows run from the prompt row to the box's closing rule, drawn in the prompt's column, where a draft's
+    # own rows are indented past the prompt's `❯` and so never end it, whatever they start with.
+    column = rows[at].index(pointer)
+    end = next((below for below in range(at + 1, len(rows)) if rows[below][column:].startswith("─") and not rows[below][:column].strip(" ")), len(rows))
     # The prompt's own `❯` and U+00A0 are blanked where they stand, so every attribute set before them still holds.
     drafted = any(_drafted(row) for row in [styled[at].replace("❯\u00a0", "  ", 1), *styled[at + 1:end]])
-    return Box("\n".join(rows[at - 1:]), drafted)
+    return Box("\n".join(rows[at - 1:]), end - at, drafted)

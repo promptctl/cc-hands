@@ -609,7 +609,7 @@ async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_a
         await brain.stop()
     assert [line[1].strip() for line in typed(tmp_path) if line[0] == "prompt"] == ["and now?"]
     # The untaken words were deleted by the next turn's look, with the input's editing keys: no Escape, no Ctrl-C.
-    assert [line[0] for line in typed(tmp_path) if line[0] not in ("prompt", "unbound", "dropped")] == ["ctrl_e", "ctrl_u", "ctrl_h"]
+    assert [line[0] for line in typed(tmp_path) if line[0] not in ("prompt", "unbound", "dropped")] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h"]
 
 
 async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_deleted_before_a_turn_is_pasted_and_that_turn_runs_on() -> None:
@@ -630,13 +630,13 @@ async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_d
 
     async def pasted(_seconds: float) -> None:
         # The take runs out once the turn is pasted: the turn ends, and its event is recorded.
-        while len(keys.pressed) < 4:
+        while len(keys.pressed) < 5:
             await asyncio.sleep(0.01)
 
     brain._pause = pasted  # pyright: ignore[reportPrivateUsage]
     with pytest.raises(Untaken):
         await brain.ask("and now?", unasked)
-    assert [key.strip() for key in keys.pressed] == ["ctrl_e", "ctrl_u", "ctrl_h", "and now?"]
+    assert [key.strip() for key in keys.pressed] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h", "and now?"]
     assert len(brain._claude_turns.opened_itself) == 1  # pyright: ignore[reportPrivateUsage]
     await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")

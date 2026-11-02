@@ -144,7 +144,7 @@ SUBMIT: Submit = "ctrl_q"
 # unbound there, without which the prompt never registers the chord's submit at all. A change to SUBMIT is a change here.
 KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]}
 # The keys that delete one row of the brain's input from its end: to the row's end, to its start, and the newline before it.
-_EMPTY_ROW: tuple[Keystroke, ...] = ("ctrl_e", "ctrl_u", "ctrl_h")
+_EMPTY_ROW: tuple[Keystroke, ...] = ("ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h")
 
 # How far apart the two captures of the brain's input box are that show it settled: Claude Code writes a frame at most every
 # 16 ms, so two captures this far apart that agree caught no frame half-drawn (docs/claude-code-screen.md, "The rule").
@@ -1219,7 +1219,7 @@ class Brain:
 
     async def _taking(self, turn: _Turn) -> None:
         """Types `turn`, with the input held, behind nothing, once the brain's screen shows its prompt within a pause of
-        `turn.take`, and waits out another for it to be taken, or to end: Untaken if either runs out, the second ended here and its words cleared. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
+        `turn.take`, and waits out another for it to be taken, or to end: Untaken if either runs out, its words deleted by the next turn's look. [LAW:single-enforcer] what Claude Code runs that the model has not told, or holds in its
         queue to run, is no turn's in flight, for an ask that already failed or one nobody made: it is stopped before the
         turn is typed, so the turn is Claude Code's next and runs alone."""
         # [LAW:no-ambient-temporal-coupling] typed at once, never held behind a turn Claude Code opened itself: Claude Code
@@ -1274,8 +1274,6 @@ class Brain:
                     # [LAW:no-silent-failure] the screen says why, read with the input still held: words left at the prompt
                     # are a submit chord that no longer sends it, as an edit to the brain's keybindings.json leaves it; an
                     # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
-                    # The turn ends Untaken first: its asker hears so without waiting on the clear, and words Claude Code takes
-                    # late, as the clear goes, are no turn's (`_took`), so the clear stops them and answers nobody with them.
                     self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{shown}"))
         finally:
             pausing.cancel()
@@ -1286,17 +1284,14 @@ class Brain:
                 pausing.result()
 
     async def _emptied(self, box: Box) -> None:
-        """Deletes the words of the input `box` shows, a row at a time from its end: Ctrl-E, Ctrl-U, Ctrl-H, the text
-        input's own editing keys, which stop no turn and arm no exit (docs/claude-code-behavior.md). Whether they emptied
-        it is the next look's to say."""
-        rows = box.rows.split("\n")
-        # The rows between the box's top rule and its closing one.
-        drafted = next((at for at in range(1, len(rows)) if rows[at].lstrip(" ").startswith("─")), len(rows)) - 1
+        """Deletes the words of the input `box` shows, a row a pass, wherever the cursor stands: Ctrl-E and Ctrl-U empty
+        the cursor's row, Ctrl-K takes the line break after it and Ctrl-H the one before, joining a neighbouring row
+        into it. They are the text input's own editing keys, which stop no turn and arm no exit
+        (docs/claude-code-behavior.md). Whether they emptied it is the next look's to say."""
         # [LAW:nothing-unseen] on the turn's own event: what the input held that the turn would have joined.
         annotate(emptied=box.rows)
-        for _ in range(drafted):
-            for key in _EMPTY_ROW:
-                await self._type(lambda typist, key=key: typist.press(key))
+        # Written whole, in one call, as the paste is.
+        await self._type(lambda typist: [typist.press(key) for _ in range(box.input) for key in _EMPTY_ROW])
 
     async def _at_prompt(self) -> Box:
         """The input box, once the brain's screen, settled, shows a turn would go into its prompt (`typable`): two captures
