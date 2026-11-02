@@ -403,9 +403,13 @@ class InTmux:
         # Read once: a pane keeps its id for as long as it lives.
         if self._pane is None:
             try:
-                self._pane = (self._workspace / "pane_id").read_text().strip()
+                pane = (self._workspace / "pane_id").read_text().strip()
             except FileNotFoundError:
-                raise BrainGone("the brain's screen cannot be read: its pane has not said which it is") from None
+                pane = ""
+            # Only a whole id is kept: an empty target is tmux's current pane, which is never the brain's.
+            if not pane.startswith("%"):
+                raise BrainGone("the brain's screen cannot be read: its pane has not said which it is")
+            self._pane = pane
         match await captured(self._tmux, self._socket, self._pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
@@ -1233,9 +1237,10 @@ class Brain:
             finally:
                 looking.cancel()
                 await asyncio.wait({looking})
-            if looking.cancelled():
+            # A take that ran out as the prompt showed types nothing: the turn would be Claude Code's with nobody waiting.
+            if looking.cancelled() or pausing.done():
                 # [LAW:no-silent-failure] what the screen showed instead is the reason, read with the input still held.
-                raise Untaken(f"the brain's screen showed no prompt to type the turn at in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._claude.screen()}")
+                raise Untaken(f"the brain's screen showed no prompt to type the turn at in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._shown()}")
             looking.result()
             # Written whole, never cut off by the take: a write cancelled here would still reach the brain from its
             # thread, as a turn nobody waits on.
@@ -1245,7 +1250,7 @@ class Brain:
                 # [LAW:no-silent-failure] the screen says why, read with the input still held: words left at the prompt
                 # are a submit chord that no longer sends it, as an edit to the brain's keybindings.json leaves it; an
                 # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
-                raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._claude.screen()}")
+                raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}")
         finally:
             pausing.cancel()
             await asyncio.wait({pausing})
@@ -1259,16 +1264,26 @@ class Brain:
         SETTLE_SECONDS apart whose input boxes agree, the second taken only once the first shows one. The sleeps set
         only how often hands looks; no outcome turns on them."""
         began, looks = time.monotonic(), 0
-        while True:
-            looks += 1
-            if (first := typable(await self._claude.screen())) is not None:
-                await asyncio.sleep(SETTLE_SECONDS)
-                if typable(await self._claude.screen()) == first:
-                    break
-            await asyncio.sleep(LOOK_SECONDS)
-        # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many settled reads that took: a turn typed
-        # at once reads 1.
-        annotate(at_prompt_after=round(time.monotonic() - began, 3), looks=looks)
+        try:
+            while True:
+                looks += 1
+                if (first := typable(await self._claude.screen())) is not None:
+                    await asyncio.sleep(SETTLE_SECONDS)
+                    if typable(await self._claude.screen()) == first:
+                        break
+                await asyncio.sleep(LOOK_SECONDS)
+        finally:
+            # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many reads that took, found or not: a
+            # turn typed at once reads 1.
+            annotate(at_prompt_after=round(time.monotonic() - began, 3), looks=looks)
+
+    async def _shown(self) -> str:
+        """The brain's screen, for an Untaken's reason: a screen that cannot be read says so there, and never stands in
+        for the turn not taken."""
+        try:
+            return await self._claude.screen()
+        except BrainGone as error:
+            return f"(nothing: {error})"
 
     async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
         """Until the first of `ending` is done, or a pause of `seconds` on the brain's one pause has passed.
@@ -1779,7 +1794,9 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
         annotate(claude=claude, mode=mode)
         # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
         # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
-        (station.config_dir / "keybindings.json").write_text(json.dumps(KEYBINDINGS, indent=2) + "\n")
+        # Whole or not at all: Claude Code reloads the file as it changes, and a half-written one binds nothing.
+        (station.config_dir / "keybindings.json.new").write_text(json.dumps(KEYBINDINGS, indent=2) + "\n")
+        os.replace(station.config_dir / "keybindings.json.new", station.config_dir / "keybindings.json")
         annotate(keybindings=SUBMIT)
         # [LAW:no-ambient-temporal-coupling] the listener is up before the brain is spawned, and the brain exists only
         # once its input is up: a hook posted between waits for the brain, behind no other hook. No turn is typed in
