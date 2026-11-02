@@ -240,6 +240,26 @@ def test_that_waits_on_a_stopped_loop():
     signal.raise_signal(signal.SIGALRM)
 """
 
+# The bound fires inside a step, with the test's coroutine running in `await anext(...)`, whose `SEND` has run 126 times: on
+# 3.12 that count leaves its inline cache reading as a suspended frame's, where cr_await segfaults.
+RUNNING = """
+import signal
+
+import pytest
+
+async def steps():
+    for _ in range(125):
+        yield
+    signal.raise_signal(signal.SIGALRM)
+    yield
+
+@pytest.mark.asyncio
+async def test_with_a_coroutine_running_as_it_fires():
+    stepping = steps()
+    while True:
+        await anext(stepping)
+"""
+
 DEBUGGED = """
 import signal
 
@@ -302,6 +322,7 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_blocks=BLOCKS,
         test_elsewhere=ELSEWHERE,
         test_stopped=STOPPED,
+        test_running=RUNNING,
         test_debugged=DEBUGGED,
     )
     return pytester
@@ -383,6 +404,10 @@ def test_under_a_signal_a_timeout_says_where_a_task_on_a_stopped_loop_waited(sui
     said = run(suite, "signal", *UNFIRED, "test_stopped.py").stdout.str()
     chain = said[said.index("left_on_a_stopped_loop() running at") :]
     assert chain.index("running=False") < chain.index("in left_on_a_stopped_loop")
+
+
+def test_under_a_signal_a_timeout_fires_with_a_coroutine_running_and_the_run_survives_its_report(suite: pytest.Pytester) -> None:
+    run(suite, "signal", *UNFIRED, "test_running.py").assert_outcomes(failed=1)
 
 
 def test_a_step_whose_async_generator_is_no_longer_running_ends_its_chain() -> None:

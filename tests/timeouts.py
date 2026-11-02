@@ -260,18 +260,20 @@ def at(frame: FrameType) -> list[str]:
 
 def awaits(awaited: object) -> Iterator[str]:
     """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first, then
-    what the chain ends at: a future's iterator, or an awaitable that hides the rest of the chain."""
+    what the chain ends at: a future's iterator, or an awaitable that hides the rest of the chain. Only a suspended frame is
+    asked what it awaits: on a running one 3.12's cr_await, gi_yieldfrom and ag_await read the frame's stack as though it were
+    suspended, and can segfault, and what a running frame calls is on its thread's stack."""
     while True:
         match awaited:
             case CoroutineType(cr_frame=FrameType() as frame):
                 yield from at(frame)
-                awaited = awaited.cr_await
+                awaited = awaited.cr_await if awaited.cr_suspended else None
             case GeneratorType(gi_frame=FrameType() as frame):
                 yield from at(frame)
-                awaited = cast(object, awaited.gi_yieldfrom)
+                awaited = cast(object, awaited.gi_yieldfrom) if awaited.gi_suspended else None
             case AsyncGeneratorType(ag_frame=FrameType() as frame):
                 yield from at(frame)
-                awaited = awaited.ag_await
+                awaited = awaited.ag_await if awaited.ag_suspended else None
             # Only the garbage collector's view reaches the step's generator on 3.12, beside any async generator it sends: its
             # own is the one running the step, and on another thread's loop the step can end as it is read, which ends the chain.
             case ASend() | AThrow() if running := [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType) and held.ag_running]:
