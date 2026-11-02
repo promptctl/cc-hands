@@ -64,6 +64,8 @@ def _boxed(*rows: str) -> str:
         pytest.param(f"❯{NBSP}", id="nothing drawn"),
         pytest.param(f"❯{NBSP}\x1b[38;2;2;7;2m{DIM}Try{RESET}", id="a colour whose numbers read as dim and inverse"),
         pytest.param(f"❯{NBSP}\x1b[58:5:3;2mTry{RESET}", id="dim behind a colon-joined colour"),
+        pytest.param(f"\x1b[38;5;4m❯{RESET}{NBSP}{DIM}Try{RESET}", id="the pointer styled apart from its space"),
+        pytest.param(f"❯{NBSP}\x1b]8;;file:///a\x1b\\{DIM}Try{RESET}\x1b]8;;\x1b\\", id="a hyperlink, which draws nothing"),
     ],
 )
 def test_an_empty_input_holds_no_words(row: str) -> None:
@@ -95,3 +97,9 @@ def test_the_box_s_rows_are_plain_text() -> None:
 def test_the_box_counts_the_rows_its_input_fills() -> None:
     box = typable(_boxed(f"❯{NBSP}one", "  ─── two", "  three"))
     assert box is not None and box.input == 3
+
+
+def test_attributes_carry_across_rows_as_tmux_writes_them() -> None:
+    # tmux writes no SGR where a row starts in the attributes the row above ended in.
+    box = typable("\n".join([f"{DIM}{RULE}", f"❯{NBSP}Try", f"{RESET}{RULE}"]))
+    assert box is not None and not box.drafted

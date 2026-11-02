@@ -14,8 +14,11 @@ _PROMPT = re.compile("^ *([❯!])\u00a0")
 # What, below the prompt row, holds the keys instead of it: a select's cursor (`❯` and an ordinary space), numbered or
 # not, or the autocomplete list's; and the inline history search.
 _TAKEN = re.compile("^ *❯ |^ *(search prompts:|no matching prompt:)")
-# An SGR sequence, the only escape `capture-pane -e` writes: its parameters, `;` or `:` separated.
-_SGR = re.compile("\x1b\\[([0-9;:]*)m")
+# The escapes `capture-pane -e` writes: an SGR, its parameters `;` or `:` separated, and an OSC 8 hyperlink, which
+# draws nothing.
+_ESCAPE = re.compile("\x1b\\[([0-9;:]*)m|\x1b\\]8;[^\x07\x1b]*(?:\x07|\x1b\\\\)")
+# A cell as drawn: its character, whether dim, whether inverse.
+_Cell = tuple[str, bool, bool]
 
 
 @dataclass(frozen=True)
@@ -30,26 +33,38 @@ class Box:
 
 
 def plain(shown: str) -> str:
-    """The capture `shown` as text, its attributes dropped."""
-    return _SGR.sub("", shown)
+    """The capture `shown` as text, its escapes dropped."""
+    return _ESCAPE.sub("", shown)
 
 
-def _drafted(row: str) -> bool:
-    """Whether the input row `row`, its prefix gone, shows words. Claude Code draws its placeholder only while the input is
-    empty, dim, its first character inverse as the cursor when the input has focus (docs/claude-code-behavior.md); so a
-    non-blank character drawn neither dim nor as an inverse cursor ahead of dim text is a word."""
-    cells: list[tuple[str, bool, bool]] = []
+def _cells(styled: list[str]) -> list[list[_Cell]]:
+    """The rows `styled` as cells. tmux writes an SGR only where the attributes change, and carries them across a line
+    break, so each row starts in the attributes the row above ended in."""
+    rows: list[list[_Cell]] = []
     dim = inverse = False
-    at = 0
-    for sgr in _SGR.finditer(row):
-        cells += [(char, dim, inverse) for char in row[at:sgr.start()]]
-        at = sgr.end()
-        dim, inverse = _styled(sgr[1], dim, inverse)
-    cells += [(char, dim, inverse) for char in row[at:]]
-    return any(
-        not char.isspace() and not dim and not (inverse and at + 1 < len(cells) and cells[at + 1][1])
-        for at, (char, dim, inverse) in enumerate(cells)
-    )
+    for row in styled:
+        cells: list[_Cell] = []
+        drawn = 0
+        for escape in _ESCAPE.finditer(row):
+            cells += [(char, dim, inverse) for char in row[drawn:escape.start()]]
+            drawn = escape.end()
+            if escape[1] is not None:
+                dim, inverse = _styled(escape[1], dim, inverse)
+        cells += [(char, dim, inverse) for char in row[drawn:]]
+        rows.append(cells)
+    return rows
+
+
+def _drafted(cells: list[_Cell]) -> bool:
+    """Whether the input cells `cells`, the prompt's own gone, show words. Claude Code draws its placeholder only while
+    the input is empty, dim, its first character inverse as the cursor when the input has focus
+    (docs/claude-code-behavior.md); so a non-blank character drawn neither dim nor as an inverse cursor ahead of dim text
+    is a word."""
+    for column, (char, dim, inverse) in enumerate(cells):
+        cursor_on_placeholder = inverse and column + 1 < len(cells) and cells[column + 1][1]
+        if not char.isspace() and not dim and not cursor_on_placeholder:
+            return True
+    return False
 
 
 def _styled(parameters: str, dim: bool, inverse: bool) -> tuple[bool, bool]:
@@ -98,6 +113,7 @@ def typable(shown: str) -> Box | None:
     # own rows are indented past the prompt's `❯` and so never end it, whatever they start with.
     column = rows[at].index(pointer)
     end = next((below for below in range(at + 1, len(rows)) if rows[below][column:].startswith("─") and not rows[below][:column].strip(" ")), len(rows))
-    # The prompt's own `❯` and U+00A0 are blanked where they stand, so every attribute set before them still holds.
-    drafted = any(_drafted(row) for row in [styled[at].replace("❯\u00a0", "  ", 1), *styled[at + 1:end]])
+    # The prompt's own `❯` and U+00A0 are dropped by their columns, wherever an SGR falls among them.
+    cells = _cells(styled)
+    drafted = any(_drafted(row) for row in [cells[at][column + 2:], *cells[at + 1:end]])
     return Box("\n".join(rows[at - 1:]), end - at, drafted)
