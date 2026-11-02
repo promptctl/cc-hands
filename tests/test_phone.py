@@ -22,6 +22,7 @@ from av import AudioFrame
 from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame
 from pipecat.transports.local.audio import LocalAudioTransportParams
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
@@ -95,7 +96,7 @@ async def a_page(asked: Asked = FIRST) -> tuple[Page, Offer]:
 
 async def answered(phone: Phone, offer: Offer, remote: str) -> RTCSessionDescription:
     """hands' answer to an offer it takes."""
-    match await phone.answer(offer, remote, begun()):
+    match await phone.answer(offer, remote, begun(SYSTEM)):
         case RTCSessionDescription() as answer:
             return answer
         case declined:
@@ -279,10 +280,10 @@ async def test_an_offer_that_never_connects_moves_nothing_and_is_let_go_of_by_th
     key, recorded = PushToTalk(lambda _: None), list[Entry]()
     phone = Phone(key, heard_rate=16000, played_rate=24000, record=recorded.append)
     unheard, offer = await a_page()
-    await phone.answer(offer, "192.168.7.21", begun())  # its page never takes the answer
+    await phone.answer(offer, "192.168.7.21", begun(SYSTEM))  # its page never takes the answer
     assert key.gate.place == "desk" and recorded == []
     page, offer = await a_page()
-    await phone.answer(offer, "192.168.7.22", begun())
+    await phone.answer(offer, "192.168.7.22", begun(SYSTEM))
     [older] = calls(recorded)
     assert (older.outcome, dict(older.facts)) == ("ok", {"remote": "192.168.7.21", "asked": FIRST, "ended": CallUnreached("replaced")})
     await phone.stop()
@@ -314,7 +315,7 @@ async def test_a_page_resuming_its_own_dropped_call_is_answered_and_takes_its_pl
 async def test_a_page_resuming_while_another_page_has_the_call_is_declined_and_moves_nothing(call: Call) -> None:
     other = Asked("another page", "resume")
     _, offer = await a_page(other)
-    assert await call.phone.answer(offer, "192.168.7.31", begun()) == CallDeclined()
+    assert await call.phone.answer(offer, "192.168.7.31", begun(SYSTEM)) == CallDeclined()
     [declined] = calls(call.recorded)
     assert (declined.outcome, dict(declined.facts)) == ("ok", {"remote": "192.168.7.31", "asked": other, "ended": CallDeclined()})
     # The page that had the call still has it, and still speaks for it.
@@ -328,9 +329,9 @@ async def test_a_page_resuming_while_another_page_has_an_offer_in_is_declined() 
     key, recorded = PushToTalk(lambda _: None), list[Entry]()
     phone = Phone(key, heard_rate=16000, played_rate=24000, record=recorded.append)
     pressed, offer = await a_page()
-    await phone.answer(offer, "192.168.7.32", begun())
+    await phone.answer(offer, "192.168.7.32", begun(SYSTEM))
     _, resumed = await a_page(Asked("another page", "resume"))
-    assert await phone.answer(resumed, "192.168.7.33", begun()) == CallDeclined()
+    assert await phone.answer(resumed, "192.168.7.33", begun(SYSTEM)) == CallDeclined()
     assert phone._offered is not None and phone._offered.asked == FIRST  # pyright: ignore[reportPrivateUsage]
     await phone.stop()
     await pressed.peer.close()
@@ -343,7 +344,7 @@ async def test_a_resume_answered_alongside_a_press_never_takes_the_phone_from_it
     resumed, resume = await a_page(Asked("another page", "resume"))
     pressed, take = await a_page()
     # The resume finishes answering after the press is put in.
-    _, declined = await asyncio.gather(phone.answer(take, "192.168.7.35", begun()), phone.answer(resume, "192.168.7.34", begun()))
+    _, declined = await asyncio.gather(phone.answer(take, "192.168.7.35", begun(SYSTEM)), phone.answer(resume, "192.168.7.34", begun(SYSTEM)))
     assert declined == CallDeclined()
     assert phone._offered is not None and phone._offered.asked == FIRST  # pyright: ignore[reportPrivateUsage]
     await phone.stop()
@@ -481,7 +482,7 @@ async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> 
     recorded: list[Entry] = []
     phone = Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
     with pytest.raises(ValueError):
-        await phone.answer(Offer("not a session description", "offer", PAGE_RATE, FIRST), "192.168.7.23", begun())
+        await phone.answer(Offer("not a session description", "offer", PAGE_RATE, FIRST), "192.168.7.23", begun(SYSTEM))
     [event] = calls(recorded)
     assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "192.168.7.23", "asked": FIRST})
     assert event.error is not None and event.error.startswith("ValueError") and event.trace

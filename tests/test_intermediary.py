@@ -10,13 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
 from hands.spotify import Catalogue, Missing
 from hands.voice.library import Library
 from hands.voice.voices import Voices
 from hands.sessions.audit import SEGMENT_GLOB, AuditLog, Transcribed, segment
-from hands.sessions.wide import annotate, fail, root, unit
+from hands.sessions.wide import annotate, begun, fail, root, unit
 from hands.sessions.home import Home
 from hands.sessions.registry import Sessions
 from hands.voice.briefing import tail
@@ -96,10 +97,10 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     # A line cut short, as a write that failed part way leaves it: the lines after it are still read.
     with segment(path, 0).open("a", encoding="utf-8") as torn:
         torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "err\n')
-    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, root()))
-    with unit("tool.run", log.record):
+    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, root(SYSTEM)))
+    with unit("tool.run", log.record, begun(SYSTEM)):
         annotate(tool="list_sessions")
-    with unit("summary.backlog", log.record):
+    with unit("summary.backlog", log.record, begun(SYSTEM)):
         fail("lit exited 3")
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
@@ -116,7 +117,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     assert found("one kind of line") == ["Transcribed"]
     assert found("the tools called lately") == ["tool.run"]
     # Once the log has rolled, what the closed segment holds is found too, before what came after.
-    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record):
+    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record, begun(SYSTEM)):
         annotate(tool="list_sessions")
     assert found("the tools called lately") == ["tool.run", "tool.run"]
     assert found("the latest errors") == ["Exchanged", "summary.backlog"]

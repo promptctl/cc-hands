@@ -8,8 +8,9 @@ from collections.abc import Awaitable, Callable
 
 from aiohttp import web
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Record
-from hands.sessions.wide import fail, unit
+from hands.sessions.wide import begun, fail, unit
 from hands.voice.phoneaddress import carries_key
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -26,7 +27,7 @@ def keyed(event: str, record: Record, key: str, counts: tuple[str, ...] = ()) ->
 
     def wrapped(handler: Handler) -> Handler:
         async def handled(request: web.Request) -> web.StreamResponse:
-            with unit(event, record, counts=counts):
+            with unit(event, record, begun(SYSTEM), counts):
                 if not carries_key(request.headers.get("Authorization", ""), key):
                     fail("asked without the phone's key")
                     return web.Response(status=401, text=UNKEYED)

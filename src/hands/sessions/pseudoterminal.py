@@ -17,6 +17,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from hands.clock import Clock
 from hands.core.session import ESCAPES
 from hands.sessions.child import Child, reaped
 
@@ -72,7 +73,8 @@ class _Terminal:
 class ClaudeCode:
     """A Claude Code running on a terminal hands holds, until it ends or is stopped."""
 
-    def __init__(self, child: Child[int], terminal: _Terminal) -> None:
+    def __init__(self, clock: Clock, child: Child[int], terminal: _Terminal) -> None:
+        self._clock = clock
         self._child = child
         self._terminal = terminal
         # Its exit code, once it has ended and what it showed last is read.
@@ -87,20 +89,21 @@ class ClaudeCode:
         return self._terminal.last()
 
     async def stop(self) -> None:
-        await self._child.stopped(STOP_SECONDS)
+        await self._child.stopped(self._clock, STOP_SECONDS)
         await asyncio.shield(self.exit)
 
     async def _run_out(self) -> int:
         code = await asyncio.shield(self._child.ended)
         try:
             # What it showed last, read to its end; a terminal some child of it still holds is not waited on for long.
-            await asyncio.wait_for(asyncio.shield(self._terminal.closed), DRAIN_SECONDS)
+            async with self._clock.timeout(DRAIN_SECONDS):
+                await asyncio.shield(self._terminal.closed)
         except TimeoutError:
             pass
         return code
 
 
-async def on_terminal(argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
+async def on_terminal(clock: Clock, argv: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ClaudeCode:
     """Run `argv` in `cwd` and `environment` on a pseudo-terminal of hands' own, as a terminal emulator runs a program."""
     master, slave = pty.openpty()
     try:
@@ -122,21 +125,21 @@ async def on_terminal(argv: Sequence[str], cwd: Path, environment: Mapping[str, 
         os.close(slave)
     child = reaped("a Claude Code", process, process.wait)
     try:
-        await _held(master, child)
+        await _held(clock, master, child)
     except BaseException:
         os.close(master)
         await child.killed("its start failed or was cut short")
         raise
-    return ClaudeCode(child, _Terminal(master))
+    return ClaudeCode(clock, child, _Terminal(master))
 
 
-async def _held(terminal: int, child: Child[int]) -> None:
+async def _held(clock: Clock, terminal: int, child: Child[int]) -> None:
     """Until `child` holds `terminal` as its session's, or has ended without taking it.
 
     [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
     that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
     while not child.ended.done() and os.tcgetpgrp(terminal) != child.process.pid:
-        await asyncio.sleep(0.002)
+        await clock.pause(0.002)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:

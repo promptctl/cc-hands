@@ -9,10 +9,10 @@ can restart a running daemon through the plugin, or by editing its settings, and
 import asyncio
 import os
 import sys
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from hands.clock import SYSTEM
 from hands.daemon.cli import launch
 from hands.daemon.config import edited, load
 from hands.daemon.starting import Ended, Start, Stop, again, keep_beating
@@ -26,13 +26,13 @@ from hands.sessions.registry import Sessions
 def main() -> None:
     home = Home(Path(sys.argv[1]))
     run_start = Start(restarted="--restarted" in sys.argv[2:])
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("starting", None, 0, listening=False, degraded=())
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
     settings = load(home)
 
     async def run(stop: Stop) -> Ended:
-        sessions = Sessions(clock=time.monotonic, record=audit.record)
+        sessions = Sessions(clock=SYSTEM, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
         beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds()))

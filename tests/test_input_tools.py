@@ -12,6 +12,7 @@ import pytest
 from loguru import logger
 from pipecat.processors.aggregators.llm_response_universal import AssistantTurnStoppedMessage, LLMUserAggregatorParams, UserTurnMessageAddedMessage
 
+from hands.clock import SYSTEM
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
 from hands.core.session import CommandName, Membership, PromptId, PromptText, RequestId, SessionId
@@ -20,7 +21,7 @@ from hands.core.status import Busy, Idle, Report, Stamp, Waiting
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.sessions.typing import Untyped
 from hands.sessions.audit import AuditLog, Entry, Record, Typing, TypingFailed, tail
-from hands.sessions.wide import unit
+from hands.sessions.wide import begun, unit
 from hands.sessions.registry import Sessions
 from hands.voice.conversation import record_turns, turns
 from hands.voice.tool import Result, Tool, tool
@@ -60,7 +61,7 @@ async def joined(tmp: Path, record: Record = unrecorded, typed: Callable[[Type[I
 async def call(tools: list[Tool], name: str, **arguments: object) -> dict[str, object]:
     """A call to the tool named, inside a unit of work, as every call the daemon makes is."""
     [tool] = [tool for tool in tools if tool.name == name]
-    with unit("tool.run", unrecorded):
+    with unit("tool.run", unrecorded, begun(SYSTEM)):
         return dict(await tool.body(**arguments))
 
 

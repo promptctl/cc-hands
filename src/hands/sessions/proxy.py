@@ -16,13 +16,13 @@ from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Protocol, cast
-from uuid import uuid4
 
 import aiohttp
 from aiohttp import web
 from loguru import logger
 from multidict import CIMultiDict
 
+from hands.clock import Clock
 from hands.core.wire import (
     Answered,
     Answering,
@@ -69,8 +69,11 @@ class Listener(Protocol):
 
 
 class _NoOne:
+    def __init__(self, clock: Clock) -> None:
+        self._clock = clock
+
     def route(self, sent: Sent) -> Route:
-        return Send(span=root())
+        return Send(span=root(self._clock))
 
     def hear(self, observed: Observed) -> None:
         pass
@@ -79,10 +82,11 @@ class _NoOne:
 class Wire:
     """What the proxy tells and asks: the daemon's record of the wire always, and the one listener joined to it, while it is."""
 
-    def __init__(self, record: Observe) -> None:
+    def __init__(self, clock: Clock, record: Observe) -> None:
+        self._clock = clock
         self._record = record
         # [LAW:dataflow-not-control-flow] with nobody joined, a listener that forwards everything and hears nothing.
-        self._listener: Listener = _NoOne()
+        self._listener: Listener = _NoOne(clock)
 
     def observe(self, observed: Observed) -> None:
         self._record(observed)
@@ -100,7 +104,7 @@ class Wire:
         try:
             yield
         finally:
-            self._listener = _NoOne()
+            self._listener = _NoOne(self._clock)
 
 
 @dataclass(frozen=True)
@@ -114,7 +118,7 @@ class Proxy:
         await self.client.close()
 
 
-async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Callable[[], Seconds]) -> Proxy:
+async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clock) -> Proxy:
     """Listen on a free local port until the returned proxy is closed; its url is what ANTHROPIC_BASE_URL is set to."""
     # The client's own timeouts govern a request: a long reply streams as long as the client keeps reading it.
     # Replies are read as sent, compressed or not, so the client gets the bytes the API wrote; and no header the client
@@ -128,8 +132,8 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
     async def forward(request: web.Request) -> web.StreamResponse:
         # Read whole whatever its size: the request is classified from its body before any of it goes upstream.
         body = await request.content.read()
-        requested_at = clock()
-        sent = sent_of(request.headers, request.path_qs, body)
+        requested_at = clock.wall().timestamp()
+        sent = sent_of(clock, request.headers, request.path_qs, body)
         exchange, session, kind, named, parsed = sent.exchange, sent.session, sent.kind, sent.named, sent.body
         tell(sent)
         try:
@@ -138,9 +142,9 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             # [LAW:no-silent-failure] a route that raises is logged with its trace, and the request goes on as it came:
             # the conversation is not broken by hands failing to decide about it.
             logger.exception(f"the proxy's route failed on exchange {exchange}; forwarding it")
-            routed = Send(span=root())
+            routed = Send(span=root(clock))
 
-        sent_at = clock()
+        sent_at = clock.wall().timestamp()
 
         def exchanged(changes: tuple[Change, ...], reply: Ending, final: bool) -> Exchanged:
             return Exchanged(exchange, session, kind, named, request.method, request.path_qs, len(body), changes, requested_at, sent_at, reply, final, routed.span)
@@ -150,10 +154,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
         try:
             match routed:
                 case Hold(said=said):
-                    content_type, answer = _held(parsed, said)
+                    content_type, answer = _held(clock, parsed, said)
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
                     held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-                    tell(exchanged((), Held(said, clock()), False))
+                    tell(exchanged((), Held(said, clock.wall().timestamp()), False))
                     return held
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
@@ -165,11 +169,11 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 # A client asks again after the proxy's 502 unless told the refusal is final.
                 final = refusal == "final"
                 refused = web.Response(status=REFUSED, text=f"hands' proxy could not reach {upstream}: {error}", headers=_told(final))
-                tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock()), final))
+                tell(exchanged(changes, Unreached(f"{type(error).__name__}: {error}", clock.wall().timestamp()), final))
                 return refused
         except BaseException as error:
             # [LAW:no-silent-failure] it goes on as it came; the exchange is still recorded as ended, and how.
-            tell(exchanged(changes, Unfinished(_unfinished(error), clock()), False))
+            tell(exchanged(changes, Unfinished(_unfinished(error), clock.wall().timestamp()), False))
             raise
         async with reached:
             first: Seconds | None = None
@@ -182,13 +186,13 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             async def read(relay: Callable[[bytes], Awaitable[None]]) -> None:
                 nonlocal first, ended, size, reply
                 async for chunk in reached.content.iter_any():
-                    first = clock() if first is None else first
+                    first = clock.wall().timestamp() if first is None else first
                     size += len(chunk)
                     # [LAW:no-ambient-temporal-coupling] read before it is written on: whatever the client does once it
                     # has these bytes, its result line on stdout included, comes after hands has heard them.
                     reader.feed(chunk)
                     await relay(chunk)
-                ended = clock()
+                ended = clock.wall().timestamp()
                 reply = reader.finish(None)
 
             try:
@@ -220,7 +224,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 reply = Garbled(f"the reply was not relayed whole, {size} bytes in: {type(error).__name__}: {error}")
                 raise
             finally:
-                last = clock() if ended is None else ended
+                last = clock.wall().timestamp() if ended is None else ended
                 tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
                 # [LAW:single-enforcer] every request hands built or changed passes here, so its 400 is told here alone,
                 # after the exchange's end is told: a failure saying it cannot unsay that.
@@ -275,11 +279,11 @@ def _unfinished(error: BaseException) -> str:
             return f"{type(error).__name__}: {error}"
 
 
-def _held(body: object, said: str) -> tuple[str, bytes]:
+def _held(clock: Clock, body: object, said: str) -> tuple[str, bytes]:
     """A finished reply holding one text block, as a stream when the request asked for one."""
     request: Mapping[str, object] = cast(Mapping[str, object], body) if isinstance(body, Mapping) else {}
     message: dict[str, object] = {
-        "id": f"msg_hands_{uuid4().hex}",
+        "id": f"msg_hands_{clock.uuid()}",
         "type": "message",
         "role": "assistant",
         "model": request.get("model"),

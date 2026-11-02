@@ -11,10 +11,10 @@ import asyncio
 import errno
 import json
 
+from hands.clock import SYSTEM
 from hands.core.attention import Attention
 import os
 import subprocess
-import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -236,10 +236,10 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     monkeypatch.setattr(pinned, "claude", located(claude_code))
     recorded: list[Entry] = []
     sent: list[Sent] = []
-    wire = Wire(lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
+    wire = Wire(SYSTEM, lambda observed: sent.append(observed) if isinstance(observed, Sent) else None)
     # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
     # forwards to.
-    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=time.time)
+    proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=SYSTEM)
     home = tmp_path / "home"
     home.mkdir()
     # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
@@ -352,7 +352,7 @@ async def at_the_pane(hands: Hands, *command: str) -> None:
     """A tmux command run against the brain's pane, as a terminal attached to it types: tmux writes the keys to the pane,
     and the pane's fritter forwards them to Claude Code byte for byte."""
     claude = hands.stage._brain._claude  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
-    ran = await ran_at(claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    ran = await ran_at(SYSTEM, claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
     assert isinstance(ran, Ran) and ran.returncode == 0, ran
 
 

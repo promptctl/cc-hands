@@ -16,6 +16,8 @@ from urllib.request import Request
 
 import pytest
 
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
@@ -25,7 +27,7 @@ from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog, Entry, Exported, segment, segments
 from hands.sessions.home import Home
 from hands.sessions.otlp import BATCH_SPANS, ENCODINGS, FAILING_BATCHES, LOGS, STOPPED, TIMEOUT_SECONDS, TRACES, Exporter, Exports, Failing, answered, degradation, exporting, failing, logs, spans, traced
-from hands.sessions.wide import WideEvent, annotate, count, root, unit
+from hands.sessions.wide import WideEvent, annotate, begun, count, root, unit
 
 STARTED = datetime(2026, 10, 3, 12, 0, 0, 250_000, tzinfo=UTC)
 
@@ -155,9 +157,9 @@ def test_an_event_is_one_log_record_named_by_its_body_at_its_audit_level_carryin
 
 def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and_a_unit_inside_another_is_its_child(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
-    with exporting(collector.url, log.record) as record:
-        with unit("turn", record):
-            with unit("delta.read", record, counts=("commits",)):
+    with exporting(collector.url, log.record, clock=SYSTEM) as record:
+        with unit("turn", record, begun(SYSTEM)):
+            with unit("delta.read", record, begun(SYSTEM), ("commits",)):
                 annotate(session="s1")
                 count(commits=1)
     lines = _lines(tmp_path / "audit")
@@ -187,8 +189,8 @@ def _exchanged(reply: Ending, span: Span = Span(TURN.trace_id, "1111111111111111
 
 def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it_and_one_made_for_none_as_a_root(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
-    alone = root()
-    with exporting(collector.url, log.record) as record:
+    alone = root(SYSTEM)
+    with exporting(collector.url, log.record, clock=SYSTEM) as record:
         record(_exchanged(Reached(200, 1001.0, 1002.25, 10, Garbled("the stream ended mid-frame"))))
         # A wrapped session's, or the brain's outside a turn: the root of a trace of its own.
         record(_exchanged(Reached(200, 1001.0, 1002.0, 10, Answered({})), span=alone))
@@ -234,8 +236,8 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
 def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported_by_span_id(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     collector = _stopped()
-    with exporting(collector, log.record) as record:
-        with unit("delta.read", record):
+    with exporting(collector, log.record, clock=SYSTEM) as record:
+        with unit("delta.read", record, begun(SYSTEM)):
             pass
     event, *exported = _lines(tmp_path / "audit")
     assert event["type"] == "WideEvent"
@@ -259,8 +261,8 @@ def test_events_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) 
     refusing = Collector(json.dumps({"partialSuccess": {"rejectedSpans": "1", "rejectedLogRecords": "1", "errorMessage": "too old"}}).encode())
     try:
         recorded: list[Entry] = []
-        with exporting(refusing.url, recorded.append) as record:
-            with unit("delta.read", record):
+        with exporting(refusing.url, recorded.append, clock=SYSTEM) as record:
+            with unit("delta.read", record, begun(SYSTEM)):
                 pass
     finally:
         refusing.close()
@@ -273,8 +275,8 @@ def test_a_request_the_collector_refused_is_said_with_the_reason_its_answer_gave
     refusing = Collector(b'{"code": 3, "message": "invalid traceId"}', status=400)
     try:
         recorded: list[Entry] = []
-        with exporting(refusing.url, recorded.append) as record:
-            with unit("delta.read", record):
+        with exporting(refusing.url, recorded.append, clock=SYSTEM) as record:
+            with unit("delta.read", record, begun(SYSTEM)):
                 pass
     finally:
         refusing.close()
@@ -287,8 +289,8 @@ def test_a_collector_that_takes_the_spans_and_refuses_the_log_records_is_said_to
     refusing = Collector(status=404, refusing=("logs",))
     try:
         log = AuditLog(tmp_path / "audit", clock=datetime.now)
-        with exporting(refusing.url, log.record) as record:
-            with unit("delta.read", record):
+        with exporting(refusing.url, log.record, clock=SYSTEM) as record:
+            with unit("delta.read", record, begun(SYSTEM)):
                 pass
     finally:
         refusing.close()
@@ -318,8 +320,8 @@ def test_a_collector_that_took_every_event_and_warned_of_something_is_said_to_ha
     warning = Collector(warned)
     try:
         recorded: list[Entry] = []
-        with exporting(warning.url, recorded.append) as record:
-            with unit("delta.read", record):
+        with exporting(warning.url, recorded.append, clock=SYSTEM) as record:
+            with unit("delta.read", record, begun(SYSTEM)):
                 pass
     finally:
         warning.close()
@@ -336,7 +338,7 @@ def test_a_fact_json_has_no_number_for_is_sent_as_proto3_json_spells_it() -> Non
     ]
 
 
-class _DarkCollector:
+class _DarkCollector(VirtualClock):
     """The exporter's time, and a collector the network has gone dark to: each request to it waits out its whole timeout
     and fails, and only those waits move the clock, so the time a stop takes is the exporter's own reckoning and no
     loaded machine's. Each request waits from when its thread last read the clock, so waits on the two signals' threads
@@ -344,16 +346,16 @@ class _DarkCollector:
     stop does once it has read the clock."""
 
     def __init__(self) -> None:
-        self.now = 0.0
+        super().__init__()
         self.requests = 0
         self.answering = threading.Event()
         self._read = threading.local()
         self._moving = threading.Lock()
         self._stopper = threading.current_thread()
 
-    def clock(self) -> float:
+    def now(self) -> float:
         with self._moving:
-            self._read.at = now = self.now
+            self._read.at = now = self.at
         # [LAW:no-ambient-temporal-coupling] opened only after the stop's read, so no wait moves the clock it reads.
         if threading.current_thread() is self._stopper:
             self.answering.set()
@@ -364,20 +366,20 @@ class _DarkCollector:
             self.requests += 1
         self.answering.wait()
         with self._moving:
-            self.now = max(self.now, cast(float, self._read.at) + timeout)
+            self.at = max(self.at, cast(float, self._read.at) + timeout)
         raise TimeoutError("timed out")
 
 
 def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says_every_batch_it_could_not_send() -> None:
     dark = _DarkCollector()
     recorded: list[Exported] = []
-    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.5, clock=dark.clock, post=dark.post)
+    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.5, clock=dark, post=dark.post)
     # Three batches' worth, each of which alone could wait out the timeout.
     events = [_event(span_id=f"{n:016x}") for n in range(3 * BATCH_SPANS)]
     for event in events:
         exporter.send(event)
     exporter.close()
-    assert dark.now == 0.5
+    assert dark.at == 0.5
     for signal in ("traces", "logs"):
         assert sorted(span for exported in recorded if exported.signal == signal for span in exported.spans) == sorted(event.span_id for event in events)
     assert all(exported.error is not None for exported in recorded)
@@ -389,7 +391,7 @@ def test_a_send_to_a_real_collector_that_never_answers_gives_up_on_it_once_its_t
         silent.bind(("127.0.0.1", 0))
         silent.listen(16)
         recorded: list[Exported] = []
-        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.05)
+        exporter = Exporter(f"http://127.0.0.1:{silent.getsockname()[1]}", recorded.append, linger=0.01, timeout=0.05, clock=SYSTEM)
         exporter.send(_event())
         deadline = time.monotonic() + TIMEOUT_SECONDS * 2
         while len(recorded) < 2:
@@ -402,13 +404,13 @@ def test_a_send_to_a_real_collector_that_never_answers_gives_up_on_it_once_its_t
 
 def test_with_no_collector_the_log_alone_records_each_event(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
-    with exporting(None, log.record) as record:
+    with exporting(None, log.record, clock=SYSTEM) as record:
         assert record == log.record
 
 
 def test_an_event_sent_once_the_exporter_is_closed_is_recorded_unsent(collector: Collector) -> None:
     recorded: list[Exported] = []
-    exporter = Exporter(collector.url, recorded.append)
+    exporter = Exporter(collector.url, recorded.append, clock=SYSTEM)
     exporter.close()
     late = _event()
     exporter.send(late)
@@ -441,7 +443,7 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
         threading.Thread(target=answer, daemon=True).start()
         recorded: list[Exported] = []
         # No linger, so each event is a batch of its own however the lanes' threads are scheduled.
-        exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0)
+        exporter = Exporter(f"http://127.0.0.1:{cut.getsockname()[1]}", recorded.append, linger=0, clock=SYSTEM)
         first, second = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
         exporter.send(first)
         exporter.send(second)
@@ -457,8 +459,8 @@ def test_a_batch_goes_straight_to_the_collector_past_a_proxy_in_the_environment(
     monkeypatch.setenv("HTTP_PROXY", _stopped())
     monkeypatch.setenv("http_proxy", _stopped())
     recorded: list[Entry] = []
-    with exporting(collector.url, recorded.append) as record:
-        with unit("delta.read", record):
+    with exporting(collector.url, recorded.append, clock=SYSTEM) as record:
+        with unit("delta.read", record, begun(SYSTEM)):
             pass
     _, traces, logged = _sent(recorded)
     assert traces.error is None and logged.error is None and len(collector.spans()) == len(collector.log_records()) == 1
@@ -484,7 +486,7 @@ class _Stuck:
 def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queued_behind_it() -> None:
     stuck_on = _Stuck("/v1/traces", "/v1/logs")
     recorded: list[Exported] = []
-    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post)
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post, clock=SYSTEM)
     first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
     exporter.send(first)
     stuck_on.sending.wait()
@@ -498,7 +500,7 @@ def test_a_send_still_waiting_as_the_stop_gives_up_is_said_with_every_event_queu
 def test_a_send_stuck_on_the_log_records_holds_up_none_of_the_spans() -> None:
     stuck_on = _Stuck("/v1/logs")
     recorded: list[Exported] = []
-    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post)
+    exporter = Exporter("http://otel.example:4318", recorded.append, linger=0.01, timeout=0.2, post=stuck_on.post, clock=SYSTEM)
     first, behind = _event(span_id="0000000000000001"), _event(span_id="0000000000000002")
     exporter.send(first)
     stuck_on.sending.wait()
@@ -545,10 +547,10 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
     # It takes the log records all along: only the spans are failing.
     refusing = Collector(b'{"code": 14, "message": "the store is down"}', status=503, refusing=("traces",))
     home = Home(tmp_path)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     entries: list[Entry] = []
-    exports = Exports(entries.append, lambda: datetime.now(UTC))
-    exporter = Exporter(refusing.url, exports.record, linger=0.01)
+    exports = Exports(entries.append, SYSTEM)
+    exporter = Exporter(refusing.url, exports.record, linger=0.01, clock=SYSTEM)
 
     def look(before: indicator.Shown | None) -> indicator.Shown:
         heart.beat("running", None, 0, listening=False, degraded=exports.degraded())
@@ -598,7 +600,7 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
 def test_a_batch_to_a_collector_that_never_answers_waits_one_timeout_for_both_signals() -> None:
     dark = _DarkCollector()
     recorded: list[Exported] = []
-    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.4, clock=dark.clock, post=dark.post)
+    exporter = Exporter("http://dark.example:4318", recorded.append, linger=0.01, timeout=0.4, clock=dark, post=dark.post)
     exporter.send(_event())
     deadline = time.monotonic() + TIMEOUT_SECONDS * 2
     # The two signals' requests are both out before the network answers either.
@@ -611,4 +613,4 @@ def test_a_batch_to_a_collector_that_never_answers_waits_one_timeout_for_both_si
         time.sleep(0.01)
     exporter.close()
     # The two signals wait on the collector side by side: one timeout, not one after the other's.
-    assert sorted(exported.signal for exported in recorded) == ["logs", "traces"] and dark.now == 0.4
+    assert sorted(exported.signal for exported in recorded) == ["logs", "traces"] and dark.at == 0.4

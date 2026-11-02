@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from conftest import BrokenClock, ManualClock
+from conftest import BrokenClock, VirtualClock
+from hands.clock import SYSTEM
 from hands.sessions import child
 from hands.sessions.child import Ran, run
 
@@ -45,7 +46,7 @@ async def test_a_child_s_output_and_exit_are_what_it_ran_to(started: list[subpro
     exits: list[str] = []
     sink = logger.add(lambda message: exits.append(message.record["message"]), level="DEBUG")
     try:
-        assert await run("sh", "-c", "echo out; echo err >&2; exit 3", timeout=5) == Ran(3, b"out\n", b"err\n")
+        assert await run("sh", "-c", "echo out; echo err >&2; exit 3", timeout=5, clock=SYSTEM) == Ran(3, b"out\n", b"err\n")
     finally:
         logger.remove(sink)
     assert any(line.startswith(f"sh ({started[0].pid}) exited 3 in ") for line in exits)
@@ -54,14 +55,14 @@ async def test_a_child_s_output_and_exit_are_what_it_ran_to(started: list[subpro
 async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     start = time.monotonic()
     with pytest.raises(TimeoutError):
-        await run("sleep", "30", timeout=0.2)
+        await run("sleep", "30", timeout=0.2, clock=SYSTEM)
     assert time.monotonic() - start < 2
     assert reaped(started[0])
     assert any(f"killed sleep ({started[0].pid})" in line and "ran past 0.2s" in line for line in logged)
 
 
 async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
-    clock = ManualClock()
+    clock = VirtualClock()
     running = asyncio.create_task(run("sleep", "30", timeout=5, clock=clock))
     await clock.paused(5.0)
     clock.advance(5)
@@ -81,7 +82,7 @@ async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure
 async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     with pytest.raises(TimeoutError):
-        await run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", timeout=0.5)
+        await run("sh", "-c", f"sleep 30 & echo $! > {pid}; wait", timeout=0.5, clock=SYSTEM)
     grandchild = int(pid.read_text())
     # Killed, it is reparented to launchd and reaped there; give that a moment before asking after it.
     for _ in range(50):
@@ -94,7 +95,7 @@ async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
 
 
 async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
-    running = asyncio.create_task(run("sleep", "30", timeout=30))
+    running = asyncio.create_task(run("sleep", "30", timeout=30, clock=SYSTEM))
     await asyncio.sleep(0.1)
     running.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -111,7 +112,7 @@ async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: 
     monkeypatch.setattr(child.os, "killpg", exited)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
-        await run("sleep", "0.4", timeout=0.1)
+        await run("sleep", "0.4", timeout=0.1, clock=SYSTEM)
     assert time.monotonic() - started >= 0.3, "it left before the child it could not kill was reaped"
     assert any("had already ended when it ran past 0.1s" in line for line in logged)
     assert not any(line.startswith("killed") for line in logged)
@@ -123,10 +124,21 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
 
     monkeypatch.setattr(child, "_ended", unreadable)
     with pytest.raises(OSError, match="could not be read"):
-        await run("true", timeout=5)
+        await run("true", timeout=5, clock=SYSTEM)
     assert not any("killed" in line or "already ended" in line for line in logged), "a failure of its own was told as a kill"
 
 
 async def test_a_child_that_cannot_start_says_so() -> None:
     with pytest.raises(OSError):
-        await run("/nonexistent/hands-no-such-program", timeout=5)
+        await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+
+
+async def test_a_child_stopped_on_a_clock_that_fails_is_killed_and_reaped_before_the_failure_leaves(logged: list[str]) -> None:
+    # A child that ignores the terminate, so only the kill ends it.
+    process = subprocess.Popen(["sh", "-c", "trap '' TERM; echo ready; sleep 30"], stdout=subprocess.PIPE, start_new_session=True)
+    assert process.stdout is not None and process.stdout.readline() == b"ready\n"
+    stopping = child.reaped("stubborn", process, process.wait)
+    with pytest.raises(RuntimeError, match="no timer"):
+        await stopping.stopped(BrokenClock(), 5)
+    assert reaped(process)
+    assert any(f"killed stubborn ({process.pid})" in line and "its wait failed" in line for line in logged)

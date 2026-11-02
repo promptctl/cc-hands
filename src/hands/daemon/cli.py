@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
@@ -263,7 +264,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
         with watchdog.watching(home.hang, watchdog.HUNG) as watched:
-            heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, watched.kick)
+            heart = heartbeat.Heart(home.status, os.getpid(), SYSTEM.wall(), heartbeat.HEARTBEAT, watched.kick, SYSTEM)
             try:
                 held = None if restarted is None else heart
                 # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
@@ -306,7 +307,7 @@ def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
     collector, or on a config.toml the daemon has yet to accept.
     """
-    with wide.unit("hands.command", record):
+    with wide.unit("hands.command", record, wide.begun(SYSTEM)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
         ended = dispatch(home, arguments, record)
@@ -450,7 +451,7 @@ def hold(home: Home, record: Callable[[wide.WideEvent], None], *, restarted: boo
     before the settings are read. A home a daemon holds is the lock's answer, not a failure, since hands is running;
     except to a restart's run, the process that held the home: it lost the lock, and hands ends with it.
     """
-    with wide.unit("hands.hold", record, counts=("retries",)):
+    with wide.unit("hands.hold", record, wide.begun(SYSTEM), ("retries",)):
         wide.annotate(pid=os.getpid(), restarted=restarted)
         home.root.mkdir(parents=True, exist_ok=True)
         # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
@@ -514,8 +515,8 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     shown = start_indicator(home)
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
-    exports = Exports(audit_log.record, lambda: datetime.now(UTC))
-    with exporting(settings.config.collector, exports.record) as exported:
+    exports = Exports(audit_log.record, SYSTEM)
+    with exporting(settings.config.collector, exports.record, SYSTEM) as exported:
         record = told_on_terminal(exported)
         ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
     return ending, shown
@@ -539,7 +540,7 @@ async def launch(
     emitted here as it ends: every cause told, in order, and the end read off them, which is what this returns or raises.
     The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
-    began = wide.begun()
+    began = wide.begun(SYSTEM)
     stop = Stop()
 
     def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
@@ -747,7 +748,7 @@ def undone(findings: Sequence[readiness.Finding]) -> str:
 
 def keyboards(pids: Sequence[int]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
-    return asyncio.run(tmux.keyboards(pids, os.environ))
+    return asyncio.run(tmux.keyboards(SYSTEM, pids, os.environ))
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:
@@ -885,7 +886,7 @@ def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
     # it took Claude Code's first run, and the account it ended on.
-    with wide.unit("brain.login", record):
+    with wide.unit("brain.login", record, wide.begun(SYSTEM)):
         wide.annotate(asked=method)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
@@ -906,7 +907,7 @@ def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
 def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
     # beside it, and whether PATH finds that claude.
-    with wide.unit("fritter.install", record):
+    with wide.unit("fritter.install", record, wide.begun(SYSTEM)):
         wide.annotate(packaged=wrapper.PACKAGED)
         try:
             installed = wrapper.install(home)
@@ -943,7 +944,7 @@ def install_brain(home: Home, record: audit.Record) -> exits.Exit:
 
     # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
     # it, whether it fetched it, and, where it did, why the copy there was not the pin.
-    with wide.unit("brain.install", record):
+    with wide.unit("brain.install", record, wide.begun(SYSTEM)):
         wide.annotate(version=pinned.VERSION)
         try:
             wide.annotate(build=pinned.build(platform.machine()))
@@ -964,7 +965,7 @@ def render_plugin(home: Home, record: audit.Record) -> Literal[0]:
     # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
     # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
     # report and never costs a session its hooks.
-    with wide.unit("plugin.render", record):
+    with wide.unit("plugin.render", record, wide.begun(SYSTEM)):
         wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, written=rendered.written)
@@ -1012,7 +1013,7 @@ def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> 
     """
     # [LAW:nothing-unseen] one unit a pass, every count zero included, and how far back the log reached: a pass with
     # nothing new and one run after its lines rolled off the log read differently.
-    with wide.unit("tickets.file", record, FILED_COUNTS):
+    with wide.unit("tickets.file", record, wide.begun(SYSTEM), FILED_COUNTS):
         wide.annotate(project=project, epic=epic)
         found = grouping.read(audit.forwards(home.audit))
         wide.annotate(oldest=found.oldest, newest=found.newest)
@@ -1030,7 +1031,7 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:
-        read = await backlog.read_backlog(project)
+        read = await backlog.read_backlog(SYSTEM, project)
     except (backlog.LitFailed, Rejected) as failed:
         return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
@@ -1048,12 +1049,12 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
         try:
             match each:
                 case filing.New(group=group):
-                    filed = await backlog.file_ticket(project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
+                    filed = await backlog.file_ticket(SYSTEM, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
                     wide.count(filed=1)
                     print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
                     # Signed as the session file-tickets is run from, whose work it is.
-                    await backlog.comment(project, ticket, filing.comment(group, logs), backlog.Inherited())
+                    await backlog.comment(SYSTEM, project, ticket, filing.comment(group, logs), backlog.Inherited())
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:
@@ -1066,7 +1067,7 @@ def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most:
     """Print the moments `hands recall` found, one a line, each at the time it happened here."""
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
     # zeros included.
-    with wide.unit("memory.recall", record, ("lines", "unreadable", "moments", "matched", "printed")):
+    with wide.unit("memory.recall", record, wide.begun(SYSTEM), ("lines", "unreadable", "moments", "matched", "printed")):
         wide.annotate(words=tuple(words), most=most)
         found = recall.recall(home.audit, words, most)
         wide.annotate(since=found.since)

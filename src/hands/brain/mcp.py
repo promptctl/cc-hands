@@ -21,9 +21,10 @@ from typing import cast
 from aiohttp import web
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.core.trace import Span
 from hands.sessions.audit import Record, said
-from hands.sessions.wide import annotate, continuing, fail, unit
+from hands.sessions.wide import annotate, begun, continuing, fail, unit
 from hands.voice.tool import Tool
 
 # What the brain's --mcp-config names this server; its tools reach the model as mcp__hands__<tool>.
@@ -91,7 +92,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
         try:
             message = json.loads(await request.read())
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
-            with unit("mcp.request", record):
+            with unit("mcp.request", record, begun(SYSTEM)):
                 fail(f"not JSON: {error}")
             return web.json_response(_error(None, PARSE_ERROR, f"not JSON: {error}"))
         match message:
@@ -99,7 +100,7 @@ async def serve_mcp(tools: Sequence[Tool], record: Record, spans: CallSpans) -> 
                 return web.json_response(await call(id, by_name[name], arguments, _text(_object(params.get("_meta")).get(TOOL_USE_ID))))
             case {"method": str(method), "id": str() | int() as id}:
                 # [LAW:nothing-unseen] every request but a tool's run, which is the tool's own event, is one event.
-                with unit("mcp.request", record):
+                with unit("mcp.request", record, begun(SYSTEM)):
                     annotate(method=method)
                     answered = answer(id, method, _params(message))
                 return web.json_response(answered)

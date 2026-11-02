@@ -44,6 +44,7 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
+from hands.clock import SYSTEM
 from hands.core.attention import Attention
 from hands.voice.narrator import set_to
 from hands.core.brainwork import AlreadyEnded, BrainWork, Epoch, Idle, NotWorking, Running, StopOutcome, Stopping, Working
@@ -617,11 +618,11 @@ class BrainStage(FrameProcessor):
         and `utterances` what the turn says of the sessions. `released` is when the user let go of the key on the words
         the turn asks, None for a turn not asked aloud, and `taken` when the turn left its lane. Returns why the turn
         failed, None where it did not."""
-        return await self._event(partial(self._typed, text, asker, unsaid, utterances, arrived, released, taken), None)
+        return await self._event(partial(self._typed, text, asker, unsaid, utterances, arrived, released, taken), begun(SYSTEM))
 
-    async def _event(self, turn: Callable[[], Awaitable[str | None]], began: Begun | None) -> str | None:
+    async def _event(self, turn: Callable[[], Awaitable[str | None]], began: Begun) -> str | None:
         # [LAW:nothing-unseen] every turn passes through here, whoever asked it, a turn nobody did included, and however it ends.
-        with unit("voice.turn", self._record, COUNTS, began=began):
+        with unit("voice.turn", self._record, began, COUNTS):
             return await turn()
 
     def _begin(self, asker: Asker, utterances: tuple[Utterance, ...], span: Span, since: Seconds) -> _Turn:
@@ -648,7 +649,7 @@ class BrainStage(FrameProcessor):
         """A turn Claude Code opened that no turn of hands' waits on, from its first request: spoken as any turn is,
         through the one event every turn has, ending as its turn of `ClaudeTurns` does."""
         with continuing(None):
-            began = begun()
+            began = begun(SYSTEM)
         now = self._now()
         turn = self._begin(Unawaited(running.opener), (), began.span, now)
         run = partial(self._turn_of, turn, running.ended, "", "", (), now, None, now)
@@ -964,7 +965,7 @@ class BrainStage(FrameProcessor):
         stay_silent held."""
         # Another session's request is made for no unit of the stage's: the root of a trace of its own.
         if sent.session != self._brain.session:
-            return Send(span=root())
+            return Send(span=root(SYSTEM))
         # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
         # asked it: asked again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it
         # would wait out to continue the task on its own at the reset, hours on, with nobody asking (hands-wire-zi2).
@@ -972,12 +973,12 @@ class BrainStage(FrameProcessor):
         # A request the brain makes while a turn is asked of it, a subagent's or a fork's among them, is that turn's part.
         if not isinstance(sent.kind, MainTurn):
             facing = self._facing()
-            return Send(refusal="final", span=root() if facing is None else within(facing.span))
+            return Send(refusal="final", span=root(SYSTEM) if facing is None else within(SYSTEM, facing.span))
         turn = self._of(self._brain.current())
         if turn is None:
             # [LAW:no-silent-failure] the brain asked the model something with no turn written to it: heard, never spoken.
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
-            return Send(refusal="final", span=root())
+            return Send(refusal="final", span=root(SYSTEM))
         now = self._now()
         carried = tool_answers(sent.body)
         # A call's result leaving is the end of its run, whether the request carrying it goes on or is held.
@@ -1006,8 +1007,8 @@ class BrainStage(FrameProcessor):
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, None, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
-            return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(turn.span))
-        return Hold(SILENT, within(turn.span))
+            return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(SYSTEM, turn.span))
+        return Hold(SILENT, within(SYSTEM, turn.span))
 
     def _of(self, running: ClaudeTurn | None) -> _Turn | None:
         """The turn of the stage's whose request this is: the one already running `running`, the turn of Claude Code's
@@ -1117,7 +1118,7 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
                 opened = turn.opening.pop(index)
                 turn.calls[opened.call] = opened.tool
-                ran = turn.tools[opened.call] = _Call(opened.tool, tool_input(opened.tool, opened.json), now, datetime.now(UTC), within(turn.span))
+                ran = turn.tools[opened.call] = _Call(opened.tool, tool_input(opened.tool, opened.json), now, datetime.now(UTC), within(SYSTEM, turn.span))
                 self._spans.opened(opened.call, ran.span)
                 turn.working.set()
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):

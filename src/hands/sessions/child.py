@@ -12,7 +12,7 @@ from typing import IO
 
 from loguru import logger
 
-from hands.sessions.clock import SYSTEM, Clock, wait
+from hands.clock import Clock, wait
 from hands.threads import settles_off_loop
 
 
@@ -33,13 +33,14 @@ class Child[T]:
     process: subprocess.Popen[bytes]
     ended: asyncio.Future[T]
 
-    async def stopped(self, grace: float) -> None:
-        """Ask the child alone to end, and kill everything it started once it has not within `grace`."""
+    async def stopped(self, clock: Clock, grace: float) -> None:
+        """Ask the child alone to end, and kill everything it started once it has not within `grace` on `clock`."""
         self.process.terminate()
         try:
-            await asyncio.wait((self.ended,), timeout=grace)
-        except asyncio.CancelledError:
-            await self.killed("its stopper stopped waiting")
+            await wait(clock, (self.ended,), grace)
+        except (asyncio.CancelledError, Exception) as stopped:
+            # Cancelled, or its clock failed and never measured the grace: the child is ended all the same.
+            await self.killed("its stopper stopped waiting" if isinstance(stopped, asyncio.CancelledError) else f"its wait failed: {stopped!r}")
             raise
         if not self.ended.done():
             await self.killed(f"it had not ended {grace:.1f}s after it was asked to")
@@ -74,7 +75,7 @@ class Ran:
     err: bytes
 
 
-async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock = SYSTEM) -> Ran:
+async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
     """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, and OSError when it cannot start.
 
     The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process

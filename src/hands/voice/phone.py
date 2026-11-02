@@ -337,7 +337,7 @@ class Phone:
         # await: a speaker reading the gate between them never finds the phone without a call.
         self._offered = None
         gone = self._leave("replaced")
-        self._call, call.channel, call.arrived_ms = call, channel, since(call.began.began)
+        self._call, call.channel, call.arrived_ms = call, channel, since(call.began.clock, call.began.began)
         # [LAW:nothing-unseen] the move a call makes is part of that call, in its trace, wherever the call's end is noticed.
         with continuing(call.began.span):
             self._key.go("phone")

@@ -13,6 +13,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
+from hands.clock import SYSTEM
 from hands.core import delta as repository
 from hands.core.delta import Changed, Delta
 from hands.core.events import Ended, Joined, Prompted, Stopped
@@ -92,7 +93,7 @@ def rendered(pending: Pending, names: Names) -> tuple[Frame, ...]:
 
 def heard() -> Utterance:
     """An utterance as the narrator opens one, for a test that hands it to a stage of the narration directly."""
-    return Utterance(begun())
+    return Utterance(begun(SYSTEM))
 
 
 def utterances(recorded: list[Entry]) -> list[WideEvent]:

@@ -25,6 +25,7 @@ from pipecat.frames.frames import DataFrame, Frame, InterruptionFrame, OutputAud
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameProcessor
 
+from hands.clock import SYSTEM
 from hands.core.effects import Heard, Story
 from hands.core.session import SessionId
 from hands.sessions.audit import Record
@@ -70,7 +71,7 @@ class Utterances:
 
     def heard(self, session: SessionId, heard: Heard | Story) -> Utterance:
         """Something `session` gave hands to say unasked, `heard`, beginning now."""
-        utterance = Utterance(begun(), {"session": session, "heard": heard})
+        utterance = Utterance(begun(SYSTEM), {"session": session, "heard": heard})
         self._heard.put_nowait(utterance)
         return utterance
 
@@ -82,7 +83,7 @@ class Utterances:
                 group.create_task(self._held(await self._heard.get()))
 
     async def _held(self, utterance: Utterance) -> None:
-        with unit("utterance", self._record, began=utterance.begun):
+        with unit("utterance", self._record, utterance.begun):
             try:
                 fate = await utterance.settled
             finally:

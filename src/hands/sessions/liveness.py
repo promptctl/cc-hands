@@ -1,6 +1,5 @@
 """Which sessions are running, from their membership files and the OS: silence is never evidence."""
 
-import asyncio
 from collections.abc import Collection, Mapping
 
 from loguru import logger
@@ -42,7 +41,7 @@ async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
     unfiled: Unfiled = frozenset()
     while True:
         unfiled = await sweep(home, sessions, unfiled)
-        await asyncio.sleep(period)
+        await sessions.clock.pause(period)
 
 
 def observed(home: Home, membership: Membership) -> Observed:

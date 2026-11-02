@@ -9,12 +9,13 @@ import asyncio
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 
+from hands.clock import SYSTEM
 from hands.core.session import Membership
 from hands.sessions.audit import Record
 from hands.sessions.names import Finished, Names
 from hands.sessions.payload import Rejected
 from hands.sessions.transcript import session_name
-from hands.sessions.wide import annotate, fail, unit
+from hands.sessions.wide import annotate, begun, fail, unit
 from hands.voice.summary import Summariser, SummaryFailed
 
 NAME_INSTRUCTION = """\
@@ -82,7 +83,7 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
     # [LAW:nothing-unseen] `judged` says what came of it: `renamed` decided a new name, given at the session's next
     # prompt; `kept` found the name it has still fits; `unread` could not read the name it has; `failed` had no answer
     # from the model; `refused` had an answer that is not a name, which `reply` holds. The last three fail the unit.
-    with unit("name.judged", record):
+    with unit("name.judged", record, begun(SYSTEM)):
         annotate(session=session)
         try:
             held = await asyncio.to_thread(lambda: [session_name(each.transcript) for each in (turn.membership, *others)])

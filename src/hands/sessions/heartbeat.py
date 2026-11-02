@@ -9,10 +9,11 @@ import json
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from hands.clock import Clock
 from hands.sessions.files import replace_whole
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import parse_pid, process_starts, still_running
@@ -119,9 +120,11 @@ class Heart:
     period: timedelta
     # Told of every beat written, the proof the run's loop still turns: the run's watchdog, which ends a run that stops.
     kick_watchdog: Callable[[], None]
+    # The wall clock each beat is stamped on.
+    clock: Clock
 
     def beat(self, pipeline: PipelineState | Refusal, last_audio_out: datetime | None, live_sessions: int, *, listening: bool, degraded: tuple[Degradation, ...]) -> None:
-        write(self.path, Status(self.pid, self.started_at, datetime.now(UTC), self.period, pipeline, last_audio_out, live_sessions, listening, degraded, Path(sys.prefix)))
+        write(self.path, Status(self.pid, self.started_at, self.clock.wall(), self.period, pipeline, last_audio_out, live_sessions, listening, degraded, Path(sys.prefix)))
         # [LAW:single-enforcer] every beat, from every path that writes one, kicks the watchdog.
         self.kick_watchdog()
 

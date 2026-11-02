@@ -18,6 +18,8 @@ import aiohttp
 import numpy as np
 from openwakeword.model import Model
 
+from hands.clock import SYSTEM
+from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
 from hands.voice.wakeword import Pretrained, Trained, Word, model_of
@@ -126,7 +128,7 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
         # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and whether hands was speaking:
         # a wake on hands' own voice, left over from the echo canceller, reads as one heard while it spoke. Whether it
         # opened a turn is the desk's to say, as its count of starts.
-        with unit("desk.wake_word_heard", emit):
+        with unit("desk.wake_word_heard", emit, wide.begun(SYSTEM)):
             annotate(score=score, threshold=THRESHOLD, while_speaking=while_speaking)
         return True
 

@@ -21,6 +21,7 @@ from typing import Never
 from aiohttp import web
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -56,7 +57,7 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
 
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
-        began = begun()
+        began = begun(SYSTEM)
         if not carries_key(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
@@ -100,7 +101,7 @@ async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Await
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:
-        with unit("phone.served", record):
+        with unit("phone.served", record, begun(SYSTEM)):
             own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
             kept: Callable[[], Coroutine[object, object, Never]]
             match await tailnet(home):

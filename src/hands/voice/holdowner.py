@@ -23,6 +23,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from hands.clock import SYSTEM
 from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
@@ -203,7 +204,7 @@ class HoldOwner(FrameProcessor):
         hold = Hold(self._holds, "typed")
         await self.push_frame(TurnOpened(hold=hold))
         await self.push_frame(VADUserStoppedSpeakingFrame())
-        await self._ended.put(_Written(hold, text, begun()))
+        await self._ended.put(_Written(hold, text, begun(SYSTEM)))
 
     async def _captured(self, frame: InputAudioRawFrame) -> None:
         # [LAW:parse-dont-validate] the microphone makes every frame this sees, and tags each one.
@@ -262,7 +263,7 @@ class HoldOwner(FrameProcessor):
             # A hearing is a trace of its own, part of no unit the audio path is in, so its lane can always run it.
             with continuing(None):
                 for hearing in self._told(listener, hold, told):
-                    hearings.put_nowait((hold, hearing, begun()))
+                    hearings.put_nowait((hold, hearing, begun(SYSTEM)))
 
     def _told(self, listener: Listener, hold: Hold, told: Callable[[Listener], Hearings]) -> Hearings:
         """The hearings `listener` returned as it was told of `hold`.
@@ -272,7 +273,7 @@ class HoldOwner(FrameProcessor):
         try:
             return told(listener)
         except Exception as error:
-            ended("hearing", self._record, begun(), error, listener=listener.name, hold=hold.number)
+            ended("hearing", self._record, begun(SYSTEM), error, listener=listener.name, hold=hold.number)
             return ()
 
     async def _end(self, fate: Fate) -> None:
@@ -288,7 +289,7 @@ class HoldOwner(FrameProcessor):
                 await self.push_frame(VADUserStoppedSpeakingFrame())
             case "dropped":
                 await self.push_frame(HoldDiscarded())
-        await self._ended.put(_Spoken(hold, fate, sound, begun()))
+        await self._ended.put(_Spoken(hold, fate, sound, begun(SYSTEM)))
 
     def _open(self, hold: Hold) -> bool:
         """Whether `hold` is the hold open now."""
@@ -367,7 +368,7 @@ class HoldOwner(FrameProcessor):
         """One hearing, bounded, and what came of it: words for the hold still open cut hands off as `InterimWords`."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
-        with continuing(None), unit("hearing", self._record, began=began):
+        with continuing(None), unit("hearing", self._record, began):
             annotate(listener=listener.name, hold=hold.number)
             async with asyncio.timeout(HEARING_SECONDS - (time.monotonic() - began.began)):
                 heard = await hearing()

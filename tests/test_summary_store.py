@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.core.events import Joined
 from hands.core.sentences import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
@@ -364,7 +365,7 @@ async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_
 async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project: Path) -> None:
     # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
     gone = project / "removed-worktree"
-    assert await read_backlog(gone) == Untracked(gone, gone=True)
+    assert await read_backlog(SYSTEM, gone) == Untracked(gone, gone=True)
 
 
 def fake_lit(script: str) -> None:
@@ -393,7 +394,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
 async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
     fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
     with pytest.raises(LitFailed, match="workspace_busy"):
-        await read_backlog(project)
+        await read_backlog(SYSTEM, project)
 
 
 @pytest.mark.skipif(shutil.which("lit") is None, reason="lit's own refusals are what is matched")
@@ -401,14 +402,14 @@ async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project:
 async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: Path, git: bool) -> None:
     if git:
         subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    assert await read_backlog(tmp_path) == Untracked(tmp_path)
+    assert await read_backlog(SYSTEM, tmp_path) == Untracked(tmp_path)
 
 
 async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_lit("echo $$ > pid\nexec sleep 30\n")
     monkeypatch.setattr("hands.sessions.backlog.LIT_TIMEOUT_SECONDS", 0.5)
     with pytest.raises(LitFailed, match="did not answer"):
-        await read_backlog(project)
+        await read_backlog(SYSTEM, project)
     with pytest.raises(ProcessLookupError):
         os.kill(int((project / "pid").read_text()), 0)
 

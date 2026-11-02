@@ -10,6 +10,7 @@ import pytest
 from loguru import logger
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
+from hands.clock import SYSTEM
 from hands.core.attention import Amount, Attention, Level, Overlay, Route, Switch, progress_route
 from hands.core.effects import Progress
 from hands.core.events import Displayed, Progressed, Read, StatusReported, Tick
@@ -21,7 +22,7 @@ from hands.core import status
 from hands.core.status import Busy, Report, Stamp
 from hands.core.turn import AgentId, AgentTask
 from hands.sessions.audit import Entry, jsonable
-from hands.sessions.wide import WideEvent, unit
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.sessions.tail import Tails
 from hands.voice.speech import Aloud, Unprompted, frames, relay, sent
 from hands.voice.utterance import Fate, Utterance, Utterances
@@ -440,7 +441,7 @@ async def test_briefly_the_focus_is_heard_saying_what_it_is_doing_without_its_ca
 
     async def explain(_text: str) -> str:
         # As the side question it is asked as opens its unit of work.
-        with unit("brain.aside", asked.append):
+        with unit("brain.aside", asked.append, begun(SYSTEM)):
             return "Explain how DNS resolution works."
 
     queued, told = await played(Progress(SID, frozenset({TURN}), (TESTS,), WRITTEN), lambda: Opened(TURN), explain, "brief")

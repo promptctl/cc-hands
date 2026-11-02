@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from hands.clock import SYSTEM
 from hands.core.sentences import Digest, Due, Reckoning, Thing, reckon
 from hands.core.session import SessionId
 from hands.sessions import backlog as tracker
@@ -98,7 +99,7 @@ async def sighted(store: SummaryStore, project: Path) -> Sighted | tracker.Untra
     [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what it finds unsaid is asked
     for, to be said in the background, never while the read waits.
     """
-    match await tracker.read_backlog(project):
+    match await tracker.read_backlog(SYSTEM, project):
         case tracker.Untracked() as untracked:
             return untracked
         case backlog:

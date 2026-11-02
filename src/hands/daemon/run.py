@@ -32,6 +32,7 @@ from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
+from hands.clock import SYSTEM
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
@@ -175,7 +176,7 @@ class Mind:
 async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(running, environment)
+    return await read_front(sessions.clock, running, environment)
 
 
 @asynccontextmanager
@@ -236,12 +237,14 @@ async def run(
     # that raised still lets go of the socket and of every permission hook waiting on it.
     async with AsyncExitStack() as held:
         # What each turn changed in the repository it ran in, which no transcript record need name.
-        deltas = Deltas(record, environment)
+        # [LAW:effects-at-boundaries] the one clock every part of the run below reads time, ids, and randomness from.
+        clock = SYSTEM
+        deltas = Deltas(record, environment, clock)
         # Before the hooks are served: a turn that finishes while the models load is named once they have.
         names = Names()
         sessions = Sessions(
-            clock=time.monotonic, record=record, changes=deltas, names=names,
-            typist=partial(type_into, environment), keyboards=partial(tmux.keyboards, environment=environment),
+            clock=clock, record=record, changes=deltas, names=names,
+            typist=partial(type_into, clock, environment), keyboards=partial(tmux.keyboards, clock, environment=environment),
         )
         # [LAW:single-enforcer] the one reader of Claude Code's statuses and transcripts: on its period, and through now
         # before each turn's hook is applied.
@@ -250,8 +253,8 @@ async def run(
         hooks = await serve_hooks(home, sessions, names, record, reader)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)
-        wire = Wire(wire_to(record))
-        proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=time.time)
+        wire = Wire(clock, wire_to(record))
+        proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=clock)
         held.push_async_callback(proxy.close)
         # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
         run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
@@ -262,7 +265,7 @@ async def run(
             for move in moves(observed):
                 sessions.hear(move)
 
-        tap = await serve_tap(home.wire, tapped, record, clock=time.time)
+        tap = await serve_tap(home.wire, tapped, record, clock=clock)
         held.push_async_callback(tap.close)
         run_start.heard(tap=home.wire)
         display = await serve_display(sessions, DISPLAY_HOST, DISPLAY_PORT, DISPLAY_PATH, record)

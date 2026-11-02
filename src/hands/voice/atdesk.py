@@ -8,7 +8,8 @@ from typing import Protocol
 
 from loguru import logger
 
-from hands.sessions.wide import WideEvent, annotate, unit
+from hands.clock import SYSTEM
+from hands.sessions.wide import WideEvent, annotate, begun, unit
 from hands.voice import wake
 from hands.voice.cues import Cue, Played, level_cue
 from hands.voice.desk import Leveled, Made
@@ -75,7 +76,7 @@ async def serve_desk(
         # the desk starts: one that cannot be is the run's failure, said with what could not be loaded, never a level
         # that fails as it is chosen.
         # [LAW:nothing-unseen] the fetch is its own unit of work, naming the files it fetched, none once they are kept.
-        with unit("desk.fetched", record):
+        with unit("desk.fetched", record, begun(SYSTEM)):
             annotate(fetched=", ".join(await wake.fetched(models, word)))
         async with loaded(rate, record) as ears, wake.loaded(rate, models, word, record) as heard:
             yield ears, wake.listening(heard, lambda: speaker().hands_speaking, record)

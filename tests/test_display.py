@@ -6,6 +6,7 @@ import socket
 import aiohttp
 import pytest
 
+from hands.virtualclock import VirtualClock
 from hands.core.events import Displayed, Event
 from hands.core.session import PromptId, SessionId
 from hands.sessions.hookconfig import DISPLAY_TIMEOUT_SECONDS, DISPLAY_URL, plugin_hooks
@@ -51,6 +52,7 @@ def test_the_plugin_posts_message_display_to_the_route_and_runs_no_process_for_i
 class Applying:
     def __init__(self) -> None:
         self.applied: list[Event] = []
+        self.clock = VirtualClock()
 
     def now(self) -> float:
         return 7.0

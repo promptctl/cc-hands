@@ -17,6 +17,7 @@ from typing import Literal, TypedDict
 
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
@@ -37,7 +38,7 @@ from hands.sessions.backfill import Reading, read_transcript
 from hands.sessions.backlog import BACKLOG, Backlog, LitFailed, Untracked
 from hands.sessions import catchup, closesession, startsession, tmux
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, fail, unit
+from hands.sessions.wide import annotate, begun, fail, unit
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.payload import Rejected
 from hands.sessions.home import Home
@@ -91,7 +92,7 @@ def audited(tool: Tool, record: Record) -> Tool:
     # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
     @functools.wraps(tool.body)
     async def call(**arguments: object) -> Result:
-        with unit("tool.run", record):
+        with unit("tool.run", record, begun(SYSTEM)):
             annotate(tool=tool.name, called=Called(arguments, None))
             result = await tool.body(**arguments)
             annotate(called=Called(arguments, result))
@@ -270,7 +271,7 @@ def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, envir
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(tmux.panes([listing.session.membership.pid for listing in listings], environment), _focus(home))
+        panes, focus = await asyncio.gather(tmux.panes(sessions.clock, [listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
@@ -296,10 +297,10 @@ def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await tmux.panes([live.membership.pid], environment)
+        [pane] = await tmux.panes(sessions.clock, [live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
-                match await tmux.shown(environment, socket, pane_id):
+                match await tmux.shown(sessions.clock, environment, socket, pane_id):
                     case str(screen):
                         return {"screen": screen, "tmux": _in_pane(pane)}
                     case Unanswered(reason=reason):
@@ -1150,7 +1151,7 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, record, Path(folder), model or None, environment, members)
+            started = await startsession.start(home, SYSTEM, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}
@@ -1165,7 +1166,7 @@ def close_session_tool(home: Home, record: Record, sessions: Sessions) -> Tool:
         # Its name as the user knows it, read while it is still listed.
         name = spoken_name(sessions, id)
         try:
-            match await closesession.close(home, record, sessions.live_session, id, asked):
+            match await closesession.close(home, sessions.clock, record, sessions.live_session, id, asked):
                 case closesession.Closed():
                     return {"closed": name}
                 case closesession.LeftRunning(session=found):

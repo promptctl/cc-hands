@@ -12,6 +12,8 @@ from typing import get_args
 
 import pytest
 
+from hands.clock import SYSTEM
+from hands import clock as clocks
 from hands.daemon import cli
 from hands.sessions import audit, backlog, filing, grouping
 from hands.sessions.audit import AuditLog, Entry, Logged, Transcribed
@@ -365,12 +367,12 @@ def test_a_ticket_closed_answers_for_every_sighting_before_it_was_closed(tmp_pat
 
 
 def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def silent(project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
+    async def silent(clock: clocks.Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
         return b"\n"
 
     monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
+        asyncio.run(backlog.file_ticket(SYSTEM, tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

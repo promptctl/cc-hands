@@ -9,10 +9,10 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 from loguru import logger
 
+from hands.clock import Clock
 from hands.core.effects import Command, Input, Key, Text
 from hands.core.session import Keystroke
 from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
@@ -39,7 +39,7 @@ class Answered:
 Answer = Answered | Unanswered
 
 
-async def asked(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process], *arguments: str) -> list[Answer]:
+async def asked(clock: Clock, environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process], *arguments: str) -> list[Answer]:
     """What each tmux server that may hold a pane of one of `pids`, as `sockets` finds them, answers `arguments` with,
     and why any could not be found; `environment` says where tmux keeps its sockets and where tmux is."""
     at = await asyncio.to_thread(sockets, environment, pids, processes)
@@ -52,7 +52,7 @@ async def asked(environment: Mapping[str, str], pids: Sequence[int], processes: 
         case (_, None):
             return [*unfound, Unanswered(f"tmux sockets are at {', '.join(map(str, found))}, and no tmux is on the PATH to ask them")]
         case (_, str(tmux)):
-            return [*unfound, *await asyncio.gather(*(_answer(tmux, socket, arguments) for socket in found))]
+            return [*unfound, *await asyncio.gather(*(_answer(clock, tmux, socket, arguments) for socket in found))]
 
 
 def sockets(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[Path | Unanswered]:
@@ -112,8 +112,8 @@ def socket_directory(environment: Mapping[str, str]) -> Path:
     return Path(environment.get("TMUX_TMPDIR") or "/tmp") / f"tmux-{os.getuid()}"
 
 
-async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
-    match await ran_at(tmux, socket, arguments):
+async def _answer(clock: Clock, tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
+    match await ran_at(clock, tmux, socket, arguments):
         case Ran(returncode=0, out=out):
             return Answered(socket, out.decode().splitlines())
         case Ran(err=err) if _NO_SERVER.match(err):
@@ -124,20 +124,20 @@ async def _answer(tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
             return unanswered
 
 
-async def shown(environment: Mapping[str, str], socket: Path, pane: str) -> str | Unanswered:
+async def shown(clock: Clock, environment: Mapping[str, str], socket: Path, pane: str) -> str | Unanswered:
     """The text tmux pane `pane` of the server at `socket` shows now, down to its last line drawn on, the blank rows below
     left off, or why it could not be read; `environment` says where tmux is."""
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     if tmux is None:
         return Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
-    return await captured(tmux, socket, pane)
+    return await captured(clock, tmux, socket, pane)
 
 
-async def captured(tmux: str, socket: Path, pane: str) -> str | Unanswered:
+async def captured(clock: Clock, tmux: str, socket: Path, pane: str) -> str | Unanswered:
     """What `shown` returns, read with the `tmux` named: pane `pane` of the server at `socket` as it shows now, or why it
     could not be read."""
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
-    match await ran_at(tmux, socket, ("capture-pane", "-p", "-t", pane)):
+    match await ran_at(clock, tmux, socket, ("capture-pane", "-p", "-t", pane)):
         case Ran(returncode=0, out=out):
             return out.decode(errors="replace").rstrip()
         case Ran(err=err):
@@ -146,7 +146,7 @@ async def captured(tmux: str, socket: Path, pane: str) -> str | Unanswered:
             return unanswered
 
 
-async def typed(environment: Mapping[str, str], pane: Pane, input: Input) -> Unanswered | None:
+async def typed(clock: Clock, environment: Mapping[str, str], pane: Pane, input: Input) -> Unanswered | None:
     """Type `input` into `pane` as someone at its keyboard would, or say why it was not; `environment` says where tmux is.
 
     [LAW:no-ambient-temporal-coupling] one tmux command list, so what is typed and the Return that sends it happen
@@ -158,13 +158,13 @@ async def typed(environment: Mapping[str, str], pane: Pane, input: Input) -> Una
         return Unanswered(f"no tmux is on the PATH to type into pane {pane.id} of tmux at {pane.socket}")
     # A buffer of its own per paste, so two sends cannot paste each other's text; loaded from a file, since a command
     # tmux is handed is far shorter than a prompt can be.
-    buffer = f"hands-{uuid4().hex}"
+    buffer = f"hands-{clock.uuid()}"
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", prefix="hands-paste-", delete_on_close=False) as pasted:
         pasted.write(_pasted(input))
         pasted.close()
-        match await ran_at(tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
+        match await ran_at(clock, tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
             case Ran(returncode=0):
-                await asyncio.sleep(_quiet(input))
+                await clock.pause(_quiet(input))
                 return None
             case Ran(err=err):
                 return Unanswered(f"tmux at {pane.socket} did not type into pane {pane.id}: {err.decode(errors='replace').strip()}")
@@ -231,31 +231,31 @@ KEYS: Mapping[Keystroke, str] = {
 }
 
 
-async def ran_at(tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
+async def ran_at(clock: Clock, tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
     """How the tmux server at `socket` exited from `arguments`, or why it gave no answer: wedged, or `tmux` not run."""
     try:
-        return await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS)
+        return await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS, clock=clock)
     except TimeoutError:
         return Unanswered(f"tmux at {socket} did not answer {arguments[0]} in {ANSWER_SECONDS:.0f} seconds")
     except OSError as error:
         return Unanswered(f"{tmux} could not be run to ask tmux at {socket}: {error}")
 
 
-async def panes(pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
+async def panes(clock: Clock, pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:
     """The tmux pane each of `pids` runs in, from one read of the processes and of each tmux server that may hold it."""
-    return await _read(pids, environment, lambda pid, processes, read: pane_of(ancestor_terminals(pid, processes), read))
+    return await _read(clock, pids, environment, lambda pid, processes, read: pane_of(ancestor_terminals(pid, processes), read))
 
 
-async def keyboards(pids: Sequence[int], environment: Mapping[str, str]) -> list[Keyboard]:
+async def keyboards(clock: Clock, pids: Sequence[int], environment: Mapping[str, str]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, from one read of the processes and of each tmux server that may hold
     it."""
-    return await _read(pids, environment, lambda pid, processes, read: keyboard_of(front_terminal(pid, processes), ancestor_terminals(pid, processes), read))
+    return await _read(clock, pids, environment, lambda pid, processes, read: keyboard_of(front_terminal(pid, processes), ancestor_terminals(pid, processes), read))
 
 
-async def _read[P](pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]) -> list[P | PaneUnread]:
+async def _read[P](clock: Clock, pids: Sequence[int], environment: Mapping[str, str], of: Callable[[int, Mapping[int, Process], list[Server]], P]) -> list[P | PaneUnread]:
     try:
         processes = await asyncio.to_thread(process_table)
-        read = await servers(environment, pids, processes)
+        read = await servers(clock, environment, pids, processes)
     except Exception as error:
         # [LAW:no-silent-failure] the pane is a fact its readers can go without: a read that broke is logged with
         # where, and each process says why its pane is missing.
@@ -264,11 +264,11 @@ async def _read[P](pids: Sequence[int], environment: Mapping[str, str], of: Call
     return [of(pid, processes, read) for pid in pids]
 
 
-async def servers(environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[Server]:
+async def servers(clock: Clock, environment: Mapping[str, str], pids: Sequence[int], processes: Mapping[int, Process]) -> list[Server]:
     """Each tmux server that may hold a pane of one of `pids`, with the live panes it holds or why it did not say."""
     # A dead pane, kept by remain-on-exit, runs nothing and keeps the name of a terminal that is gone or reused.
     # The session's name last: it is the one field that may hold a tab.
-    answers = await asked(environment, pids, processes, "list-panes", "-a", "-f", "#{?pane_dead,0,1}", "-F", "#{pane_tty}\t#{pane_id}\t#{window_index}\t#{session_name}")
+    answers = await asked(clock, environment, pids, processes, "list-panes", "-a", "-f", "#{?pane_dead,0,1}", "-F", "#{pane_tty}\t#{pane_id}\t#{window_index}\t#{session_name}")
     return [listed(answer) if isinstance(answer, Answered) else answer for answer in answers]
 
 

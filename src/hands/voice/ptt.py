@@ -24,6 +24,7 @@ from typing import Literal
 
 from pipecat.frames.frames import InputAudioRawFrame
 
+from hands.clock import SYSTEM
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
@@ -195,7 +196,7 @@ class PushToTalk:
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            ended("place.moved", self._record, begun(), None, before=before.place, after=gate.place, by=by, dropped=gate.dropped != before.dropped)
+            ended("place.moved", self._record, begun(SYSTEM), None, before=before.place, after=gate.place, by=by, dropped=gate.dropped != before.dropped)
 
     @property
     def gate(self) -> Gate:

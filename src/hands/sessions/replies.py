@@ -9,18 +9,18 @@ import zlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Protocol
-from uuid import uuid4
 
 import brotli
 import zstandard
 from loguru import logger
 
+from hands.clock import Clock
 from hands.core.wire import Body, Elsewhere, Garbled, Kind, Observed, Seconds, UsageLimitReached, Sent, Unknown, Unkept, WireEvent, assemble, classify, frames, is_stream, named_class, parse, session_of, unstreamed
 
 
-def sent_of(headers: Mapping[str, str], path: str, body: bytes) -> Sent:
+def sent_of(clock: Clock, headers: Mapping[str, str], path: str, body: bytes) -> Sent:
     """A request as it leaves for the API, named as a new exchange and classified from its path and body."""
-    exchange = uuid4().hex
+    exchange = clock.uuid()
     session = session_of(headers)
     parsed = _json(body)
     kind = classify(path, parsed, headers)

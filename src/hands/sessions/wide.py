@@ -1,9 +1,9 @@
 """Wide events: one record for each unit of work, opened as it begins and emitted as it ends, however it ends.
 
-    with unit("delta.read", record, counts=("commits", "files")):
+    with unit("delta.read", record, begun(clock), ("commits", "files")):
         annotate(session=session)       # a fact about this run, from anywhere inside it
         count(commits=len(commits))     # added to a count it declared; one it never counted is written as 0
-        child("git.log", within(here()), at, ms, "ok")  # a part of this run measured where it happened, as a span under it
+        child("git.log", within(clock, here()), at, ms, "ok")  # a part of this run measured where it happened, as a span under it
         fail("the forge refused")       # this run failed, said rather than raised: it ends failed, and nothing is thrown
 
 Code inside a unit of work never emits; it annotates the event the nearest open unit holds, and the unit emits it, once,
@@ -13,19 +13,17 @@ in it, so no fact about a run is kept both as an event and as a line beside it [
 """
 
 import asyncio
-import time
 import traceback
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from secrets import token_hex
 from typing import TYPE_CHECKING, Literal, cast
-from uuid import uuid4
 
+from hands.clock import Clock
 from hands.core.trace import Span
 
 if TYPE_CHECKING:
@@ -85,30 +83,31 @@ _open: ContextVar[_Open | Span | None] = ContextVar("the unit of work open here"
 @dataclass(frozen=True)
 class Begun:
     """A unit of work that began before the body that runs it opened: its span, and when it began, on the wall clock and
-    by time.monotonic(). Work started for it in between is its child all the same, and its event is timed from here."""
+    by `clock`'s monotonic time, which its event is timed on. Work started for it in between is its child all the same,
+    and its event is timed from here."""
 
     span: Span
     started_at: datetime
     began: float
+    clock: Clock
 
 
-def begun() -> Begun:
-    """A unit of work beginning here, now, inside the unit open here, in its trace, or the root of a new one."""
-    return Begun(_minted(), datetime.now(UTC), time.monotonic())
+def begun(clock: Clock) -> Begun:
+    """A unit of work beginning here, now on `clock`, inside the unit open here, in its trace, or the root of a new one."""
+    return Begun(_minted(clock), clock.wall(), clock.now(), clock)
 
 
 @contextmanager
-def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] = (), began: Begun | None = None) -> Generator[None]:
+def unit(event: str, emit: Callable[[WideEvent], None], began: Begun, counts: tuple[str, ...] = ()) -> Generator[None]:
     """Run the body as one unit of work named `event`, and emit its event as the body ends, however it ends.
 
-    `began` is the unit `begun` here before the body opened it; by default it begins as it opens. The body's exception is
-    the body's: it is recorded on the event and raised on, never swallowed here.
+    `began` is the unit `begun` here, as the body opens it or before. The body's exception is the body's: it is recorded
+    on the event and raised on, never swallowed here.
     """
-    if began is not None and began.span.parent_id != _minted().parent_id:
+    if began.span.parent_id != _parent():
         # [LAW:no-silent-failure] a unit begun under another would be written into a trace it is no part of.
         raise LookupError(f"{event} was begun under another unit of work than the one open here")
-    beginning = began or begun()
-    opened = _Open(beginning.span.trace_id, beginning.span.span_id, beginning.span.parent_id, emit, dict.fromkeys(counts, 0))
+    opened = _Open(began.span.trace_id, began.span.span_id, began.span.parent_id, emit, dict.fromkeys(counts, 0))
     token = _open.set(opened)
     raised: BaseException | None = None
     try:
@@ -122,7 +121,7 @@ def unit(event: str, emit: Callable[[WideEvent], None], counts: tuple[str, ...] 
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
         outcome, error, trace = _how(raised, opened.failure)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, beginning.started_at, since(beginning.began), outcome, error, trace, opened.counts, opened.facts))
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, began.started_at, since(began.clock, began.began), outcome, error, trace, opened.counts, opened.facts))
 
 
 def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: BaseException | None, failure: str | None = None, /, **facts: Fact) -> None:
@@ -130,7 +129,7 @@ def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: B
     cancelled where a CancelledError did, failed with what did otherwise, or with the `failure` it said, as `fail` says
     one. What raised is only written down, never raised again here, so its traceback stays the one it came up through."""
     outcome, error, trace = _how(raised, failure)
-    emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.began), outcome, error, trace, {}, facts))
+    emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.clock, began.began), outcome, error, trace, {}, facts))
 
 
 def _how(raised: BaseException | None, failure: str | None) -> tuple[Outcome, str | None, tuple[str, ...]]:
@@ -198,34 +197,43 @@ def here() -> Span:
     return Span(opened.trace_id, opened.span_id, opened.parent_id)
 
 
-def _minted() -> Span:
+def _minted(clock: Clock) -> Span:
     """The span a unit of work opened here would have: inside the unit open here, in its trace, or the root of a new one."""
     match _open.get():
         case None:
-            return root()
+            return root(clock)
         case _Open(trace_id=trace_id, span_id=parent_id) | Span(trace_id=trace_id, span_id=parent_id):
-            return Span(trace_id, _span_id(), parent_id)
+            return Span(trace_id, _span_id(clock), parent_id)
 
 
-def since(began: float) -> float:
-    """The milliseconds since `began`, a reading of time.monotonic(), as every event's duration is written."""
-    return round((time.monotonic() - began) * 1000, 3)
+def _parent() -> str | None:
+    """The span a unit of work opened here is a child of: the unit open here, or none for the root of a new trace."""
+    match _open.get():
+        case None:
+            return None
+        case _Open(span_id=parent_id) | Span(span_id=parent_id):
+            return parent_id
 
 
-def root() -> Span:
+def since(clock: Clock, began: float) -> float:
+    """The milliseconds since `began`, a reading of `clock.now()`, as every event's duration is written."""
+    return round((clock.now() - began) * 1000, 3)
+
+
+def root(clock: Clock) -> Span:
     """The root span of a new trace, for work done as part of no unit of work."""
     # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-    return Span(uuid4().hex, _span_id(), None)
+    return Span(clock.token(16), _span_id(clock), None)
 
 
-def within(parent: Span) -> Span:
+def within(clock: Clock, parent: Span) -> Span:
     """A new span inside `parent`, in its trace."""
-    return Span(parent.trace_id, _span_id(), parent.span_id)
+    return Span(parent.trace_id, _span_id(clock), parent.span_id)
 
 
-def _span_id() -> str:
+def _span_id(clock: Clock) -> str:
     # The W3C Trace Context size of a span id, as OTLP carries it: 8 bytes, in hex.
-    return token_hex(8)
+    return clock.token(8)
 
 
 def _current() -> _Open:

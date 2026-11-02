@@ -18,7 +18,8 @@ from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
-from hands.sessions.wide import WideEvent, unit
+from hands.clock import SYSTEM
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import drive
 from hands.voice.trigger import Choice
@@ -138,7 +139,7 @@ def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whe
     woken = listening(word, lambda: speaking[0], events.append)
 
     async def heard() -> list[bool]:
-        with unit("desk", events.append, counts=("heard",)):
+        with unit("desk", events.append, begun(SYSTEM), ("heard",)):
             over = await woken(b"\x01\x02" * 160, False)
             speaking[0] = False
             return [over, await woken(b"\x01\x02" * 160, False)]

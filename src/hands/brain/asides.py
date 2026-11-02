@@ -18,12 +18,13 @@ from enum import StrEnum
 import aiohttp
 
 from hands.brain.fork import Newest, fork
+from hands.clock import SYSTEM
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
-from hands.sessions.wide import annotate, here, since, unit, within
+from hands.sessions.wide import annotate, begun, here, since, unit, within
 
 
 # What a question's reply cost, as its usage names it: what it read of the brain's cached prefix, and what it wrote.
@@ -100,14 +101,14 @@ class Asides:
         a refusal passed on as the API said it, since its client is hands, which never asks again."""
         sending = self._sending
         # [LAW:one-source-of-truth] its request is told by the very body it was sent as; a fork's kind narrows the compare.
-        return Send(built=True, span=within(sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else None
+        return Send(built=True, span=within(SYSTEM, sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else None
 
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, asked beside the brain's conversation; raises AsideFailed when it has none,
         TIMED_OUT once its asker's time is up."""
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
-        with unit("brain.aside", self._record):
+        with unit("brain.aside", self._record, begun(SYSTEM)):
             annotate(kind=kind, question=question)
             try:
                 reply = await self._in_turn(question, within)
@@ -133,7 +134,7 @@ class Asides:
                     await self._one.acquire()
                     taken.callback(self._one.release)
                     # queued_ms only once it has its turn: the rest of its duration_ms is its request answered.
-                    annotate(queued_ms=since(queued))
+                    annotate(queued_ms=since(SYSTEM, queued))
                     match within:
                         case TimeLimit(seconds=seconds):
                             clock.reschedule(asyncio.get_running_loop().time() + seconds)

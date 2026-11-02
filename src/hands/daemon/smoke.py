@@ -36,6 +36,7 @@ from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerCo
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
+from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
@@ -334,7 +335,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    session = await on_terminal([claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
+    session = await on_terminal(SYSTEM, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
@@ -488,7 +489,7 @@ async def _synthesized(text: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="hands-smoke-") as directory:
         spoken = Path(directory) / "said.wav"
         # The test's own voice, no part of hands: its failure is the test's, raised, never named as a stage of the pipeline.
-        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0)
+        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=SYSTEM)
         if ran.returncode != 0:
             raise RuntimeError(f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
         with wave.open(str(spoken), "rb") as read:

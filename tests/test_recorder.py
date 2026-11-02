@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.echo import Cancelled
@@ -57,7 +58,7 @@ async def kept(recorder: Recorder, hold: Hold, sound: Sound, recorded: list[Entr
     [write] = recorder.ended(hold, "sent", sound)
     # As the owner's hearing lane runs it: one that fails is said on its event, and the lane hears on.
     with contextlib.suppress(Exception):
-        await owner._heard(recorder, hold, write, begun())  # pyright: ignore[reportPrivateUsage]
+        await owner._heard(recorder, hold, write, begun(SYSTEM))  # pyright: ignore[reportPrivateUsage]
     return events(recorded, "hearing")[-1]
 
 

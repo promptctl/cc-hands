@@ -24,9 +24,9 @@ from hands.core import status
 from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
-from hands.sessions.clock import Clock
+from hands.clock import Clock
 from hands.sessions.delta import HELD, MARKING, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Capture, Deltas, Mark, Standing, Unread
-from conftest import ManualClock, new_sessions, patient
+from conftest import RealWall, new_sessions, patient
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
 
@@ -382,7 +382,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
         git(root, "push", "-q", "-u", "origin", "fix")
 
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Deltas, record.append, clock)
     await deltas.snapshot(SID, root)
     commit_and_push()
@@ -659,12 +659,13 @@ async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) ->
 SHUT_DOWN = """
 import asyncio, os, sys, time
 from pathlib import Path
+from hands.clock import SYSTEM
 from hands.sessions.delta import Deltas
 
 root = Path(sys.argv[1])
 
 async def ends(after: float) -> None:
-    deltas = Deltas(record=lambda _entry: None, inherited=os.environ)
+    deltas = Deltas(record=lambda _entry: None, inherited=os.environ, clock=SYSTEM)
     await deltas.snapshot("s", root)
     (root / "a.py").write_text(f"x = {after}\\n")
     await deltas.compare("s", again=False)
@@ -802,7 +803,7 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
         git(root, "commit", "-qm", f"made long before this turn {n}")
 
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     # A repository whose tree takes everything the mark was given, which is what a slow one really does. The deadline is
     # the only thing separating a repository with no commit from one git could not answer for, so this spends the mark's
@@ -1243,7 +1244,7 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
 async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_leaves_the_reading_running(tmp_path: Path) -> None:
     """The narrator waits its patience and no longer, and the reading it stopped waiting on is not its to end."""
     root = repo(tmp_path)
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Endless, lambda _entry: None, clock)
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
@@ -1334,7 +1335,7 @@ class Stalled(Deltas):
 WAITED = 0.25
 
 
-async def marked_releasing(deltas: Stalled, clock: ManualClock, root: Path, *held: Gate) -> None:
+async def marked_releasing(deltas: Stalled, clock: RealWall, root: Path, *held: Gate) -> None:
     """The next turn's start, begun with the captures behind `held` under way and letting them go once it is marking: it
     waits on each, and each is in WAITED after it began, long before the start's deadline."""
     marking = deltas.hold("mark")
@@ -1346,7 +1347,7 @@ async def marked_releasing(deltas: Stalled, clock: ManualClock, root: Path, *hel
     await snapshot
 
 
-async def overtaking(deltas: Stalled, clock: ManualClock, root: Path, *finishing: Gate) -> None:
+async def overtaking(deltas: Stalled, clock: RealWall, root: Path, *finishing: Gate) -> None:
     """The next turn's start, begun with a capture held under way: its own mark comes in, the reads behind `finishing` are
     let go and are over, then everything the start was given passes, so the capture still held is overtaken."""
     marking = deltas.hold("mark")
@@ -1368,7 +1369,7 @@ async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_tu
     hook lets Claude Code go on only once it is in, so nothing the next turn writes is read as the turn before's."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -1390,7 +1391,7 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     the files in it may be the next turn's, and none is told. The event says which stage was lost."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -1418,7 +1419,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     its own git."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
@@ -1441,7 +1442,7 @@ async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_
     marked. It has no mark to read against, so nothing of it is read, and p2's mark waits on p1's capture alone."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("turn one\n")
@@ -1571,7 +1572,7 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
     git(other, "checkout", "-q", "fix")
     git(other, "commit", "-q", "--allow-empty", "-m", "someone else's")
     git(other, "push", "-q")
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, lambda _entry: None, clock)
     await deltas.snapshot(SID, root)
     git(root, "fetch", "-q")
@@ -1645,7 +1646,7 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
     inside the next turn, so the part going on has no start, and its event says that and nothing of the first part's."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
@@ -1670,7 +1671,7 @@ async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_
     The start was read inside the next turn, so the part going on is told nothing of it, never the next turn's files."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")
@@ -1696,7 +1697,7 @@ async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path:
     """Nothing can be ordered before a turn that has already begun, so the start after it does not wait on it either."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     ending = deltas.hold("standing")
@@ -1716,7 +1717,7 @@ async def test_a_part_going_on_after_a_blocked_stop_captures_its_end_while_the_p
     part's capture runs its own git at once, and the next mark waits on it alone and is answered with the first still held."""
     root = repo(tmp_path)
     record: list[Entry] = []
-    clock = ManualClock()
+    clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
     await deltas.snapshot(SID, root)
     (root / "first.py").write_text("the first part\n")

@@ -2,7 +2,6 @@
 
 import asyncio
 from pathlib import Path
-from uuid import uuid4
 
 from aiohttp import web
 from hands.core.events import Prompted, Stopped
@@ -15,7 +14,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.reader import Reader
 from hands.sessions.registry import Sessions
 from hands.sessions.transcript import session_name
-from hands.sessions.wide import annotate, fail, unit
+from hands.sessions.wide import annotate, begun, fail, unit
 
 
 async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Record, reader: Reader) -> web.AppRunner:
@@ -28,12 +27,12 @@ async def serve_hooks(home: Home, sessions: Sessions, names: Names, record: Reco
     async def hook(request: web.Request) -> web.Response:
         # [LAW:nothing-unseen] one event for each hook posted, held open as long as the hook holds its session: the
         # event's duration is how long Claude Code waited on hands, and its facts say which branch it was answered by.
-        with unit("hook", record):
+        with unit("hook", record, begun(sessions.clock)):
             return await answer(await request.read())
 
     async def answer(body: bytes) -> web.Response:
         try:
-            said = parse_hook(body, home=home, at=sessions.now(), heard=sessions.stamp(), request=RequestId(uuid4().hex))
+            said = parse_hook(body, home=home, at=sessions.now(), heard=sessions.stamp(), request=RequestId(sessions.clock.uuid()))
         except Rejected as error:
             # The shim prints this reply, so the session that sent the hook shows why.
             fail(f"rejected hook: {error}")
@@ -112,7 +111,7 @@ async def serve_display(sessions: Sessions, host: str, port: int, path: str, rec
 
     async def displayed(request: web.Request) -> web.Response:
         # One event for each post, as each hook on the socket is: this route takes MessageDisplay alone.
-        with unit("hook", record):
+        with unit("hook", record, begun(sessions.clock)):
             try:
                 said = parse_display(await request.read(), at=sessions.now())
             except Rejected as error:

@@ -17,6 +17,8 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.usage import Spent, Usage
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (
@@ -86,7 +88,7 @@ class Upstream:
 
 
 def forward(_sent: Sent) -> Route:
-    return Send(span=root())
+    return Send(span=root(SYSTEM))
 
 
 @dataclass
@@ -101,10 +103,22 @@ class Wire:
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+class Ticking(VirtualClock):
+    """A wall clock one second later each time it is read, from the Unix epoch."""
+
+    def __init__(self) -> None:
+        super().__init__(epoch=datetime.fromtimestamp(0, UTC))
+
+    def wall(self) -> datetime:
+        read = super().wall()
+        self.advance(1.0)
+        return read
+
+
 @pytest.fixture
 async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]]:
     cleanups: list[Callable[[], Awaitable[None]]] = []
-    ticks = iter(float(second) for second in range(1_000))
+    ticks = Ticking()
 
     async def start(handler: Handler) -> tuple[Upstream, Wire]:
         runner = web.AppRunner(web.Application())
@@ -129,7 +143,7 @@ async def serve() -> AsyncIterator[Callable[[Handler], Awaitable[tuple[Upstream,
         def route(sent: Sent) -> Route:
             return made.route(sent)
 
-        proxy = await serve_proxy(upstream.url, observe, route, clock=lambda: next(ticks))
+        proxy = await serve_proxy(upstream.url, observe, route, clock=ticks)
         cleanups.extend([proxy.close, runner.cleanup])
         made = Wire(proxy, seen, exchanged)
         return upstream, made
@@ -350,7 +364,7 @@ async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange(
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, forward, clock=lambda: 7.0)
+    proxy = await serve_proxy(dead, seen.append, forward, clock=VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)))
     try:
         status, _, body = await post(proxy.url)
     finally:
@@ -395,7 +409,7 @@ async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_
         return web.Response(status=status, body=said, headers={"Content-Type": "application/json", "request-id": "req_9", **told})
 
     _, wire = await serve(answered)
-    wire.route = lambda _sent: Send(refusal=refusal, span=root())
+    wire.route = lambda _sent: Send(refusal=refusal, span=root(SYSTEM))
     got, headers, body = await post(wire.proxy.url)
     told = {name.lower(): value for name, value in headers.items()}.get("x-should-retry")
     if final:
@@ -430,7 +444,7 @@ async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it
         return web.Response(status=429, body=SPENT, headers={"Content-Type": "application/json", **limited, **told})
 
     _, wire = await serve(answered)
-    wire.route = lambda _sent: Send(refusal=refusal, span=root())
+    wire.route = lambda _sent: Send(refusal=refusal, span=root(SYSTEM))
     got, headers, body = await post(wire.proxy.url)
     named = {name.lower(): value for name, value in headers.items()}
     if final:
@@ -451,7 +465,7 @@ async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Li
     await web.TCPSite(probe, "127.0.0.1", 0).start()
     dead = f"http://127.0.0.1:{probe.addresses[0][1]}"
     await probe.cleanup()
-    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root()), clock=lambda: 7.0)
+    proxy = await serve_proxy(dead, seen.append, lambda _sent: Send(refusal=refusal, span=root(SYSTEM)), clock=VirtualClock(epoch=datetime.fromtimestamp(7.0, UTC)))
     try:
         status, headers, _ = await post(proxy.url)
     finally:
@@ -527,7 +541,7 @@ async def test_a_request_upstream_that_raises_ends_its_exchange_naming_the_error
 
 async def test_a_route_change_that_cannot_be_made_ends_its_exchange_naming_the_error(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], monkeypatch: pytest.MonkeyPatch) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("a note"),), span=root())
+    wire.route = lambda _sent: Send((Tail("a note"),), span=root(SYSTEM))
 
     def broken(*_args: object) -> object:
         raise KeyError("messages")
@@ -642,7 +656,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
 
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(stayed silent)", root())
+    wire.route = lambda _sent: Hold("(stayed silent)", root(SYSTEM))
     status, headers, body = await post(wire.proxy.url)
     assert upstream.asked == []
     assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
@@ -659,7 +673,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
 
 async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newest_block_and_says_so(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("[hands] how they stand"),), span=root())
+    wire.route = lambda _sent: Send((Tail("[hands] how they stand"),), span=root(SYSTEM))
     status, _, body = await post(wire.proxy.url)
     assert (status, body) == (200, b"".join(STREAM))
     [(_, _, asked_body)] = upstream.asked
@@ -684,7 +698,7 @@ async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_held(
 
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("tail"),), span=root())
+    wire.route = lambda _sent: Send((Tail("tail"),), span=root(SYSTEM))
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
@@ -698,7 +712,7 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
 
 async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_tail(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Send((Tail("tail"),), span=root())
+    wire.route = lambda _sent: Send((Tail("tail"),), span=root(SYSTEM))
     # JSON.stringify writes half a surrogate pair as its escape; parsed, it is a lone surrogate UTF-8 cannot encode.
     cut = REQUEST.replace(b'"text": "hi"', b'"text": "hi \\ud83d"')
     status, _, _ = await post(wire.proxy.url, body=cut)
@@ -709,7 +723,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
 
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(interrupted)", root())
+    wire.route = lambda _sent: Hold("(interrupted)", root(SYSTEM))
     status, headers, body = await post(wire.proxy.url, REQUEST.replace(b'"stream": true', b'"stream": false'))
     assert upstream.asked == [] and status == 200 and headers["Content-Type"].startswith("application/json")
     answer = json.loads(body)
@@ -739,7 +753,7 @@ async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(
 def test_the_daemon_keeps_one_audit_line_per_exchange_and_nothing_per_event() -> None:
     lines: list[Entry] = []
     observe = wire_to(lines.append)
-    exchange = Exchanged("e1", None, MainTurn(None), None, "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root())
+    exchange = Exchanged("e1", None, MainTurn(None), None, "POST", "/v1/messages", 1, (), 1.0, 2.0, Unreached("refused", 3.0), False, root(SYSTEM))
     observe(Sent("e1", None, MainTurn(None), None, None))
     observe(Heard("e1", TextDelta(0, "hi")))
     observe(exchange)
@@ -751,7 +765,7 @@ def test_a_request_hands_cannot_read_is_warned_about_with_all_it_said() -> None:
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="WARNING")
     try:
         body = b'{"model": "claude-opus-5-5", "messages": [{"role": "user", "content": "what is this"}]}'
-        sent_of({"x-claude-code-request-class": "dreaming"}, "/v1/messages", body)
+        sent_of(SYSTEM, {"x-claude-code-request-class": "dreaming"}, "/v1/messages", body)
     finally:
         logger.remove(sink)
     assert len(logged) == 1 and "'dreaming', a class hands does not know" in logged[0] and logged[0].endswith(body.decode())
@@ -765,15 +779,15 @@ TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"
     ("route", "status", "said", "told"),
     [
         # hands changed it and the API named one of its messages: hands' bug, by index and role.
-        (Send((Tail("tail"),), span=root()), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
+        (Send((Tail("tail"),), span=root(SYSTEM)), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
         # hands wrote all of it: hands' bug, whether or not the 400 names a message.
-        (Send(built=True, span=root()), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
+        (Send(built=True, span=root(SYSTEM)), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
         # A 4xx that is not a 400 (a spent limit, expired auth) says nothing of the request's shape.
-        (Send(built=True, span=root()), 429, TOO_LONG, None),
+        (Send(built=True, span=root(SYSTEM)), 429, TOO_LONG, None),
         # The client's own request, untouched: Claude Code's to own.
-        (Send(span=root()), 400, MALFORMED, None),
+        (Send(span=root(SYSTEM)), 400, MALFORMED, None),
         # Not a 4xx at all.
-        (Send((Tail("tail"),), span=root()), 500, MALFORMED, None),
+        (Send((Tail("tail"),), span=root(SYSTEM)), 500, MALFORMED, None),
     ],
     ids=["changed", "built", "built-429", "untouched", "5xx"],
 )

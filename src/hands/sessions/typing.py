@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from hands.clock import Clock
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
 from hands.core.session import Keystroke, PromptText, SessionId, Submit
 from hands.core.tmux import Pane, Unanswered
@@ -79,14 +80,14 @@ class Typist:
                 raise Untyped(f"the fritter for session {self.session} answered {other!r}")
 
 
-async def type_into(environment: Mapping[str, str], effect: Type[Input]) -> None:
+async def type_into(clock: Clock, environment: Mapping[str, str], effect: Type[Input]) -> None:
     """Perform a Type by its writer: text or a command typed into the session and sent with Return, or a key pressed.
     `environment` says where tmux is."""
     match effect.writer:
         case Fritter(socket=path, pid=pid):
             await asyncio.to_thread(_by_fritter, Typist(effect.session, path, pid), effect.input)
         case Pane() as pane:
-            match await tmux.typed(environment, pane, effect.input):
+            match await tmux.typed(clock, environment, pane, effect.input):
                 case Unanswered(reason=reason):
                     raise Untyped(f"tmux did not type into session {effect.session}: {reason}")
                 case None:

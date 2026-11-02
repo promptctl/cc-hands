@@ -9,8 +9,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Record
-from hands.sessions.wide import annotate, unit
+from hands.sessions.wide import annotate, begun, unit
 from hands.voice.coreaudio import DefaultDevices, default_device_changes, default_devices
 from hands.voice.microphone import Devices
 from hands.voice.system import AudioMoved, SystemFact
@@ -46,7 +47,7 @@ async def follow(
         defaults = await moved(changes, current, transport.opened_on)
         # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, which reads as down, so
         # the next run opens whatever devices there are, rather than one run going on silently deaf and mute.
-        with unit("devices.moved", record):
+        with unit("devices.moved", record, begun(SYSTEM)):
             annotate(before=transport.devices, defaults=defaults)
             devices = await finished(reopened())
         await say(AudioMoved(devices))

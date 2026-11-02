@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from hands.clock import SYSTEM
 from hands.sessions.child import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -101,7 +102,7 @@ async def _tailscale(subcommand: str, *arguments: str) -> str | Untailed:
     asked = f"tailscale {subcommand}"
     try:
         # [LAW:single-enforcer] ended where every child of hands is: killed and reaped on a timeout, and on a shutdown.
-        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS)
+        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=SYSTEM)
     except TimeoutError:
         return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
     except OSError as error:

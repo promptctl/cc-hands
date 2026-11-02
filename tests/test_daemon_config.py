@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import new_sessions, onboard, patiently
+from hands.clock import SYSTEM
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
@@ -312,7 +313,7 @@ def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_c
 
 
 def _starting(tmp_path: Path) -> tuple[Home, Sessions, heartbeat.Heart, run.VoiceConfig]:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
     sessions = new_sessions()
     config = run.VoiceConfig(llm=ClaudeCodeBackend(model=ANTHROPIC_MODEL, config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT, personality="Dry and wry.", wake=Trained("Hey Computer", Path("/wake/hey_computer.onnx")))
     return Home(tmp_path), sessions, heart, config
@@ -409,7 +410,7 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     home = Home(root)
     # The system picks the display's port, so a hands running on this machine keeps its own.
     monkeypatch.setattr(run, "DISPLAY_PORT", 0)
-    heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(root / "status.json", pid=4242, started_at=datetime.now(UTC), period=timedelta(seconds=0.01), kick_watchdog=lambda: None, clock=SYSTEM)
 
     def refused(_environment: Mapping[str, str]) -> run.Configured:
         raise CannotStart("no key")
@@ -525,7 +526,7 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     monkeypatch.setattr(talkkey, "granted", lambda: True)
     gone = subprocess.Popen(["true"])
     gone.wait()
-    crashed = heartbeat.Heart(home.status, gone.pid, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
+    crashed = heartbeat.Heart(home.status, gone.pid, datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     crashed.beat("running", None, 0, listening=False, degraded=())
     assert cli.main(["--home", str(home.root), "run"]) == 1
     reason = capsys.readouterr().err.removeprefix("hands: ").rstrip("\n")

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NoReturn
 
+from hands.clock import SYSTEM
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
@@ -161,7 +162,7 @@ class Start:
     """
 
     def __init__(self, restarted: bool) -> None:
-        self._began = begun()
+        self._began = begun(SYSTEM)
         self._facts: dict[str, Fact] = {"pid": os.getpid(), "restarted": restarted}
         self._ended = False
 

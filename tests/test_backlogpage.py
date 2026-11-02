@@ -18,11 +18,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.backlog import LEVELS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.sentences import Sentences
-from hands.sessions.wide import WideEvent, unit
+from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.sentences import Sighted, SummaryStore, sighted
 from conftest import events
@@ -63,7 +64,7 @@ RELATIONS = [inside("e1", "e1.a"), inside("e1", "e1.b"), inside("e1", "e1.c"), i
 def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_sentence_and_never_its_description() -> None:
     backlog = parse_export(export(ISSUES, RELATIONS))
     recorded: list[Entry] = []
-    with unit("backlog.read", recorded.append, counts=("tickets", "summarised")):
+    with unit("backlog.read", recorded.append, begun(SYSTEM), ("tickets", "summarised")):
         page = shown(Sighted(backlog, {"e1.a": "A, said.", "e2": "Second, said."}))
     assert page["tracked"] is True
     items = cast(list[dict[str, Any]], page["items"])
@@ -88,7 +89,7 @@ def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_s
 
 def test_a_project_lit_does_not_track_is_drawn_as_none() -> None:
     recorded: list[Entry] = []
-    with unit("backlog.read", recorded.append, counts=("tickets", "summarised")):
+    with unit("backlog.read", recorded.append, begun(SYSTEM), ("tickets", "summarised")):
         assert shown(Untracked(Path("/nowhere"))) == {"tracked": False, "why": "lit has no workspace there"}
     [event] = events(recorded, "backlog.read")
     assert event.facts["tracked"] is False and event.counts == {"tickets": 0, "summarised": 0}
@@ -223,7 +224,7 @@ def test_a_level_epic_made_is_placed_so_its_topics_levels_stay_high_over_normal_
 def test_drawn_leaves_out_an_epic_with_no_open_ticket_and_the_summary_keeps_it() -> None:
     issues = [issue("e", "01", "Emptied", status=None, kind="epic"), issue("f", "02", "Full", status=None, kind="epic"), issue("f.a", "03", "A")]
     backlog = parse_export(export(issues, [inside("f", "f.a")]))
-    with unit("backlog.read", lambda _entry: None, counts=("tickets", "summarised")):
+    with unit("backlog.read", lambda _entry: None, begun(SYSTEM), ("tickets", "summarised")):
         page = shown(Sighted(backlog, {}))
     assert [node["id"] for node in cast(list[dict[str, Any]], page["items"])] == ["f"]
     assert [part.id for part in backlog.thing().parts] == ["e", "f"]
@@ -852,7 +853,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     session = str(uuid.uuid4())
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
     # `hands file-tickets` comments as the session it is run from.
-    await comment(workspace.root, hey, "Seen again.", Inherited())
+    await comment(SYSTEM, workspace.root, hey, "Seen again.", Inherited())
     exported = json.loads(subprocess.run([str(LIT), "export"], cwd=workspace.root, check=True, capture_output=True).stdout)
     [said] = [each for each in exported["comments"] if each["body"] == "Seen again."]
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
