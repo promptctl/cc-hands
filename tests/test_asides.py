@@ -12,7 +12,7 @@ from loguru import logger
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
 from hands.core.session import SessionId
-from hands.core.wire import CLASS_HEADER, Exchanged, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
+from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.core.trace import Span
@@ -312,40 +312,59 @@ async def test_a_side_question_the_api_refuses_is_logged_by_the_proxy_as_hands_b
     assert error.startswith("hands' bug: hands built exchange") and "messages.0 is role 'user';" in error and "req_9" in error
 
 
-def system(said: str) -> dict[str, object]:
-    return {"role": "system", "content": [text(said)]}
+def refused(messages: list[dict[str, object]]) -> list[str]:
+    """What the Messages API refuses in the order of `messages`: none, for a request it takes."""
+    roles = [message["role"] for message in messages]
+    spoken = [role for role in roles if role != "system"]
+    # A directive-only system message (no content, with output_config) is taken at any position.
+    misplaced = [
+        f"messages.{index}: system before {next((later for later in roles[index:] if later != 'system'), 'the end')}"
+        for index, message in enumerate(messages)
+        if message["role"] == "system" and message["content"] != [] and next((later for later in roles[index:] if later != "system"), "assistant") != "assistant"
+    ]
+    alternating = [] if spoken == ["user", "assistant"] * (len(spoken) // 2) + ["user"] * (len(spoken) % 2) else [f"roles do not alternate: {spoken}"]
+    return misplaced + alternating
 
 
+def said(message: dict[str, object]) -> list[object]:
+    return [{key: value for key, value in cast(dict[str, object], block).items() if key != "cache_control"} for block in cast(list[object], message["content"])]
+
+
+SYSTEM: dict[str, object] = {"role": "system", "content": [text("Stay brief.")]}
 DIRECTIVE: dict[str, object] = {"role": "system", "content": [], "output_config": {"effort": "low"}}
+SHAPES: dict[str, list[dict[str, object]]] = {
+    "a system message last": [user(text("hi", cache_control=MARK)), SYSTEM],
+    "a system message before an assistant message": [user(text("hi")), SYSTEM, {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))],
+    "a marked system message last": [user(text("hi")), {"role": "system", "content": [text("Stay brief.", cache_control=MARK)]}],
+    "a directive-only system message before the question": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, DIRECTIVE, user(text("and?", cache_control=MARK))],
+    "two marked system messages last": [user(text("hi")), {"role": "system", "content": [text("Stay brief.", cache_control=MARK)]}, {"role": "system", "content": [text("Be kind.", cache_control=MARK)]}],
+    "a directive-only system message last":[user(text("hi", cache_control=MARK)), DIRECTIVE],
+    "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM, DIRECTIVE],
+}
+REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking alone": reply(Thinking("hmm", "sig"), stop="max_tokens"), "a reply still calling": reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")}
 
 
-def accepted(messages: list[dict[str, object]]) -> bool:
-    """The API's ordering: a system message, unless directive-only, precedes an assistant message or ends the array;
-    user and assistant otherwise alternate; and no marker sits on a system message."""
-    spoken = [message["role"] for message in messages if message["role"] != "system"]
-    systems_placed = all(
-        message["content"] == [] or index == len(messages) - 1 or messages[index + 1]["role"] in ("assistant", "system")
-        for index, message in enumerate(messages) if message["role"] == "system"
-    )
-    unmarked = all("cache_control" not in block for message in messages if message["role"] == "system" for block in cast(list[dict[str, object]], message["content"]))
-    return systems_placed and unmarked and all(a != b for a, b in zip(spoken, spoken[1:]))
-
-
-@pytest.mark.parametrize("messages", [
-    [user(text("hi", cache_control=MARK)), system("the loop's reminder")],
-    [user(text("hi")), system("before the reply"), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))],
-    [user(text("hi", cache_control=MARK)), DIRECTIVE],
-    [user(text("hi", cache_control=MARK)), system("one"), system("two")],
-], ids=["system-last", "system-before-assistant", "directive-last", "systems-last"])
-@pytest.mark.parametrize("answered", [None, reply(), reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")], ids=["no-reply", "empty-reply", "running-call"])
-def test_a_question_forked_from_a_turn_with_system_messages_is_in_the_order_the_api_accepts(messages: list[dict[str, object]], answered: Message | None) -> None:
-    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*messages)), answered), "what now?")
-    out = cast(list[dict[str, object]], sent["messages"])
-    assert accepted(out), out
-    # The question is in the last user message, and every system message the loop sent is still there, in order.
-    [*_, asking] = [message for message in out if message["role"] == "user"]
+@pytest.mark.parametrize("replied", REPLIES.values(), ids=REPLIES.keys())
+@pytest.mark.parametrize("shape", SHAPES.values(), ids=SHAPES.keys())
+def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_takes(shape: list[dict[str, object]], replied: Message | None) -> None:
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*shape)), replied), "what now?")
+    messages = cast(list[dict[str, object]], sent["messages"])
+    assert refused(messages) == []
+    [*_, asking] = [message for message in messages if message["role"] == "user"]
     assert cast(list[object], asking["content"])[-2:] == ASKED
-    assert [message for message in out if message["role"] == "system"] == [message for message in messages if message["role"] == "system"]
+    # Every system message the turn held is still there, in its order: what it says, whatever marker moved off it.
+    assert [said(message) for message in messages if message["role"] == "system"] == [said(message) for message in shape if message["role"] == "system"]
+    # The question is what the model answers: the last message that is not a system message is the user's.
+    assert [message for message in messages if message["role"] != "system"][-1] is asking
+    # skipCacheWrite: nothing from the question on is marked, so the question is never written to the cache.
+    assert not any(cache_marked(message) for message in messages[messages.index(asking):])
+    # The loop's newest marker is kept on a shared message that is not a system message, wherever one can carry it.
+    newest = [message for message in messages[: messages.index(asking)] if cache_marked(message) and message["role"] != "system"]
+    assert len(newest) == (1 if any(cache_marked(message) for message in shape) and len([m for m in messages if m["role"] != "system"]) > 1 else 0)
+
+
+def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
+    assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM, user(text("q"))])
 
 
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:

@@ -354,6 +354,19 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
+async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
+    records: list[Entry] = []
+    await summarise_backlog(tmp_path / "removed-worktree", SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
+    [record] = records
+    assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
+
+
+async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project: Path) -> None:
+    # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
+    gone = project / "removed-worktree"
+    assert await read_backlog(gone) == Untracked(gone, gone=True)
+
+
 def fake_lit(script: str) -> None:
     """Make the `lit` the project fixture put first on PATH run `script` instead."""
     (Path(os.environ["PATH"].split(":")[0]) / "lit").write_text(f"#!/bin/sh\n{script}")
@@ -477,7 +490,7 @@ async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp
     assert "could not be read" in str((await bodies["read_backlog"](session="s1"))["error"])
     fake_lit(NEVER_INITIALIZED)
     # No backlog is an answer, not an error; a ticket in it is still one the brain asked for that is not there.
-    assert await bodies["read_backlog"](session="s1") == {"directory": str(project), "tracked": False, "items": []}
+    assert await bodies["read_backlog"](session="s1") == {"directory": str(project), "tracked": False, "why": "lit has no workspace there", "items": []}
     assert "has no backlog, so no ticket t1" in str((await bodies["read_ticket"](session="s1", ticket="t1"))["error"])
 
 

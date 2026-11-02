@@ -142,9 +142,9 @@ def shown(read: Sighted | Untracked) -> dict[str, object]:
     """The backlog as the page is given it, with whether lit tracks the project, and how many tickets it draws and how
     many of them are said, on the event of the unit open here."""
     match read:
-        case Untracked():
-            annotate(tracked=False)
-            return {"tracked": False}
+        case Untracked(gone=gone):
+            annotate(tracked=False, gone=gone)
+            return {"tracked": False, "why": read.why}
         case Sighted():
             nodes = drawn(read)
             annotate(tracked=True)
@@ -209,8 +209,8 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
         except (LitFailed, Rejected) as error:
             return _refused(502, f"not moved: the backlog in {project} could not be read: {error}")
         match before:
-            case Untracked():
-                return _refused(404, f"not moved: lit has no workspace in {project}, so it has no backlog to rank")
+            case Untracked() as untracked:
+                return _refused(404, f"not moved: {project} has no backlog to rank: {untracked.why}")
             case Backlog():
                 pass
         try:
@@ -252,7 +252,7 @@ def backlog_routes(store: SummaryStore, key: str, record: Record, environment: M
         # [LAW:nothing-unseen] whether lit made an epic, ranked it, moved the ticket, and ranked it last in its epic, each
         # "no", "yes", or "unknown", are on the event however the leveling ends.
         annotate(project=project, ticket=ticket, level=level, created="no", ranked="no", moved="no", placed="no")
-        before = await _read(project, f"not leveled: the backlog in {project} could not be read", 404, f"not leveled: lit has no workspace in {project}, so it has no backlog to level")
+        before = await _read(project, f"not leveled: the backlog in {project} could not be read", 404, f"not leveled: {project} has no backlog to level")
         try:
             asked = before.leveling(ticket, level)
         except Rejected as error:
@@ -360,14 +360,14 @@ class Halted(Exception):
 
 async def _read(project: Path, unread: str, status: int, untracked: str) -> Backlog:
     """The backlog in `project` read fresh partway through a leveling; raises Halted saying `unread` and lit's error when
-    it cannot be read, and `untracked` with `status` when lit has no workspace there."""
+    it cannot be read, and `untracked` with `status` when it has no backlog, saying why."""
     try:
         read = await read_backlog(project)
     except (LitFailed, Rejected) as error:
         raise Halted(502, f"{unread}: {error}") from error
     match read:
         case Untracked():
-            raise Halted(status, untracked)
+            raise Halted(status, f"{untracked}: {read.why}")
         case Backlog():
             return read
 

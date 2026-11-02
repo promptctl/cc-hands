@@ -152,7 +152,7 @@ async function answered(path, init, unanswered) {
 // Throws as `answered` does; a project lit does not track is said as such.
 async function drawnFrom(path, init, unanswered) {
   const read = await answered(path, init, unanswered);
-  if (!read.tracked) { tree.replaceChildren(); throw new Error(`lit has no workspace in ${project}.`); }
+  if (!read.tracked) { tree.replaceChildren(); throw new Error(`${project} has no backlog: ${read.why}.`); }
   levels = read.levels;
   tree.replaceChildren(listed(read.items));
   stale = false;

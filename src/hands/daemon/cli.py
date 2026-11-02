@@ -1034,8 +1034,8 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
     except (backlog.LitFailed, Rejected) as failed:
         return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
-        case backlog.Untracked():
-            return refused("hands file-tickets", 1, f"{project} has no lit backlog to file tickets in")
+        case backlog.Untracked() as untracked:
+            return refused("hands file-tickets", 1, f"{project} has no lit backlog to file tickets in: {untracked.why}")
         case backlog.Backlog() as held:
             pass
     under = held.tickets.get(epic)
