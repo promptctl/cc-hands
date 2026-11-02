@@ -6,15 +6,14 @@ Code stamps its statuses and records with, the calls scheduled on that time, and
 interface on a time a test moves. A budget's deadline and the wait that enforces it are one clock's: read off one and
 enforced on another, a test that stops time still loses to a loaded machine's real seconds.
 
-asyncio is imported where a pause, a call, or a wait needs it, never with the module: the hook shim reads only the wall
-clock, and it runs in Claude Code's critical path, where asyncio's import is ten milliseconds every hook pays.
+asyncio, secrets, and uuid are imported where a pause, a call, a wait, or an id needs them, never with the module: the hook
+shim reads only the wall clock, and it runs in Claude Code's critical path, where their imports are milliseconds every hook
+pays.
 """
 
 from __future__ import annotations
 
-import secrets
 import time
-import uuid
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
@@ -106,9 +105,13 @@ class SystemClock:
         return asyncio.timeout(seconds)
 
     def token(self, nbytes: int) -> str:
+        import secrets
+
         return secrets.token_hex(nbytes)
 
     def uuid(self) -> str:
+        import uuid
+
         return uuid.uuid4().hex
 
 

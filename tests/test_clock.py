@@ -95,3 +95,14 @@ async def test_a_virtual_timeout_inside_a_task_already_cancelling_expires_as_asy
             clock.advance(1.0)
             await asyncio.sleep(0)
     assert task.uncancel() == 0
+
+
+async def test_a_virtual_timeout_that_came_due_refuses_a_new_deadline_as_asyncio_s_own_does() -> None:
+    clock = VirtualClock()
+    with pytest.raises(RuntimeError, match="came due"):
+        async with clock.timeout(1.0) as limit:
+            clock.advance(1.0)
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                limit.reschedule(5.0)

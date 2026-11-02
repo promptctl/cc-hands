@@ -38,12 +38,9 @@ class Child[T]:
         self.process.terminate()
         try:
             await wait(clock, (self.ended,), grace)
-        except asyncio.CancelledError:
-            await self.killed("its stopper stopped waiting")
-            raise
-        except Exception as error:
-            # A clock that failed its pause never measured the grace; the child is ended all the same.
-            await self.killed(f"its wait failed: {error!r}")
+        except (asyncio.CancelledError, Exception) as stopped:
+            # Cancelled, or its clock failed and never measured the grace: the child is ended all the same.
+            await self.killed("its stopper stopped waiting" if isinstance(stopped, asyncio.CancelledError) else f"its wait failed: {stopped!r}")
             raise
         if not self.ended.done():
             await self.killed(f"it had not ended {grace:.1f}s after it was asked to")

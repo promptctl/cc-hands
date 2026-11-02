@@ -73,10 +73,14 @@ class VirtualClock:
             if until <= self.at and not woken.done():
                 woken.set_result(None)
         self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+        if not any(call.when <= self.at for call in self._calls):
+            return
+        # Read before a due call is taken off, so a clock moved off the loop raises with every call still scheduled.
+        loop = asyncio.get_running_loop()
         due = [call for call in self._calls if call.when <= self.at]
         self._calls = [call for call in self._calls if call.when > self.at]
         for call in sorted(due, key=lambda call: call.when):
-            call.fire()
+            call.fire(loop)
 
     def _seen(self) -> None:
         waking = self.waking
@@ -94,10 +98,10 @@ class _Call:
     def cancel(self) -> None:
         self._callback = None
 
-    def fire(self) -> None:
+    def fire(self, loop: asyncio.AbstractEventLoop) -> None:
         # Run on the loop's next step, as the loop's own timers are, never inside the `advance` that brought it due; a
         # call cancelled before that step never runs, as a loop timer's handle cancelled after it came due does not.
-        asyncio.get_running_loop().call_soon(self._run)
+        loop.call_soon(self._run)
 
     def _run(self) -> None:
         if self._callback is not None:
@@ -115,6 +119,7 @@ class _VirtualTimeout:
         self._cancelling = 0
         self._due: Scheduled | None = None
         self._expired = False
+        self._exited = False
 
     async def __aenter__(self) -> "_VirtualTimeout":
         self._task = asyncio.current_task()
@@ -124,17 +129,27 @@ class _VirtualTimeout:
         return self
 
     async def __aexit__(self, kind: type[BaseException] | None, error: BaseException | None, trace: object) -> None:
-        self.reschedule(None)
+        self._release()
+        self._exited = True
         # As `asyncio.Timeout` does: the cancel it sent is taken back whenever it expired, and is the block's own
         # TimeoutError only when no other cancellation, older than the block or sent within it, is still pending.
         if self._expired and self._task is not None and self._task.uncancel() <= self._cancelling and kind is asyncio.CancelledError:
             raise TimeoutError from error
 
     def reschedule(self, when: float | None) -> None:
-        if self._due is not None:
-            self._due.cancel()
+        # As `asyncio.Timeout` refuses: a deadline moves only while the block it guards runs, before it came due.
+        if self._task is None or self._exited:
+            raise RuntimeError("a timeout is rescheduled only inside the block it guards")
+        if self._expired:
+            raise RuntimeError("a timeout that came due cannot be rescheduled")
+        self._release()
         self._when = when
         self._due = None if when is None else self._clock.call_at(when, self._expire)
+
+    def _release(self) -> None:
+        if self._due is not None:
+            self._due.cancel()
+        self._due = None
 
     def _expire(self) -> None:
         assert self._task is not None, "a timeout comes due only inside the block it guards"

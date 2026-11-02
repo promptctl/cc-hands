@@ -11,16 +11,20 @@ ADAPTERS = ("clock.py", "virtualclock.py")
 # Modules whose facilities are all the machine's time or randomness, so importing one is reaching for it.
 MODULES = ("time", "uuid", "secrets", "random")
 
-# Calls that read or wait on real time or randomness, by the module or class they are made on, however it was imported.
-CALLS = {
-    "datetime.datetime": ("now", "utcnow", "today"),
-    "datetime.date": ("today",),
-    "asyncio": ("sleep", "timeout", "timeout_at", "wait_for"),
-    "os": ("urandom",),
-    "threading": ("Timer",),
-}
+# Calls that read or wait on real time or randomness, by the name they were imported as, however that was spelled.
+CALLS = frozenset(
+    {
+        "datetime.datetime.now", "datetime.datetime.utcnow", "datetime.datetime.today", "datetime.date.today",
+        "asyncio.sleep", "asyncio.timeout", "asyncio.timeout_at", "asyncio.wait_for",
+        "os.urandom", "threading.Timer",
+    }
+)  # fmt: skip
 
-# Waits a thread or a task makes on the machine's seconds, on whatever it waits on.
+# The machine's clock itself, which only a composition root hands on.
+SYSTEM = frozenset({"hands.clock.SYSTEM", "hands.clock.SystemClock"})
+
+# Waits a thread or a task makes on the machine's seconds, on whatever it waits on, told by their `timeout=`: told by
+# their arguments alone, a `str.join` or a `dict.get` would be one.
 TIMED = ("get", "join", "wait", "acquire")
 
 # The event loop's timers, on whatever loop they are called on: anything not a clock is the loop the machine's time runs.
@@ -59,11 +63,13 @@ def reached(source: str) -> set[str]:
                 found.update(alias.name for alias in aliases if alias.name.split(".")[0] in MODULES)
             case ast.ImportFrom(module=str(module), level=0) if module.split(".")[0] in MODULES:
                 found.add(module)
-            # The machine's clock itself, which only a composition root hands on.
-            case ast.ImportFrom(module="hands.clock", names=aliases) if any(alias.name == "SYSTEM" for alias in aliases):
-                found.add("hands.clock.SYSTEM")
-            case ast.Call(func=ast.Attribute(value=owner, attr=attr)) if attr in CALLS.get(_qualified(owner, named), ()):
-                found.add(f"{_qualified(owner, named)}.{attr}()")
+            case ast.Name() | ast.Attribute() if _qualified(node, named) in SYSTEM:
+                found.add(_qualified(node, named))
+            case ast.Call(func=func) if _qualified(func, named) in CALLS:
+                found.add(f"{_qualified(func, named)}()")
+            # `asyncio.wait`'s timeout is its second argument, and nothing else that function takes.
+            case ast.Call(func=func, args=[_, _, *_]) if _qualified(func, named) == "asyncio.wait":
+                found.add("asyncio.wait(timeout)")
             case ast.Call(func=ast.Attribute(attr=attr), keywords=keywords) if attr in TIMED and any(
                 keyword.arg == "timeout" for keyword in keywords
             ):
@@ -129,14 +135,17 @@ def test_the_check_catches_each_way_of_reaching_the_machines_time() -> None:
     source = (
         "import time\nfrom uuid import uuid4\nimport secrets as s\nfrom random import choice\n"
         "import asyncio as aio\nimport datetime as d\nfrom datetime import datetime as dt\nimport os, threading, queue\n"
-        "from hands.clock import SYSTEM\n"
-        "dt.now(UTC)\nd.datetime.now(d.UTC)\nd.date.today()\naio.sleep(1)\naio.timeout(2)\naio.wait_for(f, 3)\n"
+        "from asyncio import sleep, timeout as limit\nfrom hands.clock import SYSTEM\nfrom hands import clock as clocks\n"
+        "from hands.clock import SystemClock\n"
+        "dt.now(UTC)\nd.datetime.now(d.UTC)\nd.date.today()\naio.sleep(1)\naio.timeout(2)\naio.wait_for(f, 3)\nsleep(1)\n"
+        "limit(2)\naio.wait(fs, 5)\nrun(SYSTEM)\nclocks.SYSTEM.now()\nSystemClock()\n"
         "aio.wait(fs, timeout=5)\nlane.queue.get(timeout=6)\nthread.join(timeout=7)\nos.urandom(8)\nthreading.Timer(9, f)\n"
         "loop.call_at(4, f)\naio.get_running_loop().time()\nself._clockwork.call_later(1, f)\n"
-        "clock.now()\nclock.timeout(2)\nself._clock.call_at(4, f)\naio.wait(fs)\nqueue.get()\n"
+        "clock.now()\nclock.timeout(2)\nself._clock.call_at(4, f)\naio.wait(fs)\nqueue.get()\n', '.join(parts)\nd.get(k, 1)\n"
     )
     assert reached(source) == {
-        "time", "uuid", "secrets", "random", "hands.clock.SYSTEM", "datetime.datetime.now()", "datetime.date.today()",
-        "asyncio.sleep()", "asyncio.timeout()", "asyncio.wait_for()", ".wait(timeout=)", ".get(timeout=)", ".join(timeout=)",
-        "os.urandom()", "threading.Timer()", ".call_at()", ".time()", ".call_later()",
+        "time", "uuid", "secrets", "random", "hands.clock.SYSTEM", "hands.clock.SystemClock", "datetime.datetime.now()",
+        "datetime.date.today()", "asyncio.sleep()", "asyncio.timeout()", "asyncio.wait_for()", "asyncio.wait(timeout)",
+        ".wait(timeout=)", ".get(timeout=)", ".join(timeout=)", "os.urandom()", "threading.Timer()", ".call_at()", ".time()",
+        ".call_later()",
     }  # fmt: skip
