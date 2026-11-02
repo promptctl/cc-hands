@@ -23,7 +23,6 @@ from hands.core.wire import (
     Answered,
     Answering,
     Auxiliary,
-    Change,
     CountTokens,
     Exchanged,
     Garbled,
@@ -763,30 +762,33 @@ TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"
 
 
 @pytest.mark.parametrize(
-    ("changes", "said", "told"),
+    ("route", "status", "said", "told"),
     [
         # hands changed it and the API named one of its messages: hands' bug, by index and role.
-        ((Tail("tail"),), MALFORMED, True),
+        (Send((Tail("tail"),), span=root()), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
+        # hands wrote all of it: hands' bug, whatever 4xx it is and whether or not it names a message.
+        (Send(built=True, span=root()), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
+        (Send(built=True, span=root()), 429, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 429 (request-id req_9): "),
         # The client's own request, untouched: Claude Code's to own.
-        ((), MALFORMED, False),
-        # Refused for its size, which names no message: a refusal like any other.
-        ((Tail("tail"),), TOO_LONG, False),
+        (Send(span=root()), 400, MALFORMED, None),
+        # Not a 4xx.
+        (Send((Tail("tail"),), span=root()), 500, MALFORMED, None),
     ],
-    ids=["changed", "unchanged", "too-long"],
+    ids=["changed", "built", "built-429", "untouched", "5xx"],
 )
-async def test_a_400_naming_a_message_of_a_request_hands_changed_is_logged_as_hands_bug(
-    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], changes: tuple[Change, ...], said: bytes, told: bool
+async def test_a_4xx_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Send, status: int, said: bytes, told: str | None
 ) -> None:
     async def refused(_request: web.Request) -> web.Response:
-        return web.Response(status=400, body=said, headers={"Content-Type": "application/json"})
+        return web.Response(status=status, body=said, headers={"Content-Type": "application/json", "request-id": "req_9"})
 
     _, wire = await serve(refused)
-    wire.route = lambda _sent: Send(changes, span=root())
+    wire.route = lambda _sent: route
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        status, _, _ = await post(wire.proxy.url)
+        await post(wire.proxy.url)
     finally:
         logger.remove(sink)
-    assert status == 400
-    assert [("hands' bug" in error, "messages.0 is role 'user'" in error) for error in errors] == ([(True, True)] if told else [])
+    exchange = only_exchange(wire).exchange
+    assert [error.replace(exchange, "req-1", 1)[: len(told or "")] for error in errors] == ([] if told is None else [told])

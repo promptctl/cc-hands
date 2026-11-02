@@ -30,7 +30,6 @@ from hands.core.wire import (
     Change,
     Ending,
     Exchanged,
-    Fork,
     Forwarded,
     Garbled,
     Heard,
@@ -156,7 +155,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     tell(exchanged((), Held(said, clock()), False))
                     return held
-                case Send(changes=asked, refusal=refusal):
+                case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
             headers = _end_to_end(request.headers)
             tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
@@ -222,9 +221,9 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 raise
             finally:
                 last = clock() if ended is None else ended
-                # A side question's own refusal is told by what asked it (`hands.brain.asides`).
-                if reached.status == 400 and changes and not isinstance(kind, Fork):
-                    _malformed(exchange, onward, changes, reply)
+                # [LAW:single-enforcer] every request hands built or changed passes here, so its 4xx is told here alone.
+                if 400 <= reached.status < 500 and (built or changes):
+                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), onward, built, changes, reply)
                 tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
         return response
 
@@ -255,13 +254,13 @@ def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, .
         return body, ()
 
 
-def _malformed(exchange: str, onward: bytes, changes: tuple[Change, ...], reply: Body) -> None:
-    """Say loudly that the API refused as malformed a request hands changed: hands must never send one, so it is hands' bug."""
+def _hands_bug(exchange: str, status: int, request_id: str | None, onward: bytes, built: bool, changes: tuple[Change, ...], reply: Body) -> None:
+    """Say loudly that the API refused a request hands built or changed: hands must never send one it refuses."""
     said = str(reply)
     named = refused_message(json.loads(onward), said)
-    # [LAW:nothing-unseen] a 400 naming none of its messages (too long, no credit) is a refusal like any other.
-    if named is not None:
-        logger.error(f"hands changed exchange {exchange} ({len(changes)} changes) and the API refused it as malformed (hands' bug): {named}; answered 400: {said}")
+    made = "built" if built else f"changed ({len(changes)} changes)"
+    where = "" if named is None else f" {named};"
+    logger.error(f"hands' bug: hands {made} exchange {exchange} and the API refused it {status} (request-id {request_id}):{where} {said}")
 
 
 def _unfinished(error: BaseException) -> str:
