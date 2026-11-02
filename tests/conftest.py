@@ -693,9 +693,32 @@ time.sleep(float(os.environ.get("STARTS_AFTER", "0")))
 # 0.05s in).
 tty.setraw(0, termios.TCSANOW)
 # Claude Code asks its terminal for bracketed paste, and fritter pastes only into a program that asked.
-os.write(1, b"\\x1b[?2004h> ")
+os.write(1, b"\\x1b[?2004h")
 stated("idle")
 pending, box, turn, turn_text, prompts = b"", "", None, "", 0
+# The dialog on its screen, if one is up: the file a Write asks to write. While it is, no prompt is drawn, a paste is
+# dropped, Return answers it yes, and Ctrl-Q reaches nothing (docs/claude-code-screen.md).
+dialog = None
+drawing = threading.Lock()
+RULE = "\\u2500" * 40
+def draw():
+    # Its screen as Claude Code draws it, redrawn whole: the input box, its top rule above the prompt row, `❯` and U+00A0
+    # then the draft; or, while a dialog is up, the dialog's rows in its place.
+    with drawing:
+        if dialog is not None:
+            frame = f" Write file\\r\\n Do you want to create {{os.path.basename(dialog)}}?\\r\\n \\u276f 1. Yes\\r\\n   2. No"
+        else:
+            frame = RULE + "\\r\\n\\u276f\\u00a0" + box.replace("\\n", "\\r\\n") + "\\r\\n" + RULE
+        os.write(1, b"\\x1b[2J\\x1b[H" + frame.encode())
+draw()
+def chord_submits():
+    # Read at each Ctrl-Q, as Claude Code reloads its keybindings.json on every edit: Ctrl-Q sends the prompt only where
+    # the Chat context binds it to chat:submit and unbinds Return.
+    try:
+        bound = {{key: action for block in json.load(open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "keybindings.json")))["bindings"] if block.get("context") == "Chat" for key, action in block["bindings"].items()}}
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return bound.get("ctrl+q") == "chat:submit" and "enter" in bound and bound["enter"] is None
 # The last prompt to end, and until when its other Stop hooks run on after hands' own was answered: STOP_TAIL seconds.
 last, tail = None, 0.0
 # A prompt as Claude Code's UserPromptSubmit says it took it: a paste of four lines or more in its tags, with a
@@ -795,6 +818,22 @@ def submit(text):
             threading.Thread(target=asking, args=(index,), daemon=True).start()
         turn, turn_text = prompt, text
         return
+    if said == "ask held":
+        # A Write asked from a thread while it goes on reading keys, as Claude Code does, and outliving its turn, which
+        # ends at once: hands answers it as nobody's. Its dialog stays drawn after the answer until the file RELEASE
+        # names exists, as a Claude Code slow to read the answer leaves it up.
+        notes = os.path.join(os.path.dirname(os.environ["TYPED"]), "notes.txt")
+        def held():
+            global dialog
+            dialog = notes
+            draw()
+            decision = post("PermissionRequest", prompt_id=prompt, tool_name="Write", tool_input={{"file_path": notes, "content": "hello"}})["hookSpecificOutput"]["decision"]
+            typed(["permission", decision["behavior"], decision.get("message", ""), decision.get("interrupt", False)])
+            while not os.path.exists(os.environ["RELEASE"]):
+                time.sleep(0.01)
+            dialog = None
+            draw()
+        threading.Thread(target=held, daemon=True).start()
     if said == "slow":
         time.sleep(0.5)
     if said == "write":
@@ -855,7 +894,14 @@ while True:
             end = pending.find(b"\\x1b[201~")
             if end < 0:
                 break
-            box += pending[6:end].decode()
+            if os.environ.get("AMBUSH") and dialog is None:
+                # AMBUSH: a dialog with no hook, committed just before the paste was read, which it takes and drops.
+                dialog = "ambush.txt"
+                draw()
+            if dialog is not None:
+                typed(["dropped", pending[6:end].decode()])
+            else:
+                box += pending[6:end].decode()
             pending = pending[end + 6:]
         elif pending.startswith(b"\\x1b"):
             pending = pending[1:]
@@ -872,12 +918,20 @@ while True:
             box = ""
         # A newline, as a Return typed before it read raw reaches it, is one more line in the input: Claude Code takes
         # Ctrl+J as multiline input (its docs), and sends on a Return alone.
-        elif pending.startswith(b"\\r"):
-            pending = pending[1:]
+        elif pending.startswith(b"\\r") or pending.startswith(b"\\x11"):
+            key, pending = pending[:1], pending[1:]
             if pending:
-                # A Return with more behind it in the same burst is read as pasted, and sends nothing.
+                # A Return or a Ctrl-Q with more behind it in the same burst is read as pasted, and sends nothing.
+                continue
+            if dialog is not None:
+                # Return is the dialog's yes; Ctrl-Q is bound in no dialog's context.
+                typed(["approved"] if key == b"\\r" else ["unbound"])
+                continue
+            if key == b"\\x11" and not chord_submits():
+                typed(["unbound"])
                 continue
             text, box = box, ""
+            draw()
             submit(text)
             # Done with what this Return sent: each hook it posted was answered, so hands has heard them all.
             with open(os.environ["ANSWERED"], "a") as answered:
@@ -885,6 +939,7 @@ while True:
         else:
             box += pending[:1].decode()
             pending = pending[1:]
+    draw()
 """)
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     pin(monkeypatch, script)

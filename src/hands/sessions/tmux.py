@@ -130,6 +130,12 @@ async def shown(environment: Mapping[str, str], socket: Path, pane: str) -> str 
     tmux = shutil.which("tmux", path=environment.get("PATH"))
     if tmux is None:
         return Unanswered(f"no tmux is on the PATH to read pane {pane} of tmux at {socket}")
+    return await captured(tmux, socket, pane)
+
+
+async def captured(tmux: str, socket: Path, pane: str) -> str | Unanswered:
+    """What `shown` returns, read with the `tmux` named: pane `pane` of the server at `socket` as it shows now, or why it
+    could not be read."""
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
     match await ran_at(tmux, socket, ("capture-pane", "-p", "-t", pane)):
         case Ran(returncode=0, out=out):
@@ -217,6 +223,7 @@ KEYS: Mapping[Keystroke, str] = {
     "enter": "Enter",
     "ctrl_c": "C-c",
     "ctrl_u": "C-u",
+    "ctrl_q": "C-q",
     "up": "Up",
     "down": "Down",
     "tab": "Tab",

@@ -24,6 +24,7 @@ type request struct {
 	Text    string `json:"text"`    // kinds "text" and "command": the characters to paste, already escaped by the caller
 	Command string `json:"command"` // kind "command": the command, typed as keys ahead of its text
 	Key     string `json:"key"`     // kind "key": one of the names in keystrokes
+	Submit  string `json:"submit"`  // kind "text": the name in keystrokes of the chord that sends the pasted text
 }
 
 type response struct {
@@ -38,10 +39,13 @@ type response struct {
 // caller's domain, and fritter types the text it is given without re-deciding it
 // `[LAW:single-enforcer]`.
 var keystrokes = map[string][]byte{
-	"escape":    {0x1b},
-	"enter":     {'\r'},
-	"ctrl_c":    {0x03},
-	"ctrl_u":    {0x15},
+	"escape": {0x1b},
+	"enter":  {'\r'},
+	"ctrl_c": {0x03},
+	"ctrl_u": {0x15},
+	// Ctrl-Q is XON: it reaches a child whose terminal is raw, as Claude Code's is while it
+	// draws its prompt. The brain binds it to submitting its prompt, a chord no dialog binds.
+	"ctrl_q":    {0x11},
 	"up":        []byte("\x1b[A"),
 	"down":      []byte("\x1b[B"),
 	"tab":       {'\t'},
@@ -165,10 +169,12 @@ func (w *Wrapped) typeIn(keys []byte) error {
 
 // keys is a request as the bytes a terminal sends for it.
 //
-// A text request is the text and a Return, as someone at the keyboard would type them,
-// pasted when the child asked for bracketing so that a newline inside it stays a newline.
-// It goes as one write: the child reads the paste and the Return behind it together, and
-// the Return sends what is in the box.
+// A text request is the text and the chord it names to send it, as someone at the keyboard
+// would type them, pasted when the child asked for bracketing so that a newline inside it
+// stays a newline. It goes as one write: the child reads the paste and the chord behind it
+// together, and the chord sends what is in the box. Which chord sends is the caller's to
+// say: Return for a session on Claude Code's defaults, the brain's own submit chord for the
+// brain, whose Return a dialog would take as yes.
 func (w *Wrapped) keys(asked request) ([]byte, error) {
 	switch asked.Kind {
 	case "text":
@@ -176,7 +182,11 @@ func (w *Wrapped) keys(asked request) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		return append(pasted, keystrokes["enter"]...), nil
+		submit, known := keystrokes[asked.Submit]
+		if !known {
+			return nil, fmt.Errorf("a text request names the chord that sends it, and no key is named %q", asked.Submit)
+		}
+		return append(pasted, submit...), nil
 	case "command":
 		// A command is typed, and only its text pasted. A program that folds a long paste
 		// into a placeholder folds whatever the paste began with: a command pasted with its

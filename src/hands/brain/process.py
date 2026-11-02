@@ -42,7 +42,8 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
-from hands.core.session import DenyAndInterrupt, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
+from hands.core.screen import reaches
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -55,7 +56,7 @@ from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_ho
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
-from hands.sessions.tmux import Unanswered, ran_at, socket_directory
+from hands.sessions.tmux import KEYS, Unanswered, captured, ran_at, socket_directory
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
@@ -133,6 +134,20 @@ ESCAPE_SECONDS = 4.0
 # model's wait past an idle for the record of how the turn ended (UNTOLD). [LAW:one-source-of-truth] the model's two
 # bounds are the model's, so a change to either moves this one.
 INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
+
+# The chord that sends the brain's prompt. Return is the yes of every dialog; Ctrl-Q, bound to the prompt's submit in the
+# brain's own keybindings, resolves to that submit or to nothing in every context, so no turn hands types can answer a
+# dialog (docs/claude-code-screen.md, "Submitting the prompt with a chord no dialog binds").
+SUBMIT: Keystroke = "ctrl_q"
+# [LAW:one-source-of-truth] the brain's whole keybindings.json, from SUBMIT: the chord bound to the prompt's submit, and
+# Return unbound there, without which the prompt never registers the chord's submit at all.
+KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {KEYS[SUBMIT].replace("C-", "ctrl+"): "chat:submit", "enter": None}}]}
+# How far apart the two captures of the brain's screen are that show it settled: Claude Code writes a frame at most every
+# 16 ms, so two captures this far apart that agree caught no frame half-drawn (docs/claude-code-screen.md, "The rule").
+SETTLE_SECONDS = 0.02
+# How long hands waits before it looks at the brain's screen again when it showed no prompt to type at. Only how often it
+# looks: what it types is safe whatever the screen showed.
+LOOK_SECONDS = 0.05
 
 
 def kept(prompt: str) -> str:
@@ -379,6 +394,15 @@ class InTmux:
     def fritter(self) -> int | None:
         """The pid of the brain's fritter, once the pane's shell has started it and written it."""
         return _pid(self._workspace / "fritter")
+
+    async def screen(self) -> str:
+        """What the brain's pane shows now, read from the brain's tmux server; BrainGone when tmux cannot show it."""
+        # The pane of the session's one window, named exactly: `=` keeps a session whose name begins with this one's out.
+        match await captured(self._tmux, self._socket, f"={self._session}:"):
+            case Unanswered(reason=reason):
+                raise BrainGone(f"the brain's screen cannot be read: {reason}")
+            case str() as shown:
+                return shown
 
     def shown(self) -> str:
         """The last lines the pane showed: as it ended, once it has, else as hands' client draws it."""
@@ -745,9 +769,6 @@ class Asked:
                 raise ValueError(f"permission request {self.request} was answered {other}, which answers no permission")
 
 
-# The hooks of the brain's dialogs: each holds a dialog open on its screen until its hook is answered.
-DIALOGS = frozenset({"PermissionRequest", "Elicitation"})
-
 
 def _unanswered(event: str) -> Mapping[str, object]:
     """What a hook the brain posted is answered when hands broke handling it: a dialog refused, any other hook let go."""
@@ -789,6 +810,8 @@ class _Turn:
     take: float
     # What the turn types into the brain's input.
     typed: PromptText
+    # Whether its keys went to the brain: once the screen showed its prompt, and only then.
+    typed_in: bool = False
     # The tools the turn's latest request offered the model: what the brain's own setup gave it, beside hands' tools.
     offered: tuple[str, ...] = ()
     # The prompt id Claude Code took what was typed under, as its UserPromptSubmit names it: a turn's own, the running
@@ -1038,8 +1061,6 @@ class Brain:
         # what a clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
         self._moved = asyncio.Event()
         self._typing: set[asyncio.Task[None]] = set()
-        # The dialogs the brain posted whose hooks are not yet answered: none is open when a turn is typed (`_taking`).
-        self._dialogs: set[asyncio.Future[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
         with continuing(launched):
@@ -1159,7 +1180,9 @@ class Brain:
                 finally:
                     turn.tried.set_result(None)
                 if not taken:
-                    raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them")
+                    # [LAW:no-silent-failure] the screen says why: words left at the prompt are a submit chord that no
+                    # longer sends it, as an edit to the brain's keybindings.json leaves it; a first screen, `hands login`.
+                    raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._claude.screen()}")
             except (BrainGone, Untaken, StopUnrecorded) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
@@ -1189,23 +1212,54 @@ class Brain:
         # is bounded from now. Only what is no turn's, and none of Claude Code's own, is stopped.
         if not self._claude_turns.opened_itself and not self._all_told():
             await self._clear(turn)
-        # [LAW:single-enforcer] nothing typed answers a dialog: every dialog held now is nobody's, as the turn is not yet
-        # taken (`_owner`), so it is refused, and the turn is typed once each dialog's hook is answered, within its take.
+        # Every dialog held now is nobody's, as the turn is not yet taken (`_owner`), so it is refused.
         held = self._modelled()
         for dialog in () if held is None else held.dialogs:
             self._sessions.answer(dialog.request, Deny(NOBODY))
-        if self._dialogs:
-            answering = asyncio.ensure_future(asyncio.wait(set(self._dialogs)))
-            try:
-                await self._waited(turn.take, answering)
-            finally:
-                answering.cancel()
-            if self._dialogs:
-                # [LAW:no-silent-failure] typed now, its keys would answer the dialog still open.
-                raise Untaken(f"a dialog the brain posted was still unanswered after {turn.take:g}s, so the turn was not typed into it")
-        await self._type(lambda typist: typist.type(turn.typed))
-        await self._waited(turn.take, turn.taken, turn.answered)
-        return turn.taken.done() or turn.answered.done()
+        # [LAW:no-ambient-temporal-coupling] one take, from the first look at the screen until Claude Code says it took the
+        # turn or ended it.
+        typing = asyncio.ensure_future(self._typed(turn))
+        try:
+            await self._waited(turn.take, typing)
+        finally:
+            typing.cancel()
+            await asyncio.wait({typing})
+        if not typing.cancelled():
+            typing.result()
+            return True
+        if not turn.typed_in:
+            # [LAW:no-silent-failure] what the screen showed instead is the reason.
+            raise Untaken(f"the brain's screen showed no prompt to type the turn at in {turn.take:g}s; it showed:\n{await self._claude.screen()}")
+        return False
+
+    async def _typed(self, turn: _Turn) -> None:
+        """Types `turn` once the brain's screen shows its prompt, and returns once Claude Code took the turn or ended it.
+
+        [LAW:one-source-of-truth] whether a dialog is up is the brain's screen's to say, and the brain keeps no record of
+        its own: the turn is pasted once the screen shows the prompt taking keys, so a dialog does not drop it.
+        [LAW:single-enforcer] nothing typed answers a dialog, whatever the screen showed and however late Claude Code reads
+        it: a dialog drops the paste or holds it unsent, and SUBMIT resolves to the prompt's submit or to nothing."""
+        await self._at_prompt()
+        # Set before the keys go: a take that ends while they are written ends a turn typed and not taken.
+        turn.typed_in = True
+        await self._type(lambda typist: typist.type(turn.typed, SUBMIT))
+        await asyncio.wait({turn.taken, turn.answered}, return_when=asyncio.FIRST_COMPLETED)
+
+    async def _at_prompt(self) -> None:
+        """Returns once the brain's screen, settled, shows a key would reach its prompt (`reaches`): two captures
+        SETTLE_SECONDS apart that agree. The sleeps set only how often hands looks; no outcome turns on them."""
+        began, looks = time.monotonic(), 0
+        while True:
+            looks += 1
+            first = await self._claude.screen()
+            await asyncio.sleep(SETTLE_SECONDS)
+            second = await self._claude.screen()
+            if first == second and reaches(second):
+                break
+            await asyncio.sleep(LOOK_SECONDS)
+        # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many settled reads that took: a turn typed
+        # at once reads 1.
+        annotate(at_prompt_after=round(time.monotonic() - began, 3), looks=looks)
 
     async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
         """Until the first of `ending` is done, or a pause of `seconds` on the brain's one pause has passed.
@@ -1392,21 +1446,14 @@ class Brain:
         """A hook the brain posted, to the path of its event, as it was posted, and the body its post is answered with:
         each handled as it arrives, in a handler of its own, as a working session's is (serve_hooks), so none waits
         behind another. What it does is a part of the brain's launch, where no turn it is found a part of says else."""
-        dialog = asyncio.get_running_loop().create_future()
-        if event in DIALOGS:
-            self._dialogs.add(dialog)
         with continuing(self._launched):
             try:
                 return await self._posted(event, body)
             except Exception as error:
                 # [LAW:single-enforcer] whatever breaks, the hook is answered, as one nobody answered: what breaks here is
-                # no turn's. A dialog left unanswered is left to Claude Code's own, on a screen nobody sees, and the next
-                # turn's Return would answer it yes.
+                # no turn's. A dialog left unanswered is left to Claude Code's own, on a screen nobody sees.
                 self._broke(None, error)
                 return _unanswered(event)
-            finally:
-                self._dialogs.discard(dialog)
-                dialog.set_result(None)
 
     async def _posted(self, event: str, body: bytes) -> Mapping[str, object]:
         if event == "Elicitation":
@@ -1721,6 +1768,10 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
         claude = await asyncio.to_thread(brain_claude, station.config_dir)
         mode = settings_mode(station.config_dir)
         annotate(claude=claude, mode=mode)
+        # [LAW:one-source-of-truth] the brain's keybindings are hands' alone, written whole at every start from SUBMIT, the
+        # chord hands types: a file that bound it to anything else would leave every turn unsent, or have it say yes.
+        (station.config_dir / "keybindings.json").write_text(json.dumps(KEYBINDINGS, indent=2) + "\n")
+        annotate(keybindings=SUBMIT)
         # [LAW:no-ambient-temporal-coupling] the listener is up before the brain is spawned, and the brain exists only
         # once its input is up: a hook posted between waits for the brain, behind no other hook. No turn is typed in
         # that window, so only an MCP server's Elicitation can come.

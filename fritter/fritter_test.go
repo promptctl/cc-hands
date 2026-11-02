@@ -267,10 +267,23 @@ func TestTextIsPastedAndSentAsOneWrite(t *testing.T) {
 	// The text and the Return behind it, as someone at the keyboard would type them. The
 	// child reads them together, so the Return sends what the paste put in the box.
 	_, ask, reads := recorded(t, 1)
-	if answer := ask(`{"kind":"text","text":"two\nlines"}`); !answer.OK {
+	if answer := ask(`{"kind":"text","submit":"enter","text":"two\nlines"}`); !answer.OK {
 		t.Fatalf("the text was refused: %s", answer.Reason)
 	}
 	want := []string{"\x1b[200~two\nlines\x1b[201~\r"}
+	if got := reads(); !slices.Equal(got, want) {
+		t.Fatalf("the child read %q, want %q", got, want)
+	}
+}
+
+func TestTextIsSentByTheChordItNamesInTheSameWrite(t *testing.T) {
+	// The brain's prompt is submitted by Ctrl-Q, a chord no dialog binds, so its Return can
+	// never answer one. The chord follows the paste in the one write, as Return does.
+	_, ask, reads := recorded(t, 1)
+	if answer := ask(`{"kind":"text","submit":"ctrl_q","text":"two\nlines"}`); !answer.OK {
+		t.Fatalf("the text was refused: %s", answer.Reason)
+	}
+	want := []string{"\x1b[200~two\nlines\x1b[201~\x11"}
 	if got := reads(); !slices.Equal(got, want) {
 		t.Fatalf("the child read %q, want %q", got, want)
 	}
@@ -524,7 +537,7 @@ func TestMultiLineTextIsRefusedWhenTheSessionWillNotBracketIt(t *testing.T) {
 	wrapped, ask, exited := wrap(t, "sh", "-c", "sleep 30")
 	defer ending(t, wrapped, exited)
 
-	answer := ask(`{"kind":"text","text":"first\nsecond"}`)
+	answer := ask(`{"kind":"text","submit":"enter","text":"first\nsecond"}`)
 	if answer.OK {
 		t.Fatal("a multi-line draft was accepted into a session that cannot take one whole")
 	}
@@ -581,10 +594,10 @@ func TestTextThatIsNotCharactersIsRefusedRatherThanTyped(t *testing.T) {
 	_, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
-		{"the marker that ends a paste", `{"kind":"text","text":"look at \u001b[201~ this"}`},
-		{"an interrupt", `{"kind":"text","text":"a\u0003b"}`},
-		{"a carriage return, which submits", `{"kind":"text","text":"first\rsecond"}`},
-		{"a tab, which is a key", `{"kind":"text","text":"a\tb"}`},
+		{"the marker that ends a paste", `{"kind":"text","submit":"enter","text":"look at \u001b[201~ this"}`},
+		{"an interrupt", `{"kind":"text","submit":"enter","text":"a\u0003b"}`},
+		{"a carriage return, which submits", `{"kind":"text","submit":"enter","text":"first\rsecond"}`},
+		{"a tab, which is a key", `{"kind":"text","submit":"enter","text":"a\tb"}`},
 		{"a command's text", `{"kind":"command","command":"/btw","text":"a\u0003b"}`},
 		{"a command", `{"kind":"command","command":"/b\u001btw","text":"a"}`},
 	} {
@@ -610,6 +623,8 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 		{"not json at all", `nonsense`, "cannot read the request"},
 		{"a command of no word", `{"kind":"command","text":"hi"}`, "one word"},
 		{"a command of two words", `{"kind":"command","command":"/btw hi","text":"there"}`, "one word"},
+		{"text that names no chord to send it", `{"kind":"text","text":"hi"}`, "names the chord that sends it"},
+		{"text sent by an unknown chord", `{"kind":"text","submit":"f13","text":"hi"}`, "no key is named"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := ask(c.body)
@@ -630,7 +645,7 @@ func TestARequestForAnotherProcessIsNotTypedIntoThisOne(t *testing.T) {
 	wrapped, ask, reads := recorded(t, 1)
 
 	for _, c := range []struct{ name, body string }{
-		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","text":"intruder"}`, wrapped.cmd.Process.Pid+1)},
+		{"another process", fmt.Sprintf(`{"pid":%d,"kind":"text","submit":"enter","text":"intruder"}`, wrapped.cmd.Process.Pid+1)},
 		{"no process at all", `{"pid":0,"kind":"key","key":"enter"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {

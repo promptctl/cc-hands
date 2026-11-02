@@ -42,9 +42,10 @@ class Typist:
     # session started from inside a wrapped one carries its parent's. Every request names this.
     pid: int
 
-    def type(self, text: PromptText) -> None:
-        """Type text into the session's input and press Return."""
-        self._ask({"pid": self.pid, "kind": "text", "text": str(text)})
+    def type(self, text: PromptText, submit: Keystroke) -> None:
+        """Type text into the session's input and press `submit`, the chord that sends it: Return at Claude Code's
+        defaults, the brain's own chord for the brain (`hands.brain.process.SUBMIT`)."""
+        self._ask({"pid": self.pid, "kind": "text", "text": str(text), "submit": submit})
 
     def command(self, command: Command) -> None:
         """Type a slash command into the session's input and press Return: the command as keys, and its arguments
@@ -95,7 +96,8 @@ async def type_into(environment: Mapping[str, str], effect: Type[Input]) -> None
 def _by_fritter(typist: Typist, input: Input) -> None:
     match input:
         case Text() as typed:
-            typist.type(typed.typed)
+            # A wrapped session runs on Claude Code's own keybindings, where Return sends the prompt.
+            typist.type(typed.typed, "enter")
         case Command() as command:
             typist.command(command)
         case Key(key=key):
