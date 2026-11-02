@@ -779,15 +779,15 @@ TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"
     ("route", "status", "said", "told"),
     [
         # hands changed it and the API named one of its messages: hands' bug, by index and role.
-        (Send((Tail("tail"),), span=root()), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
+        (Send((Tail("tail"),), span=root(SYSTEM)), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
         # hands wrote all of it: hands' bug, whether or not the 400 names a message.
-        (Send(built=True, span=root()), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
+        (Send(built=True, span=root(SYSTEM)), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
         # A 4xx that is not a 400 (a spent limit, expired auth) says nothing of the request's shape.
-        (Send(built=True, span=root()), 429, TOO_LONG, None),
+        (Send(built=True, span=root(SYSTEM)), 429, TOO_LONG, None),
         # The client's own request, untouched: Claude Code's to own.
-        (Send(span=root()), 400, MALFORMED, None),
+        (Send(span=root(SYSTEM)), 400, MALFORMED, None),
         # Not a 4xx at all.
-        (Send((Tail("tail"),), span=root()), 500, MALFORMED, None),
+        (Send((Tail("tail"),), span=root(SYSTEM)), 500, MALFORMED, None),
     ],
     ids=["changed", "built", "built-429", "untouched", "5xx"],
 )

@@ -333,16 +333,16 @@ def said(message: dict[str, object]) -> list[object]:
     return [{key: value for key, value in cast(dict[str, object], block).items() if key != "cache_control"} for block in cast(list[object], message["content"])]
 
 
-SYSTEM: dict[str, object] = {"role": "system", "content": [text("Stay brief.")]}
+SYSTEM_MESSAGE: dict[str, object] = {"role": "system", "content": [text("Stay brief.")]}
 DIRECTIVE: dict[str, object] = {"role": "system", "content": [], "output_config": {"effort": "low"}}
 SHAPES: dict[str, list[dict[str, object]]] = {
-    "a system message last": [user(text("hi", cache_control=MARK)), SYSTEM],
-    "a system message before an assistant message": [user(text("hi")), SYSTEM, {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))],
+    "a system message last": [user(text("hi", cache_control=MARK)), SYSTEM_MESSAGE],
+    "a system message before an assistant message": [user(text("hi")), SYSTEM_MESSAGE, {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))],
     "a marked system message last": [user(text("hi")), {"role": "system", "content": [text("Stay brief.", cache_control=MARK)]}],
     "a directive-only system message before the question": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, DIRECTIVE, user(text("and?", cache_control=MARK))],
     "two marked system messages last": [user(text("hi")), {"role": "system", "content": [text("Stay brief.", cache_control=MARK)]}, {"role": "system", "content": [text("Be kind.", cache_control=MARK)]}],
     "a directive-only system message last":[user(text("hi", cache_control=MARK)), DIRECTIVE],
-    "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM, DIRECTIVE],
+    "two system messages last": [user(text("hi")), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK)), SYSTEM_MESSAGE, DIRECTIVE],
 }
 REPLIES = {"no reply yet": None, "an empty reply": reply(), "a reply of thinking alone": reply(Thinking("hmm", "sig"), stop="max_tokens"), "a reply still calling": reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")}
 
@@ -367,7 +367,7 @@ def test_a_question_forked_from_a_turn_holding_system_messages_is_one_the_api_ta
 
 
 def test_the_checker_refuses_the_order_that_was_refused_live() -> None:
-    assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM, user(text("q"))])
+    assert "messages.1: system before user" in refused([user(text("hi")), SYSTEM_MESSAGE, user(text("q"))])
 
 
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
