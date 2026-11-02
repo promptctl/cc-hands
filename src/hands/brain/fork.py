@@ -97,11 +97,9 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
             history.append({"role": "user", "content": asked})
-    # skipCacheWrite: the marker sits on the last message the fork shares with the loop, so nothing new is written. A
-    # system message takes none: it goes on the last one before the question that is not one.
-    at = next((index for index in reversed(range(len(history) - 1)) if history[index].get("role") != "system"), None)
-    if marker is not None and at is not None:
-        history[at] = _marked(history[at], marker)
+    # skipCacheWrite: the marker sits on the last message the fork shares with the loop, so nothing new is written.
+    if marker is not None and len(history) > 1:
+        history[-2] = _marked(history[-2], marker)
     history.extend(trailing)
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
     return headers, {**sent, "messages": history}

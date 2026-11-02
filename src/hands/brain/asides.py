@@ -15,8 +15,8 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
 from enum import StrEnum
+from typing import cast
 
 import aiohttp
 
