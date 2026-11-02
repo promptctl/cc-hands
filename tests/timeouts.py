@@ -12,12 +12,13 @@ import threading
 import time
 import traceback
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from types import AsyncGeneratorType, CoroutineType, FrameType, GeneratorType
 from typing import Any, cast
 
 import pytest
+from _pytest.capture import CaptureManager
 from pytest_timeout import Settings, get_env_settings  # pyright: ignore[reportUnknownVariableType]  (untyped in pytest-timeout)
 
 
@@ -82,8 +83,9 @@ def saying_where(item: pytest.Item, fires: Callable[[int, FrameType | None], Any
             # so a test that caught the report's error would run on with no bound.
             try:
                 say_where(item, frame)
-            finally:
-                raise timeout
+            except Exception as report:
+                raise timeout from report
+            raise
 
     return saying
 
@@ -97,8 +99,8 @@ def say_where(item: pytest.Item, frame: FrameType | None) -> None:
     # the timer does not know which it landed in.
     item.add_report_section("fired", "timeout", where)
     terminal = item.config.get_terminal_writer()
-    capture = item.config.pluginmanager.get_plugin("capturemanager")
-    with capture.global_and_fixture_disabled() if capture else nullcontext():
+    capture = cast(CaptureManager, item.config.pluginmanager.get_plugin("capturemanager"))
+    with capture.global_and_fixture_disabled():
         terminal.line(f"\n{where}")
         terminal.flush()
 
@@ -230,17 +232,14 @@ def stalled() -> str:
     """Where everything was as a wait stalled or a bound fired: each other thread's stack, by the thread's name, and each pending task's
     whole await chain, from its coroutine down to the one waiting. The loop's own thread is the stalled wait itself, which
     its task's chain shows. Task.print_stack stops at the task's own coroutine on 3.12, above the wait
-    (asyncio.format_call_graph walks the chain from 3.14)."""
+    (asyncio.format_call_graph walks the chain from 3.14). A task on a stopped loop has nothing to run it, so nothing to stall."""
     names = {thread.ident: thread.name for thread in threading.enumerate()}
     threads = [f"thread {names.get(ident, ident)}:\n{''.join(traceback.format_stack(frame))}" for ident, frame in sys._current_frames().items() if ident != threading.get_ident()]  # pyright: ignore[reportPrivateUsage]  (sys documents it, the one view of every thread's frame)
-    try:
-        pending = asyncio.all_tasks()
-    except RuntimeError:
-        # [LAW:nothing-unseen] no loop to ask is a different fact from a loop with nothing pending, which prints nothing.
-        tasks = ["no event loop is running on this thread"]
-    else:
-        tasks = [f"{task!r}:\n{''.join(traceback.StackSummary.extract((frame, frame.f_lineno) for frame in awaits(task.get_coro())).format())}" for task in pending]
-    return "\n".join(threads + tasks)
+    # [LAW:nothing-unseen] every running loop's tasks, on whichever thread: all_tasks() answers for this thread's loop alone,
+    # and asyncio lists no loops. By type(), as isinstance() asks each object its __class__, which a dead weakref.proxy raises on.
+    pending = [held for held in gc.get_objects() if issubclass(type(held), asyncio.Task) and not held.done() and held.get_loop().is_running()]
+    tasks = [f"{task!r}:\n{''.join(awaits(task.get_coro()))}" for task in pending]
+    return "\n".join(threads + (tasks or ["no task is pending on a running loop"]))
 
 
 async def _held() -> AsyncGenerator[None]:
@@ -254,22 +253,30 @@ ASend, AThrow = type(_never_started.asend(None)), type(_never_started.athrow(Gen
 del _never_started
 
 
-def awaits(awaited: object) -> Iterator[FrameType]:
-    """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first."""
+def at(frame: FrameType) -> list[str]:
+    return traceback.StackSummary.extract([(frame, frame.f_lineno)]).format()
+
+
+def awaits(awaited: object) -> Iterator[str]:
+    """The frame of `awaited` and of each coroutine, generator or async generator it awaits through, outermost first, then
+    what the chain ends at: a future's iterator, or an awaitable that hides the rest of the chain."""
     while True:
         match awaited:
             case CoroutineType(cr_frame=FrameType() as frame):
-                yield frame
+                yield from at(frame)
                 awaited = awaited.cr_await
             case GeneratorType(gi_frame=FrameType() as frame):
-                yield frame
+                yield from at(frame)
                 awaited = cast(object, awaited.gi_yieldfrom)
             case AsyncGeneratorType(ag_frame=FrameType() as frame):
-                yield frame
+                yield from at(frame)
                 awaited = awaited.ag_await
             case ASend() | AThrow():
                 # Only the garbage collector's view reaches the step's generator on 3.12, beside any async generator it
                 # sends: its own is the one running the step.
                 [awaited] = [cast(object, held) for held in gc.get_referents(awaited) if isinstance(held, AsyncGeneratorType) and held.ag_running]
+            case None:
+                return
             case _:
+                yield f"  awaiting {awaited!r}\n"
                 return

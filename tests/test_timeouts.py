@@ -207,6 +207,23 @@ def test_that_blocks(monkeypatch):
     signal.raise_signal(signal.SIGALRM)
 """
 
+# A task on another thread's loop, with the main thread in a sync wait.
+ELSEWHERE = """
+import asyncio
+import signal
+import threading
+
+async def parked_off_the_main_thread(parked):
+    parked.set()
+    await asyncio.Event().wait()
+
+def test_that_waits_on_a_thread():
+    parked = threading.Event()
+    threading.Thread(target=lambda: asyncio.run(parked_off_the_main_thread(parked)), daemon=True).start()
+    parked.wait()
+    signal.raise_signal(signal.SIGALRM)
+"""
+
 DEBUGGED = """
 import signal
 
@@ -230,7 +247,7 @@ UNREPORTABLE = """
 import timeouts
 
 def stalled():
-    raise RuntimeError("no report")
+    raise {raised}
 
 timeouts.stalled = stalled
 """
@@ -267,6 +284,7 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_skips=SKIPS,
         test_awaits=AWAITS,
         test_blocks=BLOCKS,
+        test_elsewhere=ELSEWHERE,
         test_debugged=DEBUGGED,
     )
     return pytester
@@ -319,7 +337,8 @@ def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_sum
     said = ran.stdout.str()
     failures, summary = said[said.index("FAILURES") :].split("short test summary info")
     assert outermost_first(failures)
-    assert "in test_that_blocks" in failures and "no event loop is running on this thread" in failures
+    assert "  awaiting <" in failures
+    assert "in test_that_blocks" in failures and "no task is pending on a running loop" in failures
     assert "timed out" not in summary
 
 
@@ -335,13 +354,12 @@ def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_t
     said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
     assert "FAILURES" not in said
     where = said[said.index("\ntest_blocks.py::test_that_blocks timed out") :]
-    assert "in test_that_blocks" in where and "no event loop is running on this thread" in where
+    assert "in test_that_blocks" in where and "no task is pending on a running loop" in where
 
 
-def test_under_a_signal_a_timeout_says_where_everything_was_with_capture_off(suite: pytest.Pytester) -> None:
-    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
-    said = run(suite, "signal", *UNFIRED, "-p", "no:capture", "test_blocks.py").stdout.str()
-    assert "test_blocks.py::test_that_blocks timed out" in said
+def test_under_a_signal_a_timeout_says_where_a_task_on_another_threads_loop_waited(suite: pytest.Pytester) -> None:
+    said = run(suite, "signal", *UNFIRED, "test_elsewhere.py").stdout.str()
+    assert "in parked_off_the_main_thread" in said[said.index("parked_off_the_main_thread() running at") :]
 
 
 def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_out(suite: pytest.Pytester) -> None:
@@ -351,10 +369,15 @@ def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_o
 
 
 def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: pytest.Pytester) -> None:
-    suite.makeconftest(UNREPORTABLE)
+    suite.makeconftest(UNREPORTABLE.format(raised='RuntimeError("no report")'))
     ran = run(suite, "signal", *UNFIRED, "test_blocks.py")
     ran.assert_outcomes(failed=1)
     ran.stdout.fnmatch_lines(["*RuntimeError: no report", "FAILED test_blocks.py::test_that_blocks - Failed: Timeout*"])
+
+
+def test_under_a_signal_an_interrupt_during_a_report_ends_the_run(suite: pytest.Pytester) -> None:
+    suite.makeconftest(UNREPORTABLE.format(raised="KeyboardInterrupt"))
+    assert run(suite, "signal", *UNFIRED, "test_blocks.py").ret == pytest.ExitCode.INTERRUPTED
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
