@@ -17,7 +17,8 @@ from aiohttp import web
 from loguru import logger
 
 from hands.brain.usage import Spent, Usage
-from hands.clock import SYSTEM, VirtualClock
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import (

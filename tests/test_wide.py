@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.clock import VirtualClock
+from hands.virtualclock import VirtualClock
 from hands.sessions.audit import AuditLog, segment, segments
 from hands.sessions.otlp import spans
 from hands.core.trace import Span

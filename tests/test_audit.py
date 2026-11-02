@@ -16,7 +16,8 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
-from hands.clock import SYSTEM, VirtualClock
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
 from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed

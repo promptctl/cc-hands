@@ -6,7 +6,7 @@ import socket
 import aiohttp
 import pytest
 
-from hands.clock import VirtualClock
+from hands.virtualclock import VirtualClock
 from hands.core.events import Displayed, Event
 from hands.core.session import PromptId, SessionId
 from hands.sessions.hookconfig import DISPLAY_TIMEOUT_SECONDS, DISPLAY_URL, plugin_hooks

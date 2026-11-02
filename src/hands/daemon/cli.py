@@ -264,7 +264,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
         with watchdog.watching(home.hang, watchdog.HUNG) as watched:
-            heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, watched.kick, SYSTEM)
+            heart = heartbeat.Heart(home.status, os.getpid(), SYSTEM.wall(), heartbeat.HEARTBEAT, watched.kick, SYSTEM)
             try:
                 held = None if restarted is None else heart
                 # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was

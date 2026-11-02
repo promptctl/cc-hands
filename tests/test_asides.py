@@ -12,7 +12,8 @@ from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
-from hands.clock import SYSTEM, VirtualClock
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry

@@ -14,7 +14,8 @@ import pytest
 from aiohttp import web
 from loguru import logger
 
-from hands.clock import SYSTEM, VirtualClock
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached

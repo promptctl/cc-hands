@@ -223,7 +223,7 @@ def since(clock: Clock, began: float) -> float:
 def root(clock: Clock) -> Span:
     """The root span of a new trace, for work done as part of no unit of work."""
     # The W3C Trace Context size of a trace id, as OTLP carries it: 16 bytes, in hex.
-    return Span(clock.uuid(), _span_id(clock), None)
+    return Span(clock.token(16), _span_id(clock), None)
 
 
 def within(clock: Clock, parent: Span) -> Span:
@@ -233,7 +233,7 @@ def within(clock: Clock, parent: Span) -> Span:
 
 def _span_id(clock: Clock) -> str:
     # The W3C Trace Context size of a span id, as OTLP carries it: 8 bytes, in hex.
-    return clock.uuid()[:16]
+    return clock.token(8)
 
 
 def _current() -> _Open:

@@ -60,3 +60,38 @@ async def test_a_system_pause_cancelled_as_its_timer_fires_is_over_with_nothing_
     await asyncio.sleep(0.01)
     assert pause.cancelled() and raised == []
     loop.set_exception_handler(None)
+
+
+async def test_a_virtual_timeout_left_before_its_due_cancel_runs_leaves_no_cancel_behind() -> None:
+    clock = VirtualClock()
+    done = asyncio.get_running_loop().create_future()
+    done.set_result(None)
+    async with clock.timeout(0.0):
+        await done
+    await asyncio.sleep(0)
+    assert asyncio.current_task().cancelling() == 0  # type: ignore[union-attr]
+
+
+async def test_a_virtual_timeout_that_expired_takes_its_cancel_back_however_the_block_ended() -> None:
+    clock = VirtualClock()
+    async with clock.timeout(1.0):
+        clock.advance(1.0)
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass
+    assert asyncio.current_task().cancelling() == 0  # type: ignore[union-attr]
+
+
+async def test_a_virtual_timeout_inside_a_task_already_cancelling_expires_as_asyncio_s_own_does() -> None:
+    # `asyncio.Timeout` counts the task's cancellations from where they stood as the block began: its own taken back, the
+    # count is back there, and the block leaves as its TimeoutError with the older cancel still pending.
+    clock = VirtualClock()
+    task = asyncio.current_task()
+    assert task is not None
+    task.cancel()
+    with pytest.raises(TimeoutError):
+        async with clock.timeout(1.0):
+            clock.advance(1.0)
+            await asyncio.sleep(0)
+    assert task.uncancel() == 0

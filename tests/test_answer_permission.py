@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from hands.clock import VirtualClock
+from hands.virtualclock import VirtualClock
 from hands.core.effects import Allow, Heard, HookReply, Narrate, Withdraw, Asking
 from hands.core.events import Joined, Located, PermissionRequested, StatusReported, Tick, ToolFinished
 from hands.core.session import AskedQuestion, Held, Membership, Option, Permission, Plan, Question, RequestId, SessionId

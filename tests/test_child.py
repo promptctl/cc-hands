@@ -131,3 +131,14 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
 async def test_a_child_that_cannot_start_says_so() -> None:
     with pytest.raises(OSError):
         await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+
+
+async def test_a_child_stopped_on_a_clock_that_fails_is_killed_and_reaped_before_the_failure_leaves(logged: list[str]) -> None:
+    # A child that ignores the terminate, so only the kill ends it.
+    process = subprocess.Popen(["sh", "-c", "trap '' TERM; echo ready; sleep 30"], stdout=subprocess.PIPE, start_new_session=True)
+    assert process.stdout is not None and process.stdout.readline() == b"ready\n"
+    stopping = child.reaped("stubborn", process, process.wait)
+    with pytest.raises(RuntimeError, match="no timer"):
+        await stopping.stopped(BrokenClock(), 5)
+    assert reaped(process)
+    assert any(f"killed stubborn ({process.pid})" in line and "its wait failed" in line for line in logged)

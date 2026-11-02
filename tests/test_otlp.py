@@ -16,7 +16,8 @@ from urllib.request import Request
 
 import pytest
 
-from hands.clock import SYSTEM, VirtualClock
+from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
 from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
