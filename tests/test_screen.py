@@ -3,7 +3,7 @@ each surface."""
 
 import pytest
 
-from hands.core.screen import reaches
+from hands.core.screen import typable
 
 RULE = "─" * 40
 NBSP = " "
@@ -14,14 +14,13 @@ NBSP = " "
     [
         pytest.param(f"{RULE}\n❯{NBSP}\n{RULE}\n  ? for shortcuts", id="an idle prompt"),
         pytest.param(f"● Done.\n\n{RULE}\n❯{NBSP}fix the tests\n  and run them\n{RULE}", id="a prompt holding a draft"),
-        pytest.param(f"{RULE}\n!{NBSP}ls\n{RULE}", id="bash mode"),
         pytest.param(f"{'─' * 3} plan mode {'─' * 20}\n❯{NBSP}\n{RULE}", id="a top rule carrying a label"),
         pytest.param(f"{RULE}\n❯{NBSP}", id="a prompt row that captures as the pointer and U+00A0 alone"),
         pytest.param(f"> earlier text\n❯{NBSP}quoted in the transcript\n\n{RULE}\n❯{NBSP}\n{RULE}", id="the transcript imitating a prompt above the real one"),
     ],
 )
-def test_a_key_reaches_the_prompt(shown: str) -> None:
-    assert reaches(shown)
+def test_a_turn_goes_into_the_prompt(shown: str) -> None:
+    assert typable(shown) is not None
 
 
 @pytest.mark.parametrize(
@@ -36,7 +35,13 @@ def test_a_key_reaches_the_prompt(shown: str) -> None:
         pytest.param(f"❯{NBSP}\n{RULE}", id="a prompt row on the screen's first row"),
         pytest.param(f"{RULE}\n❯ hello\n{RULE}", id="the pointer followed by an ordinary space"),
         pytest.param("", id="a blank screen"),
+        pytest.param(f"{RULE}\n!{NBSP}ls\n{RULE}", id="bash mode, where the turn would run as a shell command"),
     ],
 )
-def test_a_key_does_not_reach_the_prompt(shown: str) -> None:
-    assert not reaches(shown)
+def test_a_turn_does_not_go_into_the_prompt(shown: str) -> None:
+    assert typable(shown) is None
+
+
+def test_the_box_is_what_settles_while_a_turn_draws_above_it() -> None:
+    box = f"{RULE}\n❯{NBSP}\n{RULE}\n  esc to interrupt"
+    assert typable(f"✻ Thinking… (3s)\n● streamed\n{box}") == typable(f"✽ Thinking… (4s)\n● streamed more\n{box}") == box

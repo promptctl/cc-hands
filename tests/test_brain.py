@@ -558,7 +558,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
             await asyncio.sleep(0.01)
 
     brain._pause = looked  # pyright: ignore[reportPrivateUsage]
-    with pytest.raises(Untaken, match="showed no prompt to type the turn at") as untaken:
+    with pytest.raises(Untaken, match="showed no prompt to type the turn at.*`hands login` answers them") as untaken:
         await brain.ask("and now?", unasked)
     assert DIALOG_SHOWN in str(untaken.value)
     assert keys.pressed == []
@@ -971,12 +971,12 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
         await brain.stop()
 
 
-async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
+async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
     brain = await start(launch(tmp_path), lambda _entry: None, typings_answered(tmp_path))
     try:
-        with pytest.raises(Untaken, match="`hands login` answers them"):
+        with pytest.raises(Untaken, match="did not take the turn typed into it"):
             await brain.ask("deaf", unasked)
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:

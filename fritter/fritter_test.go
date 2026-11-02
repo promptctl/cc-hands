@@ -624,7 +624,8 @@ func TestRequestsThatNameNothingRealAreRefusedWithAReason(t *testing.T) {
 		{"a command of no word", `{"kind":"command","text":"hi"}`, "one word"},
 		{"a command of two words", `{"kind":"command","command":"/btw hi","text":"there"}`, "one word"},
 		{"text that names no chord to send it", `{"kind":"text","text":"hi"}`, "names the chord that sends it"},
-		{"text sent by an unknown chord", `{"kind":"text","submit":"f13","text":"hi"}`, "no key is named"},
+		{"text sent by an unknown chord", `{"kind":"text","submit":"f13","text":"hi"}`, "is neither"},
+		{"text sent by a key that sends no prompt", `{"kind":"text","submit":"escape","text":"hi"}`, "is neither"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := ask(c.body)

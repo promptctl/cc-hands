@@ -42,7 +42,7 @@ from hands.brain.mcp import SERVER_NAME
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
-from hands.core.screen import reaches
+from hands.core.screen import typable
 from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
@@ -56,7 +56,7 @@ from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_ho
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.child import Ran
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
-from hands.sessions.tmux import KEYS, Unanswered, captured, ran_at, socket_directory
+from hands.sessions.tmux import Unanswered, captured, ran_at, socket_directory
 from hands.sessions.typing import Typist, Untyped
 from hands.sessions.untap import untapped
 from hands.sessions.wide import Begun, annotate, begun, continuing, ended, fail, here, unit, within
@@ -139,10 +139,10 @@ INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
 # brain's own keybindings, resolves to that submit or to nothing in every context, so no turn hands types can answer a
 # dialog (docs/claude-code-screen.md, "Submitting the prompt with a chord no dialog binds").
 SUBMIT: Keystroke = "ctrl_q"
-# [LAW:one-source-of-truth] the brain's whole keybindings.json, from SUBMIT: the chord bound to the prompt's submit, and
-# Return unbound there, without which the prompt never registers the chord's submit at all.
-KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {KEYS[SUBMIT].replace("C-", "ctrl+"): "chat:submit", "enter": None}}]}
-# How far apart the two captures of the brain's screen are that show it settled: Claude Code writes a frame at most every
+# The brain's whole keybindings.json: SUBMIT, in Claude Code's own name for it, bound to the prompt's submit, and Return
+# unbound there, without which the prompt never registers the chord's submit at all. A change to SUBMIT is a change here.
+KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]}
+# How far apart the two captures of the brain's input box are that show it settled: Claude Code writes a frame at most every
 # 16 ms, so two captures this far apart that agree caught no frame half-drawn (docs/claude-code-screen.md, "The rule").
 SETTLE_SECONDS = 0.02
 # How long hands waits before it looks at the brain's screen again when it showed no prompt to type at. Only how often it
@@ -397,8 +397,13 @@ class InTmux:
 
     async def screen(self) -> str:
         """What the brain's pane shows now, read from the brain's tmux server; BrainGone when tmux cannot show it."""
-        # The pane of the session's one window, named exactly: `=` keeps a session whose name begins with this one's out.
-        match await captured(self._tmux, self._socket, f"={self._session}:"):
+        # The brain's own pane, by the id its shell wrote: a window a person opens beside it, or a split of its own, is
+        # the session's current pane and never the brain's.
+        try:
+            pane = (self._workspace / "pane_id").read_text().strip()
+        except FileNotFoundError:
+            raise BrainGone("the brain's screen cannot be read: its pane has not said which it is") from None
+        match await captured(self._tmux, self._socket, pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
             case str() as shown:
@@ -489,6 +494,7 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
     )
     (workspace / "pane.sh").write_text(
         f"echo $$ > {shlex.quote(str(pid))}\n"
+        f'echo "$TMUX_PANE" > {shlex.quote(str(workspace / "pane_id"))}\n'
         # A hangup reaches only the pane's shell, its session's leader, on macOS: passed on to fritter, which the
         # shell waits on for its status. Run in the background so the wait can be broken by the hangup, with the
         # pane's terminal for its input, which a background command is otherwise not given.
@@ -1153,7 +1159,7 @@ class Brain:
     def _broke(self, turn: _Turn | None, error: BaseException) -> None:
         """[LAW:single-enforcer] what the brain's own work raised that nothing in it expected: said once, with where it
         came from, and the end of the turn it was done for, stopped as an Escape stops it, so no dialog of it is left open
-        for the next turn's Return, its asker is answered, and the turns behind it are typed. A turn already over is ended
+        to drop the next turn's paste, its asker is answered, and the turns behind it are typed. A turn already over is ended
         already: what Claude Code still runs of it is no turn's (`_owner`), and is cleared before the next is typed
         (`_taking`), so its break ends nothing the turn in flight runs."""
         logger.opt(exception=error).error(f"the brain's own work failed: {error!r}")
@@ -1181,8 +1187,9 @@ class Brain:
                     turn.tried.set_result(None)
                 if not taken:
                     # [LAW:no-silent-failure] the screen says why: words left at the prompt are a submit chord that no
-                    # longer sends it, as an edit to the brain's keybindings.json leaves it; a first screen, `hands login`.
-                    raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._claude.screen()}")
+                    # longer sends it, as an edit to the brain's keybindings.json leaves it; an empty prompt, a dialog
+                    # drawn as the turn was pasted, which dropped it.
+                    raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._claude.screen()}")
             except (BrainGone, Untaken, StopUnrecorded) as error:
                 self._over(turn, error)
             await asyncio.wait({turn.answered})
@@ -1229,7 +1236,7 @@ class Brain:
             return True
         if not turn.typed_in:
             # [LAW:no-silent-failure] what the screen showed instead is the reason.
-            raise Untaken(f"the brain's screen showed no prompt to type the turn at in {turn.take:g}s; it showed:\n{await self._claude.screen()}")
+            raise Untaken(f"the brain's screen showed no prompt to type the turn at in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._claude.screen()}")
         return False
 
     async def _typed(self, turn: _Turn) -> None:
@@ -1246,16 +1253,16 @@ class Brain:
         await asyncio.wait({turn.taken, turn.answered}, return_when=asyncio.FIRST_COMPLETED)
 
     async def _at_prompt(self) -> None:
-        """Returns once the brain's screen, settled, shows a key would reach its prompt (`reaches`): two captures
-        SETTLE_SECONDS apart that agree. The sleeps set only how often hands looks; no outcome turns on them."""
+        """Returns once the brain's screen, settled, shows a turn would go into its prompt (`typable`): two captures
+        SETTLE_SECONDS apart whose input boxes agree, the second taken only once the first shows one. The sleeps set
+        only how often hands looks; no outcome turns on them."""
         began, looks = time.monotonic(), 0
         while True:
             looks += 1
-            first = await self._claude.screen()
-            await asyncio.sleep(SETTLE_SECONDS)
-            second = await self._claude.screen()
-            if first == second and reaches(second):
-                break
+            if (first := typable(await self._claude.screen())) is not None:
+                await asyncio.sleep(SETTLE_SECONDS)
+                if typable(await self._claude.screen()) == first:
+                    break
             await asyncio.sleep(LOOK_SECONDS)
         # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many settled reads that took: a turn typed
         # at once reads 1.
@@ -1364,7 +1371,7 @@ class Brain:
         finally:
             # A broken turn ends with what broke it however its stop went, even unstopped: nothing else is left to end it.
             # What it holds the model refused as it learned the turn broke (`_broke`), so no dialog of it is left open
-            # for the next turn's Return.
+            # to drop the next turn's paste.
             if turn.broken is not None and not turn.answered.done():
                 self._over(turn, turn.broken)
 

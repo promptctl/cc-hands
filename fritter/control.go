@@ -182,10 +182,12 @@ func (w *Wrapped) keys(asked request) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		submit, known := keystrokes[asked.Submit]
-		if !known {
-			return nil, fmt.Errorf("a text request names the chord that sends it, and no key is named %q", asked.Submit)
+		// Only a chord that sends a prompt: a trailing ESC, or an arrow, read with the paste
+		// would be a chord of its own and send nothing.
+		if asked.Submit != "enter" && asked.Submit != "ctrl_q" {
+			return nil, fmt.Errorf("a text request names the chord that sends it, enter or ctrl_q, and %q is neither", asked.Submit)
 		}
+		submit := keystrokes[asked.Submit]
 		return append(pasted, submit...), nil
 	case "command":
 		// A command is typed, and only its text pasted. A program that folds a long paste
