@@ -175,19 +175,19 @@ class Asides:
             case Garbled(reason=reason) if response.status == 200:
                 # Answered, then cut off on the way: the stream ended before its reply was whole.
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
-            case other if response.status == 400:
-                # [LAW:nothing-unseen] a side question is wholly hands' construction, so a 400 on it is hands' bug, told
-                # as one with the message the API named.
-                raise AsideFailed(Unanswered.MALFORMED, f"hands built a malformed side question (hands' own bug): {_named(body, str(other))}; answered 400 (request-id {request_id}): {other}")
+            case other if response.status == 400 and (named := _named(body, str(other))) is not None:
+                # [LAW:nothing-unseen] a side question is wholly hands' construction, so a 400 naming one of its messages
+                # is hands' bug, told as one. A 400 naming none (too long, no credit) is a refusal like any other.
+                raise AsideFailed(Unanswered.MALFORMED, f"hands built a malformed side question (hands' own bug): {named}; answered 400 (request-id {request_id}): {other}")
             case other:
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
 
 
-def _named(body: Mapping[str, object], said: str) -> str:
-    """The message a refusal names, by its index and role, or that it named none of this body's."""
+def _named(body: Mapping[str, object], said: str) -> str | None:
+    """The message of this body a refusal names, by its index and role, if it names one."""
     found = re.search(r"messages\.(\d+)", said)
     messages = cast(list[object], body.get("messages", []))
     if found is None or int(found[1]) >= len(messages):
-        return "the refusal names none of its messages"
+        return None
     named = messages[int(found[1])]
     return f"messages.{found[1]} is role {cast(Mapping[str, object], named).get('role')!r}"

@@ -304,6 +304,20 @@ async def test_a_side_question_refused_as_malformed_is_told_as_hands_own_bug_nam
         await rig.asides.ask(AsideKind.NAME, "malformed", Deadline(5))
     [event] = events(recorded)
     assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.MALFORMED, 400)
+    assert len(rig.asked) == 2
+
+
+async def test_a_400_naming_none_of_the_side_questions_messages_is_a_refusal(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
+    rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
+    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\).*prompt is too long"):
+        await rig.asides.ask(AsideKind.NAME, "too long", Deadline(5))
+    [event] = events(recorded)
+    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, 400)
+    assert len(rig.asked) == 2
 
 
 def system(said: str) -> dict[str, object]:
