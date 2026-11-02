@@ -51,6 +51,8 @@ def pasted(text: str) -> PromptText:
 # The named chords a session can be sent, as distinct from text. Which bytes each one is
 # belongs to whatever does the typing, not here; this is the vocabulary hands speaks.
 Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "ctrl_q", "up", "down", "tab", "shift_tab"]
+# The chords that send a typed prompt, the only ones fritter takes as a text request's `submit`.
+Submit = Literal["enter", "ctrl_q"]
 
 # A slash command's name without its slash, such as `compact` or a plugin's `memento:ceiling`: word characters, colons,
 # and hyphens, so typing it after a slash cannot type anything but the command. Made only where the model's words are parsed.

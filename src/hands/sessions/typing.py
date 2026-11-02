@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hands.core.effects import Command, Fritter, Input, Key, Text, Type
-from hands.core.session import Keystroke, PromptText, SessionId
+from hands.core.session import Keystroke, PromptText, SessionId, Submit
 from hands.core.tmux import Pane, Unanswered
 from hands.sessions import tmux
 
@@ -42,7 +42,7 @@ class Typist:
     # session started from inside a wrapped one carries its parent's. Every request names this.
     pid: int
 
-    def type(self, text: PromptText, submit: Keystroke) -> None:
+    def type(self, text: PromptText, submit: Submit) -> None:
         """Type text into the session's input and press `submit`, the chord that sends it: Return at Claude Code's
         defaults, the brain's own chord for the brain (`hands.brain.process.SUBMIT`)."""
         self._ask({"pid": self.pid, "kind": "text", "text": str(text), "submit": submit})

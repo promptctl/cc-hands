@@ -45,7 +45,7 @@ from turns import RECORDINGS, prompts, stops
 from hands.brain.stage import BrainStage
 from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
-from hands.core.session import Keystroke, Membership, PromptId, PromptText, SessionId, pasted
+from hands.core.session import Keystroke, Membership, PromptId, PromptText, SessionId, Submit, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -736,7 +736,7 @@ class _Pressed:
         self._told = told
         self.pressed: list[tuple[Keystroke, bool]] = []
 
-    def type(self, text: PromptText, submit: Keystroke) -> None:
+    def type(self, text: PromptText, submit: Submit) -> None:
         self._typist.type(text, submit)
 
     def press(self, key: Keystroke) -> None:
@@ -856,7 +856,7 @@ class _Timed:
         self._typist = typist
         self.cleared: list[float] = []
 
-    def type(self, text: PromptText, submit: Keystroke) -> None:
+    def type(self, text: PromptText, submit: Submit) -> None:
         self._typist.type(text, submit)
 
     def press(self, key: Keystroke) -> None:
