@@ -51,7 +51,7 @@ the path and says so, rather than letting `bind` fail with an error that names n
 One JSON object per connection, newline-terminated, answered with one JSON object.
 
 ```
-{"pid":4242,"kind":"text","text":"fix the auth middleware"}
+{"pid":4242,"kind":"text","submit":"enter","text":"fix the auth middleware"}
 {"pid":4242,"kind":"command","command":"/btw","text":"what did the last test say?"}
 {"pid":4242,"kind":"key","key":"escape"}
 ```
@@ -64,7 +64,8 @@ parent's address in its own environment. So wrap the program itself — `fritter
 `hands install-fritter`, does exactly that for every interactive session.
 
 A `text` request is typed the way someone at the keyboard types a message: the text, then
-Return. It goes into the child as one write. fritter does not decide what a leading `/` or
+the chord its `submit` names, `enter` or `ctrl_q`. A program whose Return a dialog takes as
+yes binds its submit to Ctrl-Q, as hands' brain does. It goes into the child as one write. fritter does not decide what a leading `/` or
 `@` means to the program underneath; that is the caller's, and in hands it is settled
 before anything reaches here.
 
@@ -76,8 +77,8 @@ as a prompt. A command is one word; with no text it is typed alone, then Return.
 
 `text` is characters and newlines, and a control byte in it is refused by name: an `ESC`
 would end the bracketing early and a `0x03` is a Ctrl-C. Send a `key` request for a
-keystroke. The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab` and
-`shift_tab`, and each is typed exactly as if the user had pressed it.
+keystroke. The keys are `escape`, `enter`, `ctrl_c`, `ctrl_u`, `up`, `down`, `tab`,
+`shift_tab` and `ctrl_q`, and each is typed exactly as if the user had pressed it.
 
 A `pasting` request, `{"pid":4242,"kind":"pasting"}`, types nothing. It is answered ok if
 the child has turned bracketed paste on, and refused if not. Claude Code turns it on once

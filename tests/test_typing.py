@@ -71,9 +71,9 @@ def asked(path: Path, answer: bytes, send: Callable[[Typist], None]) -> dict[str
 
 
 def test_text_reaches_fritter_as_text_for_the_process_it_wrapped(short_dir: Path) -> None:
-    # A newline is text: fritter pastes it, so only the Return fritter adds sends the message.
-    sent = asked(short_dir / "f.sock", b'{"ok":true}\n', lambda t: t.type(PromptText("first\nsecond")))
-    assert sent == {"pid": 4242, "kind": "text", "text": "first\nsecond"}
+    # A newline is text: fritter pastes it, so only the chord fritter adds behind it sends the message.
+    sent = asked(short_dir / "f.sock", b'{"ok":true}\n', lambda t: t.type(PromptText("first\nsecond"), "ctrl_q"))
+    assert sent == {"pid": 4242, "kind": "text", "text": "first\nsecond", "submit": "ctrl_q"}
 
 
 def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
@@ -84,7 +84,8 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
     finally:
         fritter.close()
     assert fritter.asked is not None
-    assert json.loads(fritter.asked)["text"] == " /compact now"
+    # A wrapped session runs on Claude Code's own keybindings, so Return sends it.
+    assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": " /compact now", "submit": "enter"}
 
 
 @pytest.mark.parametrize(
@@ -115,14 +116,14 @@ def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None
 )
 def test_anything_but_a_yes_is_raised_with_what_fritter_said(short_dir: Path, answer: bytes, says: str) -> None:
     with pytest.raises(Untyped, match=re.escape(says)):
-        asked(short_dir / "f.sock", answer, lambda t: t.type(PromptText("hello")))
+        asked(short_dir / "f.sock", answer, lambda t: t.type(PromptText("hello"), "enter"))
 
 
 def test_a_socket_nobody_is_listening_on_says_so(short_dir: Path) -> None:
     # The common case: the session's process ended and took its fritter with it.
     path = short_dir / "gone.sock"
     with pytest.raises(Untyped, match=re.escape(str(path))):
-        typist(path).type(PromptText("hello"))
+        typist(path).type(PromptText("hello"), "enter")
 
 
 class MuteFritter:
@@ -157,6 +158,6 @@ def test_a_fritter_that_never_answers_does_not_hold_the_daemon(short_dir: Path, 
     fritter = MuteFritter(path, hold=3.0)
     try:
         with pytest.raises(Untyped, match="timed out"):
-            typist(path).type(PromptText("hello"))
+            typist(path).type(PromptText("hello"), "enter")
     finally:
         fritter.close()

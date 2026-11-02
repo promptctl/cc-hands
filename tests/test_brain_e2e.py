@@ -15,7 +15,7 @@ from hands.core.attention import Attention
 import os
 import subprocess
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -29,7 +29,7 @@ from hands.brain.fork import REMINDER
 from hands.brain.stage import ANSWERS, OWED, BrainStage
 from hands.core.brainwork import Idle, Running, Stopping, Working
 from hands.core.wire import Sent, tool_answers
-from hands.brain.process import BROKEN, STOPPED, starting_settings, workdir
+from hands.brain.process import BROKEN, STOPPED, SUBMIT, starting_settings, workdir
 from hands.core.effects import Deny
 from hands.core.session import DenyAndInterrupt
 from hands.daemon.run import mind
@@ -44,7 +44,7 @@ from hands.voice.pipeline import VoiceConfig
 from hands.voice.refocus import Refocus
 from hands.sessions.sentences import Sentences
 from hands.sessions.child import Ran
-from hands.sessions.tmux import ran_at
+from hands.sessions.tmux import KEYS, ran_at
 from hands.voice.sentences import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Received, Spoken
@@ -124,17 +124,13 @@ def claude_code(pytestconfig: pytest.Config) -> Path:
     return pytestconfig.stash[RUN].claude_code
 
 
-# The brain's keybindings, as docs/claude-code-screen.md's "Submitting the prompt with a chord no dialog binds" settles
-# them: Ctrl-Q submits the prompt, and Return is unbound from submitting it, without which the prompt never takes Ctrl-Q as
-# a submit. hands writes no keybindings yet, so only the tests that prove the chord give the brain these.
-BRAIN_KEYS = {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]}
-# BRAIN_KEYS' submit chord, as tmux names the key.
-SUBMIT = "C-q"
+# [LAW:one-source-of-truth] the brain's submit chord, as tmux names the key: the one hands types and binds in the brain's
+# keybindings.json, which hands writes at every start.
+CHORD = KEYS[SUBMIT]
 
 
-def logged_in(brain: Path, mock_binary: Path, keys: Mapping[str, object] | None) -> None:
-    """A brain directory logged in as the mock's account by the mock's own login, the directory it works in trusted, and
-    its keybindings `keys`, or Claude Code's defaults as hands leaves them when None."""
+def logged_in(brain: Path, mock_binary: Path) -> None:
+    """A brain directory logged in as the mock's account by the mock's own login, and the directory it works in trusted."""
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
@@ -145,8 +141,6 @@ def logged_in(brain: Path, mock_binary: Path, keys: Mapping[str, object] | None)
     said = json.loads(settings.read_text())
     allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
     settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
-    if keys is not None:
-        (brain / "keybindings.json").write_text(json.dumps(keys))
 
 
 @dataclass(frozen=True)
@@ -233,15 +227,9 @@ def opened(pipe: Path) -> bool:
 
 
 @pytest.fixture
-def keys() -> Mapping[str, object] | None:
-    """The brain's keybindings.json: none, as hands starts the brain. A test that needs others parametrizes `keys`."""
-    return None
-
-
-@pytest.fixture
-async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch, keys: Mapping[str, object] | None) -> AsyncGenerator[Hands]:
+async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_code: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Hands]:
     brain = tmp_path / "brain"
-    logged_in(brain, mock_binary, keys)
+    logged_in(brain, mock_binary)
     # Every start of a claude, the brain's, an aside's, a login's, runs the cached Claude Code, the pin itself, held
     # offline as the run is (conftest): a connection it or anything it starts makes around the mock is refused by the OS,
     # and one through its proxy is in the mock's log.
@@ -449,7 +437,6 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
     await hands.until(lambda: "Hello." in "".join(hands.out.said()))
 
 
-@pytest.mark.parametrize("keys", [BRAIN_KEYS])
 # What is typed before the chord, and what the screen shows once Claude Code has read it, so the chord arrives as a read
 # of its own, never in one with the words before it.
 @pytest.mark.parametrize(("before", "shows"), [([], "Do you want to proceed?"), ([("Tab",), ("-l", "use a copy instead")], "use a copy instead")], ids=["Yes focused", "Yes amended, its field holding words"])
@@ -467,7 +454,7 @@ async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answ
     for typed in before:
         await keyed(hands, *typed)
     await hands.until(lambda: shows in shown(hands))
-    await keyed(hands, SUBMIT)
+    await keyed(hands, CHORD)
     await keyed(hands, "Down")
     # The second option, whatever it says: a Bash dialog in default mode offers "Yes, and don't ask again" there.
     await hands.until(lambda: "❯ 2." in shown(hands))
@@ -482,7 +469,6 @@ async def test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answ
     assert isinstance(permission.facts["decision"], Deny)
 
 
-@pytest.mark.parametrize("keys", [BRAIN_KEYS])
 async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(mock_api: MockApi, hands: Hands) -> None:
     """A paste long enough that Claude Code folds it into a placeholder, then Ctrl-Q: the whole text is sent as a turn,
     which hands speaks as any turn Claude Code opens (promptctl-brain-z04s.ar0)."""
@@ -491,8 +477,29 @@ async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(m
     await connected(hands)
     await pasted(hands, words)
     await hands.until(lambda: "[Pasted text #1 +29 lines]" in shown(hands))
-    await keyed(hands, SUBMIT)
+    await keyed(hands, CHORD)
     await hands.until(lambda: "I read it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
+
+
+async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
+    """The brain asks to Write, the user says no and at once says the next turn. The Write never runs, whatever Claude
+    Code still had on its screen as the next turn was typed, and the next turn is answered (promptctl-brain-q9s8.45d)."""
+    notes = hands.workdir / "notes.txt"
+    # Tried in name order: the hello turn, whose history holds the Write's result too, ahead of the Write's end.
+    mock_api.script("1-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
+    mock_api.script("2-left", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "I left it unwritten."})
+    mock_api.script("3-write", {"lastUserContains": ["write the notes"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Write", "input": {"file_path": str(notes), "content": "hello"}}, stop="tool_use")
+    await connected(hands)
+    await hands.say("write the notes")
+    await hands.until(lambda: len(held(hands)) == 1 and any("Say yes to allow it." in said for said in hands.out.said()))
+    await hands.say("no")
+    await hands.say("say hello")
+    await hands.until(lambda: "Hello." in "".join(hands.out.said()) and "I left it unwritten." in "".join(hands.out.said()))
+    assert not notes.exists()
+    [permission] = permissions(hands.recorded)
+    assert isinstance(permission.facts["decision"], Deny)
+    # Every turn was typed at a prompt the screen showed, and sent by the brain's own chord.
+    assert all(isinstance(turn.facts["looks"], int) and turn.facts["looks"] >= 1 for turn in events(hands.recorded, "brain.turn"))
 
 
 async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_and_are_the_next_turn(mock_api: MockApi, hands: Hands) -> None:

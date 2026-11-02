@@ -390,9 +390,9 @@ So the brain's mode is its config directory's to say: `tui` in its settings.json
 
 ## Submitting the prompt with a chord no dialog binds
 
-Return is the yes key of every dialog. Ctrl-Q, bound to the prompt's submit in the brain's own keybindings, submits the prompt, and no dialog acts on it. A turn typed as a paste and this chord approves nothing, however slowly Claude Code reads keys or draws frames. Its words can still land in a dialog: a paste typed while an option's text field has the focus goes into that field, and the chord then leaves it there unsent. Settled for promptctl-brain-z04s.ar0 from the code, with the anchors below, and by runs. hands still ends a typed turn with Return (fritter appends it in `fritter/control.go`, `keys`, as `src/hands/sessions/typing.py` asks), and nothing writes the binding into the brain's home yet:
+Return is the yes key of every dialog. Ctrl-Q, bound to the prompt's submit in the brain's own keybindings, submits the prompt, and no dialog acts on it. A turn typed as a paste and this chord approves nothing, however slowly Claude Code reads keys or draws frames. Its words can still land in a dialog: a paste typed while an option's text field has the focus goes into that field, and the chord then leaves it there unsent. Settled for promptctl-brain-z04s.ar0 from the code, with the anchors below, and by runs. Since promptctl-brain-q9s8.45d, hands writes the binding into the brain's home at every start, and ends every typed turn with the chord: fritter's `text` request names the key that sends it (`fritter/control.go`, `keys`), and the brain names `SUBMIT` (`src/hands/brain/process.py`). The turn is pasted only once two settled captures of the screen satisfy "The rule" below, so a dialog that is up does not drop it:
 
-- **The brain end to end** (`tests/test_brain_e2e.py`): `test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing`, and `test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord`. Only these two run with the binding.
+- **The brain end to end** (`tests/test_brain_e2e.py`): every test runs with the binding hands writes, and every turn goes in as a bracketed paste and 0x11 in one fritter write, which Claude Code reads as the paste and then Ctrl-Q. `test_the_brain_s_submit_chord_typed_into_a_held_permission_dialog_answers_nothing` types the chord into a held dialog, and `test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord` sends a folded paste with it.
 - **By hand**: the pinned Claude Code against mock-anthropic in a tmux pane. That machine's policy put it in auto mode, so its dialogs came from an `ask` rule.
 
 The binding:
@@ -455,7 +455,7 @@ The chord can trigger one action, `chat:submit`, and nothing else acts on its ke
   - Ctrl-C and Ctrl-D are hard-wired, and Ctrl-Z and Ctrl-\ are signals.
   - Every other Ctrl letter is bound by a default or edits a text field. Ctrl-Q is the only one that is neither.
 - **Alt chords are out.** An Alt chord is Escape then the key. Split across two reads, it arrives as Escape, which in a dialog denies and stops the turn.
-- **How the byte gets there.** fritter writes a key's bytes to the pty (`fritter/control.go`, `keystrokes`), and its map has no Ctrl-Q yet. The tests type it through tmux instead: `send-keys C-q` writes 0x11 to the pane, whose fritter forwards it to Claude Code.
+- **How the byte gets there.** fritter writes a key's bytes to the pty (`fritter/control.go`, `keystrokes`, as `ctrl_q`), behind the turn's paste in the same write. The two chord tests also type it through tmux: `send-keys C-q` writes 0x11 to the pane, whose fritter forwards it to Claude Code.
 
 ### The brain's keybindings.json is hands' to write
 
@@ -463,7 +463,7 @@ The binding is half of a contract hands' typing depends on: the chord hands send
 - **A file without `"enter": null`** leaves every turn unsent.
 - **A file that binds Ctrl-Q to `confirm:yes` or `select:accept`** makes hands' submit approve dialogs.
 
-So the whole file is hands' to write, from the same definition its typing sends the chord from, where it sets up the brain's config directory (`src/hands/brain/process.py`). `settings.json` is different: hands writes it once and leaves it to the person. Claude Code reloads the file on every edit ("Edits", above), so an edit made while the brain runs changes the chord's meaning at once, not at hands' next start.
+So the whole file is hands' to write, from the same definition its typing sends the chord from: `start` in `src/hands/brain/process.py` writes `KEYBINDINGS`, built from `SUBMIT`, over whatever is there, before it spawns the brain. `settings.json` is different: hands writes it once and leaves it to the person. Claude Code reloads the file on every edit ("Edits", above), so an edit made while the brain runs changes the chord's meaning at once, not at hands' next start. hands does not watch the file: a turn typed after such an edit is left at the prompt, and its take ends `Untaken` with the screen, the words still at the prompt, in its message.
 
 ## The rule
 
@@ -507,6 +507,8 @@ Every surface in this document, and the verdict of the rule on it:
 | **A frame torn while stdout is backed up** | reaches, when the torn grid still holds the prompt row | **wrong**: two captures agree on a grid that is half one frame and half the next, so condition 4 passes while a dialog is being drawn |
 | **Pane in a tmux mode, or a person typing at the pane** | reaches | **wrong**: copy mode takes `send-keys` keys, and a person shares the input. tmux reports a mode as `#{pane_in_mode}`, not in the text |
 | **Transcript text imitating the prompt** (a row beginning `─`, then a row beginning `❯` and U+00A0, which the markdown renderer draws from an ordinary `❯ 1.` line of the brain's reply) above a dialog whose choices are not select rows, such as an elicitation form | reaches | **wrong**: condition 3 catches dialogs whose choices are select rows, not one whose choices are buttons |
+
+For the brain, a row the rule gets wrong costs a turn, never an answer. hands types a turn as a paste and the chord of "Submitting the prompt with a chord no dialog binds", so a dialog the rule missed drops the paste, or holds it unsent in a text field, and the chord reaches nothing; the turn's take ends `Untaken`, carrying the screen. hands neither retries nor presses Return there.
 
 ## What the code does not settle
 

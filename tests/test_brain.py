@@ -30,7 +30,7 @@ from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
 from hands.sessions.reader import Reader
 from hands.sessions.tail import Tails
-from hands.brain.process import ClaudeTurns, BROKEN, HOOKS, LET_GO, NOBODY, STOPPED, SLIM, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, model, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import ClaudeTurns, BROKEN, HOOKS, KEYBINDINGS, LET_GO, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, _listen, _Turn, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, model, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
 from hands.core.permissions import heard
@@ -45,7 +45,7 @@ from turns import RECORDINGS, prompts, stops
 from hands.brain.stage import BrainStage
 from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
-from hands.core.session import Keystroke, Membership, PromptId, PromptText, SessionId, pasted
+from hands.core.session import Keystroke, Membership, PromptId, PromptText, SessionId, Submit, pasted
 from hands.core.wire import Exchanged, Fork, Heard, Kind, MainTurn, Message, MessageStarted, Reached, Sent, Written
 from hands.core.wire import Text as Said
 from hands.daemon.cli import main
@@ -213,6 +213,11 @@ def launch(tmp: Path) -> Launch:
     return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
 
 
+def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
+    """A brain turn's facts but how long it waited for the prompt, which no test can name in advance."""
+    return {name: fact for name, fact in facts.items() if name != "at_prompt_after"}
+
+
 def typed(tmp: Path) -> list[list[str]]:
     """What the fake claude read from its terminal, in order."""
     path = tmp / "typed.jsonl"
@@ -346,15 +351,18 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     # Each event the model applies to the brain's session is one of its own (`applied`), as a working session's is, beside these.
     launched, first, second, ran = [entry for entry in recorded if not (isinstance(entry, WideEvent) and entry.event == "applied")]
     assert isinstance(launched, WideEvent) and isinstance(first, WideEvent) and isinstance(second, WideEvent) and isinstance(ran, WideEvent)
-    # Each turn is its own, with the prompt Claude Code took it as.
-    assert [(turn.event, turn.outcome, turn.facts) for turn in (first, second)] == [
-        ("brain.turn", "ok", {"taken": "p1", "queued": False, "offered": (), "told": "p1", "order_lost": None, "ids": ("p1",), "matched": "id"}),
-        ("brain.turn", "ok", {"taken": "p2", "queued": False, "offered": (), "told": "p2", "order_lost": None, "ids": ("p2",), "matched": "id"}),
+    # Each turn is its own, with the prompt Claude Code took it as, typed at the first settled look at a screen showing
+    # its prompt, however long that look took.
+    assert all(isinstance(turn.facts["at_prompt_after"], float) for turn in (first, second))
+    assert [(turn.event, turn.outcome, untimed(turn.facts)) for turn in (first, second)] == [
+        ("brain.turn", "ok", {"looks": 1, "taken": "p1", "queued": False, "offered": (), "told": "p1", "order_lost": None, "ids": ("p1",), "matched": "id"}),
+        ("brain.turn", "ok", {"looks": 1, "taken": "p2", "queued": False, "offered": (), "told": "p2", "order_lost": None, "ids": ("p2",), "matched": "id"}),
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
         "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
+        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
+        "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
     # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
     assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
@@ -472,6 +480,113 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
     assert [event.facts for event in events(recorded, "brain.elicitation")] == [{"prompt": "p1", "server": "probe"}, {"prompt": "p2", "server": "probe"}]
 
 
+def _chord_read(tmp: Path) -> Callable[[float], Awaitable[None]]:
+    """A take's time that is up once the stand-in has read the submit chord and done nothing with it: never on a clock."""
+
+    async def pause(seconds: float) -> None:
+        if seconds != TAKE_SECONDS:
+            await asyncio.sleep(seconds)
+            return
+        while ["unbound"] not in typed(tmp):
+            await asyncio.sleep(0.01)
+
+    return pause
+
+
+async def test_a_dialog_still_drawn_after_it_was_answered_no_takes_no_key_and_the_next_turn_is_typed_once_the_prompt_shows(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ticket's case (promptctl-brain-q9s8.45d): a Write held and answered no, and the next turn asked at once, while
+    Claude Code still draws the dialog it has not yet taken down. hands types nothing until the screen shows the prompt,
+    and then its keys can answer nothing."""
+    release = tmp_path / "release"
+    monkeypatch.setenv("RELEASE", str(release))
+    looked_at_dialog = 0
+    screen = process.InTmux.screen
+
+    async def watched(self: process.InTmux) -> str:
+        # The dialog is taken down only once hands has looked at it twice: by an event of hands', never by a lag.
+        nonlocal looked_at_dialog
+        shown = await screen(self)
+        if "Do you want to create" in shown:
+            looked_at_dialog += 1
+            if looked_at_dialog == 2:
+                release.touch()
+        return shown
+
+    monkeypatch.setattr(process.InTmux, "screen", watched)
+    no = heard("No, leave it.")
+    recorded: list[Entry] = []
+    brain = await start(launch(tmp_path), recorded.append)
+    try:
+        assert await asyncio.wait_for(brain.ask("ask held", lambda asked: asked.settle(no)), 10) == BrainAnswered("p1", None)
+        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
+    finally:
+        await brain.stop()
+    assert looked_at_dialog >= 2
+    # No key reached the dialog: no paste was dropped by it, no Return said yes to it, no chord was sent to nothing.
+    assert [line for line in typed(tmp_path) if line[0] in ("dropped", "approved", "unbound")] == []
+    assert ["prompt", " and now?"] in typed(tmp_path)
+    [(_, tool, decision)] = permissions(recorded)
+    assert tool == "Write" and isinstance(decision, Deny)
+    assert not (tmp_path / "notes.txt").exists()
+    first, second = events(recorded, "brain.turn")
+    assert first.facts["looks"] == 1 and isinstance(looks := second.facts["looks"], int) and looks >= 2
+
+
+async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_untaken_saying_what_the_screen_showed(
+    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A dialog committed between hands' look at the screen and Claude Code's read of the paste.
+    monkeypatch.setenv("AMBUSH", "1")
+    brain = await start(launch(tmp_path), lambda _entry: None, _chord_read(tmp_path))
+    try:
+        with pytest.raises(Untaken, match="Do you want to create ambush.txt"):
+            await asyncio.wait_for(brain.ask("hello", unasked), 10)
+    finally:
+        await brain.stop()
+    assert typed(tmp_path) == [["dropped", " hello"], ["unbound"]]
+
+
+async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what_it_showed_with_nothing_typed() -> None:
+    brain = _owning()
+    keys = _keyed(brain, [])
+    keys.shown = DIALOG_SHOWN
+
+    async def looked(_seconds: float) -> None:
+        while keys.looked < 4:
+            await asyncio.sleep(0.01)
+
+    brain._pause = looked  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(Untaken, match="showed no prompt to type the turn at.*`hands login` answers them") as untaken:
+        await brain.ask("and now?", unasked)
+    assert DIALOG_SHOWN in str(untaken.value)
+    assert keys.pressed == []
+
+
+async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start(tmp_path: Path, fake_claude: Path) -> None:
+    keybindings = tmp_path / "brain" / "keybindings.json"
+    keybindings.parent.mkdir(parents=True, exist_ok=True)
+    keybindings.write_text(json.dumps({"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:newline"}}]}))
+    brain = await start(launch(tmp_path), lambda _entry: None)
+    await brain.stop()
+    assert json.loads(keybindings.read_text()) == KEYBINDINGS
+    # The chord bound is the one hands types, and Return no longer sends the prompt.
+    assert KEYBINDINGS == {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]} and SUBMIT == "ctrl_q"
+
+
+async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chord_is_untaken_showing_its_words_at_the_prompt(tmp_path: Path, fake_claude: Path) -> None:
+    brain = await start(launch(tmp_path), lambda _entry: None, _chord_read(tmp_path))
+    try:
+        # As a person's edit while the brain runs, which Claude Code reloads at once.
+        (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
+        with pytest.raises(Untaken, match="did not take the turn typed into it") as untaken:
+            await asyncio.wait_for(brain.ask("hello", unasked), 10)
+    finally:
+        await brain.stop()
+    assert "❯  hello" in str(untaken.value)
+
+
 async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("hands.brain.process.BRAIN_REPLY_BY_SECONDS", 0.3)
     recorded: list[Entry] = []
@@ -493,7 +608,8 @@ async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(
     # part of the brain's turn it was held for, timed from its post to its answer.
     [brain_turn] = events(recorded, "brain.turn")
     assert (brain_turn.trace_id, brain_turn.parent_id) == (asking.trace_id, asking.span_id)
-    assert brain_turn.facts == {"taken": "p1", "queued": False, "offered": ("Write", "mcp__hands__read_session"), "told": "p1", "order_lost": None, "ids": ("p1",), "matched": "id"}
+    assert isinstance(brain_turn.facts["at_prompt_after"], float)
+    assert untimed(brain_turn.facts) == {"looks": 1, "taken": "p1", "queued": False, "offered": ("Write", "mcp__hands__read_session"), "told": "p1", "order_lost": None, "ids": ("p1",), "matched": "id"}
     [permission] = events(recorded, "brain.permission")
     assert (permission.trace_id, permission.parent_id) == (asking.trace_id, brain_turn.span_id) and permission.duration_ms >= 300
     assert not (tmp_path / "notes.txt").exists()
@@ -518,7 +634,6 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
 async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -621,8 +736,8 @@ class _Pressed:
         self._told = told
         self.pressed: list[tuple[Keystroke, bool]] = []
 
-    def type(self, text: PromptText) -> None:
-        self._typist.type(text)
+    def type(self, text: PromptText, submit: Submit) -> None:
+        self._typist.type(text, submit)
 
     def press(self, key: Keystroke) -> None:
         self.pressed.append((key, self._told.is_set()))
@@ -741,8 +856,8 @@ class _Timed:
         self._typist = typist
         self.cleared: list[float] = []
 
-    def type(self, text: PromptText) -> None:
-        self._typist.type(text)
+    def type(self, text: PromptText, submit: Submit) -> None:
+        self._typist.type(text, submit)
 
     def press(self, key: Keystroke) -> None:
         self._typist.press(key)
@@ -778,7 +893,6 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
 
 async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
@@ -797,7 +911,6 @@ async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -858,12 +971,12 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
         await brain.stop()
 
 
-async def test_a_turn_never_taken_fails_naming_hands_login_and_the_next_turn_is_its_own(
+async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
     brain = await start(launch(tmp_path), lambda _entry: None, typings_answered(tmp_path))
     try:
-        with pytest.raises(Untaken, match="`hands login` answers them"):
+        with pytest.raises(Untaken, match="did not take the turn typed into it"):
             await brain.ask("deaf", unasked)
         assert await brain.ask("and now?", unasked) == BrainAnswered("p2", None)
     finally:
@@ -935,10 +1048,11 @@ async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path
 class _Jammed:
     """A typist whose every key fails as a terminal gone from under it does: not the Untyped a stale socket raises."""
 
-    def type(self, text: object) -> None:
+    def type(self, text: object, submit: object) -> None:
         raise OSError("jammed")
 
-    press = type
+    def press(self, key: object) -> None:
+        raise OSError("jammed")
 
 
 def _played(tmp: Path) -> int:
@@ -1111,7 +1225,6 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
     # [LAW:one-source-of-truth] which turn answers them is the model's to say, from Claude Code's queue records: the turn
     # they were typed into, when a remove took them out of the queue before its Stop, or the turn they ran as after it.
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1145,7 +1258,6 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
     transcript = tmp_path / "projects" / "-brain-cwd" / "b1.jsonl"
     transcript.parent.mkdir(parents=True)
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     recorded: list[Entry] = []
@@ -1204,7 +1316,6 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
 
     brain = object.__new__(Brain)
 
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain._claude = Ended()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     brain._exit = asyncio.ensure_future(exited())  # pyright: ignore[reportPrivateUsage]
     brain._reading = asyncio.ensure_future(reading())  # pyright: ignore[reportPrivateUsage]
@@ -1230,7 +1341,6 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
 
     brain = object.__new__(Brain)
 
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = record  # pyright: ignore[reportPrivateUsage]
@@ -1269,7 +1379,6 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
 
 async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_runs() -> None:
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1293,7 +1402,6 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
 async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
     recorded: list[Entry] = []
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -1874,7 +1982,6 @@ def _permission_hook(prompt: str, path: str = "/tmp/x") -> bytes:
 async def _in_turn(recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, _Turn]:  # pyright: ignore[reportPrivateUsage]
     """A brain built bare, with a turn in flight that Claude Code took as p1, which the model holds running."""
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -2124,7 +2231,6 @@ def _owning() -> Brain:
     """A brain built bare, its model and its `ClaudeTurns` as `Brain` builds them, heard only through what the model hands
     over: the words each prompt hook filed (`_took`), and each telling (`_told`)."""
     brain = object.__new__(Brain)
-    brain._dialogs = set()  # pyright: ignore[reportPrivateUsage]
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -2213,24 +2319,39 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
     assert (scheduled.opener, scheduled.ended.result(), scheduled.matched) == ("scheduled", BrainAnswered(PromptId("p1"), None), "id")
 
 
+# The brain's screen with its prompt taking keys, and with a permission dialog up in its place.
+PROMPT_SHOWN = f"{'─' * 40}\n❯ \n{'─' * 40}"
+DIALOG_SHOWN = " Write file\n Do you want to create notes.txt?\n ❯ 1. Yes\n   2. No"
+
+
 class _Keys:
-    """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order."""
+    """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order; and its screen, as tmux
+    shows it, which shows the prompt unless the test says else: every capture it was read for is counted."""
 
     def __init__(self) -> None:
         self.pressed: list[str] = []
+        self.shown = PROMPT_SHOWN
+        self.looked = 0
 
-    def type(self, text: str) -> None:
+    def type(self, text: str, submit: str) -> None:
+        # Every turn is sent by the brain's own chord, never by Return.
+        assert submit == SUBMIT
         self.pressed.append(text)
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
 
+    async def screen(self) -> str:
+        self.looked += 1
+        return self.shown
+
 
 def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
-    """A bare brain a turn can be asked of: typed into a keyboard of the test's, with a take that never runs out."""
+    """A bare brain a turn can be asked of: typed into a keyboard of the test's, read off a screen of the test's, with a
+    take that never runs out."""
     loop = asyncio.get_running_loop()
     keys = _Keys()
-    brain._typist, brain._record, brain._typing, brain._input = keys, recorded.append, set(), asyncio.Lock()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
+    brain._typist, brain._claude, brain._record, brain._typing, brain._input = keys, keys, recorded.append, set(), asyncio.Lock()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     brain._exit, brain._cleared = loop.create_future(), float("-inf")  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
 
     async def never(_seconds: float) -> None:
@@ -2474,17 +2595,15 @@ async def test_words_queued_while_which_turn_runs_is_unknown_take_no_turn_for_th
     assert brain.current() is not None and brain.current().ids == {"p2"}  # pyright: ignore[reportOptionalMemberAccess]
 
 
-async def test_a_turn_is_typed_only_once_every_dialog_the_brain_posted_is_answered() -> None:
+async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_place_of_a_dialog() -> None:
     recorded: list[Entry] = []
     brain = _owning()
     keys = _keyed(brain, recorded)
-    dialog: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    brain._dialogs.add(dialog)  # pyright: ignore[reportPrivateUsage]
+    keys.shown = DIALOG_SHOWN
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
-    await asyncio.sleep(0.05)
-    # Its keys would answer the dialog still open on the brain's screen.
+    # Looked at twice over, the screen still shows the dialog: a dialog would drop the paste, so nothing goes in.
+    await until(lambda: keys.looked >= 4)
     assert keys.pressed == []
-    brain._dialogs.discard(dialog)  # pyright: ignore[reportPrivateUsage]
-    dialog.set_result(None)
+    keys.shown = PROMPT_SHOWN
     await until(lambda: keys.pressed == [" and now?"])
     asking.cancel()
