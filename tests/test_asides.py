@@ -298,9 +298,9 @@ async def test_a_side_question_refused_as_malformed_is_told_as_hands_own_bug_nam
     recorded: list[Entry] = []
     rig = await brain(recorded)
     await rig.main_turn()
-    said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.0: role \'system\' must precede an \'assistant\' message or end the array"}}'
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content.1: unexpected tool_result block"}}'
     rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
-    with pytest.raises(AsideFailed, match=r"hands' own bug\): messages\.0 is role 'user'; answered 400 \(request-id req_9\)"):
+    with pytest.raises(AsideFailed, match=r"hands' to own\): messages\.0 is role 'user'; answered 400 \(request-id req_9\)"):
         await rig.asides.ask(AsideKind.NAME, "malformed", Deadline(5))
     [event] = events(recorded)
     assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.MALFORMED, 400)

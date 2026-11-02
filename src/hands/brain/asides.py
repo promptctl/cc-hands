@@ -47,7 +47,7 @@ class Unanswered(StrEnum):
 
     UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
     REFUSED = "refused"  # its request was answered with something other than a reply
-    MALFORMED = "malformed"  # the API refused the request hands built as malformed: always hands' own bug
+    MALFORMED = "malformed"  # the API refused a message of the request hands sent: hands' to own, whoever wrote the message
     BROKEN = "broken"  # its request or its reply broke off on the way
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
@@ -175,10 +175,10 @@ class Asides:
             case Garbled(reason=reason) if response.status == 200:
                 # Answered, then cut off on the way: the stream ended before its reply was whole.
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
-            case other if response.status == 400 and (named := _named(body, str(other))) is not None:
-                # [LAW:nothing-unseen] a side question is wholly hands' construction, so a 400 naming one of its messages
-                # is hands' bug, told as one. A 400 naming none (too long, no credit) is a refusal like any other.
-                raise AsideFailed(Unanswered.MALFORMED, f"hands built a malformed side question (hands' own bug): {named}; answered 400 (request-id {request_id}): {other}")
+            case other if response.status == 400 and (named := _named(body, said := str(other))) is not None:
+                # [LAW:nothing-unseen] hands sent every message of a side question, so a 400 naming one is hands' to own,
+                # even one copied from the brain's history. A 400 naming none (too long, no credit) is a refusal like any other.
+                raise AsideFailed(Unanswered.MALFORMED, f"hands sent a side question the API refused as malformed (hands' to own): {named}; answered 400 (request-id {request_id}): {said}")
             case other:
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
 
@@ -186,7 +186,7 @@ class Asides:
 def _named(body: Mapping[str, object], said: str) -> str | None:
     """The message of this body a refusal names, by its index and role, if it names one."""
     found = re.search(r"messages\.(\d+)", said)
-    messages = cast(list[object], body.get("messages", []))
+    messages = cast(list[object], body["messages"])
     if found is None or int(found[1]) >= len(messages):
         return None
     named = messages[int(found[1])]
