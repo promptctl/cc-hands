@@ -127,7 +127,10 @@ jobs:
         id: check
         run: make check
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers: `gh run view --log` reads
-      # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed.
+      # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed. continue-on-error for
+      # the same reason: a report that cannot be read shows red on its own step and does not gate the suite's verdict. --no-sync:
+      # the locked environment is already built, and a sync here would be time the cancelled run does not have.
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
-        run: uv run python tests/costs.py
+        continue-on-error: true
+        run: uv run --no-sync python tests/costs.py

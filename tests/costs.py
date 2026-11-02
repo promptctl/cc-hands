@@ -2,7 +2,7 @@
 then each test, slowest first. CI prints this into the job's log, so `gh run view <id> --log` reads any run's, cancelled or
 red ones too, and reading it starts nothing.
 
-    uv run python tests/costs.py
+    uv run --no-sync python tests/costs.py
 """
 
 import json
