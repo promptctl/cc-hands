@@ -3,6 +3,7 @@ against none of them, and each test's own work stays bounded by its own. In anot
 and its signal are the whole process's, and its thread method ends the process it fires in."""
 
 import ast
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -12,6 +13,8 @@ import timeouts
 
 # Each unit sleeps longer than half the bound, so two of them together overrun it and either alone does not.
 BOUND = ["--timeout=2"]
+# A bound past any setup, for a run whose firing the test drives itself.
+UNFIRED = ["--timeout=30"]
 
 SHARED = """
 import time
@@ -166,6 +169,125 @@ def test_that_skips(skips):
     pass
 """
 
+# The bound is driven by its signal, with the main thread in the loop's select where a stuck async test sits, so what is
+# reported depends on no clock.
+AWAITS = """
+import asyncio
+import signal
+import sys
+import threading
+import time
+
+import pytest
+
+def fire_in_select():
+    main = threading.main_thread().ident
+    while sys._current_frames()[main].f_code.co_name != "select":
+        time.sleep(0.001)
+    signal.pthread_kill(main, signal.SIGALRM)
+
+async def deepest():
+    threading.Thread(target=fire_in_select, daemon=True).start()
+    await asyncio.Event().wait()
+
+async def outermost():
+    await deepest()
+
+@pytest.mark.asyncio
+async def test_that_awaits():
+    await outermost()
+"""
+
+# One frame of each stack: a report short of the stdout file's buffer, which only a flush gets out of a run ended early.
+BLOCKS = """
+import signal
+import sys
+
+def test_that_blocks(monkeypatch):
+    monkeypatch.setattr(sys, "tracebacklimit", 1, raising=False)
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+# A task on another thread's loop, with the main thread in a sync wait.
+ELSEWHERE = """
+import asyncio
+import signal
+import threading
+
+async def parked_off_the_main_thread(parked):
+    parked.set()
+    await asyncio.Event().wait()
+
+def test_that_waits_on_a_thread():
+    parked = threading.Event()
+    threading.Thread(target=lambda: asyncio.run(parked_off_the_main_thread(parked)), daemon=True).start()
+    parked.wait()
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+# A sync wait on a task whose loop is stopped between its runs, as a module-scoped loop is between async tests.
+STOPPED = """
+import asyncio
+import signal
+
+async def left_on_a_stopped_loop():
+    await asyncio.Event().wait()
+
+def test_that_waits_on_a_stopped_loop():
+    loop = asyncio.new_event_loop()
+    task = loop.create_task(left_on_a_stopped_loop())
+    loop.run_until_complete(asyncio.sleep(0))
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+# The bound fires inside a step, with the test's coroutine running in `await anext(...)`, whose `SEND` has run 126 times: on
+# 3.12 that count leaves its inline cache reading as a suspended frame's, where cr_await segfaults.
+RUNNING = """
+import signal
+
+import pytest
+
+async def steps():
+    for _ in range(125):
+        yield
+    signal.raise_signal(signal.SIGALRM)
+    yield
+
+@pytest.mark.asyncio
+async def test_with_a_coroutine_running_as_it_fires():
+    stepping = steps()
+    while True:
+        await anext(stepping)
+"""
+
+DEBUGGED = """
+import signal
+
+def test_under_a_debugger(request):
+    request.config.hook.pytest_enter_pdb(config=request.config, pdb=None)
+    signal.raise_signal(signal.SIGALRM)
+"""
+
+# A run ended before pytest reports anything of the failure, as a job cancelled at its limit is. Ending it at the report's
+# logging would be too late: pytest flushes each test's outcome there, and with it whatever the timeout left unflushed.
+ENDED_BEFORE_ITS_REPORT = """
+import os
+
+def pytest_runtest_makereport(call):
+    if call.excinfo:
+        os._exit(99)
+"""
+
+# A report that cannot be made.
+UNREPORTABLE = """
+import timeouts
+
+def stalled():
+    raise {raised}
+
+timeouts.stalled = stalled
+"""
+
 # pytest's own logging of a test's start and its reports of each phase, each slow, as on a loaded machine.
 SLOW_REPORTING = """
 import time
@@ -196,6 +318,12 @@ def suite(pytester: pytest.Pytester) -> pytest.Pytester:
         test_rearmed=REARMED,
         test_reported=REPORTED,
         test_skips=SKIPS,
+        test_awaits=AWAITS,
+        test_blocks=BLOCKS,
+        test_elsewhere=ELSEWHERE,
+        test_stopped=STOPPED,
+        test_running=RUNNING,
+        test_debugged=DEBUGGED,
     )
     return pytester
 
@@ -233,6 +361,78 @@ def test_under_a_signal_a_test_skipped_in_its_setup_is_bounded_through_its_teard
     ran = run(suite, "signal", "-rsE", "test_skips.py")
     ran.assert_outcomes(skipped=1, errors=1)
     ran.stdout.fnmatch_lines_random(["ERROR test_skips.py::test_that_skips - Failed: Timeout (>1.*s)*"])
+
+
+def outermost_first(said: str) -> bool:
+    return said.index("in test_that_awaits") < said.index("in outermost") < said.index("in deepest")
+
+
+def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_summary_stays_one_line(suite: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # CI: pytest's summary then carries a failure's whole message, not the terminal's width of it.
+    monkeypatch.setenv("CI", "true")
+    ran = run(suite, "signal", *UNFIRED, "test_awaits.py", "test_blocks.py")
+    ran.assert_outcomes(failed=2)
+    said = ran.stdout.str()
+    failures, summary = said[said.index("FAILURES") :].split("short test summary info")
+    assert outermost_first(failures)
+    assert "  awaiting <" in failures
+    assert "in test_that_blocks" in failures and "no task is pending" in failures
+    assert "timed out" not in summary
+
+
+def test_under_a_signal_a_timeout_says_where_each_task_waited_in_a_run_ended_before_its_report(suite: pytest.Pytester) -> None:
+    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
+    said = run(suite, "signal", *UNFIRED, "test_awaits.py").stdout.str()
+    assert "FAILURES" not in said
+    assert outermost_first(said[said.index("\ntest_awaits.py::test_that_awaits timed out") :])
+
+
+def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_that_no_loop_runs(suite: pytest.Pytester) -> None:
+    suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
+    said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
+    assert "FAILURES" not in said
+    where = said[said.index("\ntest_blocks.py::test_that_blocks timed out") :]
+    assert "in test_that_blocks" in where and "no task is pending" in where
+
+
+def test_under_a_signal_a_timeout_says_where_a_task_on_another_threads_loop_waited(suite: pytest.Pytester) -> None:
+    said = run(suite, "signal", *UNFIRED, "test_elsewhere.py").stdout.str()
+    assert "in parked_off_the_main_thread" in said[said.index("parked_off_the_main_thread() running at") :]
+
+
+def test_under_a_signal_a_timeout_says_where_a_task_on_a_stopped_loop_waited(suite: pytest.Pytester) -> None:
+    said = run(suite, "signal", *UNFIRED, "test_stopped.py").stdout.str()
+    chain = said[said.index("left_on_a_stopped_loop() running at") :]
+    assert chain.index("running=False") < chain.index("in left_on_a_stopped_loop")
+
+
+def test_under_a_signal_a_timeout_fires_with_a_coroutine_running_and_the_run_survives_its_report(suite: pytest.Pytester) -> None:
+    run(suite, "signal", *UNFIRED, "test_running.py").assert_outcomes(failed=1)
+
+
+def test_a_step_whose_async_generator_is_no_longer_running_ends_its_chain() -> None:
+    async def generator() -> AsyncGenerator[None]:
+        yield
+
+    assert [line.strip().split()[:2] for line in timeouts.awaits(generator().asend(None))] == [["awaiting", "<async_generator_asend"]]
+
+
+def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_out(suite: pytest.Pytester) -> None:
+    ran = run(suite, "signal", *UNFIRED, "test_debugged.py")
+    ran.assert_outcomes(passed=1)
+    assert "timed out" not in ran.stdout.str()
+
+
+def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: pytest.Pytester) -> None:
+    suite.makeconftest(UNREPORTABLE.format(raised='RuntimeError("no report")'))
+    ran = run(suite, "signal", *UNFIRED, "test_blocks.py")
+    ran.assert_outcomes(failed=1)
+    ran.stdout.fnmatch_lines(["*RuntimeError: no report", "FAILED test_blocks.py::test_that_blocks - Failed: Timeout*"])
+
+
+def test_under_a_signal_an_interrupt_during_a_report_ends_the_run(suite: pytest.Pytester) -> None:
+    suite.makeconftest(UNREPORTABLE.format(raised="KeyboardInterrupt"))
+    assert run(suite, "signal", *UNFIRED, "test_blocks.py").ret == pytest.ExitCode.INTERRUPTED
 
 
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
