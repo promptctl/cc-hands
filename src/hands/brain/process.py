@@ -1250,17 +1250,21 @@ class Brain:
                 # [LAW:no-silent-failure] the screen says why, read with the input still held: words left at the prompt
                 # are a submit chord that no longer sends it, as an edit to the brain's keybindings.json leaves it; an
                 # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
-                untaken = Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}")
+                # The turn ends Untaken first: its asker hears so without waiting on the clear, and words Claude Code takes
+                # late, as the clear goes, are no turn's (`_took`), so the clear stops them and answers nobody with them.
+                self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}"))
                 # [LAW:single-enforcer] the words this turn typed are stopped and cleared by the one stop, before the
                 # input is let go: left at the prompt, the next turn's paste would join them, and Claude Code would send
                 # both as one prompt. The screen cannot say whether they are there (capture-pane drops the dim of
                 # Claude Code's placeholder), so the clear goes whatever it showed, and its Ctrl-C keeps its spacing
-                # from the last, so one on an empty prompt never exits the brain.
-                try:
-                    await self._clear(None)
-                except (BrainGone, StopUnrecorded) as error:
-                    raise error from untaken
-                raise untaken
+                # from the last, so one on an empty prompt never exits the brain. A turn Claude Code opened itself is
+                # never stopped for it, as `_taking` never stops one before typing: the words queue behind that turn.
+                if not self._claude_turns.opened_itself:
+                    try:
+                        await self._clear(None)
+                    except (BrainGone, StopUnrecorded) as error:
+                        # [LAW:no-silent-failure] the turn's outcome is said already; what failed its clear is said here.
+                        logger.warning(f"the words of a turn the brain did not take may be left in its input: {error}")
         finally:
             pausing.cancel()
             await asyncio.wait({pausing})
