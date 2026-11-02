@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import cast
 
@@ -11,6 +12,7 @@ from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
+from hands.clock import SYSTEM, VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
 from hands.sessions.audit import Entry
@@ -101,7 +103,7 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     message = reply(Text("Done."))
 
     def exchanged(exchange: str, session: SessionId) -> Exchanged:
-        return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root())
+        return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root(SYSTEM))
 
     # Another session's main turn, and a fork of the brain's, are never what a question forks from.
     for observed in (
@@ -204,8 +206,8 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         upstream.app.router.add_route("*", "/{path:.*}", api)
         await upstream.setup()
         await web.TCPSite(upstream, "127.0.0.1", 0).start()
-        wire = Wire(lambda _observed: None)
-        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=lambda: 0.0)
+        wire = Wire(SYSTEM, lambda _observed: None)
+        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=VirtualClock(epoch=datetime.fromtimestamp(0, UTC)))
         asides = Asides(proxy.url, Newest(BRAIN), recorded.append)
 
         class Listening:
@@ -213,7 +215,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
                 # As Kept routes: the question's own request by the question, the rest as the stage routes every request
                 # of the brain's that is not a main turn.
                 owned = asides.own(sent)
-                route = Send(refusal="final", span=root()) if owned is None else owned
+                route = Send(refusal="final", span=root(SYSTEM)) if owned is None else owned
                 routed.append(route.span)
                 return route
 

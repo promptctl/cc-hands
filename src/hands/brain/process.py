@@ -39,6 +39,7 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
+from hands.clock import SYSTEM
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
@@ -410,7 +411,7 @@ class InTmux:
             if not pane.startswith("%"):
                 raise BrainGone("the brain's screen cannot be read: its pane has not said which it is")
             self._pane = pane
-        match await captured(self._tmux, self._socket, self._pane):
+        match await captured(SYSTEM, self._tmux, self._socket, self._pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
             case str() as shown:
@@ -452,7 +453,7 @@ class InTmux:
             await asyncio.shield(self.exit)
 
     async def end_session(self) -> None:
-        match await ran_at(self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
+        match await ran_at(SYSTEM, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
             case Unanswered() as unanswered:
                 logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
             case Ran(returncode=code, err=err) if code != 0 and not _UNHELD.search(err):
@@ -476,7 +477,7 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
     # was attached is ended first.
-    match await ran_at(tmux, socket, ("kill-session", "-t", f"={session}")):
+    match await ran_at(SYSTEM, tmux, socket, ("kill-session", "-t", f"={session}")):
         case Ran(returncode=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
         case Unanswered() as unanswered:
@@ -538,7 +539,7 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
         # is the size of whoever watches it.
         + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -f ignore-size -t ={session} || sleep 0.2; done\n"
     )
-    client = await on_terminal(["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
+    client = await on_terminal(SYSTEM, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
     return InTmux(client, tmux, socket, session, workspace)
 
 
@@ -1018,7 +1019,7 @@ def model(record: Record, told: Callable[[Story], None], took: Callable[[Submitt
     its turns say is the brain's stage's to say, from the wire, never what the model makes of its session.
     """
     # [LAW:one-source-of-truth] the brain's Stop held as long as its hook declares it is waited on (hookconfig).
-    return Sessions(time.monotonic, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
+    return Sessions(SYSTEM, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
 
 
 def _unsaid(_heard: Heard) -> None:
@@ -1079,7 +1080,7 @@ class Brain:
         self._cleared = float("-inf")
         with continuing(launched):
             self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
-            self._exit = asyncio.ensure_future(self._run_out(begun()))
+            self._exit = asyncio.ensure_future(self._run_out(begun(SYSTEM)))
 
     @property
     def pid(self) -> int:
@@ -1095,7 +1096,7 @@ class Brain:
             raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
         loop = asyncio.get_running_loop()
         # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, Text(pasted(text)).typed)
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(SYSTEM), TAKE_SECONDS, Text(pasted(text)).typed)
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(turn), turn)
         return await asyncio.shield(turn.answered)
@@ -1182,7 +1183,7 @@ class Brain:
     async def _send(self, turn: _Turn) -> None:
         # [LAW:nothing-unseen] the turn is one event of the brain's own, from its typing to its end, however long its asker
         # still waits on it: a turn left to run on is still heard to its end.
-        with unit("brain.turn", self._record, began=turn.began):
+        with unit("brain.turn", self._record, turn.began):
             try:
                 # [LAW:no-ambient-temporal-coupling] the input is the turn's from its first key until Claude Code says it
                 # took the turn. Claude Code reads keys that reach it together as one paste, and a Return inside a paste
@@ -1334,7 +1335,7 @@ class Brain:
         held = self._modelled()
         # [LAW:nothing-unseen] each clear is one event: whether it was for a turn, and how long Claude Code took to stop
         # what it ran.
-        with unit("brain.clear", self._record):
+        with unit("brain.clear", self._record, begun(SYSTEM)):
             annotate(for_turn=turn is not None)
             # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog
             # it holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether
@@ -1478,7 +1479,7 @@ class Brain:
     async def _run_out(self, up: Begun) -> int:
         # [LAW:nothing-unseen] the brain's run, from its input coming up to its process's end, is one event as it ends:
         # its exit code, and the last of what it showed on its terminal; or that hands stopped waiting for its end.
-        with unit("brain.run", self._record, began=up):
+        with unit("brain.run", self._record, up):
             code = await asyncio.shield(self._claude.exit)
             annotate(pid=self.pid, code=code, shown=self._claude.shown())
             # Nothing is left to interrupt, and every dialog it held is answered all the same.
@@ -1554,7 +1555,7 @@ class Brain:
         match event:
             case "PermissionRequest":
                 # [LAW:nothing-unseen] one event, though hands could not read which turn's it is.
-                with unit("brain.permission", self._record):
+                with unit("brain.permission", self._record, begun(SYSTEM)):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
             case "UserPromptSubmit" | "Stop":
@@ -1571,7 +1572,7 @@ class Brain:
             case PermissionHook():
                 reply = Deny(NOBODY)
                 # [LAW:nothing-unseen] one event, as every permission the brain posts is, though no turn of the brain's asked it.
-                with unit("brain.permission", self._record):
+                with unit("brain.permission", self._record, begun(SYSTEM)):
                     annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
                 return hook_output(reply)
             case Hook():
@@ -1585,7 +1586,7 @@ class Brain:
         settled through the model before the reply is waited on, so the wait cannot hang on hands' own failure.
         [LAW:nothing-unseen] each is one event, written once its hook's reply is known: a part of the turn it was held
         for, or of the brain's launch where no turn of the user's was in flight to ask in."""
-        began = begun()
+        began = begun(SYSTEM)
         turn: _Turn | None = None
         raised: BaseException | None = None
         try:
@@ -1614,7 +1615,7 @@ class Brain:
                 self._sessions.answer(hook.asked.request, Deny(BROKEN))
             reply = refused(await asyncio.shield(replying))
         # Timed from its hold, and a part of the turn it was held for, which is known only once Claude Code is read through.
-        ended("brain.permission", self._record, replace(began, span=within(self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
+        ended("brain.permission", self._record, replace(began, span=within(SYSTEM, self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
         return reply
 
     async def _decide(self, hook: PermissionHook, turn: _Turn | None, replying: "asyncio.Future[HookReply]", by: float) -> None:
@@ -1650,7 +1651,7 @@ class Brain:
     def _dialog(self, event: str, prompt: str | None, owner: _Turn | None) -> Generator[None]:
         """A dialog the brain posted, as one unit of work `event`: a part of its `owner`, the turn in flight it was posted
         for, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
-        with continuing(self._part_of(owner)), unit(event, self._record):
+        with continuing(self._part_of(owner)), unit(event, self._record, begun(SYSTEM)):
             annotate(prompt=prompt)
             yield
 
@@ -1671,7 +1672,7 @@ class Brain:
             said = Payload.parse(body)
             prompt, server = said.optional_text("prompt_id"), said.optional_text("mcp_server_name")
         except Rejected as error:
-            with unit("brain.elicitation", self._record):
+            with unit("brain.elicitation", self._record, begun(SYSTEM)):
                 fail(f"hands could not read the Elicitation hook: {error}")
             return
         with self._dialog("brain.elicitation", prompt, self._owner(prompt)):
@@ -1798,7 +1799,7 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
     the time a typed turn has to be taken passes."""
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
-    with unit("brain.launch", record):
+    with unit("brain.launch", record, begun(SYSTEM)):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
         match launch.conversation:
             case Fresh(untranscribed=untranscribed):

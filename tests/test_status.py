@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from conftest import unedited
+from hands.clock import SYSTEM
 from hands.daemon import indicator
 from hands.sessions import audit, heartbeat
 from hands.daemon.cli import Run, launch, main
@@ -107,7 +108,7 @@ def test_a_heartbeat_that_says_a_degradation_twice_or_also_in_the_old_way_is_ref
 
 
 def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT, kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=BEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("starting", None, 0, listening=False, degraded=DEAF)
     first = heartbeat.read(heart.path)
     heart.beat("running", NOW, 2, listening=True, degraded=())
@@ -123,7 +124,7 @@ def test_every_heartbeat_of_a_run_repeats_what_the_heart_fixed(tmp_path: Path) -
 
 
 async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_loads_begins(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     imported = threading.Event()
     ran: list[bool] = []
 
@@ -151,7 +152,7 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
 
 
 async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     never = threading.Event()
 
     def load() -> Run:

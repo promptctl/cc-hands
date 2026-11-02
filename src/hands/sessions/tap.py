@@ -17,6 +17,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from hands.clock import Clock
 from hands.core.events import Closed
 from hands.core.session import SessionId
 from hands.core.wire import Body, Exchanged, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Seconds, Sent, Written, Text, Uncopied, Unreached, WireEvent
@@ -145,7 +146,7 @@ class Tap:
             await asyncio.wait({closed, *self.reading}, return_when=asyncio.FIRST_COMPLETED)
 
 
-async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> Tap:
+async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Record, clock: Clock) -> Tap:
     """Take copies on the socket until the returned tap is closed."""
     tell = shielded(observe)
     reading: set[asyncio.Task[None]] = set()
@@ -173,7 +174,7 @@ async def serve_tap(path: Path, observe: Callable[[Observed], None], record: Rec
     return Tap(server, reading)
 
 
-async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], record: Record, clock: Callable[[], Seconds]) -> None:
+async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], record: Record, clock: Clock) -> None:
     """One copy read as it arrives, each event told as its bytes come, and the whole exchange told at its end."""
     first = await _line(reader)
     if first is None:
@@ -181,21 +182,21 @@ async def _copy(reader: asyncio.StreamReader, tell: Callable[[Observed], None], 
         # its next one. [LAW:one-source-of-truth] that count is the loss's one record.
         return
     # Off the loop: a request carries its session's whole history, megabytes on a long one, and the voice runs on this loop.
-    request, sent = await asyncio.to_thread(_opened, first)
+    request, sent = await asyncio.to_thread(_opened, clock, first)
     if request.lost:
         record(CopiesLost(sent.session, request.lost))
     tell(sent)
 
     def end(reply: Reached | Unreached | Uncopied) -> None:
-        tell(Exchanged(sent.exchange, sent.session, sent.kind, sent.named, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root()))
+        tell(Exchanged(sent.exchange, sent.session, sent.kind, sent.named, request.method, request.path, len(request.body), (), request.at, request.at, reply, False, root(clock)))
 
     await _reply(reader, sent.kind, lambda event: tell(Heard(sent.exchange, event)), clock, end)
 
 
-def _opened(raw: bytes) -> tuple[Request, Sent]:
+def _opened(clock: Clock, raw: bytes) -> tuple[Request, Sent]:
     match line_of(raw):
         case Request() as request:
-            return request, sent_of(request.headers, request.path, request.body)
+            return request, sent_of(clock, request.headers, request.path, request.body)
         case other:
             raise Rejected(f"a copy opened with a {type(other).__name__}, not its request")
 
@@ -229,7 +230,7 @@ async def _reply(
     reader: asyncio.StreamReader,
     kind: Kind,
     hear: Callable[[WireEvent], None],
-    clock: Callable[[], Seconds],
+    clock: Clock,
     end: Callable[[Reached | Unreached | Uncopied], None],
 ) -> None:
     """Read the reply as its copy tells it, and `end` the exchange once with how it ended; a copy that breaks off, however
@@ -238,7 +239,7 @@ async def _reply(
     try:
         opened = await _opening(reader, clock)
     except BaseException as error:
-        end(Uncopied(_stopped(error), clock()))
+        end(Uncopied(_stopped(error), clock.wall().timestamp()))
         raise
     match opened:
         case Response() as head:
@@ -255,7 +256,7 @@ async def _reply(
     end(reply)
 
 
-async def _opening(reader: asyncio.StreamReader, clock: Callable[[], Seconds]) -> Response | Unreached | Uncopied:
+async def _opening(reader: asyncio.StreamReader, clock: Clock) -> Response | Unreached | Uncopied:
     """The reply's head, or how the exchange ended without one."""
     match await _next(reader):
         case Response() as head:
@@ -263,9 +264,9 @@ async def _opening(reader: asyncio.StreamReader, clock: Callable[[], Seconds]) -
         case NoUpstream(at=at, error=error):
             return Unreached(error, at)
         case str() as broken:
-            return Uncopied(broken, clock())
+            return Uncopied(broken, clock.wall().timestamp())
         case unexpected:
-            return Uncopied(_disordered(unexpected), clock())
+            return Uncopied(_disordered(unexpected), clock.wall().timestamp())
 
 
 @dataclass

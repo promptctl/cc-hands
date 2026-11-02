@@ -15,6 +15,7 @@ from typing import Protocol
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, TimeLimit
+from hands.clock import SYSTEM
 from hands.core.context import Result, aged, key, line, question, results
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -39,7 +40,7 @@ from hands.core.wire import (
 )
 from hands.sessions.audit import Record
 from hands.sessions.proxy import Listener
-from hands.sessions.wide import annotate, count, unit
+from hands.sessions.wide import annotate, begun, count, unit
 
 # Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
@@ -151,7 +152,7 @@ class Keeper:
         if fresh:
             # [LAW:nothing-unseen] a batch reached is one unit of work, its lookups in the store included: the calls whose
             # results go as a line from now on, and those that go whole because no sentence had been said of them by then.
-            with unit("context.stubbing", self._record, counts=("stubbed", "whole")):
+            with unit("context.stubbing", self._record, begun(SYSTEM), ("stubbed", "whole")):
                 for result in fresh:
                     said = self._store.known(key(result))
                     self._decided[result.call] = None if said is None else line(result, said)

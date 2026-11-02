@@ -13,6 +13,7 @@ import pytest
 from conftest import SYSTEM_PATH
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.daemon import cli
 from hands.daemon.cli import main
 from hands.sessions import heartbeat, marketplace
@@ -50,7 +51,7 @@ def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_eve
 def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
-    heartbeat.Heart(home.status, os.getpid(), now, heartbeat.HEARTBEAT, kick_watchdog=lambda: None).beat("running", None, 1, listening=True, degraded=())
+    heartbeat.Heart(home.status, os.getpid(), now, heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM).beat("running", None, 1, listening=True, degraded=())
     assert main(["--home", str(home.root), "status"]) == 0
     capsys.readouterr()
     [command] = events(home)

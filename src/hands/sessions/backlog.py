@@ -14,6 +14,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal, get_args
 
+from hands.clock import Clock
 from hands.core.sentences import Thing
 from hands.sessions.child import run
 from hands.sessions.payload import Payload, Rejected
@@ -356,11 +357,11 @@ class Backlog:
         return Thing(BACKLOG, "", tuple(of(id) for id in self.roots()))
 
 
-async def read_backlog(project: Path) -> Backlog | Untracked:
+async def read_backlog(clock: Clock, project: Path) -> Backlog | Untracked:
     """The backlog lit holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises LitFailed when lit cannot say, and
     Rejected when what it said does not parse."""
     try:
-        out = await _lit(project, "export", environment=None)
+        out = await _lit(clock, project, "export", environment=None)
     except ProjectGone:
         return Untracked(project, gone=True)
     except LitFailed as failed:
@@ -371,41 +372,41 @@ async def read_backlog(project: Path) -> Backlog | Untracked:
     return await asyncio.to_thread(parse_export, out)
 
 
-async def rank(project: Path, move: Move, by: Signer) -> str:
+async def rank(clock: Clock, project: Path, move: Move, by: Signer) -> str:
     """Have lit in `project` make `move` for `by`, in the environment it runs in for them, and what lit said of what it
     ranked; raises LitFailed when it fails. lit records no one for a rank and takes no `--by` for it.
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return (await _lit(project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)).decode(errors="replace").strip()
+    return (await _lit(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)).decode(errors="replace").strip()
 
 
-async def make_epic(project: Path, new: NewEpic, by: Signer) -> None:
+async def make_epic(clock: Clock, project: Path, new: NewEpic, by: Signer) -> None:
     """Have lit in `project` make `new`, at the bottom of its frame, signed `by`; raises LitFailed when it fails. It is found after by its frame, title, and topic, as every level's epic is (`Backlog.level_epics`)."""
-    await _lit(project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
+    await _lit(clock, project, "new", "--type", "epic", "--topic", new.topic, "--title", new.title, *(() if new.parent is None else ("--parent", new.parent)), *by.signature, environment=by.runs_in)
 
 
-async def adopt(project: Path, ticket: str, epic: str, by: Signer) -> None:
+async def adopt(clock: Clock, project: Path, ticket: str, epic: str, by: Signer) -> None:
     """Have lit in `project` move `ticket` inside `epic`, keeping its id, signed `by`; raises LitFailed when it fails."""
-    await _lit(project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
+    await _lit(clock, project, "parent", "set", "--child", ticket, "--parent", epic, *by.signature, environment=by.runs_in)
 
 
-async def file_ticket(project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
+async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title: str, description: str, label: str) -> str:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
-    filed = await _lit(project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
+    filed = await _lit(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
     said = filed.decode(errors="replace").split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
 
 
-async def comment(project: Path, ticket: str, body: str, by: Signer) -> None:
+async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signer) -> None:
     """Have lit in `project` add a comment to `ticket`, signed `by`; raises LitFailed when it fails."""
-    await _lit(project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
+    await _lit(clock, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
 
 
-async def _lit(project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
+async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
     """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitFailed when
     it could not run, did not answer, or exited non-zero.
 
@@ -413,7 +414,7 @@ async def _lit(project: Path, *arguments: str, environment: Mapping[str, str] | 
     """
     command = f"lit {arguments[0]}"
     try:
-        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment)
+        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except OSError as error:

@@ -104,7 +104,7 @@ class Reader:
                 await asyncio.wait(performing)
             for performed in performing:
                 performed.result()
-            await asyncio.sleep(period)
+            await self._sessions.clock.pause(period)
 
 
 def _said(performed: "asyncio.Future[None]") -> None:

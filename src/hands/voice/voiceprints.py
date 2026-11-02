@@ -24,6 +24,7 @@ from urllib.parse import quote
 import numpy as np
 import numpy.typing as npt
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
@@ -279,7 +280,7 @@ class Voiceprints:
     def speaking_in(self, voice: str) -> None:
         """hands speaks in `voice` from now: its voiceprint is read back, or made, off everything hands says, and until
         it is, every speaker is Unidentified. Returns at once, and cannot fail: a print not made fails its own unit."""
-        began = begun()
+        began = begun(SYSTEM)
         match self._load:
             case None:
                 pass
@@ -314,7 +315,7 @@ class Voiceprints:
         """`voice`'s print read back from where hands keeps it; one that cannot be read fails its unit, and is made
         again."""
         try:
-            with unit("voiceprints.recalled", self._record):
+            with unit("voiceprints.recalled", self._record, begun(SYSTEM)):
                 annotate(voice=voice, file=path)
                 self._prints[voice] = np.load(path).astype(np.float32)
         except Exception:
@@ -368,13 +369,13 @@ class Voiceprints:
     def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
         `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
-        began = begun()
+        began = begun(SYSTEM)
         self._lane.give(lambda: self._identified(hold, voiced, began))
 
     def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
         remembered."""
-        began = begun()
+        began = begun(SYSTEM)
 
         def last() -> None:
             self._identified(hold, voiced, began)
@@ -385,7 +386,7 @@ class Voiceprints:
     def spanned(self, span: int, voiced: Voiced) -> None:
         """Who the one voice of echo span `span` is (`hands.voice.recorder`), hands' echo heard with no hold open,
         worked out on the lane and told as a `voiceprints.identified` unit of the span's. Returns at once."""
-        began = begun()
+        began = begun(SYSTEM)
 
         def identified() -> None:
             try:

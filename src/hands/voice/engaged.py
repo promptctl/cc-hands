@@ -29,6 +29,8 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
+from hands.clock import SYSTEM
+from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
 from hands.threads import settles_off_loop
@@ -241,7 +243,7 @@ async def drive(
         while True:
             # [LAW:nothing-unseen] one event for each stint at a level, counting every move, edge, and change of level
             # in it, emitted as the level changes.
-            with unit("desk", emit, counts=_COUNTED):
+            with unit("desk", emit, wide.begun(SYSTEM), _COUNTED):
                 level = desk.level
                 annotate(level=level)
                 while desk.level == level:
@@ -311,7 +313,7 @@ async def drive(
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
                                 # [LAW:nothing-unseen] each change of level is its own event: from, to, and by.
-                                with unit("desk.leveled", emit):
+                                with unit("desk.leveled", emit, wide.begun(SYSTEM)):
                                     annotate(was=was_level, now=now, by=chooser)
                                 await on_level(act)
                     for at, later in deadline(was.phase, desk.phase):
@@ -333,7 +335,7 @@ def _changed(was: VADState, now: VADState, clock: Callable[[], Instant]) -> tupl
 
 async def _judged(ears: Ears, emit: Callable[[WideEvent], None]) -> bool:
     """Ask Smart Turn whether the speech that just stopped ends the turn: its own unit of work, with its verdict."""
-    with unit("desk.judged", emit):
+    with unit("desk.judged", emit, wide.begun(SYSTEM)):
         complete, metrics = await ears.judge()
         # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio in it.
         annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)

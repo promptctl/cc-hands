@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
@@ -218,7 +219,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
     holder = holding(root, "import sys; sys.stdin.read()")
     listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2), kick_watchdog=lambda: None).beat("running", None, 1, listening=True, degraded=())
+        heartbeat.Heart(home.status, holder.pid, datetime.now(UTC), timedelta(seconds=2), kick_watchdog=lambda: None, clock=SYSTEM).beat("running", None, 1, listening=True, degraded=())
         live = home.status.read_bytes()
         listening.bind(str(home.socket))
         listening.listen()
@@ -299,14 +300,14 @@ def test_a_unit_of_work_that_failed_is_said_on_the_terminal_and_is_one_line_in_t
     shown = cli.to_terminal(terminal)
     failures = audit.logged_to(record, cli.on_terminal)
     try:
-        with wide.unit("naming.pass", record):
+        with wide.unit("naming.pass", record, wide.begun(SYSTEM)):
             wide.fail("the naming model timed out\x1b[2J")
-        with wide.unit("summary.pass", record):
+        with wide.unit("summary.pass", record, wide.begun(SYSTEM)):
             pass
-        with wide.unit("brain.turn", record):
-            wide.child("tool.call", wide.within(wide.here()), datetime.now(UTC), 1.0, "failed")
+        with wide.unit("brain.turn", record, wide.begun(SYSTEM)):
+            wide.child("tool.call", wide.within(SYSTEM, wide.here()), datetime.now(UTC), 1.0, "failed")
         # Raised through two units, it is said by what catches it, never by each unit it passed.
-        with pytest.raises(OSError), wide.unit("hook", record), wide.unit("applied", record):
+        with pytest.raises(OSError), wide.unit("hook", record, wide.begun(SYSTEM)), wide.unit("applied", record, wide.begun(SYSTEM)):
             raise OSError("the session is gone")
     finally:
         for sink in (*shown, failures):
@@ -331,7 +332,7 @@ def test_a_pass_over_a_tracked_backlog_is_told_on_the_terminal_from_its_event_an
     from hands.sessions import wide
 
     def backlog_pass(record: audit.Record, tracked: bool, failing: bool = False) -> None:
-        with wide.unit("summary.backlog", record, counts=("rounds", "items", "items_said", "items_known", "items_unsaid")):
+        with wide.unit("summary.backlog", record, wide.begun(SYSTEM), ("rounds", "items", "items_said", "items_known", "items_unsaid")):
             wide.annotate(project="/code/p", tracked=tracked)
             if tracked:
                 wide.annotate(overview="said")
@@ -348,12 +349,12 @@ def test_a_pass_over_a_tracked_backlog_is_told_on_the_terminal_from_its_event_an
         backlog_pass(record, tracked=True, failing=True)
         # One that raised before it finished counting is no line, and its error is the one that reaches its caller.
         with pytest.raises(OSError, match="database or disk is full"):
-            with wide.unit("summary.backlog", record, counts=("rounds",)):
+            with wide.unit("summary.backlog", record, wide.begun(SYSTEM), ("rounds",)):
                 wide.annotate(project="/code/p", tracked=True)
                 raise OSError("database or disk is full")
         # One cut short as the daemon stops did not finish what its counts would tell.
         with pytest.raises(asyncio.CancelledError):
-            with wide.unit("summary.backlog", record, counts=("rounds",)):
+            with wide.unit("summary.backlog", record, wide.begun(SYSTEM), ("rounds",)):
                 wide.annotate(project="/code/p", tracked=True)
                 raise asyncio.CancelledError
     finally:

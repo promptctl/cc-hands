@@ -16,6 +16,7 @@ from loguru import logger
 from pipecat.utils.errors import ErrorCategory
 
 from hands.brain.stage import HandsAsked, UserAsked
+from hands.clock import SYSTEM, VirtualClock
 from hands.core.effects import Audit, Compare, Deny, Effect, Holding, HoldingBehind, NoneBehind, QueuedBehind, Reply, Snapshot, Submitted, Summarise, Unfiled, Unmatched, Unregistered, Withdraw
 from hands.core.front import SessionInFront
 from hands.core.events import Abandoned, Joined, PermissionRequested, Prompted, Read, StatusReported, Stopped, Tick, Unqueued, Removed
@@ -41,7 +42,7 @@ from hands.sessions.audit import (
 from hands.sessions.delta import NoChanges
 from hands.sessions.home import Home
 from hands.sessions.model_facts import ModelFailed
-from hands.sessions.wide import WideEvent, annotate, fail, root, unit
+from hands.sessions.wide import WideEvent, annotate, begun, fail, root, unit
 from hands.sessions.registry import EFFECT_KINDS, Performed
 from hands.voice.tool import tool
 from hands.voice.tools import Called, audited
@@ -72,7 +73,7 @@ class Marking(NoChanges):
         self._record = record
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
-        with unit("delta.mark", self._record):
+        with unit("delta.mark", self._record, begun(SYSTEM)):
             pass
 
 
@@ -162,9 +163,9 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
     log.record(Logged(level="error", source="hands.x:f", message="broke", where="/x.py:1", trace=()))
-    with unit("name.judged", log.record):
+    with unit("name.judged", log.record, begun(SYSTEM)):
         pass
-    with unit("name.judged", log.record):
+    with unit("name.judged", log.record, begun(SYSTEM)):
         fail("timed out")
     for reply in (
         Reached(200, 0.0, 0.0, 2, Answered({"input_tokens": 3})),
@@ -175,7 +176,7 @@ def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing
         Uncopied("the copy broke off", 0.0),
         Unfinished("RuntimeError: the client broke", 0.0),
     ):
-        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root()))
+        log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, reply, False, root(SYSTEM)))
     assert [(line["type"], line["level"]) for line in lines(path)] == [
         ("Logged", "error"),
         ("WideEvent", "info"),
@@ -677,7 +678,7 @@ async def test_an_applied_event_whose_effect_fails_is_one_failed_event_saying_wh
 async def test_an_event_applied_inside_a_unit_of_work_is_that_units_child() -> None:
     recorded: list[Entry] = []
     sessions = new_sessions(record=recorded.append)
-    with unit("hook", recorded.append):
+    with unit("hook", recorded.append, begun(SYSTEM)):
         await sessions.apply(Joined(member(), "startup"))
     event, hook = recorded
     assert isinstance(event, WideEvent) and isinstance(hook, WideEvent)
@@ -702,7 +703,7 @@ async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it
     recorded: list[Entry] = []
     sessions = new_sessions(record=recorded.append, changes=Marking(recorded.append))
     await sessions.apply(Joined(member(), "startup"))
-    with unit("hook", recorded.append):
+    with unit("hook", recorded.append, begun(SYSTEM)):
         await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.hear(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"), text=""))
     await asyncio.wait_for(asyncio.gather(*sessions._hearing), 1.0)  # pyright: ignore[reportPrivateUsage]
@@ -860,7 +861,8 @@ async def test_a_stop_hook_says_whether_it_was_decided_or_let_go_by_shutdown_whi
 async def test_a_stop_hook_is_let_go_once_the_hold_passes_and_the_stop_decided_later_answers_no_hook() -> None:
     """The hold bounds how long Claude Code waits, however slowly the transcript is read."""
     recorded: list[Entry] = []
-    sessions = new_sessions(clock=lambda: 0.0, record=recorded.append, stop_hold=0.01)
+    # A hold that has passed as the Stop arrives, on a clock that stands at 0: the Stop is let go on the loop's next step.
+    sessions = new_sessions(clock=VirtualClock(), record=recorded.append, stop_hold=0.0)
     await sessions.apply(Joined(member(), "startup"))
     await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     await sessions.apply(StatusReported(member().id, Report(Busy(), Stamp(1000)), at=1.0))
@@ -963,7 +965,7 @@ async def test_what_was_heard_where_nothing_waits_on_it_still_fails_loudly() -> 
 def test_a_brain_turn_that_failed_is_written_with_what_it_failed_of(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
-    with unit("voice.turn", log.record):
+    with unit("voice.turn", log.record, begun(SYSTEM)):
         annotate(failed=ModelFailed(ErrorCategory.SERVER))
         fail("the brain's turn ended in error: api_error")
     [line] = lines(path)
@@ -975,7 +977,7 @@ def test_a_brain_turn_is_written_with_what_was_in_front_as_the_user_asked_it_and
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
     for asker in (UserAsked("screen", "held key", SessionInFront("iTerm2", SessionId("s1"), "hands, docs"), 4.2), HandsAsked()):
-        with unit("voice.turn", log.record):
+        with unit("voice.turn", log.record, begun(SYSTEM)):
             annotate(asker=asker)
     user, hands = lines(path)
     assert user["facts"]["asker"] == {"type": "UserAsked", "modality": "screen", "opened": "held key", "front": {"type": "SessionInFront", "app": "iTerm2", "session": "s1", "name": "hands, docs"}, "read_ms": 4.2}

@@ -20,6 +20,7 @@ from loguru import logger
 
 from conftest import PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice import engaged, streaming, voiceprints
@@ -100,7 +101,7 @@ class Rig:
         for hearing in told:
             # As the owner's hearing lane runs each: one that fails is said on its event, and the lane hears on.
             with contextlib.suppress(Exception):
-                await self.owned._heard(self.listener, hold, hearing, begun())  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+                await self.owned._heard(self.listener, hold, hearing, begun(SYSTEM))  # pyright: ignore[reportPrivateUsage, reportArgumentType]
 
     async def opened(self, hold: Hold, before: Samples) -> None:
         await self.run(hold, self.listener.opened(hold, Sound(pcm(before), pcm(before), None)))
@@ -352,7 +353,7 @@ async def test_a_holds_end_the_owner_gave_up_waiting_on_still_ends_for_the_ident
     await rig.heard(HELD, sound(seconds(STEPPED)))
     [settle] = rig.listener.ended(HELD, "sent", Sound(b"", b"", None))
     # The owner's bound runs out on the hearing: it is cancelled while the stream is still closing the hold.
-    with pytest.raises(TimeoutError), unit("hearing", lambda _event: None):
+    with pytest.raises(TimeoutError), unit("hearing", lambda _event: None, begun(SYSTEM)):
         await asyncio.wait_for(settle(), 0.05)
     session.closes.set()
     async with asyncio.timeout(10):

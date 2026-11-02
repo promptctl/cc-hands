@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import unedited
+from hands.clock import SYSTEM
 from hands.daemon.cli import launch
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.daemon.run import stopping, until_told
@@ -44,7 +45,7 @@ class Launched:
     """A launch whose run does each of `now` as it begins, waits to be told to stop, and then does each of `then`."""
 
     def __init__(self, tmp_path: Path, now: list[Step], then: list[Step], ready: bool = True) -> None:
-        self.heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
+        self.heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
         self.recorded: list[audit.Entry] = []
         self.running = asyncio.Event()
         run_start = Start(restarted=False)
@@ -140,7 +141,7 @@ async def test_a_run_that_fails_before_it_was_ready_fails_its_start_too(tmp_path
 
 
 async def test_a_run_that_returns_with_no_cause_told_fails_saying_so(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     recorded: list[audit.Entry] = []
 
     async def run(_stop: Stop) -> Ended:
@@ -206,7 +207,7 @@ async def test_a_task_that_raises_as_it_is_cancelled_is_told_before_the_cancel_r
 
 
 async def test_a_settings_watch_that_raises_as_the_run_ends_fails_it_on_its_event(tmp_path: Path) -> None:
-    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
     recorded: list[audit.Entry] = []
 
     async def watch_that_closes_badly() -> SettingsEdited:

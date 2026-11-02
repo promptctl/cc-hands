@@ -6,14 +6,13 @@ nothing but that `claude`, so tmux closes it, and a shell the user started it fr
 returns once the registry no longer lists the session, or says why it did not.
 """
 
-import asyncio
 import os
 import signal
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from hands.clock import Clock
 from hands.core import status
 from hands.core.events import Attached, Died, MovedOn
 from hands.core.session import Idle, Session, SessionId, Told, Untold
@@ -65,11 +64,11 @@ def done(session: Session) -> bool:
             return False
 
 
-async def close(home: Home, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:
+async def close(home: Home, clock: Clock, record: audit.Record, live: Callable[[SessionId], Session | None], session: SessionId, asked: Asked) -> Outcome:
     """End `session` as `asked`, and wait until `live` no longer has it; or leave it running, where it was asked about as
     done and is not."""
     # [LAW:nothing-unseen] a close is one unit of work: which session, why, and whether it was left running or signalled.
-    with wide.unit("session.close", record):
+    with wide.unit("session.close", record, wide.begun(clock)):
         wide.annotate(session=session, asked=asked)
         found = live(session)
         if found is None:
@@ -80,7 +79,7 @@ async def close(home: Home, record: audit.Record, live: Callable[[SessionId], Se
             return LeftRunning(found)
         signalled = _signalled(home, found)
         wide.annotate(signalled=signalled)
-        await _ended(live, session)
+        await _ended(clock, live, session)
         return Closed()
 
 
@@ -104,9 +103,9 @@ def _signalled(home: Home, session: Session) -> bool:
     return True
 
 
-async def _ended(live: Callable[[SessionId], Session | None], session: SessionId) -> None:
-    deadline = time.monotonic() + END_SECONDS
+async def _ended(clock: Clock, live: Callable[[SessionId], Session | None], session: SessionId) -> None:
+    deadline = clock.now() + END_SECONDS
     while live(session) is not None:
-        if time.monotonic() > deadline:
+        if clock.now() > deadline:
             raise NotClosed(f"session {session} was told to end and is still running {END_SECONDS:g} seconds later")
-        await asyncio.sleep(LOOK_SECONDS)
+        await clock.pause(LOOK_SECONDS)

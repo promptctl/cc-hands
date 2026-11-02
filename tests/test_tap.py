@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from datetime import UTC, datetime
 import json
 import os
 import shutil
@@ -13,6 +14,7 @@ import pytest
 from aiohttp import web
 from loguru import logger
 
+from hands.clock import SYSTEM, VirtualClock
 from hands.core.events import Closed
 from hands.core.session import PromptId, SessionId
 from hands.core.wire import Block, Elsewhere, Exchanged, Fork, Garbled, Heard, Kind, MainTurn, Message, Observed, Reached, Sent, Written, Subagent, Text, TextDelta, ToolUse, Uncopied, Unkept, Unreached
@@ -82,7 +84,7 @@ class Heard_:
 @pytest.fixture
 async def tap(socket_path: Path) -> AsyncIterator[Heard_]:
     heard = Heard_()
-    tapped = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=lambda: 999.0)
+    tapped = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC)))
     yield heard
     await tapped.close()
 
@@ -204,7 +206,7 @@ async def test_a_copy_cut_partway_through_its_request_tells_nothing_and_is_no_er
     reader = asyncio.StreamReader()
     reader.feed_data(encoded([request_line()])[:60])
     reader.feed_eof()
-    await _copy(reader, heard.observe, heard.entries.append, lambda: 999.0)
+    await _copy(reader, heard.observe, heard.entries.append, VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC)))
     assert (heard.observed, heard.entries) == ([], [])
 
 
@@ -268,7 +270,7 @@ CANCELLED = Garbled("hands stopped reading the copy: cancelled, as hands stopped
 
 async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cancelled() -> None:
     heard = Heard_()
-    reading = asyncio.create_task(_copy(fed([request_line(), HEAD, *CHUNKS[:3]]), heard.observe, heard.entries.append, lambda: 999.0))
+    reading = asyncio.create_task(_copy(fed([request_line(), HEAD, *CHUNKS[:3]]), heard.observe, heard.entries.append, VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC))))
     await text_heard(heard)
     reading.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -283,7 +285,7 @@ async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cance
 
 async def test_a_copy_still_coming_when_the_tap_closes_has_ended_its_exchange_once_the_close_returns(socket_path: Path) -> None:
     heard = Heard_()
-    tap = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=lambda: 999.0)
+    tap = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC)))
     _, writer = await asyncio.open_unix_connection(str(socket_path))
     writer.write(encoded([request_line(), HEAD, *CHUNKS[:3]]))
     await writer.drain()
@@ -302,7 +304,7 @@ async def test_a_reply_reader_that_fails_ends_its_reached_exchange_once_and_its_
     monkeypatch.setattr("hands.sessions.tap.reply_reader", failing)
     heard = Heard_()
     with pytest.raises(RuntimeError, match="the reader broke"):
-        await _copy(fed([request_line(), HEAD]), heard.observe, heard.entries.append, lambda: 999.0)
+        await _copy(fed([request_line(), HEAD]), heard.observe, heard.entries.append, VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC)))
     # The head had come: its status is the API's answer, whatever became of hands' reading of the rest.
     assert heard.exchanged().reply == Reached(200, 100.5, 100.5, 0, Garbled("hands stopped reading the copy: RuntimeError: the reader broke"))
 
@@ -369,7 +371,7 @@ TURN = PromptId("p1")
 
 def replied(kind: Kind, stop_reason: str, *content: Block) -> Exchanged:
     message = Message("m1", "claude-opus-5-5", content, stop_reason, {})
-    return Exchanged("e1", SessionId("s1"), kind, None, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Written(message, True)), False, root())
+    return Exchanged("e1", SessionId("s1"), kind, None, "POST", "/v1/messages", 1, (), 1.0, 1.0, Reached(200, 2.0, 3.0, 10, Written(message, True)), False, root(SYSTEM))
 
 
 def test_a_reply_that_ends_the_turn_with_text_closes_it_with_its_last_text_as_its_stop_carries_it() -> None:

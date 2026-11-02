@@ -1,7 +1,6 @@
 """The one owner of the session registry."""
 
 import asyncio
-import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -23,7 +22,7 @@ from hands.core.tmux import Keyboard, NotInTmux, PaneUnread
 from hands.sessions.audit import Record, Typing, TypingFailed
 from hands.sessions import wide
 from hands.sessions.wide import Begun, annotate, begun, continuing, count, here, since, unit
-from hands.sessions.clock import stamp_now
+from hands.clock import Clock, stamp
 from hands.sessions.hookconfig import STOP_HOLD_SECONDS
 from hands.sessions.delta import Changes, NoChanges
 from hands.sessions.names import Names
@@ -68,12 +67,11 @@ class Sessions:
 
     def __init__(
         self,
-        clock: Callable[[], Instant],
+        clock: Clock,
         record: Record,
         changes: Changes | None = None,
-        typist: Callable[[Type[Input]], Awaitable[None]] = partial(type_into, {}),
+        typist: Callable[[Type[Input]], Awaitable[None]] | None = None,
         keyboards: Callable[[Sequence[int]], Awaitable[list[Keyboard]]] = unread,
-        stamp: Callable[[], Stamp] = stamp_now,
         stop_hold: float = STOP_HOLD_SECONDS,
         names: Names | None = None,
         story_sink: Callable[[Story], None] | None = None,
@@ -82,18 +80,17 @@ class Sessions:
     ) -> None:
         # [LAW:no-shared-mutable-globals] the registry is replaced only here, one event or request at a time.
         self._registry = Registry(sessions={}, drafts={})
-        # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it.
+        # [LAW:effects-at-boundaries] the one clock: hooks, answers, and ticks are all stamped from it, and its wall clock
+        # is the one Claude Code stamps its statuses and records with [LAW:one-source-of-truth]: a Stop is heard on it and
+        # a transcript read through on it, and the two are compared.
         self._clock = clock
-        # [LAW:one-source-of-truth] the wall clock Claude Code stamps its statuses and records with: a Stop is heard on
-        # it and a transcript read through on it, and the two are compared.
-        self._stamp = stamp
         self._stop_hold = stop_hold
         # [LAW:single-enforcer] every event and every effect passes through here, so here is where each becomes a wide event.
         self._record = record
         # What a turn did to the repository it ran in. A daemon given none tells every turn by its steps alone.
         self._changes = changes or NoChanges()
-        # What types a Type into its session, or raises Untyped.
-        self._typist = typist
+        # What types a Type into its session, or raises Untyped. A daemon given none finds no tmux to type into.
+        self._typist = typist or partial(type_into, clock, {})
         # The tmux pane whose keys reach each of a list of processes, which a session's writer is chosen by. A daemon
         # given none reads none, so nothing it is not told to type into is typed into.
         self._keyboards = keyboards
@@ -125,11 +122,15 @@ class Sessions:
         # What was heard where nothing waits on it, still being performed.
         self._hearing: set[asyncio.Future[None]] = set()
 
+    @property
+    def clock(self) -> Clock:
+        return self._clock
+
     def now(self) -> Instant:
-        return self._clock()
+        return self._clock.now()
 
     def stamp(self) -> Stamp:
-        return self._stamp()
+        return stamp(self._clock)
 
     def apply(self, event: Event) -> "asyncio.Future[None]":
         """The event decided now, as it is called, and its effects being performed: done once they all are.
@@ -164,7 +165,7 @@ class Sessions:
         performed = _unperformed(effects)
         # Begun now, as it is decided, in the context of whatever unit of work applied it: inside a hook post's, it is that
         # post's child.
-        applying = begun()
+        applying = begun(self._clock)
         # [LAW:no-ambient-temporal-coupling] the effects are scheduled as they are decided, before the applying opens its
         # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child, and
         # the applying is timed from before any of them ran.
@@ -178,7 +179,7 @@ class Sessions:
         # [LAW:nothing-unseen] one event for each event or answer the registry applies, open until every effect it
         # called for is performed: what was applied, each effect with its outcome and time, and the effects counted by
         # kind. [LAW:one-source-of-truth] it is the one record of them; no line beside it repeats an effect.
-        with unit("applied", self._record, counts=EFFECT_KINDS, began=applying):
+        with unit("applied", self._record, applying, EFFECT_KINDS):
             annotate(applied=applied)
             try:
                 await performing
@@ -225,16 +226,17 @@ class Sessions:
         self._waiting[event.request] = waiting
         try:
             await self.apply(event)
-            await asyncio.wait_for(asyncio.shield(waiting), self._stop_hold)
+            async with self._clock.timeout(self._stop_hold):
+                await asyncio.shield(waiting)
             # [LAW:no-ambient-temporal-coupling] which resolved this hold is read off the hold, not off whether
             # shutdown has begun by the time this resumes.
             return "released" if event.request in self._let_go else "decided"
         except TimeoutError:
             # Claude Code goes on before the Stop is decided.
-            await self.apply(Abandoned(event.session, event.request, self._clock()))
+            await self.apply(Abandoned(event.session, event.request, self._clock.now()))
             return "let go"
         except asyncio.CancelledError:
-            await self.apply(Abandoned(event.session, event.request, self._clock()))
+            await self.apply(Abandoned(event.session, event.request, self._clock.now()))
             raise
         finally:
             del self._waiting[event.request]
@@ -284,7 +286,7 @@ class Sessions:
                 case decision:
                     lost = f"; its reply {decision} was never delivered"
             logger.info(f"the hook for session {event.session} request {event.request} closed{lost}")
-            await self.apply(Abandoned(event.session, event.request, self._clock()))
+            await self.apply(Abandoned(event.session, event.request, self._clock.now()))
             raise
 
     def release_waiting(self) -> None:
@@ -309,10 +311,9 @@ class Sessions:
             case Reply(session=session, request=held, reply=sent):
                 # Performed at once, in no session's order: the session is waiting on this very reply, and its hook is
                 # answered by the time the call returns.
-                applying = begun()
-                began = time.monotonic()
+                applying = begun(self._clock)
                 self._reply(session, held, sent)
-                performed = [Performed(reply, "ok", since(began), None)]
+                performed = [Performed(reply, "ok", since(self._clock, applying.began), None)]
                 finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
                 finished.set_result(None)
                 self._hearing.add(recording := asyncio.ensure_future(self._applied(answered, performed, finished, applying)))
@@ -367,8 +368,8 @@ class Sessions:
     async def keep_time(self, period: float) -> None:
         """Tell the reducer the time once a period, until cancelled. The period is how late a settled burst of progress can be heard."""
         while True:
-            await asyncio.sleep(period)
-            await self.apply(Tick(self._clock()))
+            await self._clock.pause(period)
+            await self.apply(Tick(self._clock.now()))
 
     async def story(self) -> Story:
         """The next turn a session finished or the next session gone, in the order they happened."""
@@ -444,16 +445,16 @@ class Sessions:
         # written by the one chain that performs it, and read by the applying once every chain has ended.
         for index in indices:
             effect = performed[index].effect
-            began = time.monotonic()
+            began = self._clock.now()
             try:
                 await self._perform(effect)
             except asyncio.CancelledError:
-                performed[index] = Performed(effect, "cancelled", since(began), None)
+                performed[index] = Performed(effect, "cancelled", since(self._clock, began), None)
                 raise
             except Exception as error:
-                performed[index] = Performed(effect, "failed", since(began), f"{type(error).__name__}: {error}")
+                performed[index] = Performed(effect, "failed", since(self._clock, began), f"{type(error).__name__}: {error}")
                 raise
-            performed[index] = Performed(effect, "ok", since(began), None)
+            performed[index] = Performed(effect, "ok", since(self._clock, began), None)
 
     async def _perform(self, effect: Effect) -> None:
         match effect:

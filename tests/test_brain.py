@@ -21,6 +21,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 import pytest
+from hands.clock import SYSTEM
 from hands.sessions.pseudoterminal import on_terminal
 from loguru import logger
 
@@ -170,8 +171,8 @@ async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_o
     recorded: list[Entry] = []
     spans = CallSpans()
     server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, spans)
-    with unit("voice.turn", recorded.append):
-        call = within(here())
+    with unit("voice.turn", recorded.append, begun(SYSTEM)):
+        call = within(SYSTEM, here())
     spans.opened("toolu_1", call)
     try:
         for id, used in enumerate(("toolu_1", "toolu_2")):
@@ -258,7 +259,7 @@ def running(tmp: Path) -> list[str]:
 
 def answered(session: str, words: str, stop: str = "end_turn", exchange: str = "x1", kind: Kind = Fork()) -> Exchanged:
     message = Message("m1", "claude-sonnet-5", (Said(words),) if words else (), stop, {})
-    return Exchanged(exchange, SessionId(session), kind, None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root())
+    return Exchanged(exchange, SessionId(session), kind, None, "POST", "/v1/messages", 10, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 10, Written(message, True)), False, root(SYSTEM))
 
 
 def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_own_login_through_the_proxy(tmp_path: Path) -> None:
@@ -616,7 +617,7 @@ async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(
     held: list[Asked] = []
     brain = await start(launch(tmp_path), recorded.append)
     try:
-        with unit("voice.turn", recorded.append):
+        with unit("voice.turn", recorded.append, begun(SYSTEM)):
             asking = here()
             turn = asyncio.create_task(brain.ask("write", held.append))
             await until(lambda: len(held) == 1)
@@ -660,7 +661,7 @@ async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answ
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
-    with unit("brain.launch", recorded.append):
+    with unit("brain.launch", recorded.append, begun(SYSTEM)):
         launched = here()
     brain._launched = launched  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -1228,7 +1229,7 @@ def _modelled(brain: Brain) -> None:
     brain._reader = Reader(brain._sessions, Tails(brain._sessions), brain._apply)  # pyright: ignore[reportPrivateUsage]
     brain._moved = asyncio.Event()  # pyright: ignore[reportPrivateUsage]
     brain._claude_turns = ClaudeTurns(brain._settle)  # pyright: ignore[reportPrivateUsage]
-    brain.__dict__.setdefault("_launched", root())
+    brain.__dict__.setdefault("_launched", root(SYSTEM))
 
 
 async def _serving(brain: Brain) -> tuple[web.AppRunner, str]:
@@ -1252,7 +1253,7 @@ async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_an
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" and add 3?"), pasted=True)  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(SYSTEM), TAKE_SECONDS, PromptText(" and add 3?"), pasted=True)  # pyright: ignore[reportPrivateUsage]
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     # Read on its period, as a running brain's model is: a Stop with words waiting is held until the transcript is read
     # through it, and let go unread, the order of the brain's turns is lost (`Brain._ordered`).
@@ -1285,7 +1286,7 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     recorded: list[Entry] = []
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
-    with unit("brain.launch", lambda _entry: None):
+    with unit("brain.launch", lambda _entry: None, begun(SYSTEM)):
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1296,7 +1297,7 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
         held.settle(Allow())
 
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), allowed, begun(), TAKE_SECONDS, PromptText(" and add 3?"), pasted=True)  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), allowed, begun(SYSTEM), TAKE_SECONDS, PromptText(" and add 3?"), pasted=True)  # pyright: ignore[reportPrivateUsage]
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     path = str(transcript)
     # Read on its period, as a running brain's model is, so the Stop with words waiting is decided and not let go.
@@ -1367,11 +1368,11 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = record  # pyright: ignore[reportPrivateUsage]
-    with unit("brain.launch", lambda _entry: None):
+    with unit("brain.launch", lambda _entry: None, begun(SYSTEM)):
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     # The elicitation that breaks is a part of the turn in flight: it was declined before it was heard, so the turn runs on.
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(" probe"), pasted=True)  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(SYSTEM), TAKE_SECONDS, PromptText(" probe"), pasted=True)  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     # Claude Code's turn p1 in flight, as the model holds it: the turn taken.
@@ -1409,7 +1410,7 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
     await brain._apply(Located(Membership(SessionId("b1"), 4242, Path("/brain/cwd"), Path("/brain/projects/-brain-cwd/b1.jsonl"))))  # pyright: ignore[reportPrivateUsage]
     await brain._apply(Prompted(SessionId("b1"), 0.0, "default", PromptId("p2"), "next"))  # pyright: ignore[reportPrivateUsage]
     loop = asyncio.get_running_loop()
-    over, current = (_Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(f" {typed}"), pasted=True) for typed in ("first", "next"))  # pyright: ignore[reportPrivateUsage]
+    over, current = (_Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(SYSTEM), TAKE_SECONDS, PromptText(f" {typed}"), pasted=True) for typed in ("first", "next"))  # pyright: ignore[reportPrivateUsage]
     brain._turn = current  # pyright: ignore[reportPrivateUsage]
     said, sink = failures()
     try:
@@ -1474,7 +1475,7 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
         session = brain_session(station.config_dir)
         await until(lambda: tmux_at("has-session", "-t", f"={session}").returncode == 0)
         # A person attaches, as `tmux attach -t hands-brain` does, on a terminal of their own.
-        person = await on_terminal(["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(SYSTEM, ["tmux", "attach-session", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         await running._client.stop()  # pyright: ignore[reportPrivateUsage]
         # hands' client is gone; the brain keeps running while someone is attached.
@@ -1515,7 +1516,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 1)
         # A person attaches as `tmux attach -d` does, detaching every other client: hands' attaches again, and the brain
         # is not taken for ended.
-        person = await on_terminal(["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
+        person = await on_terminal(SYSTEM, ["tmux", "attach-session", "-d", "-t", session], tmp_path, {name: value for name, value in os.environ.items() if name != "TMUX"})
         await until(lambda: tmux_at("list-clients", "-t", f"={session}").stdout.count("\n") == 2)
         assert not running.exit.done()
         # A window opened beside it does not keep the session once fritter ends.
@@ -1905,7 +1906,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 
 async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
-    wire = Wire(lambda _observed: None)
+    wire = Wire(SYSTEM, lambda _observed: None)
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
@@ -1943,7 +1944,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
+        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
 
     launched: list[Launch] = []
 
@@ -1966,7 +1967,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut, Attention):
+        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut, Attention):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
@@ -1986,7 +1987,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_cut, Attention):
+        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_cut, Attention):
             pass
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"
@@ -2008,11 +2009,11 @@ async def _in_turn(recorded: list[Entry], asks: Callable[[Asked], None]) -> tupl
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
-    with unit("brain.launch", lambda _entry: None):
+    with unit("brain.launch", lambda _entry: None, begun(SYSTEM)):
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     brain._typing = set()  # pyright: ignore[reportPrivateUsage]
     loop = asyncio.get_running_loop()
-    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(), TAKE_SECONDS, PromptText(" write"), pasted=True)  # pyright: ignore[reportPrivateUsage]
+    turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(SYSTEM), TAKE_SECONDS, PromptText(" write"), pasted=True)  # pyright: ignore[reportPrivateUsage]
     turn.taken.set_result(None)
     brain._turn = turn  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -2263,7 +2264,7 @@ def _owning() -> Brain:
 
 def _typed_turn(brain: Brain, words: str) -> _Turn:  # pyright: ignore[reportPrivateUsage]
     loop = asyncio.get_running_loop()
-    turn = brain._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(), TAKE_SECONDS, PromptText(f" {words}"), pasted=True)  # pyright: ignore[reportPrivateUsage]
+    turn = brain._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), unasked, begun(SYSTEM), TAKE_SECONDS, PromptText(f" {words}"), pasted=True)  # pyright: ignore[reportPrivateUsage]
     return turn
 
 
@@ -2390,7 +2391,7 @@ def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
         await loop.create_future()
 
     brain._pause = never  # pyright: ignore[reportPrivateUsage]
-    with unit("brain.launch", lambda _entry: None):
+    with unit("brain.launch", lambda _entry: None, begun(SYSTEM)):
         brain._launched = here()  # pyright: ignore[reportPrivateUsage]
     return keys
 

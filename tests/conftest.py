@@ -17,7 +17,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
@@ -39,6 +39,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
+from hands.clock import SYSTEM, VirtualClock
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
@@ -87,7 +88,7 @@ def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
 # [LAW:locality-or-seam] the one place tests build the session registry, so a change to its constructor is one edit here.
 # A test passes, by the constructor's own names, what its behavior rests on: a clock it reads, the audit it reads, its
 # typist or sinks. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
-new_sessions = partial(Sessions, clock=lambda: 0.0, record=lambda _: None)
+new_sessions = partial(Sessions, clock=SYSTEM, record=lambda _: None)
 
 
 def model_facts(load: WideEvent) -> dict[str, Fact]:
@@ -106,73 +107,28 @@ PATIENCE_SECS = 2.0
 LOOK_SECS = 0.01
 
 
-class ManualClock:
-    """Time that passes only when a test moves it: `now` reads it, `pause` waits until it has moved on that far, as the
-    clock and pause a unit takes in place of `time.monotonic` and `asyncio.sleep`."""
-
-    def __init__(self) -> None:
-        self.at = 0.0
-        self._pauses: list[tuple[float, asyncio.Future[None]]] = []
-        self._watched: list[tuple[float, asyncio.Future[None]]] = []
-
-    def now(self) -> float:
-        return self.at
-
-    def pause(self, seconds: float) -> asyncio.Future[None]:
-        woken = asyncio.get_running_loop().create_future()
-        self._pauses.append((self.at + seconds, woken))
-        self._seen()
-        # A pause already due wakes at once, as `asyncio.sleep(0)` does.
-        self._wake()
-        return woken
-
-    def advance(self, seconds: float) -> None:
-        self.at += seconds
-        self._wake()
-
-    async def paused(self, until: float) -> None:
-        """Once a pause that wakes at `until` is waiting on this clock, however long the unit takes to come to it: a test
-        moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling], and a
-        unit that never comes to it is ended by the suite's timeout."""
-        seen = asyncio.get_running_loop().create_future()
-        self._watched.append((until, seen))
-        self._seen()
-        await seen
-
-    @property
-    def waking(self) -> tuple[float, ...]:
-        """When each pause still waiting wakes, on this clock."""
-        return tuple(until for until, woken in self._pauses if not woken.done())
-
-    def _wake(self) -> None:
-        for until, woken in self._pauses:
-            if until <= self.at and not woken.done():
-                woken.set_result(None)
-        self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
-
-    def _seen(self) -> None:
-        waking = self.waking
-        for until, seen in self._watched:
-            if until in waking and not seen.done():
-                seen.set_result(None)
-        self._watched = [(until, seen) for until, seen in self._watched if not seen.done()]
-
-
-class BrokenClock:
+class BrokenClock(VirtualClock):
     """A clock whose pause fails."""
 
-    def now(self) -> float:
-        return 0.0
+    def pause(self, seconds: float) -> asyncio.Future[None]:
+        broken: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        broken.set_exception(RuntimeError("no timer"))
+        return broken
 
-    async def pause(self, seconds: float) -> None:
-        raise RuntimeError("no timer")
+
+class RealWall(VirtualClock):
+    """Deadlines that pass only when a test moves them, on the machine's wall clock: git and gh stamp what they write
+    with the real time, and a delta compares its marks with those stamps."""
+
+    def wall(self) -> datetime:
+        return SYSTEM.wall()
 
 
-def patient[D: Deltas](kind: type[D], record: Record, clock: ManualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:
+def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:
     """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a mark or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
     spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or ManualClock())
+    return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or RealWall())
 
 
 async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:

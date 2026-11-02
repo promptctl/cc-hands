@@ -13,6 +13,7 @@ from typing import Literal, cast
 
 import aiohttp
 
+from hands.clock import SYSTEM
 from hands.sessions.child import Ran, run
 from hands.sessions.wide import annotate
 
@@ -55,7 +56,7 @@ type Tell = Callable[[Sequence[str], Sequence[str]], Awaitable[Ran]]
 
 async def osascript(script: Sequence[str], argv: Sequence[str]) -> Ran:
     # Every value goes in as an argument, never spliced into the script, so nothing in it needs quoting.
-    return await run("osascript", *(part for line in script for part in ("-e", line)), "--", *argv, timeout=TELL_SECONDS)
+    return await run("osascript", *(part for line in script for part in ("-e", line)), "--", *argv, timeout=TELL_SECONDS, clock=SYSTEM)
 
 
 @dataclass(frozen=True)

@@ -238,7 +238,7 @@ def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path
 
     started: list[dict[str, str]] = []
 
-    async def on_terminal(_argv: list[str], _cwd: Path, environment: dict[str, str]) -> None:
+    async def on_terminal(_clock: object, _argv: list[str], _cwd: Path, environment: dict[str, str]) -> None:
         started.append(environment)
         raise NotReached("joined", "the test's stand-in claude is not started")
 

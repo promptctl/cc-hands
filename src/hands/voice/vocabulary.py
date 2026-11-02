@@ -18,6 +18,7 @@ from pathlib import Path
 
 from mlx_whisper.tokenizer import get_encoding
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Primed, Record
 from hands.sessions.child import run
 from hands.sessions.focus import Unreadable, focused
@@ -155,7 +156,7 @@ async def _git(cwd: Path, environment: Mapping[str, str], deadline: float, *args
         raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
     try:
         # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"})
+        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=SYSTEM)
     except TimeoutError:
         raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
     except OSError as error:

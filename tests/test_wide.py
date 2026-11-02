@@ -11,15 +11,19 @@ from pathlib import Path
 
 import pytest
 
+from hands.clock import VirtualClock
 from hands.sessions.audit import AuditLog, segment, segments
 from hands.sessions.otlp import spans
 from hands.core.trace import Span
-from hands.sessions.wide import WideEvent, annotate, child, continuing, count, fail, here, unit, within
+from hands.sessions.wide import WideEvent, annotate, begun, child, continuing, count, fail, here, unit, within
+
+# Ids from a seed, and time that stands still: no event here is timed by how loaded the machine is.
+CLOCK = VirtualClock()
 
 
 def test_a_unit_that_ends_well_is_one_event_with_its_facts_and_its_counts_zeros_included() -> None:
     emitted: list[WideEvent] = []
-    with unit("job", emitted.append, counts=("seen", "failed")):
+    with unit("job", emitted.append, begun(CLOCK), ("seen", "failed")):
         annotate(session="s1")
         count(seen=3)
     [event] = emitted
@@ -32,7 +36,7 @@ def test_a_unit_that_ends_well_is_one_event_with_its_facts_and_its_counts_zeros_
 def test_a_unit_that_raises_is_a_failed_event_saying_what_it_raised_and_the_error_goes_on_up() -> None:
     emitted: list[WideEvent] = []
     with pytest.raises(RuntimeError, match="git is on fire"):
-        with unit("job", emitted.append):
+        with unit("job", emitted.append, begun(CLOCK)):
             annotate(step="reading")
             raise RuntimeError("git is on fire")
     [event] = emitted
@@ -45,7 +49,7 @@ async def test_a_unit_cancelled_mid_run_is_a_cancelled_event_and_not_a_failure()
     emitted: list[WideEvent] = []
 
     async def endless() -> None:
-        with unit("job", emitted.append):
+        with unit("job", emitted.append, begun(CLOCK)):
             await asyncio.Event().wait()
 
     task = asyncio.create_task(endless())
@@ -58,11 +62,11 @@ async def test_a_unit_cancelled_mid_run_is_a_cancelled_event_and_not_a_failure()
 
 async def test_a_unit_opened_inside_another_is_its_child_in_one_trace_and_each_annotates_only_its_own_event() -> None:
     emitted: list[WideEvent] = []
-    with unit("turn", emitted.append):
+    with unit("turn", emitted.append, begun(CLOCK)):
         annotate(level="outer")
 
         async def inner() -> None:
-            with unit("reading", emitted.append):
+            with unit("reading", emitted.append, begun(CLOCK)):
                 annotate(level="inner")
 
         # A task started inside a unit carries it along, as the delta's reading task does.
@@ -77,14 +81,14 @@ async def test_a_unit_opened_inside_another_is_its_child_in_one_trace_and_each_a
 def test_two_units_one_after_the_other_are_two_traces() -> None:
     emitted: list[WideEvent] = []
     for _ in range(2):
-        with unit("job", emitted.append):
+        with unit("job", emitted.append, begun(CLOCK)):
             pass
     assert emitted[0].trace_id != emitted[1].trace_id
 
 
 def test_counting_adds_to_what_the_unit_has_counted_so_far() -> None:
     emitted: list[WideEvent] = []
-    with unit("job", emitted.append, counts=("retries",)):
+    with unit("job", emitted.append, begun(CLOCK), ("retries",)):
         count(retries=1)
         count(retries=2)
     assert emitted[0].counts == {"retries": 3}
@@ -98,7 +102,7 @@ async def test_a_task_that_outlives_its_unit_cannot_change_the_event_already_emi
         await ended.wait()
         annotate(late=True)
 
-    with unit("job", emitted.append):
+    with unit("job", emitted.append, begun(CLOCK)):
         task = asyncio.create_task(straggler())
     ended.set()
     with pytest.raises(LookupError):
@@ -109,14 +113,14 @@ async def test_a_task_that_outlives_its_unit_cannot_change_the_event_already_emi
 def test_a_count_the_unit_did_not_declare_is_refused_and_fails_the_unit() -> None:
     emitted: list[WideEvent] = []
     with pytest.raises(KeyError, match="pushed"):
-        with unit("job", emitted.append, counts=("seen",)):
+        with unit("job", emitted.append, begun(CLOCK), ("seen",)):
             count(pushed=1)
     assert [event.outcome for event in emitted] == ["failed"]
 
 
 def test_a_unit_that_says_it_failed_ends_failed_with_why_and_runs_to_its_end() -> None:
     emitted: list[WideEvent] = []
-    with unit("job", emitted.append):
+    with unit("job", emitted.append, begun(CLOCK)):
         fail("the forge refused")
         annotate(after="still ran")
     [event] = emitted
@@ -126,8 +130,8 @@ def test_a_unit_that_says_it_failed_ends_failed_with_why_and_runs_to_its_end() -
 def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -> None:
     emitted: list[WideEvent] = []
     at = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
-    with unit("turn", emitted.append):
-        span = within(here())
+    with unit("turn", emitted.append, begun(CLOCK)):
+        span = within(CLOCK, here())
         child("tool.call", span, at, 700.0, "ok", call="t1")
     part, turn = emitted
     assert (part.event, part.started_at, part.duration_ms, part.outcome, part.facts) == ("tool.call", at, 700.0, "ok", {"call": "t1"})
@@ -136,22 +140,22 @@ def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -
 
 def test_a_part_minted_under_another_unit_is_refused_rather_than_written_into_a_trace_it_is_no_part_of() -> None:
     emitted: list[WideEvent] = []
-    with unit("turn", emitted.append):
-        earlier = within(here())
-    with unit("turn", emitted.append), pytest.raises(LookupError, match="tool.call is no part of the unit of work open here"):
+    with unit("turn", emitted.append, begun(CLOCK)):
+        earlier = within(CLOCK, here())
+    with unit("turn", emitted.append, begun(CLOCK)), pytest.raises(LookupError, match="tool.call is no part of the unit of work open here"):
         child("tool.call", earlier, datetime.now(UTC), 1.0, "ok")
     assert [event.event for event in emitted] == ["turn", "turn"]
 
 
 def test_a_unit_opened_for_a_span_begun_elsewhere_continues_its_trace_and_one_for_none_is_a_root() -> None:
     emitted: list[WideEvent] = []
-    with unit("turn", emitted.append):
-        part = within(here())
+    with unit("turn", emitted.append, begun(CLOCK)):
+        part = within(CLOCK, here())
     with continuing(part):
-        with unit("tool.run", emitted.append):
+        with unit("tool.run", emitted.append, begun(CLOCK)):
             pass
-    with unit("turn", emitted.append), continuing(None):
-        with unit("tool.run", emitted.append):
+    with unit("turn", emitted.append, begun(CLOCK)), continuing(None):
+        with unit("tool.run", emitted.append, begun(CLOCK)):
             pass
     _, ran, rooted, _ = emitted
     assert (ran.trace_id, ran.parent_id) == (part.trace_id, part.span_id) and ran.span_id != part.span_id
@@ -165,11 +169,11 @@ def test_a_fact_inside_a_continued_span_with_no_unit_open_is_refused() -> None:
 
 def test_a_unit_hands_its_span_to_a_part_of_it_that_runs_where_it_is_not_open() -> None:
     emitted: list[WideEvent] = []
-    with unit("turn", emitted.append):
-        with unit("step", emitted.append):
+    with unit("turn", emitted.append, begun(CLOCK)):
+        with unit("step", emitted.append, begun(CLOCK)):
             step = here()
         turn = here()
-    inside = within(turn)
+    inside = within(CLOCK, turn)
     stepped, turned = emitted
     assert (step.trace_id, step.span_id, step.parent_id) == (stepped.trace_id, stepped.span_id, turned.span_id)
     assert (turn.span_id, turn.parent_id) == (turned.span_id, None)
@@ -185,10 +189,10 @@ def test_a_fact_with_no_unit_open_to_land_on_is_refused() -> None:
 
 def test_an_event_is_an_audit_line_with_its_start_written_as_a_time_and_a_failed_one_is_an_error(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=lambda: datetime(2026, 10, 3, tzinfo=UTC))
-    with unit("job", log.record, counts=("seen",)):
+    with unit("job", log.record, begun(CLOCK), ("seen",)):
         annotate(session="s1")
     with pytest.raises(ValueError):
-        with unit("job", log.record):
+        with unit("job", log.record, begun(CLOCK)):
             raise ValueError("bad")
     written = [json.loads(line) for base in segments(tmp_path / "audit") for line in segment(tmp_path / "audit", base).read_text().splitlines()]
     assert [(line["type"], line["level"], line["outcome"]) for line in written] == [("WideEvent", "info", "ok"), ("WideEvent", "error", "failed")]
@@ -214,7 +218,7 @@ def test_every_kind_of_fact_is_written_on_its_audit_line_and_carried_by_its_otlp
         emitted.append(event)
 
     at = datetime(2026, 10, 3, 1, 2, 3, tzinfo=UTC)
-    with unit("job", record):
+    with unit("job", record, begun(CLOCK)):
         annotate(none=None, flag=True, n=3, ms=1.5, word="s1", at=at, path=Path("/x"), reading=Reading.READ, change=Pushed("fix"))
         annotate(changes=(Pushed("a"), 2), seen=frozenset({"b", "a"}))
     [line] = [json.loads(line) for base in segments(tmp_path / "audit") for line in segment(tmp_path / "audit", base).read_text().splitlines()]
@@ -237,13 +241,14 @@ def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_w
     annotated = tmp_path / "annotated.py"
     annotated.write_text(
         "import socket\n"
+        "from hands.clock import SYSTEM\n"
         "from hands.sessions.wide import annotate, child, here, within\n"
         "from datetime import UTC, datetime\n"
         "annotate(n=1, words=('a', 'b'), pairs=frozenset({(None, 1.5)}))\n"
         "annotate(socket=socket.socket())\n"
         "annotate(listed=[1])\n"
         "annotate(by={'a': 1})\n"
-        "child('part', within(here()), datetime.now(UTC), 1.0, 'ok', handler=print)\n"
+        "child('part', within(SYSTEM, here()), datetime.now(UTC), 1.0, 'ok', handler=print)\n"
         "from enum import Enum\n"
         "class Held(Enum):\n"
         "    SOCKET = socket.socket()\n"
@@ -253,4 +258,4 @@ def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_w
     assert checked.stdout, checked.stderr
     diagnostics = json.loads(checked.stdout)["generalDiagnostics"]
     refused = [(diagnostic["range"]["start"]["line"] + 1, diagnostic["rule"], '"Fact"' in diagnostic["message"]) for diagnostic in diagnostics]
-    assert refused == [(line, "reportArgumentType", True) for line in (5, 6, 7, 8, 12)]
+    assert refused == [(line, "reportArgumentType", True) for line in (6, 7, 8, 9, 13)]

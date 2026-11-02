@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from conftest import SYSTEM_PATH, executable, pin, stand_in
+from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
@@ -856,7 +857,7 @@ def test_the_brain_says_its_account_and_never_a_key() -> None:
 
 def beating(home: Home) -> None:
     home.root.mkdir(parents=True, exist_ok=True)
-    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None)
+    heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("running", None, 0, listening=True, degraded=())
 
 

@@ -48,10 +48,11 @@ from pipecat.transports.local.audio import (
     LocalAudioTransportParams,
 )
 
+from hands.clock import SYSTEM
 from hands.voice.coreaudio import DefaultDevices, default_devices
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
-from hands.sessions.wide import annotate, count, unit
+from hands.sessions.wide import annotate, begun, count, unit
 from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
 from hands.voice.phone import Phone
 from hands.voice.ptt import Key, PushToTalk
@@ -349,7 +350,7 @@ class Speaker(LocalAudioOutputTransport):
     async def let_go(self, opened: Attached) -> None:
         """Stop a detached stream, end its writer once the writes already given to it have run, then close it."""
         # [LAW:nothing-unseen] one event for each stream let go of, carrying what its device took over its life.
-        with unit("speaker.let_go", self._record, PLAYOUT_COUNTS):
+        with unit("speaker.let_go", self._record, begun(SYSTEM), PLAYOUT_COUNTS):
             annotate(device=opened.device)
             try:
                 # [LAW:no-ambient-temporal-coupling] closing frees the stream, so it waits until no write is inside it.
@@ -541,7 +542,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
             opened.echo.close()
 
         # [LAW:nothing-unseen] one event for each stream let go of, carrying what its canceller did over its life.
-        with unit("microphone.let_go", self._record, COUNTS):
+        with unit("microphone.let_go", self._record, begun(SYSTEM), COUNTS):
             annotate(device=opened.device)
             try:
                 await off_loop(stop_and_close, "closing the microphone")

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
+from hands.clock import VirtualClock
 from hands.core.effects import Allow, Heard, HookReply, Narrate, Withdraw, Asking
 from hands.core.events import Joined, Located, PermissionRequested, StatusReported, Tick, ToolFinished
 from hands.core.session import AskedQuestion, Held, Membership, Option, Permission, Plan, Question, RequestId, SessionId
@@ -46,14 +47,6 @@ BUSY = Report(Busy(), Stamp(1))
 WAIT_SECONDS = 5.0
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 @pytest.fixture
 def home() -> Iterator[Home]:
     # A unix socket path is capped near 104 bytes on macOS, so not under pytest's long tmp_path.
@@ -63,12 +56,12 @@ def home() -> Iterator[Home]:
 
 
 @pytest.fixture
-def clock() -> Clock:
-    return Clock()
+def clock() -> VirtualClock:
+    return VirtualClock()
 
 
 @pytest.fixture
-async def sessions(home: Home, clock: Clock) -> AsyncIterator[Sessions]:
+async def sessions(home: Home, clock: VirtualClock) -> AsyncIterator[Sessions]:
     registry = new_sessions(clock=clock)
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     yield registry
@@ -154,7 +147,7 @@ async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, session
     }
 
 
-async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_that_its_session_closed_it(home: Home, clock: Clock) -> None:
+async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_that_its_session_closed_it(home: Home, clock: VirtualClock) -> None:
     recorded: list[Entry] = []
 
     def asks() -> list[WideEvent]:
@@ -263,12 +256,12 @@ async def test_a_voice_deny_carries_its_message_to_the_agent(home: Home, session
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})
 
 
-async def test_a_request_nobody_answers_waits_past_any_clock_and_a_voice_answer_still_reaches_it(home: Home, sessions: Sessions, clock: Clock) -> None:
+async def test_a_request_nobody_answers_waits_past_any_clock_and_a_voice_answer_still_reaches_it(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     """The user, 2026-10-19: no answer is timed. Ticks well past where the old deadline stood, and past a day of them,
     neither deny it nor say anything of it, and the user's answer then is the one the hook prints."""
     shim, moment = await asked(home, sessions)
-    for clock.now in (85.0, 90.0, 3600.0, LATE):
-        await sessions.apply(Tick(clock.now))
+    for clock.at in (85.0, 90.0, 3600.0, LATE):
+        await sessions.apply(Tick(clock.at))
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(sessions.heard(), 0.1)
     assert shim.process.returncode is None
@@ -285,7 +278,7 @@ async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home
     assert await shim.finished() == (0, "", "")
 
 
-async def test_a_hook_that_went_away_is_neither_answered_nor_spoken_of(home: Home, sessions: Sessions, clock: Clock) -> None:
+async def test_a_hook_that_went_away_is_neither_answered_nor_spoken_of(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
     try:
@@ -293,8 +286,8 @@ async def test_a_hook_that_went_away_is_neither_answered_nor_spoken_of(home: Hom
         shim.process.kill()
         await shim.process.wait()
         await asyncio.sleep(0.2)  # the daemon notices the closed connection
-        clock.now = LATE
-        await sessions.apply(Tick(clock.now))
+        clock.at = LATE
+        await sessions.apply(Tick(clock.at))
     finally:
         logger.remove(sink)
     with pytest.raises(TimeoutError):
@@ -362,7 +355,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
     assert f"reply Allow() for session {SID} request r1 was never delivered: its hook was already given Withdraw()" in logged
 
 
-async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: Clock) -> None:
+async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: VirtualClock) -> None:
     registry = new_sessions(clock=clock)
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
     shim, _ = await asked(home, registry)
@@ -399,7 +392,7 @@ async def test_a_request_from_a_session_this_daemon_never_met_joins_it_and_is_an
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
 
 
-async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answered(home: Home, sessions: Sessions, clock: Clock) -> None:
+async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answered(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     shim, moment = await asked(home, sessions)
     shim.process.kill()
     await shim.process.wait()

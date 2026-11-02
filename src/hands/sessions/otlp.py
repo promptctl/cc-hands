@@ -21,7 +21,6 @@ import json
 import math
 import queue
 import threading
-import time
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,6 +29,7 @@ from typing import Literal, cast
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from hands.clock import Clock
 from hands.core.wire import Answered, Body, Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unkept, Unreached, Written
 from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
@@ -66,13 +66,13 @@ def _post(request: Request, timeout: float) -> bytes:
 
 
 @contextmanager
-def exporting(collector: str | None, record: Record) -> Generator[Record]:
+def exporting(collector: str | None, record: Record, clock: Clock) -> Generator[Record]:
     """`record`, and where a collector is set, each wide event recorded through it also sent there; what is still to be
     sent as this ends is sent, or recorded unsent, before it returns."""
     if collector is None:
         yield record
         return
-    exporter = Exporter(collector, record)
+    exporter = Exporter(collector, record, clock)
 
     def both(entry: Entry) -> None:
         record(entry)
@@ -120,7 +120,7 @@ class Exports:
     """`record`, folding each Exported line it records into what the collector is failing to take, per signal, which
     the up heartbeat carries as its degradations."""
 
-    def __init__(self, record: Record, clock: Callable[[], datetime]) -> None:
+    def __init__(self, record: Record, clock: Clock) -> None:
         self._record = record
         self._clock = clock
         # [LAW:no-shared-mutable-globals] replaced whole under the lock, by each signal's exporter thread and by a stop;
@@ -134,7 +134,7 @@ class Exports:
             return
         key = (entry.collector, entry.signal)
         with self._folding:
-            streak = failing(self._streaks.get(key), entry, self._clock())
+            streak = failing(self._streaks.get(key), entry, self._clock.wall())
             self._streaks = {**{held: kept for held, kept in self._streaks.items() if held != key}, **({} if streak is None else {key: streak})}
 
     def degraded(self) -> tuple[Degradation, ...]:
@@ -218,9 +218,9 @@ class Exporter:
         self,
         collector: str,
         record: Callable[[Exported], None],
+        clock: Clock,
         linger: float = LINGER_SECONDS,
         timeout: float = TIMEOUT_SECONDS,
-        clock: Callable[[], float] = time.monotonic,
         post: Callable[[Request, float], bytes] = _post,
     ) -> None:
         self._collector = collector
@@ -258,11 +258,11 @@ class Exporter:
         # [LAW:no-ambient-temporal-coupling] set before the end of the queues is marked, so every batch sent from here on
         # reads it, whether or not its thread has reached the mark yet.
         with self._marking:
-            self._deadline = self._clock() + self._timeout
+            self._deadline = self._clock.now() + self._timeout
             for lane in self._lanes:
                 lane.queue.put(_CLOSED)
         for lane in self._lanes:
-            lane.thread.join(max(0.0, self._deadline + 1 - self._clock()))
+            lane.thread.join(max(0.0, self._deadline + 1 - self._clock.now()))
         for lane in self._lanes:
             if lane.thread.is_alive():
                 # [LAW:nothing-unseen] a send that outlived the timeout, which bounds each socket operation and not a
@@ -287,8 +287,8 @@ class Exporter:
         """A batch beginning with `first`: every event sent within the linger after it, up to BATCH_SPANS; and whether
         the exporter was closed while it gathered."""
         batch = [first]
-        deadline = self._clock() + self._linger
-        while len(batch) < BATCH_SPANS and (left := deadline - self._clock()) > 0:
+        deadline = self._clock.now() + self._linger
+        while len(batch) < BATCH_SPANS and (left := deadline - self._clock.now()) > 0:
             try:
                 taken = lane.queue.get(timeout=left)
             except queue.Empty:
@@ -302,11 +302,11 @@ class Exporter:
         # [LAW:no-ambient-temporal-coupling] read under the lock close sets the deadline under, so a batch begun once a
         # stop has read the time is held to that stop's deadline.
         with self._marking:
-            began = self._clock()
+            began = self._clock.now()
             left = min(self._timeout, self._deadline - began)
         lane.sending = tuple(event.span_id for event in batch)
         refused, warning = self._sent(lane.encoding, batch, left) if left > 0 else (STOPPED, None)
-        self._record(Exported(self._collector, lane.encoding.signal, lane.sending, (self._clock() - began) * 1000, refused, warning))
+        self._record(Exported(self._collector, lane.encoding.signal, lane.sending, (self._clock.now() - began) * 1000, refused, warning))
 
     def _sent(self, encoding: "Encoding", batch: Sequence[WideEvent], timeout: float) -> tuple[str | None, str | None]:
         """Why the collector did not take `batch` as `encoding`'s signal, None where it took every event; and what it

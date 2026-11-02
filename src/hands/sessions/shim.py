@@ -21,9 +21,9 @@ import socket
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import UTC, datetime
 from pathlib import Path
 
+from hands.clock import SYSTEM, Clock
 from hands.core.session import Membership
 from hands.sessions import heartbeat
 from hands.sessions.home import Home, default_home
@@ -159,9 +159,9 @@ def post(home: Home, body: bytes, timeout: float) -> str:
     return detail
 
 
-def unreached(home: Home, error: Unreached) -> int:
+def unreached(home: Home, clock: Clock, error: Unreached) -> int:
     """The exit for a hook no daemon answered: silent when hands is off or starting, loud when it is broken."""
-    now = datetime.now(UTC)
+    now = clock.wall()
     try:
         verdict = heartbeat.look(home.status, now)
     except OSError as judging:
@@ -181,7 +181,7 @@ def unreached(home: Home, error: Unreached) -> int:
             return FAILED
 
 
-def main(argv: Sequence[str]) -> int:
+def main(argv: Sequence[str], clock: Clock) -> int:
     match argv:
         case [_]:
             pass  # everything the shim is told comes on stdin and in HANDS_HOME
@@ -200,7 +200,7 @@ def main(argv: Sequence[str]) -> int:
         sys.stdout.write(told(payload))
         reply = post(home, body, post_timeout(payload.text("hook_event_name")))
     except Unreached as error:
-        return unreached(home, error)
+        return unreached(home, clock, error)
     except (Rejected, Refused) as error:
         print(f"hands: {error}", file=sys.stderr)
         return FAILED
@@ -210,4 +210,4 @@ def main(argv: Sequence[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main(sys.argv, SYSTEM))

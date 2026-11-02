@@ -6,7 +6,7 @@ from typing import Literal
 
 import numpy as np
 
-from conftest import ManualClock, patiently
+from conftest import VirtualClock, patiently
 from hands.sessions.audit import Cued, Entry
 from hands.sessions.audit import Played
 from hands.voice.cues import CUE_LEVEL, CUE_SECONDS, DROPPED, OPENED, RECEIVED, SENT, WORKING, Cue, QuietCue, QuietCues, cues, sound
@@ -98,7 +98,7 @@ class Speaker:
 
 
 async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> None:
-    clock = ManualClock()
+    clock = VirtualClock()
     owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
     cueing = asyncio.create_task(owed.keep_playing(speaker, recorded.append))
     try:
@@ -118,7 +118,7 @@ async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> 
 
 
 async def test_a_burst_of_acts_in_silence_is_one_tone_per_spacing() -> None:
-    clock = ManualClock()
+    clock = VirtualClock()
     owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
     speaker.quiet.set()
     spaced = QuietCue(WORKING.cue, 0.05)

@@ -9,6 +9,7 @@ import pytest
 
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
 from hands.brain.asides import AsideFailed, Unanswered
+from hands.clock import SYSTEM
 from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -43,7 +44,7 @@ from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("brain")
 # The span the stages here route with: which trace a request is in is the stage's, not the keeper's.
-SPAN = root()
+SPAN = root(SYSTEM)
 MARKED = {"type": "ephemeral"}
 
 
@@ -170,7 +171,7 @@ def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> 
 
 def ended(kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root())
+    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(SYSTEM))
 
 
 class Rig:

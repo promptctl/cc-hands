@@ -18,7 +18,7 @@ from collections import deque
 from collections.abc import Awaitable, Collection, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from itertools import dropwhile
 from pathlib import Path
 from typing import Literal, Protocol, cast, overload
@@ -29,9 +29,9 @@ from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pu
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
 from hands.sessions.child import run
-from hands.sessions.clock import SYSTEM, Clock, wait
+from hands.clock import Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
-from hands.sessions.wide import annotate, count, unit
+from hands.sessions.wide import annotate, begun, count, unit
 
 # What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
 # and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a mark that
@@ -249,10 +249,10 @@ class Deltas:
         self,
         record: Record,
         inherited: Mapping[str, str],
+        clock: Clock,
         marking: float = MARKING,
         reading: float = READING,
         patience: float = PATIENCE,
-        clock: Clock = SYSTEM,
     ) -> None:
         self._record = record
         # The daemon's environment, which git and gh are found and run in: its PATH, and whatever the user set their own variables to.
@@ -294,7 +294,7 @@ class Deltas:
         self._marks.pop(session, None)
         capturing = self._capturing.setdefault(session, set())
         under_way = [capture for capture in capturing if not capture.tree.done()]
-        with unit("delta.mark", self._record, _MARK_COUNTS):
+        with unit("delta.mark", self._record, begun(self._clock), _MARK_COUNTS):
             annotate(session=session)
             count(captures_waited=len(under_way))
             try:
@@ -418,7 +418,7 @@ class Deltas:
         """[LAW:nothing-unseen] one event for every reading however it ended, so a turn told without its delta can be told
         apart from one that changed nothing, and a slow forge from a slow repository: whose it is, from its start, so one
         that raised still says so."""
-        with unit("delta.read", self._record, _READ_COUNTS):
+        with unit("delta.read", self._record, begun(self._clock), _READ_COUNTS):
             annotate(session=session)
             yield
 
@@ -434,14 +434,14 @@ class Deltas:
         one thing worth saying about it should not lose that because `git add -A` ran past the next turn's start.
         """
         try:
-            capture.standing.set_result(await self._standing(capture.root, datetime.now(UTC), deadline))
+            capture.standing.set_result(await self._standing(capture.root, self._clock.wall(), deadline))
             capture.tree.set_result(await self._tree(capture.root, deadline))
         finally:
             # A capture that raised or was cancelled mid-read, which the reading's other parts are waiting on.
             capture.ended()
 
     async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
-        at = datetime.now(UTC)
+        at = self._clock.wall()
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
         if not root:
             return None

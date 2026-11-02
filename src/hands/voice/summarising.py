@@ -13,11 +13,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from hands.clock import SYSTEM
 from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, read_backlog
 from hands.sessions.payload import Rejected
-from hands.sessions.wide import Fact, WideEvent, annotate, count, fail, unit
+from hands.sessions.wide import Fact, WideEvent, annotate, begun, count, fail, unit
 from hands.voice.sentences import Backlog, SummaryStore, Turns
 from hands.voice.summary import Summariser, SummaryFailed
 
@@ -63,7 +64,7 @@ Overview = Literal["said", "known", "unsaid", "none"]
 def _pass(event: str, record: Record, counts: tuple[str, ...], **facts: Fact) -> Generator[_Missed]:
     """Run the body as one pass, a unit of work whose event carries what its replies left out and its calls raised,
     written as the body ends however it ends, so a pass cut short still says what it had."""
-    with unit(event, record, counts=(*counts, *CALL_COUNTS)):
+    with unit(event, record, begun(SYSTEM), (*counts, *CALL_COUNTS)):
         annotate(**facts)
         missed = _Missed()
         try:
@@ -115,7 +116,7 @@ async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summa
     # backlog's own sentence: what the terminal is told of the pass.
     with _pass(BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
-            backlog = await read_backlog(project)
+            backlog = await read_backlog(SYSTEM, project)
         except (LitFailed, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")

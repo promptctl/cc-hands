@@ -399,7 +399,7 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
 
 
 async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def stuck(*_argv: str, timeout: float) -> None:
+    async def stuck(*_argv: str, timeout: float, clock: object) -> None:
         raise TimeoutError
 
     monkeypatch.setattr(notify, "run", stuck)
