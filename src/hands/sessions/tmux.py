@@ -136,8 +136,18 @@ async def shown(clock: Clock, environment: Mapping[str, str], socket: Path, pane
 async def captured(clock: Clock, tmux: str, socket: Path, pane: str) -> str | Unanswered:
     """What `shown` returns, read with the `tmux` named: pane `pane` of the server at `socket` as it shows now, or why it
     could not be read."""
+    return await _capture(clock, tmux, socket, pane, ("-p",))
+
+
+async def styled(clock: Clock, tmux: str, socket: Path, pane: str) -> str | Unanswered:
+    """What `captured` returns, with the attributes each character is drawn in kept as SGR (`-e`): what tells Claude
+    Code's dim placeholder from words (hands.core.screen)."""
+    return await _capture(clock, tmux, socket, pane, ("-p", "-e"))
+
+
+async def _capture(clock: Clock, tmux: str, socket: Path, pane: str, how: tuple[str, ...]) -> str | Unanswered:
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
-    match await ran_at(clock, tmux, socket, ("capture-pane", "-p", "-t", pane)):
+    match await ran_at(clock, tmux, socket, ("capture-pane", *how, "-t", pane)):
         case Ran(returncode=0, out=out):
             return out.decode(errors="replace").rstrip()
         case Ran(err=err):
@@ -222,6 +232,8 @@ KEYS: Mapping[Keystroke, str] = {
     "escape": "Escape",
     "enter": "Enter",
     "ctrl_c": "C-c",
+    "ctrl_e": "C-e",
+    "ctrl_h": "C-h",
     "ctrl_u": "C-u",
     "ctrl_q": "C-q",
     "up": "Up",
