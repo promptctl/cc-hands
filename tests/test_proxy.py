@@ -766,17 +766,18 @@ TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"
     [
         # hands changed it and the API named one of its messages: hands' bug, by index and role.
         (Send((Tail("tail"),), span=root()), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
-        # hands wrote all of it: hands' bug, whatever 4xx it is and whether or not it names a message.
+        # hands wrote all of it: hands' bug, whether or not the 400 names a message.
         (Send(built=True, span=root()), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
-        (Send(built=True, span=root()), 429, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 429 (request-id req_9): "),
+        # A 4xx that is not a 400 (a spent limit, expired auth) says nothing of the request's shape.
+        (Send(built=True, span=root()), 429, TOO_LONG, None),
         # The client's own request, untouched: Claude Code's to own.
         (Send(span=root()), 400, MALFORMED, None),
-        # Not a 4xx.
+        # Not a 4xx at all.
         (Send((Tail("tail"),), span=root()), 500, MALFORMED, None),
     ],
     ids=["changed", "built", "built-429", "untouched", "5xx"],
 )
-async def test_a_4xx_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
+async def test_a_400_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Send, status: int, said: bytes, told: str | None
 ) -> None:
     async def refused(_request: web.Request) -> web.Response:

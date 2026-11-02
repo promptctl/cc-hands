@@ -172,6 +172,6 @@ class Asides:
                 # Answered, then cut off on the way: the stream ended before its reply was whole.
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
             case other:
-                # A 4xx is logged as hands' bug by the proxy, the one place every request hands built or changed passes.
+                # A 400 is logged as hands' bug by the proxy, the one place every request hands built or changed passes.
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
 

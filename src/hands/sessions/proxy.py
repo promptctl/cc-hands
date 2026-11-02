@@ -156,7 +156,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     tell(exchanged((), Held(said, clock()), False))
                     return held
                 case Send(changes=asked, refusal=refusal, built=built):
-                    sent, onward, changes = _edited(exchange, body, parsed, asked)
+                    outgoing, onward, changes = _edited(exchange, body, parsed, asked)
             headers = _end_to_end(request.headers)
             tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
             try:
@@ -222,10 +222,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             finally:
                 last = clock() if ended is None else ended
                 tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
-                # [LAW:single-enforcer] every request hands built or changed passes here, so its 4xx is told here alone,
+                # [LAW:single-enforcer] every request hands built or changed passes here, so its 400 is told here alone,
                 # after the exchange's end is told: a failure saying it cannot unsay that.
-                if 400 <= reached.status < 500 and (built or changes):
-                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), sent, built, changes, reply)
+                if reached.status == 400 and (built or changes):
+                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), outgoing, built, changes, reply)
         return response
 
     app = web.Application()
