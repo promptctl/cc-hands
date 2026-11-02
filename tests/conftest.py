@@ -71,9 +71,26 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
 
 # [LAW:single-enforcer] every skip is reported by one of these two: a test's, from its marks or its body, and a module's,
 # skipped as it is collected.
+# [LAW:single-enforcer] the one owner of a quarantined test's rule in a run: it runs and reports, and a failure in any phase
+# is an expected failure with its ticket as the reason, so the run stays green. How long a quarantine may last is
+# tests/quarantine_gate.py's to say, in CI; the run does not decide it.
 @pytest.hookimpl(wrapper=True)
-def pytest_runtest_makereport() -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    return in_ci((yield))
+def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report = in_ci((yield))
+    marker = item.get_closest_marker("quarantined")
+    if marker is not None and report.failed:
+        report.outcome = "skipped"
+        report.wasxfail = f"quarantined by {marker.args[0]}"
+    return report
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """[LAW:no-silent-failure] a quarantine that names no ticket is a quarantine nobody can close, so the run stops before
+    any test."""
+    for item in items:
+        marker = item.get_closest_marker("quarantined")
+        if marker is not None and not (len(marker.args) == 1 and isinstance(marker.args[0], str) and marker.args[0]):
+            raise pytest.UsageError(f'{item.nodeid} is quarantined without its ticket: quarantined("<ticket id>")')
 
 
 @pytest.hookimpl(wrapper=True)
