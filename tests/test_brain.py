@@ -543,9 +543,11 @@ async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_unt
     try:
         with pytest.raises(Untaken, match="Do you want to create ambush.txt"):
             await asyncio.wait_for(brain.ask("hello", unasked), 10)
+        # The untaken turn's words are cleared before the input is let go, though here the dialog dropped them.
+        await until(lambda: ["ctrl_c", ""] in typed(tmp_path))
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["dropped", " hello"], ["unbound"]]
+    assert typed(tmp_path) == [["dropped", " hello"], ["unbound"], ["escape", ""], ["ctrl_c", ""]]
 
 
 async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what_it_showed_with_nothing_typed() -> None:
@@ -585,6 +587,27 @@ async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chor
     finally:
         await brain.stop()
     assert "❯  hello" in str(untaken.value)
+
+
+async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_alone(tmp_path: Path, fake_claude: Path) -> None:
+    read, takes = _chord_read(tmp_path), 0
+
+    async def pause(seconds: float) -> None:
+        # The first take is up once the unbound chord is read; the second, once taken, is never up.
+        nonlocal takes
+        takes += seconds == TAKE_SECONDS
+        await (read(seconds) if takes <= 1 else asyncio.sleep(seconds))
+
+    brain = await start(launch(tmp_path), lambda _entry: None, pause)
+    try:
+        (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
+        with pytest.raises(Untaken):
+            await asyncio.wait_for(brain.ask("hello", unasked), 10)
+        (tmp_path / "brain" / "keybindings.json").write_text(json.dumps(KEYBINDINGS))
+        assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
+    finally:
+        await brain.stop()
+    assert [line[1].strip() for line in typed(tmp_path) if line[0] == "prompt"] == ["and now?"]
 
 
 async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:

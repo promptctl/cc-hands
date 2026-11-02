@@ -1250,7 +1250,17 @@ class Brain:
                 # [LAW:no-silent-failure] the screen says why, read with the input still held: words left at the prompt
                 # are a submit chord that no longer sends it, as an edit to the brain's keybindings.json leaves it; an
                 # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
-                raise Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}")
+                untaken = Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{await self._shown()}")
+                # [LAW:single-enforcer] the words this turn typed are stopped and cleared by the one stop, before the
+                # input is let go: left at the prompt, the next turn's paste would join them, and Claude Code would send
+                # both as one prompt. The screen cannot say whether they are there (capture-pane drops the dim of
+                # Claude Code's placeholder), so the clear goes whatever it showed, and its Ctrl-C keeps its spacing
+                # from the last, so one on an empty prompt never exits the brain.
+                try:
+                    await self._clear(None)
+                except (BrainGone, StopUnrecorded) as error:
+                    raise error from untaken
+                raise untaken
         finally:
             pausing.cancel()
             await asyncio.wait({pausing})
