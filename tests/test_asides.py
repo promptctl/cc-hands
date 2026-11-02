@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 from aiohttp import web
+from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
@@ -294,30 +295,21 @@ async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brai
     assert len(rig.asked) == 2
 
 
-async def test_a_side_question_refused_as_malformed_is_told_as_hands_own_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+async def test_a_side_question_the_api_refuses_is_logged_by_the_proxy_as_hands_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
     await rig.main_turn()
     said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content.1: unexpected tool_result block"}}'
     rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
-    with pytest.raises(AsideFailed, match=r"hands' to own\): messages\.0 is role 'user'; answered 400 \(request-id req_9\)"):
-        await rig.asides.ask(AsideKind.NAME, "malformed", Deadline(5))
-    [event] = events(recorded)
-    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.MALFORMED, 400)
-    assert len(rig.asked) == 2
-
-
-async def test_a_400_naming_none_of_the_side_questions_messages_is_a_refusal(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
-    recorded: list[Entry] = []
-    rig = await brain(recorded)
-    await rig.main_turn()
-    said = '{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
-    rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
-    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\).*prompt is too long"):
-        await rig.asides.ask(AsideKind.NAME, "too long", Deadline(5))
-    [event] = events(recorded)
-    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, 400)
-    assert len(rig.asked) == 2
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\)"):
+            await rig.asides.ask(AsideKind.NAME, "malformed", Deadline(5))
+    finally:
+        logger.remove(sink)
+    [error] = errors
+    assert error.startswith("hands' bug: hands built exchange") and "messages.0 is role 'user';" in error and "req_9" in error
 
 
 def system(said: str) -> dict[str, object]:

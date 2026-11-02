@@ -213,6 +213,15 @@ def streams(body: object) -> bool:
     return isinstance(body, Mapping) and cast(Mapping[str, object], body).get("stream") is True
 
 
+def refused_message(body: object, said: str) -> str | None:
+    """The message of a request a refusal names, by its index and role, if it names one of this body's."""
+    found = re.search(r"messages\.(\d+)", said)
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    if found is None or int(found[1]) >= len(messages):
+        return None
+    return f"messages.{found[1]} is role {_role(messages[int(found[1])])!r}"
+
+
 def _since_reply(messages: Sequence[object]) -> int:
     """Where the messages after the model's last reply begin."""
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]
@@ -854,6 +863,8 @@ class Send:
     # What the client is given when the API refuses it: the refusal as the API said it, which the client asks again
     # after or not as it decides, or the proxy's own told final, so a client that would ask again ends there instead.
     refusal: Literal["retried", "final"] = "retried"
+    # Whether hands wrote the whole request (a side question), not only changed the client's.
+    built: bool = False
     # [LAW:types-are-the-program] the exchange's span, which its record carries, as the router chose it: inside the unit
     # of work the request was made for, or the root of a trace of its own for one made for none.
     span: Span = field(kw_only=True)

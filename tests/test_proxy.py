@@ -755,3 +755,43 @@ def test_a_request_hands_cannot_read_is_warned_about_with_all_it_said() -> None:
     finally:
         logger.remove(sink)
     assert len(logged) == 1 and "'dreaming', a class hands does not know" in logged[0] and logged[0].endswith(body.decode())
+
+
+MALFORMED = b'{"type":"error","error":{"type":"invalid_request_error","message":"messages.0: role \'system\' must precede an \'assistant\' message or end the array"}}'
+TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
+
+
+@pytest.mark.parametrize(
+    ("route", "status", "said", "told"),
+    [
+        # hands changed it and the API named one of its messages: hands' bug, by index and role.
+        (Send((Tail("tail"),), span=root()), 400, MALFORMED, "hands' bug: hands changed (1 changes) exchange req-1 and the API refused it 400 (request-id req_9): messages.0 is role 'user';"),
+        # hands wrote all of it: hands' bug, whether or not the 400 names a message.
+        (Send(built=True, span=root()), 400, TOO_LONG, "hands' bug: hands built exchange req-1 and the API refused it 400 (request-id req_9): "),
+        # A 4xx that is not a 400 (a spent limit, expired auth) says nothing of the request's shape.
+        (Send(built=True, span=root()), 429, TOO_LONG, None),
+        # The client's own request, untouched: Claude Code's to own.
+        (Send(span=root()), 400, MALFORMED, None),
+        # Not a 4xx at all.
+        (Send((Tail("tail"),), span=root()), 500, MALFORMED, None),
+    ],
+    ids=["changed", "built", "built-429", "untouched", "5xx"],
+)
+async def test_a_400_on_a_request_hands_built_or_changed_is_logged_as_hands_bug(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Send, status: int, said: bytes, told: str | None
+) -> None:
+    async def refused(_request: web.Request) -> web.Response:
+        return web.Response(status=status, body=said, headers={"Content-Type": "application/json", "request-id": "req_9"})
+
+    _, wire = await serve(refused)
+    wire.route = lambda _sent: route
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        await post(wire.proxy.url)
+    finally:
+        logger.remove(sink)
+    exchange = only_exchange(wire).exchange
+    assert [error.replace(exchange, "req-1", 1)[: len(told or "")] for error in errors] == ([] if told is None else [told])
+    # A refusal that names no message is not given one.
+    assert all(("is role" in error) == ("is role" in (told or "")) for error in errors)

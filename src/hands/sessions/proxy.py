@@ -45,6 +45,7 @@ from hands.core.wire import (
     Unreached,
     edited,
     is_stream,
+    refused_message,
     streams,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
@@ -154,7 +155,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
                     tell(exchanged((), Held(said, clock()), False))
                     return held
-                case Send(changes=asked, refusal=refusal):
+                case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
             headers = _end_to_end(request.headers)
             tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
@@ -221,6 +222,10 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
             finally:
                 last = clock() if ended is None else ended
                 tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
+                # [LAW:single-enforcer] every request hands built or changed passes here, so its 400 is told here alone,
+                # after the exchange's end is told: a failure saying it cannot unsay that.
+                if reached.status == 400 and (built or changes):
+                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), parsed, built, changes, reply)
         return response
 
     app = web.Application()
@@ -248,6 +253,16 @@ def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, .
         # [LAW:no-silent-failure] the request goes on as it came, and the log says it went unchanged.
         logger.exception(f"the proxy could not change exchange {exchange}; forwarding it as it came")
         return body, ()
+
+
+def _hands_bug(exchange: str, status: int, request_id: str | None, request: object, built: bool, changes: tuple[Change, ...], reply: Body) -> None:
+    """Say loudly that the API refused a request hands built or changed: hands must never send one it refuses."""
+    said = str(reply)
+    # hands' changes never add, drop, or re-role a message, so the request as it came names the same one.
+    named = refused_message(request, said)
+    made = "built" if built else f"changed ({len(changes)} changes)"
+    where = "" if named is None else f" {named};"
+    logger.error(f"hands' bug: hands {made} exchange {exchange} and the API refused it {status} (request-id {request_id}):{where} {said}")
 
 
 def _unfinished(error: BaseException) -> str:
