@@ -89,7 +89,7 @@ def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_s
 def test_a_project_lit_does_not_track_is_drawn_as_none() -> None:
     recorded: list[Entry] = []
     with unit("backlog.read", recorded.append, counts=("tickets", "summarised")):
-        assert shown(Untracked(Path("/nowhere"))) == {"tracked": False}
+        assert shown(Untracked(Path("/nowhere"))) == {"tracked": False, "why": "lit has no workspace there"}
     [event] = events(recorded, "backlog.read")
     assert event.facts["tracked"] is False and event.counts == {"tickets": 0, "summarised": 0}
 
@@ -387,7 +387,7 @@ async def test_a_read_that_names_no_directory_is_refused_rather_than_asking_lit(
 async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: Page, tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     response = await page.client.get("/backlog/tickets", params={"project": str(tmp_path)}, headers=KEYED)
-    assert response.status == 200 and await response.json() == {"tracked": False}
+    assert response.status == 200 and await response.json() == {"tracked": False, "why": "lit has no workspace there"}
     [event] = page.events("backlog.read")
     assert event.outcome == "ok" and event.facts["tracked"] is False
 
@@ -793,7 +793,7 @@ async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_suc
     (bin / "lit").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
     status, body = await leveled(page, workspace, hey, "high")
-    assert status == 502 and body == f"not leveled: lit made the epic wake word - high, and lit no longer tracks {workspace.root}"
+    assert status == 502 and body == f"not leveled: lit made the epic wake word - high, and lit no longer tracks {workspace.root}: lit has no workspace there"
 
 
 async def noted(page: Page, workspace: Workspace, ticket: str, text: str) -> tuple[int, str]:

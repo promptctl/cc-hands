@@ -99,12 +99,25 @@ class LitFailed(Exception):
         return self.reason is not None
 
 
+class ProjectGone(LitFailed):
+    """The directory lit was to run in no longer exists: lit never started there."""
+
+    def __init__(self, project: Path) -> None:
+        super().__init__(f"{project} no longer exists", None)
+
+
 @dataclass(frozen=True)
 class Untracked:
     """A directory lit was never set up in, or that is in no git repository: it has no backlog, which is an answer, not
-    a failure."""
+    a failure. `gone` says the directory itself was removed (a worktree cleaned up), so there is nothing to run lit in."""
 
     project: Path
+    gone: bool = False
+
+    @property
+    def why(self) -> str:
+        """[LAW:one-source-of-truth] why there is no backlog, as every reader says it."""
+        return "the directory no longer exists" if self.gone else "lit has no workspace there"
 
 
 # A failed lit command's first stderr line names its reason as a token beside the exit code, lit's published contract
@@ -344,10 +357,12 @@ class Backlog:
 
 
 async def read_backlog(project: Path) -> Backlog | Untracked:
-    """The backlog lit holds for `project`, or that lit has no workspace there; raises LitFailed when lit cannot say, and
+    """The backlog lit holds for `project`, or that it has none (no lit workspace, or the directory is gone); raises LitFailed when lit cannot say, and
     Rejected when what it said does not parse."""
     try:
         out = await _lit(project, "export", environment=None)
+    except ProjectGone:
+        return Untracked(project, gone=True)
     except LitFailed as failed:
         if failed.reason in NO_WORKSPACE:
             return Untracked(project)
@@ -402,6 +417,9 @@ async def _lit(project: Path, *arguments: str, environment: Mapping[str, str] | 
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
     except OSError as error:
+        # The spawn names the missing path: the project directory, not lit, is what is gone.
+        if isinstance(error, FileNotFoundError) and str(error.filename) == str(project):
+            raise ProjectGone(project) from error
         raise LitFailed(f"cannot run lit in {project}: {error}", None) from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")

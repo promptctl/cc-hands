@@ -519,7 +519,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
         sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
         sentence is being written. `directory` is where this backlog was read; lit run there works its tracker.
-        `tracked` false means lit has no workspace there, so the project has no backlog at all.
+        `tracked` false means the project has no backlog at all, and `why` says why: lit has no workspace there, or
+        the directory no longer exists.
 
         Args:
             session: The id, from list_sessions, of a session working in the project.
@@ -527,8 +528,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
-            case Untracked(project):
-                return {"directory": str(project), "tracked": False, "items": []}
+            case Untracked(project) as untracked:
+                return {"directory": str(project), "tracked": False, "why": untracked.why, "items": []}
             case (project, Sighted(backlog=backlog, said=said)):
                 roots = backlog.roots()
                 return {
@@ -553,8 +554,8 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
-            case Untracked(project):
-                return {"error": f"{project} has no backlog, so no ticket {ticket}: lit has no workspace there"}
+            case Untracked(project) as untracked:
+                return {"error": f"{project} has no backlog, so no ticket {ticket}: {untracked.why}"}
             case (_, Sighted(backlog=backlog)) if ticket not in backlog.tickets:
                 return {"error": f"the backlog has no ticket {ticket}"}
             case (_, Sighted(backlog=backlog, said=said)):

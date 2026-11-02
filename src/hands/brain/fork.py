@@ -84,23 +84,24 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
     # fork shares with the loop. Markers it put on earlier messages stay where they are.
     newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
     marker = None if newest is None else [cast(Mapping[str, object], block)["cache_control"] for block in _blocks(messages[newest]["content"]) if isinstance(block, Mapping) and "cache_control" in block][-1]
-    history = [_unmarked(message) if index == newest else message for index, message in enumerate((*messages, *replied))]
-    # The API takes a system message only before an assistant message or at the end: the loop's trailing ones stay at the
-    # end, after the question, so no content is lost and none comes to precede a user message.
-    split = len(history)
-    while split > 0 and history[split - 1].get("role") == "system":
-        split -= 1
-    history, trailing = history[:split], history[split:]
+    shared = [_unmarked(message) if index == newest else message for index, message in enumerate((*messages, *replied))]
+    # The API takes a system message only before an assistant message or at the end: a run of them closing a turn with no
+    # reply yet to follow it stays at the end, and the question goes before it.
+    at = next((index + 1 for index in reversed(range(len(shared))) if shared[index].get("role") != "system"), 0)
+    # Past the question, a marker would write the question to the cache: the closing messages carry none.
+    history, closing = shared[:at], [_unmarked(message) for message in shared[at:]]
     # Claude Code's normalisation merges adjacent user messages: the question joins a last message that is the user's.
-    match history[-1] if history else None:
-        case {"role": "user", "content": content}:
+    match history:
+        case [*_, {"role": "user", "content": content}]:
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
             history.append({"role": "user", "content": asked})
-    # skipCacheWrite: the marker sits on the last message the fork shares with the loop, so nothing new is written.
-    if marker is not None and len(history) > 1:
-        history[-2] = _marked(history[-2], marker)
-    history.extend(trailing)
+    # skipCacheWrite: the marker sits on the last message the fork shares with the loop that can carry one, so nothing new
+    # is written. A system message never carries it, and a reply of thinking alone has no block that can.
+    carrier = next((index for index in reversed(range(len(history) - 1)) if history[index].get("role") != "system" and _markable(history[index])), None)
+    if marker is not None and carrier is not None:
+        history[carrier] = _marked(history[carrier], marker)
+    history.extend(closing)
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
     return headers, {**sent, "messages": history}
 
@@ -157,6 +158,10 @@ def _blocks(content: object) -> list[object]:
 def _unmarked(message: Mapping[str, object]) -> dict[str, object]:
     blocks = [{key: value for key, value in cast(Mapping[str, object], block).items() if key != "cache_control"} if isinstance(block, Mapping) else block for block in _blocks(message["content"])]
     return {**message, "content": blocks}
+
+
+def _markable(message: Mapping[str, object]) -> bool:
+    return any(cast(Mapping[str, object], block).get("type") not in UNMARKABLE for block in _blocks(message["content"]))
 
 
 def _marked(message: Mapping[str, object], marker: object) -> dict[str, object]:
