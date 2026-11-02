@@ -156,7 +156,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                     tell(exchanged((), Held(said, clock()), False))
                     return held
                 case Send(changes=asked, refusal=refusal, built=built):
-                    outgoing, onward, changes = _edited(exchange, body, parsed, asked)
+                    onward, changes = _edited(exchange, body, parsed, asked)
             headers = _end_to_end(request.headers)
             tell(Forwarded(exchange, request.path_qs, tuple(headers.items()), onward))
             try:
@@ -225,7 +225,7 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 # [LAW:single-enforcer] every request hands built or changed passes here, so its 400 is told here alone,
                 # after the exchange's end is told: a failure saying it cannot unsay that.
                 if reached.status == 400 and (built or changes):
-                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), outgoing, built, changes, reply)
+                    _hands_bug(exchange, reached.status, reached.headers.get("request-id"), parsed, built, changes, reply)
         return response
 
     app = web.Application()
@@ -240,26 +240,26 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
     return Proxy(url=f"http://{host}:{port}", runner=runner, client=client)
 
 
-def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, ...]) -> tuple[object, bytes, tuple[Change, ...]]:
-    """The request that goes upstream with `changes` made, its bytes, and the changes they carry: none when they could not be made."""
+def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, ...]) -> tuple[bytes, tuple[Change, ...]]:
+    """The bytes that go upstream with `changes` made, and the changes they carry: none when they could not be made."""
     if not changes:
         # The bytes the client wrote, not a re-encoding of them.
-        return parsed, body, ()
+        return body, ()
     try:
-        sent = edited(parsed, changes)
         # JSON.stringify's spacing. Non-ASCII is escaped: a string Claude Code cut mid-emoji holds a lone surrogate,
         # which UTF-8 cannot encode.
-        return sent, json.dumps(sent, separators=(",", ":")).encode(), changes
+        return json.dumps(edited(parsed, changes), separators=(",", ":")).encode(), changes
     except ValueError:
         # [LAW:no-silent-failure] the request goes on as it came, and the log says it went unchanged.
         logger.exception(f"the proxy could not change exchange {exchange}; forwarding it as it came")
-        return parsed, body, ()
+        return body, ()
 
 
-def _hands_bug(exchange: str, status: int, request_id: str | None, sent: object, built: bool, changes: tuple[Change, ...], reply: Body) -> None:
+def _hands_bug(exchange: str, status: int, request_id: str | None, request: object, built: bool, changes: tuple[Change, ...], reply: Body) -> None:
     """Say loudly that the API refused a request hands built or changed: hands must never send one it refuses."""
     said = str(reply)
-    named = refused_message(sent, said)
+    # hands' changes never add, drop, or re-role a message, so the request as it came names the same one.
+    named = refused_message(request, said)
     made = "built" if built else f"changed ({len(changes)} changes)"
     where = "" if named is None else f" {named};"
     logger.error(f"hands' bug: hands {made} exchange {exchange} and the API refused it {status} (request-id {request_id}):{where} {said}")
