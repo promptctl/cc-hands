@@ -213,6 +213,15 @@ def streams(body: object) -> bool:
     return isinstance(body, Mapping) and cast(Mapping[str, object], body).get("stream") is True
 
 
+def refused_message(body: object, said: str) -> str | None:
+    """The message of a request a 400 names, by its index and role, if it names one of this body's."""
+    found = re.search(r"messages\.(\d+)", said)
+    messages = _list(cast(Mapping[str, object], body).get("messages")) if isinstance(body, Mapping) else []
+    if found is None or int(found[1]) >= len(messages):
+        return None
+    return f"messages.{found[1]} is role {_role(messages[int(found[1])])!r}"
+
+
 def _since_reply(messages: Sequence[object]) -> int:
     """Where the messages after the model's last reply begin."""
     replies = [index for index, message in enumerate(messages) if _role(message) == "assistant"]

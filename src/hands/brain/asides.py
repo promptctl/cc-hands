@@ -11,7 +11,6 @@ Each question is one request through hands' proxy, built as the brain's Claude C
 import asyncio
 import contextlib
 import json
-import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ import aiohttp
 
 from hands.brain.fork import Newest, fork
 from hands.core.trace import Span
-from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
+from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written, refused_message
 from hands.core.wire import Text as Said
 from hands.sessions.audit import Record
 from hands.sessions.replies import reply_reader
@@ -175,19 +174,10 @@ class Asides:
             case Garbled(reason=reason) if response.status == 200:
                 # Answered, then cut off on the way: the stream ended before its reply was whole.
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
-            case other if response.status == 400 and (named := _named(body, said := str(other))) is not None:
+            case other if response.status == 400 and (named := refused_message(body, said := str(other))) is not None:
                 # [LAW:nothing-unseen] hands sent every message of a side question, so a 400 naming one is hands' to own,
                 # even one copied from the brain's history. A 400 naming none (too long, no credit) is a refusal like any other.
                 raise AsideFailed(Unanswered.MALFORMED, f"hands sent a side question the API refused as malformed (hands' to own): {named}; answered 400 (request-id {request_id}): {said}")
             case other:
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
 
-
-def _named(body: Mapping[str, object], said: str) -> str | None:
-    """The message of this body a refusal names, by its index and role, if it names one."""
-    found = re.search(r"messages\.(\d+)", said)
-    messages = cast(list[object], body["messages"])
-    if found is None or int(found[1]) >= len(messages):
-        return None
-    named = messages[int(found[1])]
-    return f"messages.{found[1]} is role {cast(Mapping[str, object], named).get('role')!r}"

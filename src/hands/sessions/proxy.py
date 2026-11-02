@@ -30,6 +30,7 @@ from hands.core.wire import (
     Change,
     Ending,
     Exchanged,
+    Fork,
     Forwarded,
     Garbled,
     Heard,
@@ -45,6 +46,7 @@ from hands.core.wire import (
     Unreached,
     edited,
     is_stream,
+    refused_message,
     streams,
 )
 from hands.sessions.replies import reply_reader, sent_of, shielded, spent
@@ -220,6 +222,9 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Cal
                 raise
             finally:
                 last = clock() if ended is None else ended
+                # A side question's own refusal is told by what asked it (`hands.brain.asides`).
+                if reached.status == 400 and changes and not isinstance(kind, Fork):
+                    _malformed(exchange, onward, changes, reply)
                 tell(exchanged(changes, Reached(reached.status, last if first is None else first, last, size, reply), final))
         return response
 
@@ -248,6 +253,15 @@ def _edited(exchange: str, body: bytes, parsed: object, changes: tuple[Change, .
         # [LAW:no-silent-failure] the request goes on as it came, and the log says it went unchanged.
         logger.exception(f"the proxy could not change exchange {exchange}; forwarding it as it came")
         return body, ()
+
+
+def _malformed(exchange: str, onward: bytes, changes: tuple[Change, ...], reply: Body) -> None:
+    """Say loudly that the API refused as malformed a request hands changed: hands must never send one, so it is hands' bug."""
+    said = str(reply)
+    named = refused_message(json.loads(onward), said)
+    # [LAW:nothing-unseen] a 400 naming none of its messages (too long, no credit) is a refusal like any other.
+    if named is not None:
+        logger.error(f"hands changed exchange {exchange} ({len(changes)} changes) and the API refused it as malformed (hands' bug): {named}; answered 400: {said}")
 
 
 def _unfinished(error: BaseException) -> str:

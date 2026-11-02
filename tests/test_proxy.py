@@ -23,6 +23,7 @@ from hands.core.wire import (
     Answered,
     Answering,
     Auxiliary,
+    Change,
     CountTokens,
     Exchanged,
     Garbled,
@@ -755,3 +756,37 @@ def test_a_request_hands_cannot_read_is_warned_about_with_all_it_said() -> None:
     finally:
         logger.remove(sink)
     assert len(logged) == 1 and "'dreaming', a class hands does not know" in logged[0] and logged[0].endswith(body.decode())
+
+
+MALFORMED = b'{"type":"error","error":{"type":"invalid_request_error","message":"messages.0: role \'system\' must precede an \'assistant\' message or end the array"}}'
+TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
+
+
+@pytest.mark.parametrize(
+    ("changes", "said", "told"),
+    [
+        # hands changed it and the API named one of its messages: hands' bug, by index and role.
+        ((Tail("tail"),), MALFORMED, True),
+        # The client's own request, untouched: Claude Code's to own.
+        ((), MALFORMED, False),
+        # Refused for its size, which names no message: a refusal like any other.
+        ((Tail("tail"),), TOO_LONG, False),
+    ],
+    ids=["changed", "unchanged", "too-long"],
+)
+async def test_a_400_naming_a_message_of_a_request_hands_changed_is_logged_as_hands_bug(
+    serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], changes: tuple[Change, ...], said: bytes, told: bool
+) -> None:
+    async def refused(_request: web.Request) -> web.Response:
+        return web.Response(status=400, body=said, headers={"Content-Type": "application/json"})
+
+    _, wire = await serve(refused)
+    wire.route = lambda _sent: Send(changes, span=root())
+    errors: list[str] = []
+    sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
+    try:
+        status, _, _ = await post(wire.proxy.url)
+    finally:
+        logger.remove(sink)
+    assert status == 400
+    assert [("hands' bug" in error, "messages.0 is role 'user'" in error) for error in errors] == ([(True, True)] if told else [])
