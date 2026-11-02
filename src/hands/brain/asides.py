@@ -11,8 +11,11 @@ Each question is one request through hands' proxy, built as the brain's Claude C
 import asyncio
 import contextlib
 import json
+import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 from enum import StrEnum
 
 import aiohttp
@@ -44,6 +47,7 @@ class Unanswered(StrEnum):
 
     UNFORKED = "unforked"  # the brain had sent no main turn to fork it from within its asker's time
     REFUSED = "refused"  # its request was answered with something other than a reply
+    MALFORMED = "malformed"  # the API refused the request hands built as malformed: always hands' own bug
     BROKEN = "broken"  # its request or its reply broke off on the way
     TIMED_OUT = "timed_out"  # no answer within what its asker gave it
     WORDLESS = "wordless"  # the model's reply did not end in words
@@ -171,5 +175,19 @@ class Asides:
             case Garbled(reason=reason) if response.status == 200:
                 # Answered, then cut off on the way: the stream ended before its reply was whole.
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
+            case other if response.status == 400:
+                # [LAW:nothing-unseen] a side question is wholly hands' construction, so a 400 on it is hands' bug, told
+                # as one with the message the API named.
+                raise AsideFailed(Unanswered.MALFORMED, f"hands built a malformed side question (hands' own bug): {_named(body, str(other))}; answered 400 (request-id {request_id}): {other}")
             case other:
                 raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
+
+
+def _named(body: Mapping[str, object], said: str) -> str:
+    """The message a refusal names, by its index and role, or that it named none of this body's."""
+    found = re.search(r"messages\.(\d+)", said)
+    messages = cast(list[object], body.get("messages", []))
+    if found is None or int(found[1]) >= len(messages):
+        return "the refusal names none of its messages"
+    named = messages[int(found[1])]
+    return f"messages.{found[1]} is role {cast(Mapping[str, object], named).get('role')!r}"
