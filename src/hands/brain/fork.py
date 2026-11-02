@@ -85,8 +85,14 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
     newest = next((index for index in reversed(range(len(messages))) if cache_marked(messages[index])), None)
     marker = None if newest is None else [cast(Mapping[str, object], block)["cache_control"] for block in _blocks(messages[newest]["content"]) if isinstance(block, Mapping) and "cache_control" in block][-1]
     history = [_unmarked(message) if index == newest else message for index, message in enumerate((*messages, *replied))]
+    # The API takes a system message only before an assistant message or at the end: the loop's trailing ones stay at the
+    # end, after the question, so no content is lost and none comes to precede a user message.
+    split = len(history)
+    while split > 0 and history[split - 1].get("role") == "system":
+        split -= 1
+    history, trailing = history[:split], history[split:]
     # Claude Code's normalisation merges adjacent user messages: the question joins a last message that is the user's.
-    match history[-1]:
+    match history[-1] if history else None:
         case {"role": "user", "content": content}:
             history[-1] = {**history[-1], "content": [*_blocks(content), *asked]}
         case _:
@@ -94,6 +100,7 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
     # skipCacheWrite: the marker sits on the last message the fork shares with the loop, so nothing new is written.
     if marker is not None and len(history) > 1:
         history[-2] = _marked(history[-2], marker)
+    history.extend(trailing)
     headers = tuple((name, SIDE_QUESTION_CLASS if name.lower() == CLASS_HEADER else value) for name, value in turn.headers)
     return headers, {**sent, "messages": history}
 

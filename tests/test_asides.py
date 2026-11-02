@@ -276,7 +276,6 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
 # its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload.
 # The limit and the overload are the two the proxy would hold final, and pass on as its own 502, for Claude Code.
 @pytest.mark.parametrize(("status", "error", "headers"), [
-    (400, "invalid_request_error", {}),
     (403, "permission_error", {}),
     (529, "overloaded_error", {}),
     (429, "rate_limit_error", {"retry-after": "240711", "anthropic-ratelimit-unified-status": "rejected"}),
@@ -293,6 +292,68 @@ async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brai
     [event] = events(recorded)
     assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, status)
     assert len(rig.asked) == 2
+
+
+async def test_a_side_question_refused_as_malformed_is_told_as_hands_own_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.0.content.1: unexpected tool_result block"}}'
+    rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
+    with pytest.raises(AsideFailed, match=r"hands' to own\): messages\.0 is role 'user'; answered 400 \(request-id req_9\)"):
+        await rig.asides.ask(AsideKind.NAME, "malformed", Deadline(5))
+    [event] = events(recorded)
+    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.MALFORMED, 400)
+    assert len(rig.asked) == 2
+
+
+async def test_a_400_naming_none_of_the_side_questions_messages_is_a_refusal(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    await rig.main_turn()
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
+    rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
+    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\).*prompt is too long"):
+        await rig.asides.ask(AsideKind.NAME, "too long", Deadline(5))
+    [event] = events(recorded)
+    assert (event.facts["unanswered"], event.facts["status"]) == (Unanswered.REFUSED, 400)
+    assert len(rig.asked) == 2
+
+
+def system(said: str) -> dict[str, object]:
+    return {"role": "system", "content": [text(said)]}
+
+
+DIRECTIVE: dict[str, object] = {"role": "system", "content": [], "output_config": {"effort": "low"}}
+
+
+def accepted(messages: list[dict[str, object]]) -> bool:
+    """The API's ordering: a system message, unless directive-only, precedes an assistant message or ends the array;
+    user and assistant otherwise alternate; and no marker sits on a system message."""
+    spoken = [message["role"] for message in messages if message["role"] != "system"]
+    systems_placed = all(
+        message["content"] == [] or index == len(messages) - 1 or messages[index + 1]["role"] in ("assistant", "system")
+        for index, message in enumerate(messages) if message["role"] == "system"
+    )
+    unmarked = all("cache_control" not in block for message in messages if message["role"] == "system" for block in cast(list[dict[str, object]], message["content"]))
+    return systems_placed and unmarked and all(a != b for a, b in zip(spoken, spoken[1:]))
+
+
+@pytest.mark.parametrize("messages", [
+    [user(text("hi", cache_control=MARK)), system("the loop's reminder")],
+    [user(text("hi")), system("before the reply"), {"role": "assistant", "content": [text("hello")]}, user(text("and?", cache_control=MARK))],
+    [user(text("hi", cache_control=MARK)), DIRECTIVE],
+    [user(text("hi", cache_control=MARK)), system("one"), system("two")],
+], ids=["system-last", "system-before-assistant", "directive-last", "systems-last"])
+@pytest.mark.parametrize("answered", [None, reply(), reply(Text("Looking."), ToolUse("t1", "list", {}), stop="tool_use")], ids=["no-reply", "empty-reply", "running-call"])
+def test_a_question_forked_from_a_turn_with_system_messages_is_in_the_order_the_api_accepts(messages: list[dict[str, object]], answered: Message | None) -> None:
+    _, sent = forked(Turn("x1", "/v1/messages", HEADERS, as_sent(body(*messages)), answered), "what now?")
+    out = cast(list[dict[str, object]], sent["messages"])
+    assert accepted(out), out
+    # The question is in the last user message, and every system message the loop sent is still there, in order.
+    [*_, asking] = [message for message in out if message["role"] == "user"]
+    assert cast(list[object], asking["content"])[-2:] == ASKED
+    assert [message for message in out if message["role"] == "system"] == [message for message in messages if message["role"] == "system"]
 
 
 def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() -> None:
