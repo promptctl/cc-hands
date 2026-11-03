@@ -118,10 +118,10 @@ def cued(tool: Tool, acting: Callable[[], None]) -> Tool:
 
 
 def intermediary_tools(
-    clock: Clock, sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
+    sessions: Sessions, store: SummaryStore, home: Home, recounts: Recounts, player: Player, refocus: Refocus, switch: Callable[[Modality], None], levels: Levels, wake: Word, own: "OwnModel", voices: Voices, catalogue: spotify.Catalogue, environment: Mapping[str, str], acting: Callable[[], None]
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
-    but staying silent, whose call is the choice not to act. `clock` is the run's, which every tool reads time on.
+    but staying silent, whose call is the choice not to act. Every tool reads time on `sessions.clock`, the run's one clock.
     `environment` is the run's, which says where tmux keeps its sockets and where tmux is.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
@@ -133,25 +133,25 @@ def intermediary_tools(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
-        *backlog_tools(clock, sessions, store),
+        *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
-        read_screen_tool(clock, sessions, environment),
+        read_screen_tool(sessions, environment),
         set_overlay_tool(sessions, overlays),
     ]
     acts = [
-        list_sessions_tool(clock, sessions, overlays, home, environment),
+        list_sessions_tool(sessions, overlays, home, environment),
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
-        catch_up_tool(sessions, home, clock.wall),
+        catch_up_tool(sessions, home, sessions.clock.wall),
         attention_tool(home),
         modality_tool(switch),
         *listening_tools(levels, wake),
         *voice_tools(voices),
         *model_tools(own, player),
         *playback_tools(player),
-        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, clock)), catalogue),
+        *spotify_tools(spotify.Player(functools.partial(spotify.osascript, sessions.clock)), catalogue),
     ]
     return [*(cued(tool, acting) for tool in acts), stay_silent_tool()]
 
@@ -253,7 +253,7 @@ def focus_session_tool(sessions: Sessions, home: Home) -> Tool:
     return tool(focus_session)
 
 
-def list_sessions_tool(clock: Clock, sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool:
+def list_sessions_tool(sessions: Sessions, overlays: Overlays, home: Home, environment: Mapping[str, str]) -> Tool:
     async def list_sessions() -> Result:
         """List the running Claude Code sessions by name, what each is doing, and the permission mode each is in.
 
@@ -271,7 +271,7 @@ def list_sessions_tool(clock: Clock, sessions: Sessions, overlays: Overlays, hom
         so keys reach it by `tmux -S <socket> send-keys -t <pane>`; or "not in tmux", or says why it cannot be read.
         """
         listings = sessions.live()
-        panes, focus = await asyncio.gather(tmux.panes(clock, [listing.session.membership.pid for listing in listings], environment), _focus(home))
+        panes, focus = await asyncio.gather(tmux.panes(sessions.clock, [listing.session.membership.pid for listing in listings], environment), _focus(home))
         return {
             "sessions": [{**describe_listing(listing), "overlay": await _overlay(overlays, listing.session.membership.id), "tmux": _in_pane(pane)} for listing, pane in zip(listings, panes, strict=True)],
             "focus": focus,
@@ -281,7 +281,7 @@ def list_sessions_tool(clock: Clock, sessions: Sessions, overlays: Overlays, hom
 
 
 
-def read_screen_tool(clock: Clock, sessions: Sessions, environment: Mapping[str, str]) -> Tool:
+def read_screen_tool(sessions: Sessions, environment: Mapping[str, str]) -> Tool:
     async def read_screen(session: str) -> Result:
         """What a session's terminal shows now, as text, read off the tmux pane it runs in.
 
@@ -297,10 +297,10 @@ def read_screen_tool(clock: Clock, sessions: Sessions, environment: Mapping[str,
         live = sessions.live_session(id)
         if live is None:
             return {"error": f"no session {session} is running: list_sessions names the ones that are"}
-        [pane] = await tmux.panes(clock, [live.membership.pid], environment)
+        [pane] = await tmux.panes(sessions.clock, [live.membership.pid], environment)
         match pane:
             case Pane(socket=socket, id=pane_id):
-                match await tmux.shown(clock, environment, socket, pane_id):
+                match await tmux.shown(sessions.clock, environment, socket, pane_id):
                     case str(screen):
                         return {"screen": screen, "tmux": _in_pane(pane)}
                     case Unanswered(reason=reason):
@@ -511,7 +511,7 @@ def _page(happenings: list[Happening]) -> list[Happening]:
     return happenings[:end]
 
 
-def backlog_tools(clock: Clock, sessions: Sessions, store: SummaryStore) -> list[Tool]:
+def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     """read_backlog, read_ticket: a session's project backlog, a sentence per ticket first and the ticket's own words on request."""
 
     async def read_backlog(session: str) -> Result:
@@ -526,7 +526,7 @@ def backlog_tools(clock: Clock, sessions: Sessions, store: SummaryStore) -> list
         Args:
             session: The id, from list_sessions, of a session working in the project.
         """
-        match await _backlog(clock, sessions, store, session):
+        match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
             case Untracked(project) as untracked:
@@ -552,7 +552,7 @@ def backlog_tools(clock: Clock, sessions: Sessions, store: SummaryStore) -> list
             ticket: The ticket's id, from read_backlog or an earlier read_ticket.
             full: True to be handed the ticket's own words: its description and its comments.
         """
-        match await _backlog(clock, sessions, store, session):
+        match await _backlog(sessions, store, session):
             case str() as error:
                 return {"error": error}
             case Untracked(project) as untracked:
@@ -572,14 +572,14 @@ def backlog_tools(clock: Clock, sessions: Sessions, store: SummaryStore) -> list
     return [tool(read_backlog), tool(read_ticket)]
 
 
-async def _backlog(clock: Clock, sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Sighted] | Untracked | str:
+async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tuple[Path, Sighted] | Untracked | str:
     """The session's project and its backlog sighted there; that lit has no workspace there, so it has no backlog; or
     why it could not be read."""
     member = sessions.membership(SessionId(session))
     if member is None:
         return f"there is no session {session}"
     try:
-        read = await sighted(clock, store, member.cwd)
+        read = await sighted(sessions.clock, store, member.cwd)
     except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")

@@ -171,10 +171,10 @@ class Mind:
     summariser: Callable[[AsideKind, str, float], Summariser]
 
 
-async def front_now(clock: Clock, sessions: Sessions, environment: Mapping[str, str]) -> InFront:
+async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFront:
     """What is in front on the Mac's screen among the sessions running now."""
     running = {listing.session.membership.id: (listing.session.membership.pid, identifier(listing)) for listing in sessions.live()}
-    return await read_front(clock, running, environment)
+    return await read_front(sessions.clock, running, environment)
 
 
 @asynccontextmanager
@@ -297,7 +297,7 @@ async def run(
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
             voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), prints.speaking_in)
-            tools = [audited(clock, tool, record) for tool in intermediary_tools(clock, sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
+            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
@@ -308,9 +308,9 @@ async def run(
                 audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(clock, sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
-                lexicon = Lexicon(clock, sessions, home, environment, record)
+                lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
                 voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
