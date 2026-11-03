@@ -19,8 +19,10 @@ class VirtualClock:
         self._epoch = epoch
         self._random = random.Random(seed)
         self._pauses: list[tuple[float, asyncio.Future[None]]] = []
-        self._watched: list[tuple[float, asyncio.Future[None]]] = []
+        self._watched: list[tuple[float, int, asyncio.Future[None]]] = []
         self._calls: list[_Call] = []
+        # How long each pause ever begun on this clock was to last, done or not: what a test reads to say one never began.
+        self.begun: list[float] = []
 
     def now(self) -> float:
         return self.at
@@ -31,6 +33,7 @@ class VirtualClock:
     def pause(self, seconds: float) -> asyncio.Future[None]:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
+        self.begun.append(seconds)
         self._seen()
         # A pause already due wakes at once, as `asyncio.sleep(0)` does.
         self._wake()
@@ -39,6 +42,7 @@ class VirtualClock:
     def call_at(self, when: float, callback: Callable[[], object]) -> Scheduled:
         call = _Call(when, callback)
         self._calls.append(call)
+        self._seen()
         self._wake()
         return call
 
@@ -64,15 +68,18 @@ class VirtualClock:
         return source.get_nowait()
 
     def advance(self, seconds: float) -> None:
+        # Monotonic, as the time it stands in for: a rewind would stamp what follows before what came first.
+        if seconds < 0:
+            raise ValueError(f"a clock moves only forward; advance({seconds}) would rewind it")
         self.at += seconds
         self._wake()
 
-    async def paused(self, until: float) -> None:
-        """Once a pause that wakes at `until` is waiting on this clock, however long the unit takes to come to it: a test
-        moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling], and a
-        unit that never comes to it is ended by the suite's timeout."""
+    async def paused(self, until: float, count: int = 1) -> None:
+        """Once `count` pauses or calls that come due at `until` are waiting on this clock, however long the unit takes to
+        come to them: a test moves the clock only once the deadline it spends is being waited out
+        [LAW:no-ambient-temporal-coupling], and a unit that never comes to it is ended by the suite's timeout."""
         seen = asyncio.get_running_loop().create_future()
-        self._watched.append((until, seen))
+        self._watched.append((until, count, seen))
         self._seen()
         await seen
 
@@ -96,11 +103,11 @@ class VirtualClock:
             call.fire(loop)
 
     def _seen(self) -> None:
-        waking = self.waking
-        for until, seen in self._watched:
-            if until in waking and not seen.done():
+        waiting = [*self.waking, *(call.when for call in self._calls if call.live)]
+        for until, count, seen in self._watched:
+            if waiting.count(until) >= count and not seen.done():
                 seen.set_result(None)
-        self._watched = [(until, seen) for until, seen in self._watched if not seen.done()]
+        self._watched = [watch for watch in self._watched if not watch[2].done()]
 
 
 class _Call:

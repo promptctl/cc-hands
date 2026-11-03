@@ -158,3 +158,22 @@ def test_a_rest_while_a_loop_waits_on_the_clock_is_refused() -> None:
         paused.cancel()
 
     asyncio.run(waiting())
+
+
+def test_a_virtual_clock_moves_only_forward() -> None:
+    clock = VirtualClock()
+    clock.advance(2.0)
+    with pytest.raises(ValueError, match="only forward"):
+        clock.advance(-1.0)
+    assert clock.now() == 2.0
+
+
+async def test_a_deadline_is_waited_on_as_a_pause_is_and_as_many_times_as_it_is_begun() -> None:
+    clock = VirtualClock()
+    seen = asyncio.create_task(clock.paused(3.0, count=2))
+    clock.call_at(3.0, lambda: None)
+    await asyncio.sleep(0)
+    assert not seen.done()
+    clock.pause(3.0)
+    await seen
+    assert clock.begun == [3.0]
