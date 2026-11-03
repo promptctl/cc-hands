@@ -15,7 +15,6 @@ charged to that test and not to the next.
 
 import contextvars
 import functools
-import inspect
 import os
 import random
 import secrets
@@ -24,7 +23,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from types import CodeType
@@ -43,10 +42,8 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
-    "fetches.py",
     "fixtures/standin_daemon.py",
     "fixtures/watched_run.py",
-    "npm_registry.py",
     "test_answer_permission.py",
     "test_asides.py",
     "test_atdesk.py",
@@ -154,8 +151,8 @@ FACILITIES: dict[str, tuple[object, tuple[str, ...]]] = {
 # Functions that read the machine's time only when not handed one: how many arguments they take before it.
 GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime": 0, "time.strftime": 1}
 
-# Waits handed their seconds at a place, which wait on none when handed none: a sleep of none is a yield.
-POLLED = {"time.sleep": 0, "threading.Timer": 1}
+# Waits handed their seconds at a place or by a keyword, which wait on none when handed none: a sleep of none is a yield.
+POLLED = {"time.sleep": (0, "secs"), "threading.Timer": (1, "interval"), "SystemClock.pause": (1, "seconds"), "SystemClock.rest": (1, "seconds"), "SystemClock.take": (2, "seconds")}
 
 # Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
@@ -218,7 +215,7 @@ class Watch:
         innermost, harness = entered
         return innermost if harness else ORIGIN.get(innermost)
 
-    def _through(self, facility: str, charged: Callable[[], str | None], function: Callable[..., object], *args: object, **kwargs: object) -> object:
+    def _through(self, facility: str, charged: Callable[[], str | None], function: Callable[..., object], /, *args: object, **kwargs: object) -> object:
         """`function` called, as a reach of `facility` by the module `charged` names unless it is made inside another
         facility: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made,
         not its parts. Only the outer call walks the stack."""
@@ -239,7 +236,7 @@ class Watch:
 
         @functools.wraps(function)
         def reached(*args: object, **kwargs: object) -> object:
-            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or len(args) <= polled or args[polled] != 0)
+            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or (args[polled[0]] if len(args) > polled[0] else kwargs.get(polled[1])) != 0)
             return self._through(facility, functools.partial(self._charged, carried) if reads else lambda: None, function, *args, **kwargs)
 
         return reached
@@ -294,7 +291,7 @@ class Watch:
 
     def rebind(self) -> None:
         """Every module attribute bound to a facility by `from time import monotonic` and its like, bound to its wrapper."""
-        for module in list(sys.modules.values()):
+        for module in [module for module in list(sys.modules.values()) if hasattr(module, "__dict__")]:
             for name, value in list(vars(module).items()):
                 if (wrapper := self._originals.get(id(value))) is not None and value is not wrapper:
                     self._patch.setattr(module, name, wrapper)
@@ -313,7 +310,7 @@ class Watch:
             functions: list[Callable[..., object]] = [item.function]  # pyright: ignore[reportUnknownMemberType]
             # A fixture of a wider scope is set up and torn down for whichever test comes first or last: the harness's.
             functions += (definition.func for definitions in item._fixtureinfo.name2fixturedefs.values() for definition in definitions if definition.scope == "function")  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
-            self._tests.update(inspect.unwrap(function).__code__ for function in functions)
+            self._tests.update(code for function in functions for code in layers(function))
         token = ORIGIN.set(module)
         try:
             return (yield)
@@ -333,7 +330,7 @@ class Watch:
         whole = session.exitstatus == 0 and not self._skipped and not self._deselected and modules <= self._ran
         for module, found in scanned(self.tests).items():
             self.record[module] |= found
-        self.new, self.stale = verdict({module: found for module, found in self.record.items() if found}, self.unmoved, whole)
+        self.new, self.stale = verdict({module: found for module, found in dict(self.record).items() if found}, self.unmoved, whole)
         # Only a run that would pass fails for the watch: an interrupted or empty one keeps its own status.
         if (self.new or self.stale) and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
@@ -353,6 +350,15 @@ def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -
     of the whole suite, each it holds that never did. A part of the suite sees only its part's reaches, so only the whole
     can prove an entry stale."""
     return {module: found for module, found in record.items() if module not in unmoved}, set(unmoved - record.keys()) if whole else set()
+
+
+def layers(function: Callable[..., object]) -> Iterator[CodeType]:
+    """The code of `function` and of each function it wraps: pytest calls a decorated test's outermost layer."""
+    layer: object = function
+    while layer is not None:
+        if isinstance(code := getattr(layer, "__code__", None), CodeType):
+            yield code
+        layer = getattr(layer, "__wrapped__", None)
 
 
 @functools.cache

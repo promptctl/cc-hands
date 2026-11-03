@@ -74,8 +74,9 @@ def reached(source: str, package: str = "hands") -> set[str]:
             # `asyncio.wait`'s timeout is its second argument, and nothing else that function takes.
             case ast.Call(func=func, args=[_, _, *_]) if _qualified(func, named) == "asyncio.wait":
                 found.add("asyncio.wait(timeout)")
+            # A timeout of none is a poll, as it is handed second.
             case ast.Call(func=ast.Attribute(attr=attr), keywords=keywords) if attr in TIMED and any(
-                keyword.arg == "timeout" for keyword in keywords
+                keyword.arg == "timeout" and not (isinstance(keyword.value, ast.Constant) and keyword.value.value == 0) for keyword in keywords
             ):
                 found.add(f".{attr}(timeout=)")
             # A thread's join, an event's wait, and a future's result take their seconds first, as a number no

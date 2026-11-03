@@ -128,3 +128,11 @@ def test_a_task_a_test_spawns_is_charged_to_the_test_and_a_wait_of_none_to_no_on
     # The loop asyncio.run drives reads the machine's monotonic clock too.
     assert "test_user.py: ['time.monotonic', 'time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
+
+
+def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    helper = "import functools, time\n\ndef later():\n    time.strftime('%H')\n\ndef wrapped(test):\n    @functools.wraps(test)\n    def run():\n        test()\n    return run\n"
+    user = "import threading\nfrom helper import later, wrapped\n\n@wrapped\ndef test_decorated():\n    later()\n\ndef test_polls():\n    threading.Timer(interval=0, function=lambda: None).cancel()\n"
+    lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
+    assert "test_user.py: ['time.strftime']" in lines
+    assert not any(line.startswith("helper.py") for line in lines)
