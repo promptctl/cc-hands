@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
+from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.effects import Allow, Heard, HookReply, Narrate, Withdraw, Asking
 from hands.core.events import Joined, Located, PermissionRequested, StatusReported, Tick, ToolFinished
@@ -534,7 +535,7 @@ async def test_a_hold_the_model_could_not_decide_raises_and_leaves_nothing_for_s
         raise RuntimeError("the reducer broke")
 
     monkeypatch.setattr("hands.sessions.registry.reduce", broken)
-    sessions = new_sessions()
+    sessions = new_sessions(clock=SYSTEM)
     asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
     with pytest.raises(RuntimeError, match="the reducer broke"):
         sessions.hold(asked)
@@ -553,7 +554,7 @@ async def test_a_held_request_s_reply_is_never_an_error_though_performing_what_i
     def failing(_: Heard) -> None:
         raise RuntimeError("the narration sink broke")
 
-    sessions = new_sessions(heard_sink=failing)
+    sessions = new_sessions(clock=SYSTEM, heard_sink=failing)
     await sessions.apply(Joined(Membership(SID, pid=os.getpid(), cwd=Path("/code/a"), transcript=Path("/nowhere.jsonl")), "startup"))
     asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)
     replying = sessions.hold(asked)

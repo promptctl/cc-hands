@@ -44,7 +44,8 @@ from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("brain")
 # The span the stages here route with: which trace a request is in is the stage's, not the keeper's.
-SPAN = root(VirtualClock())
+# Seeded apart from every other clock here, so its ids are no span the keeper or an exchange opens.
+SPAN = root(VirtualClock(seed=1))
 MARKED = {"type": "ephemeral"}
 
 

@@ -145,7 +145,7 @@ async def test_a_session_goes_by_the_name_its_judging_found_it_with(tmp_path: Pa
     async def keeps(_text: str) -> str:
         return "billing"
 
-    await judge(VirtualClock(), Finished(Membership(BILLING, pid=1, cwd=tmp_path, transcript=transcript), "done"), Names(), (), keeps, log.record)
+    await judge(VirtualClock(epoch=MORNING), Finished(Membership(BILLING, pid=1, cwd=tmp_path, transcript=transcript), "done"), Names(), (), keeps, log.record)
     log.record(typed("Drop the token-helper."))
     assert [moment.heading for moment in recall(home.audit, [], 20).moments] == ["sent to billing"]
 
@@ -251,7 +251,7 @@ async def test_a_tool_hands_called_is_a_moment_of_the_conversation_and_no_part_o
     clock = iter(MORNING + timedelta(minutes=minute) for minute in range(3))
     log = AuditLog(home.audit, clock=lambda: next(clock))
     log.record(Transcribed("switch to the wake word"))
-    await audited(VirtualClock(), tool(set_trigger), log.record).body(trigger="wake word")
+    await audited(VirtualClock(epoch=MORNING), tool(set_trigger), log.record).body(trigger="wake word")
     log.record(Replied("Okay.", False))
     assert [moment.kind for moment in folded(home, Moments()).moments()] == ["heard", "called", "said"]
     assert [moment.kind for moment in folded(home, Moments(2)).moments()] == ["called", "said"]

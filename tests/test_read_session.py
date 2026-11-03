@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
+from hands.clock import Clock
 from hands.virtualclock import VirtualClock
 from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
@@ -26,8 +27,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
 SID = SessionId("s1")
 
 
-async def joined(transcript: Path) -> Sessions:
-    sessions = new_sessions()
+async def joined(clock: Clock, transcript: Path) -> Sessions:
+    sessions = new_sessions(clock=clock)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/a"), transcript=transcript), "startup"))
     return sessions
 
@@ -55,7 +56,7 @@ async def read(sessions: Sessions, session: str = "s1", since: str = "", turn: i
 async def test_a_session_is_read_back_in_order_and_everything_names_its_record(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     first, second = await read(sessions), await read(sessions, turn=2)
     said = [happening["what"] for happening in first["happened"] + second["happened"]]
     # What was asked is in its place among what was done, so an hour of work reads as work on something.
@@ -77,7 +78,7 @@ async def test_a_session_is_read_back_in_order_and_everything_names_its_record(t
 async def test_reading_on_from_where_it_read_to_gives_what_came_after_and_nothing_twice(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     whole = await read(sessions)
     third = whole["happened"][2]["record"]
     after = await read(sessions, since=third)
@@ -96,7 +97,7 @@ async def test_a_session_with_more_than_one_reading_says_where_to_read_on_from(t
     records = ['{"uuid":"u0","type":"user","message":{"role":"user","content":"go"}}']
     records += [said(f"s{n}", f"step {n}") for n in range(60)]
     transcript.write_text("".join(f"{record}\n" for record in records))
-    answer = await read(await joined(transcript))
+    answer = await read(await joined(VirtualClock(), transcript))
     assert len(answer["happened"]) == READBACK_COUNT
     assert answer["more"] is True and answer["working"] is False
     assert answer["more_since"] == answer["happened"][-1]["record"]
@@ -116,7 +117,7 @@ async def test_a_record_holding_both_settled_work_and_a_call_still_running_is_ne
         '{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}\n'
     )
     transcript.write_text(prompt + both)
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
 
     working = await read(sessions)
     assert [happening["record"] for happening in working["happened"]] == ["u1", "u2", "u2"]
@@ -145,7 +146,7 @@ async def test_a_record_carrying_a_whole_page_is_handed_over_long_rather_than_sh
         + '{"uuid":"u2","type":"assistant","message":{"content":[' + calls + ']}}\n'
         + '{"uuid":"u3","type":"user","message":{"role":"user","content":[' + results + ']}}\n'
     )
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     # The record begins inside the page, so the page ends before it rather than splitting it.
     first = await read(sessions)
     assert [happening["record"] for happening in first["happened"]] == ["u1"]
@@ -173,7 +174,7 @@ async def test_a_reading_never_ends_inside_a_record_so_the_rest_of_one_is_never_
     )
     records.append('{"uuid":"res","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}')
     transcript.write_text("".join(f"{record}\n" for record in records))
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
 
     answer = await read(sessions)
     assert len(answer["happened"]) == READBACK_COUNT - 1
@@ -194,7 +195,7 @@ async def test_what_a_session_is_still_running_is_told_and_its_result_is_told_wh
     prompt = '{"uuid":"u1","type":"user","message":{"role":"user","content":"run the suite"}}\n'
     call = '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}\n'
     transcript.write_text(prompt + call)
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
 
     working = await read(sessions)
     assert [happening["record"] for happening in working["happened"]] == ["u1", "u2"]
@@ -218,7 +219,7 @@ async def test_a_record_that_names_no_id_is_never_the_mark_handed_back(tmp_path:
         '{"uuid":"u1","type":"user","message":{"role":"user","content":"go"}}\n'
         '{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}\n'
     )
-    answer = await read(await joined(transcript))
+    answer = await read(await joined(VirtualClock(), transcript))
     assert [happening["record"] for happening in answer["happened"]] == ["u1", None]
     assert answer["more_since"] == "u1"
 
@@ -234,7 +235,7 @@ async def test_a_session_that_has_ended_is_never_said_to_be_in_the_middle_of_som
         '{"uuid":"u1","type":"user","message":{"role":"user","content":"run the suite"}}\n'
         '{"uuid":"u2","type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pytest"}}]}}\n'
     )
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     assert (await read(sessions))["working"] is True
 
     await sessions.apply(Ended(SID, "other"))
@@ -247,7 +248,7 @@ async def test_a_mark_this_turn_never_held_is_said_rather_than_read_as_the_start
     """[LAW:no-silent-failure] a mark from another session would otherwise re-tell this one from the top."""
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     answer = await read(sessions, since="not-a-record")
     assert answer == {"error": "turn 1 of session s1 has no record not-a-record; call again with since empty to read from its start"}
     # A mark from another turn of the same session is not this turn's either.
@@ -258,17 +259,17 @@ async def test_a_mark_this_turn_never_held_is_said_rather_than_read_as_the_start
 async def test_a_turn_the_session_has_not_had_is_said_rather_than_read_as_another(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     shutil.copy(FIXTURE, transcript)
-    assert await read(await joined(transcript), turn=3) == {"error": "session s1 has turns 1 to 2, and no turn 3"}
+    assert await read(await joined(VirtualClock(), transcript), turn=3) == {"error": "session s1 has turns 1 to 2, and no turn 3"}
 
 
 async def test_a_session_the_registry_never_heard_of_is_said_to_be_no_session(tmp_path: Path) -> None:
-    answer = await read(await joined(tmp_path / "s1.jsonl"), session="nobody")
+    answer = await read(await joined(VirtualClock(), tmp_path / "s1.jsonl"), session="nobody")
     assert answer == {"error": "there is no session nobody"}
 
 
 async def test_a_transcript_that_cannot_be_read_is_said_rather_than_answered_with_nothing(tmp_path: Path) -> None:
     """[LAW:no-silent-failure] the model is told why it got nothing, rather than being handed nothing."""
-    answer = await read(await joined(tmp_path / "gone.jsonl"))
+    answer = await read(await joined(VirtualClock(), tmp_path / "gone.jsonl"))
     assert answer == {"error": "the transcript of session s1 could not be read"}
 
 
@@ -299,7 +300,7 @@ async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_pa
     """An hour of work read raw is thousands of tokens; a sentence per turn is a few hundred."""
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=30, steps=40)))
-    sessions = await at_prompt(await joined(transcript))
+    sessions = await at_prompt(await joined(VirtualClock(), transcript))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
     # Nothing is said yet: each finished turn is its request, and none of it waited on a model.
@@ -330,7 +331,7 @@ async def test_the_turn_a_running_session_is_on_is_not_summarised_until_it_is_do
     """A turn still growing would be summarised under a key it will not have once it is done."""
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     await sessions.apply(StatusReported(SID, Report(Busy(), Stamp(1)), at=0.0))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
@@ -345,7 +346,7 @@ async def test_a_session_at_its_prompt_while_a_subagent_works_in_the_background_
     """Claude Code says busy while the subagent works, but the turn that launched it was told: it is over."""
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
-    sessions = await joined(transcript)
+    sessions = await joined(VirtualClock(), transcript)
     turn = PromptId("p1")
     for event in (
         StatusReported(SID, Report(Idle(), Stamp(1)), at=0.0),
@@ -369,7 +370,7 @@ async def test_a_session_whose_status_is_not_read_yet_has_its_last_turn_left_uns
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=2, steps=3)))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
-    answer = await sentences(await joined(transcript), store)
+    answer = await sentences(await joined(VirtualClock(), transcript), store)
     assert answer["working"] is False and answer["unsummarised"] == 1
     wanted = await store.wanted()
     assert isinstance(wanted, Turns) and [due.id for due in wanted.due] == ["turn-1"]
@@ -378,7 +379,7 @@ async def test_a_session_whose_status_is_not_read_yet_has_its_last_turn_left_uns
 async def test_a_long_day_is_read_newest_first_a_page_at_a_time(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=TURNS_PAGE + 10, steps=1)))
-    sessions = await at_prompt(await joined(transcript))
+    sessions = await at_prompt(await joined(VirtualClock(), transcript))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
 
     newest = await sentences(sessions, store)
@@ -395,7 +396,7 @@ async def test_a_long_day_is_read_newest_first_a_page_at_a_time(tmp_path: Path) 
 async def test_a_transcript_that_starts_part_way_through_a_turn_says_so_rather_than_what_was_asked(tmp_path: Path) -> None:
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in [said("r0", "picking up where it was"), *hour(turns=1, steps=1)]))
-    answer = await sentences(await joined(transcript), SummaryStore(Sentences(tmp_path / "sentences.db")))
+    answer = await sentences(await joined(VirtualClock(), transcript), SummaryStore(Sentences(tmp_path / "sentences.db")))
     assert answer["turns"][0] == {"turn": 1, "began": "Claude said:\npicking up where it was"}
     assert answer["turns"][1] == {"turn": 2, "opened": "The user asked:\ndo task 0"}
 
@@ -404,7 +405,7 @@ async def test_a_turn_said_after_it_was_queued_is_not_asked_for_again(tmp_path: 
     """Read twice while the first pass runs, or told aloud in between: the second pass finds it said."""
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=3, steps=1)))
-    sessions = await at_prompt(await joined(transcript))
+    sessions = await at_prompt(await joined(VirtualClock(), transcript))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     await sentences(sessions, store)
     first = await store.wanted()
@@ -433,7 +434,7 @@ async def test_a_turns_pass_says_what_its_replies_left_out_and_its_calls_raised(
     transcript = tmp_path / "s1.jsonl"
     transcript.write_text("".join(f"{record}\n" for record in hour(turns=3, steps=1)))
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    await sentences(await at_prompt(await joined(transcript)), store)
+    await sentences(await at_prompt(await joined(VirtualClock(), transcript)), store)
     wanted = await store.wanted()
     assert isinstance(wanted, Turns)
     _, second, third = (due.id for due in wanted.due)

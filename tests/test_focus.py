@@ -42,7 +42,7 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
     async def typist(effect: Type[Input]) -> None:
         typed.append(effect)
 
-    sessions = new_sessions(typist=typist)
+    sessions = new_sessions(clock=SYSTEM, typist=typist)
     for id, project in ((HANDS, "cc-hands"), (LAWS, "laws")):
         await sessions.apply(Joined(Membership(id, 4242, Path("/code") / project, tmp / f"{id}.jsonl", tmp / f"{id}.sock"), "startup"))
     return sessions

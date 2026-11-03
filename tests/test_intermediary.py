@@ -58,7 +58,7 @@ def test_the_prompt_names_no_tool_the_daemon_does_not_give() -> None:
     # The rule in intermediary_instruction: a prompt that asks for a tool before it exists gets that tool paraphrased.
     # Every tool is snake_case, so every snake_case name in the prompt is a tool, bar the code names it quotes as ones never to say.
     quoted_code_names = {"parse_date", "test_invoice_total"}
-    given = set(names(new_sessions()))
+    given = set(names(new_sessions(clock=VirtualClock())))
     prompt = brain_instruction(Path("/home/hands/audit"), Path("/home/hands/brain"), "hands", None)
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", prompt)) - quoted_code_names
     assert named, "the prompt names no tool at all"
@@ -118,7 +118,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     assert found("one kind of line") == ["Transcribed"]
     assert found("the tools called lately") == ["tool.run"]
     # Once the log has rolled, what the closed segment holds is found too, before what came after.
-    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record, begun(VirtualClock())):
+    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record, begun(clock)):
         annotate(tool="list_sessions")
     assert found("the tools called lately") == ["tool.run", "tool.run"]
     assert found("the latest errors") == ["Exchanged", "summary.backlog"]

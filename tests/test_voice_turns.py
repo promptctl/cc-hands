@@ -284,7 +284,7 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict, SYSTEM),
         prompt=vocabulary,
-        prints=stood_in(tmp_path / "voiceprints"),
+        prints=stood_in(SYSTEM, tmp_path / "voiceprints"),
         holds=tmp_path / "holds",
         record=recorded.append,
     )

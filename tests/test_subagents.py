@@ -7,6 +7,7 @@ from typing import cast
 
 from loguru import logger
 
+from hands.virtualclock import VirtualClock
 from hands.core.attention import Spoken
 from hands.core.delta import Delta
 from hands.core.session import Membership, PromptId, SessionId
@@ -105,7 +106,7 @@ async def told(transcript: Path) -> tuple[Recounts, dict[str, object]]:
 
 
 async def opened(recounts: Recounts, part: str) -> list[str]:
-    call = expand_tool(new_sessions(), recounts).body
+    call = expand_tool(new_sessions(clock=VirtualClock()), recounts).body
     result = await call(session=SID, part=part)
     return [entry["told"] for entry in cast(list[dict[str, str]], result["parts"])]
 
@@ -114,7 +115,7 @@ async def test_what_the_reviewer_found_is_answered_from_the_reviewers_own_steps(
     transcript = parent(tmp_path, REVIEWER)
     reviewer(transcript)
     recounts, facts = await told(transcript)
-    whole = await expand_tool(new_sessions(), recounts).body(session=SID)
+    whole = await expand_tool(new_sessions(clock=VirtualClock()), recounts).body(session=SID)
     lines = [entry["told"] for entry in cast(list[dict[str, str]], whole["parts"]) if entry["part"] == WORK]
     # Named by the job it was given, and counted: its prompt is the job, and not a step of it.
     assert lines == ["A subagent's own work on /code-review medium 66: two steps."]

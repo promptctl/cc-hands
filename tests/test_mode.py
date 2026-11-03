@@ -5,6 +5,7 @@ from typing import get_args
 
 import pytest
 
+from hands.virtualclock import VirtualClock
 from hands.core.effects import Allow
 from hands.core.events import Joined, PermissionRequested, Prompted, Stopped
 from hands.core.session import Membership, Mode, PromptId, Permission, PermissionMode, RequestId, SessionId, UnknownMode
@@ -43,7 +44,7 @@ def test_every_mode_claude_code_has_is_said_by_name() -> None:
 
 
 async def test_a_mode_changed_at_the_keyboard_is_listed_at_the_sessions_next_hook() -> None:
-    sessions = new_sessions()
+    sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Joined(ONE, "startup"))
     assert describe_listing(sessions.live()[0])["mode"] == "not reported yet"
     await sessions.apply(Prompted(SID, at=1.0, mode="default", prompt=PromptId("p1"), text=""))
@@ -55,7 +56,7 @@ async def test_a_mode_changed_at_the_keyboard_is_listed_at_the_sessions_next_hoo
 
 
 async def test_a_voice_answer_keeps_the_mode_the_session_reported() -> None:
-    sessions = new_sessions()
+    sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Joined(ONE, "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode="plan", prompt=PromptId("p1"), text=""))
     request = PermissionRequested(SID, at=2.0, request=RequestId("r1"), on=Permission("Bash", {}), mode="plan")

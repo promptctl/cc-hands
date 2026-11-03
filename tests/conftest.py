@@ -39,7 +39,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
@@ -87,9 +87,9 @@ def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
 
 
 # [LAW:locality-or-seam] the one place tests build the session registry, so a change to its constructor is one edit here.
-# A test passes, by the constructor's own names, what its behavior rests on: a clock it reads, the audit it reads, its
-# typist or sinks. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
-new_sessions = partial(Sessions, clock=SYSTEM, record=lambda _: None)
+# A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, which has no default
+# so a test on the machine's clock names SYSTEM where the clock boundary sees it, the audit it reads, its typist or sinks. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
+new_sessions = partial(Sessions, record=lambda _: None)
 
 
 def model_facts(load: WideEvent) -> dict[str, Fact]:
@@ -245,7 +245,7 @@ def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(streaming, "load", unspoken)
 
 
-def stood_in(kept: Path) -> voiceprints.Voiceprints:
+def stood_in(clock: Clock, kept: Path) -> voiceprints.Voiceprints:
     """hands' voiceprints where no test is about them: a model that prints every voice alike, and a TTS that says
     anything as a second of silence, its prints kept in `kept`. The real model is test_voiceprints' and test_streaming's."""
 
@@ -255,7 +255,7 @@ def stood_in(kept: Path) -> voiceprints.Voiceprints:
     def speech() -> voiceprints.Synthesize:
         return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
 
-    return voiceprints.Voiceprints(SYSTEM, model, speech, kept, lambda _entry: None)
+    return voiceprints.Voiceprints(clock, model, speech, kept, lambda _entry: None)
 
 
 async def unprimed() -> None:
