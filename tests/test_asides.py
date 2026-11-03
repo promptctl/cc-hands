@@ -209,7 +209,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         await web.TCPSite(upstream, "127.0.0.1", 0).start()
         wire = Wire(SYSTEM, lambda _observed: None)
         proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=VirtualClock(epoch=datetime.fromtimestamp(0, UTC)))
-        asides = Asides(proxy.url, Newest(BRAIN), recorded.append)
+        asides = Asides(SYSTEM, proxy.url, Newest(BRAIN), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:

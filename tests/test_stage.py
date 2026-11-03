@@ -36,6 +36,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from conftest import patiently, running
 from hands.brain.process import BROKEN, NOBODY, SPOKEN_OVER, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
 from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
 from hands.core.effects import Allow, Deny
 from hands.core import place
@@ -173,7 +174,7 @@ class FakeBrain:
         return self.running
 
     # The brain's session, as the brain's own model holds it: what a permission is held in, and settled through.
-    sessions: Sessions = field(default_factory=lambda: model(lambda _: None, lambda _: None, lambda _: None))
+    sessions: Sessions = field(default_factory=lambda: model(SYSTEM, lambda _: None, lambda _: None, lambda _: None))
     held: int = 0
 
     def permit(self, tool: str, input: dict[str, object]) -> Asked:
@@ -431,6 +432,25 @@ class Rig:
         await asyncio.wait({waiting})
 
 
+class Held(VirtualClock):
+    """A clock whose time is what the test last set, and whose pauses pass only when the test runs them."""
+
+    def __init__(self, now: list[float], pauses: list[tuple[asyncio.Future[None], asyncio.Task[object]]]) -> None:
+        super().__init__()
+        self._at = now
+        self._held = pauses
+
+    def now(self) -> float:
+        return self._at[0]
+
+    def pause(self, seconds: float) -> asyncio.Future[None]:
+        paused: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiting = asyncio.current_task()
+        assert waiting is not None
+        self._held.append((paused, waiting))
+        return paused
+
+
 @pytest.fixture
 async def rig() -> AsyncGenerator[Rig, None]:
     brain = FakeBrain()
@@ -452,16 +472,9 @@ async def rig() -> AsyncGenerator[Rig, None]:
     call_spans = CallSpans()
     pauses: list[tuple[asyncio.Future[None], asyncio.Task[object]]] = []
 
-    async def pause(_seconds: float) -> None:
-        paused = asyncio.get_running_loop().create_future()
-        waiting = asyncio.current_task()
-        assert waiting is not None
-        pauses.append((paused, waiting))
-        await paused
-
     out = Spoken()
     settings = [Attention()]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, lambda: settings[-1], clock=lambda: now[0], pause=pause)
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, lambda: settings[-1], Held(now, pauses))
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())

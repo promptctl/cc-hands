@@ -197,7 +197,7 @@ async def test_a_call_with_arguments_the_tool_does_not_take_is_refused_as_the_to
     home = Home(tmp_path / "home")
     sessions = await two_sessions(tmp_path, [])
     await tools(sessions, home)["focus_session"].body(session=LAWS)
-    server = await serve_mcp(list(tools(sessions, home).values()), lambda _: None, CallSpans())
+    server = await serve_mcp(SYSTEM, list(tools(sessions, home).values()), lambda _: None, CallSpans())
     try:
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "stage_draft", "arguments": {"prompt": "run the tests"}}}
         async with aiohttp.ClientSession() as client, client.post(server.url, json=call, headers={"Authorization": f"Bearer {server.token}"}) as reply:

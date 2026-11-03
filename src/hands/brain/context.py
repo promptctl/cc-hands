@@ -15,7 +15,7 @@ from typing import Protocol
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, TimeLimit
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.context import Result, aged, key, line, question, results
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -80,7 +80,8 @@ class Store(Protocol):
 class Keeper:
     """The changes hands makes to the brain's history on the way out, and the side questions that make them possible."""
 
-    def __init__(self, session: SessionId, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
+    def __init__(self, clock: Clock, session: SessionId, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
+        self._clock = clock
         # The session the brain's requests carry, and what answers a side question.
         self._session = session
         self._ask = ask
@@ -152,7 +153,7 @@ class Keeper:
         if fresh:
             # [LAW:nothing-unseen] a batch reached is one unit of work, its lookups in the store included: the calls whose
             # results go as a line from now on, and those that go whole because no sentence had been said of them by then.
-            with unit("context.stubbing", self._record, begun(SYSTEM), ("stubbed", "whole")):
+            with unit("context.stubbing", self._record, begun(self._clock), ("stubbed", "whole")):
                 for result in fresh:
                     said = self._store.known(key(result))
                     self._decided[result.call] = None if said is None else line(result, said)
