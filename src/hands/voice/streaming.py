@@ -26,6 +26,7 @@ from typing import Any, Protocol, cast
 import numpy as np
 from loguru import logger
 
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads, voiceprints
@@ -364,7 +365,8 @@ class StreamingRecognizer:
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, model: Callable[[int], Session], identify: Identifier, record: Record) -> None:
+    def __init__(self, clock: Clock, model: Callable[[int], Session], identify: Identifier, record: Record) -> None:
+        self._clock = clock
         self._record = record
         self._identify = identify
         # The models load on the thread first, so holds spoken while they load wait behind them, and nothing else does.
@@ -380,7 +382,7 @@ class StreamingRecognizer:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each hold with why.
         [LAW:nothing-unseen] the load is a unit of its own, as the transcriber's is."""
         try:
-            with loads.loading("streaming.loaded", self._record):
+            with loads.loading(self._clock, "streaming.loaded", self._record):
                 annotate(
                     model=MODEL,
                     revision=REVISION,

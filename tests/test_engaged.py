@@ -11,6 +11,7 @@ from speech import quiet, spoken
 from pipecat.audio.vad.vad_analyzer import VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
+from hands.clock import SYSTEM
 from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, Ears, Hears, drive, loaded
@@ -85,7 +86,7 @@ class Rig:
         self.levels.append(leveled)
 
     def start(self, ears: Ears | None = None) -> asyncio.Task[None]:
-        return asyncio.create_task(drive(self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.chosen, self.on_move, self.on_level, self.events.append))
+        return asyncio.create_task(drive(SYSTEM, self.tapped, self.overheard, hearing_with(ears or self.ears, unwoken), self.chosen, self.on_move, self.on_level, self.events.append))
 
     async def tap(self) -> None:
         while not self.keys:
@@ -192,7 +193,7 @@ async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> 
         await asyncio.Event().wait()
         yield rig.ears, unwoken
 
-    driving = asyncio.create_task(drive(rig.tapped, rig.overheard, loading, rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(SYSTEM, rig.tapped, rig.overheard, loading, rig.chosen, rig.on_move, rig.on_level, rig.events.append))
     while not rig.keys:
         await asyncio.sleep(0)
     for event in (Pressed(1.0), Ripe(1.0), Released()):
@@ -212,7 +213,7 @@ async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:
         yield rig.ears, unwoken
 
     with pytest.raises(ExceptionGroup) as failed:
-        await drive(rig.tapped, rig.overheard, unloadable, rig.chosen, rig.on_move, rig.on_level, rig.events.append)
+        await drive(SYSTEM, rig.tapped, rig.overheard, unloadable, rig.chosen, rig.on_move, rig.on_level, rig.events.append)
     assert failed.group_contains(OSError, match="no network")
 
 
@@ -235,7 +236,7 @@ async def test_each_level_hears_from_where_it_started() -> None:
         begun.append(afresh)
         return False
 
-    driving = asyncio.create_task(drive(rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
+    driving = asyncio.create_task(drive(SYSTEM, rig.tapped, rig.overheard, hearing_with(rig.ears, woken), rig.chosen, rig.on_move, rig.on_level, rig.events.append))
     # Off, nothing hears the room; the wake word's model hears from its level's first buffer, afresh each time it starts.
     await rig.hear(b"q")
     for level in ("wake word", "off", "wake word"):
@@ -284,7 +285,7 @@ async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks(
 
 async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
-    async with loaded(16000, events.append) as ears:
+    async with loaded(SYSTEM, 16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
     [loaded_event] = events
     facts = model_facts(loaded_event)
@@ -302,7 +303,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
 async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool) -> None:
     # As the edge gives it: the speech as speech, then the silence the detector ends it at, then the question.
     audio = spoken(said)
-    async with loaded(16000, lambda event: None) as models:
+    async with loaded(SYSTEM, 16000, lambda event: None) as models:
         for at in range(0, len(audio), 640):
             models.heard(audio[at : at + 640], True)
         models.heard(quiet(STOP_SECS), False)
@@ -313,7 +314,7 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
     rig = Rig(verdicts=[])
     # Two phrases with a breath between them, then silence past Smart Turn's own stop: one turn, whatever it judges.
     audio = spoken("create a ticket") + quiet(0.4) + spoken("to read session history") + quiet(4.0)
-    async with loaded(16000, rig.events.append) as models:
+    async with loaded(SYSTEM, 16000, rig.events.append) as models:
         driving = rig.start(models)
         await rig.choose("engaged")
         await rig.hear(*(audio[at : at + 640] for at in range(0, len(audio), 640)))

@@ -17,13 +17,12 @@ Latency from key release to the first audio out is logged for every turn.
 import asyncio
 import shlex
 import sys
-import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
@@ -32,7 +31,7 @@ from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
@@ -181,7 +180,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], cut_off: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
@@ -192,7 +191,7 @@ async def mind(
     talk = conversation(llm.config_dir, SessionId(str(uuid4())))
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
     usage = Usage(talk.session)
-    tools = [*tools, *brain_tools, audited(usage_tool(usage), record)]
+    tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
     server = await serve_mcp(tools, record, spans)
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
@@ -282,43 +281,43 @@ async def run(
         refocus = Refocus(sessions, home, record)
         # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
         # and the brain's stage reads it.
-        key = PushToTalk(record)
+        key = PushToTalk(clock, record)
         # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
         # tap or set_listening_level's choice, and the tools read it.
         levels = Levels()
         # [LAW:one-source-of-truth] one queue of the cues owed to silence: the tools, the relay, and the turn's receipt owe
         # them, and the run plays them once its speaker is up and quiet.
-        quiet_cues = QuietCues()
+        quiet_cues = QuietCues(clock)
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop)
         if config is not None:
             # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks
             # in, the chooser each one it changes to. Its model loads on a thread of its own once the voice is built, so
             # nothing waits on it.
-            prints = Voiceprints(voiceprints.load, voices.pocket, home.voiceprints, record)
+            prints = Voiceprints(clock, voiceprints.load, voices.pocket, home.voiceprints, record)
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(), prints.speaking_in)
-            tools = [audited(tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), prints.speaking_in)
+            tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment)), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
             # A session is started by the daemon, in the environment hands was started in, which is the user's, and is
             # started once the registry holds it, so the brain can stage for it at once; it is closed once the registry
             # no longer does.
             brain_tools = [
-                audited(cued(start_session_tool(home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
-                audited(cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
+                audited(clock, cued(start_session_tool(clock, home, record, environment, sessions.live_members), lambda: quiet_cues.owe(WORKING)), record),
+                audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
-                floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions)
-                voice = await start(lambda: off_loop(lambda: build_voice(config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop)
+                floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
+                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop)
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
-    return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
+    return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
 async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
@@ -376,7 +375,7 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
-    channel = SystemChannel(voice.tts, post_notification, record)
+    channel = SystemChannel(voice.tts, post_notification, record, sessions.clock)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))
@@ -384,7 +383,7 @@ async def converse(
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
+        heart.beat(pipeline.state, _wall(sessions.clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay
@@ -397,7 +396,7 @@ async def converse(
         store.want(listing.session.membership.cwd)
     overlays = Overlays(home)
     playing = Playing()
-    utterances = Utterances(record)
+    utterances = Utterances(sessions.clock, record)
     background = [
         asyncio.create_task(sessions.keep_time(TICK_SECONDS), name="the progress ticker"),
         asyncio.create_task(keep_sweeping(home, sessions, SWEEP_SECONDS), name="the session liveness sweep"),
@@ -412,12 +411,12 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(store, sentences, record), name="the summary store"),
-        asyncio.create_task(keep_naming(names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
+        asyncio.create_task(keep_summarising(sessions.clock, store, sentences, record), name="the summary store"),
+        asyncio.create_task(keep_naming(sessions.clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds()), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
-    following = asyncio.create_task(follow_default_devices(pipeline.started, voice.audio, channel.say, record), name="the audio device follower")
+    following = asyncio.create_task(follow_default_devices(sessions.clock, pipeline.started, voice.audio, channel.say, record), name="the audio device follower")
     background.append(following)
     for task in background:
         task.add_done_callback(stop_if_failed)
@@ -439,7 +438,7 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record)
+        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=sessions.clock)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
@@ -452,7 +451,7 @@ async def converse(
         try:
             # Either failing ends the other, and the phone task with them.
             async with asyncio.TaskGroup() as phone_tasks:
-                phone_tasks.create_task(serve_phone(voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment, gallery), name="the phone's page")
+                phone_tasks.create_task(serve_phone(sessions.clock, voice.phone, minded.llm, lambda text: voice.worker.queue_frame(Typed(text=text)), store, home, record, environment, gallery), name="the phone's page")
                 phone_tasks.create_task(cue_the_phone(), name="the phone's cues")
         finally:
             await voice.phone.stop()
@@ -568,8 +567,8 @@ class PipelineWatch:
             self.started.set()
 
 
-def _wall(instant: float | None) -> datetime | None:
+def _wall(clock: Clock, instant: float | None) -> datetime | None:
     """A monotonic instant as the wall-clock time a reader of the heartbeat can compare with its own."""
-    return None if instant is None else datetime.now(UTC) - timedelta(seconds=time.monotonic() - instant)
+    return None if instant is None else clock.wall() - timedelta(seconds=clock.now() - instant)
 
 

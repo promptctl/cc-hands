@@ -10,7 +10,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
 from hands import footprint
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.footprint import Measured
 from hands.sessions.wide import Fact, WideEvent, annotate, begun, unit
 
@@ -27,11 +27,11 @@ def memory(before: Measured, after: Measured) -> dict[str, Fact]:
 
 
 @contextmanager
-def loading(event: str, emit: Callable[[WideEvent], None], read: Callable[[], int] = footprint.footprint) -> Generator[None]:
+def loading(clock: Clock, event: str, emit: Callable[[WideEvent], None], read: Callable[[], int] = footprint.footprint) -> Generator[None]:
     """Run a model's load as the unit of work `event`, which says how big the process was as it ended and how much it
     grew across it, however the load ends. [LAW:nothing-unseen] a measurement that fails is on the event as
     `footprint_error` or `footprint_before_error`, and the load goes on as it would have."""
-    with unit(event, emit, begun(SYSTEM)):
+    with unit(event, emit, begun(clock)):
         before = footprint.measured(read)
         try:
             yield

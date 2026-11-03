@@ -401,7 +401,7 @@ async def _called(home: Home, caller: Caller) -> None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CALL_SECONDS)) as client, client.post(
             f"https://127.0.0.1:{PHONE_PORT}/offer",
             json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE, "page": "the smoke test", "claim": "take"},
-            headers={"Authorization": f"Bearer {phone_key(home)}"},
+            headers={"Authorization": f"Bearer {phone_key(SYSTEM, home)}"},
             ssl=trusted,
         ) as answered:
             if answered.status != 200:

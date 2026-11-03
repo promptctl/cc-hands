@@ -24,7 +24,6 @@ the phone back and forth between them; only a press takes it from another page.
 import asyncio
 import fractions
 import json
-import time
 from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Literal
@@ -35,6 +34,7 @@ from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 from loguru import logger
 
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
@@ -142,8 +142,9 @@ class Outbound(MediaStreamTrack):
 
     kind = "audio"
 
-    def __init__(self, sample_rate: int) -> None:
+    def __init__(self, clock: Clock, sample_rate: int) -> None:
         super().__init__()
+        self._clock = clock
         self._sample_rate = sample_rate
         self._samples = round(sample_rate * FRAME_SECS)
         self._pending: deque[tuple[bytes, asyncio.Future[None] | None]] = deque()
@@ -172,9 +173,9 @@ class Outbound(MediaStreamTrack):
             raise MediaStreamError
         # [LAW:no-ambient-temporal-coupling] frames are dated by the count sent, against the clock at the first: a
         # late frame is followed at once by the next, so the call never drifts behind real time.
-        now = time.monotonic()
+        now = self._clock.now()
         start = self._start = now if self._start is None else self._start
-        await asyncio.sleep(max(0.0, start + self._sent * FRAME_SECS - now))
+        await self._clock.pause(max(0.0, start + self._sent * FRAME_SECS - now))
         frame, done = self._pending.popleft() if self._pending else (bytes(self._samples * 2), None)
         if done is not None and not done.done():
             done.set_result(None)
@@ -258,7 +259,8 @@ class Phone:
     already gone moves nothing.
     """
 
-    def __init__(self, key: PushToTalk, heard_rate: int, played_rate: int, record: Record) -> None:
+    def __init__(self, clock: Clock, key: PushToTalk, heard_rate: int, played_rate: int, record: Record) -> None:
+        self._clock = clock
         self._key = key
         self._heard_rate = heard_rate
         self._played_rate = played_rate
@@ -277,7 +279,7 @@ class Phone:
         # [LAW:one-source-of-truth] no ICE server: the phone reaches hands at an address it already has, on the LAN or
         # the tailnet, so hands' own addresses are every candidate there is.
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
-        outbound = Outbound(self._played_rate)
+        outbound = Outbound(self._clock, self._played_rate)
         resampler = AudioResampler(format="s16", layout="mono", rate=self._heard_rate)
         call = _Call(peer, outbound, resampler, offer.rate, remote, offer.asked, began, asyncio.Event())
         peer.addTrack(outbound)
@@ -361,7 +363,8 @@ class Phone:
     async def _watch(self, call: _Call) -> None:
         while True:
             try:
-                await asyncio.wait_for(call.heard.wait(), QUIET_SECS)
+                async with self._clock.timeout(QUIET_SECS):
+                    await call.heard.wait()
             except TimeoutError:
                 if self._call is call:
                     await self.hang_up("went quiet")

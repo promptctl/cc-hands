@@ -146,6 +146,9 @@ class _VirtualTimeout:
         self._when = when
         self._due = None if when is None else self._clock.call_at(when, self._expire)
 
+    def expired(self) -> bool:
+        return self._expired
+
     def _release(self) -> None:
         if self._due is not None:
             self._due.cancel()

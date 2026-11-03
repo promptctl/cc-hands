@@ -14,6 +14,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
 from conftest import running
+from hands.virtualclock import VirtualClock
+from hands.clock import SYSTEM
 from hands.sessions import heartbeat
 from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
@@ -172,7 +174,7 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
         return True
 
     recorded: list[Entry] = []
-    channel = SystemChannel(tts, notify, recorded.append)
+    channel = SystemChannel(tts, notify, recorded.append, SYSTEM)
     await channel.say(ModelUnreachable())
     # Kept out of the model's context: there it would read as the model's own reply.
     assert [(type(frame), getattr(frame, "text", None), getattr(frame, "append_to_context", None)) for frame in tts.frames] == [
@@ -190,17 +192,7 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
     ]
 
 
-class Clock:
-    """A clock the test winds, so crossing a burst window costs no wall time."""
-
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
-def speaking(clock: Clock) -> tuple[Recorder, list[Entry], SystemChannel]:
+def speaking(clock: VirtualClock) -> tuple[Recorder, list[Entry], SystemChannel]:
     """A channel whose speech works, so nothing it says should reach the screen."""
     tts, recorded = Recorder(), list[Entry]()
 
@@ -218,11 +210,11 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
     """A key held down on 2026-09-22 queued hundreds of empty turns, and this channel reported each one every 0.43 s
     for as long as they drained. A fault that recurs recurs in bursts, and a burst that fills the only channel the
     daemon has is not a loud failure but a jammed one."""
-    clock = Clock()
+    clock = VirtualClock()
     tts, recorded, channel = speaking(clock)
     for _ in range(200):
         await channel.say(TranscriptionFailed())
-        clock.now += 0.43
+        clock.advance(0.43)
     assert said(tts) == ["Speech recognition failed for that turn."] * 9  # 200 turns over 86 s, not 200 sentences
     # The audit says a thing was announced only where it was: what a burst costs is the saying, not the knowing.
     assert recorded == [Announced("Speech recognition failed for that turn.", "speech")] * 9
@@ -231,7 +223,7 @@ async def test_a_fact_repeated_through_one_burst_is_said_once() -> None:
 async def test_a_brain_failing_one_way_through_one_burst_is_said_once_however_its_words_differ() -> None:
     """What Claude Code shows for a failure can name a request id or a time, so it differs every time the same failure
     happens; the burst is the failure's kind, and a different kind is news."""
-    clock = Clock()
+    clock = VirtualClock()
     tts, _, channel = speaking(clock)
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_1"))
     await channel.say(StopFailed("server_error", "API Error: Connection lost mid-response. req_2"))
@@ -245,13 +237,13 @@ async def test_a_brain_failing_one_way_through_one_burst_is_said_once_however_it
 async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_passed() -> None:
     """Nothing else is ever said while a model is down, so only time can end the burst. Suppressing until
     something else was said would leave a user pressing a key at a daemon that has gone permanently silent."""
-    clock = Clock()
+    clock = VirtualClock()
     tts, _, channel = speaking(clock)
     await channel.say(TranscriptionFailed())
-    clock.now += BURST_SECONDS - 0.01
+    clock.advance(BURST_SECONDS - 0.01)
     await channel.say(TranscriptionFailed())
     assert said(tts) == ["Speech recognition failed for that turn."]
-    clock.now += 0.01
+    clock.advance(0.01)
     await channel.say(TranscriptionFailed())
     assert said(tts) == ["Speech recognition failed for that turn."] * 2
 
@@ -259,11 +251,11 @@ async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_
 async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() -> None:
     """Two faults can interleave, as a turn that fails and a press with no microphone. Were the window one slot
     wide, each would be news to the other and the pair would speak at the full jammed cadence."""
-    clock = Clock()
+    clock = VirtualClock()
     tts, _, channel = speaking(clock)
     for fact in (TranscriptionFailed(), NoMicrophone()) * 20:
         await channel.say(fact)
-        clock.now += 0.43
+        clock.advance(0.43)
     assert said(tts) == [
         "Speech recognition failed for that turn.",
         "There is no microphone, so hands cannot hear you.",
@@ -274,7 +266,7 @@ async def test_two_faults_taking_turns_do_not_between_them_defeat_the_burst() ->
 
 async def test_two_model_failures_of_different_kinds_are_both_heard() -> None:
     """The facts carry what differs, so sameness is the type's answer and not a comparison of sentences."""
-    clock = Clock()
+    clock = VirtualClock()
     tts, _, channel = speaking(clock)
     for fact in (ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.CONNECTIVITY), ModelFailed(ErrorCategory.RATE_LIMIT)):
         await channel.say(fact)
@@ -288,7 +280,7 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
     """A TTS that fails raises one error frame per frame it was handed, and the screen jams exactly as the ear
     did — the same window, taken from the other path. Pipecat's text for a silent utterance carries a fresh
     context id each time, so a window taken on the sentence rather than on the fault would never once close."""
-    clock, posted = Clock(), list[str]()
+    clock, posted = VirtualClock(), list[str]()
 
     async def notify(text: str) -> bool:
         posted.append(text)
@@ -297,7 +289,7 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
     channel = SystemChannel(Recorder(), notify, lambda _: None, clock)
     for turn in range(200):
         await channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio"))
-        clock.now += 0.43
+        clock.advance(0.43)
     assert len(posted) == 9  # 200 turns over 86 s, not 200 notifications
     assert posted[0] == "hands cannot speak: TTS context 0000-0000 completed with no audio"
 
@@ -306,7 +298,7 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
     """A run started over ssh may have no GUI session to post into, so osascript refuses every time. The refusal is no
     announcement and goes on no audit — and it still costs one attempt, because a screen that always says no is
     the one case where recording only what landed would hammer it at the jammed cadence forever."""
-    clock, recorded, attempts = Clock(), list[Entry](), list[str]()
+    clock, recorded, attempts = VirtualClock(), list[Entry](), list[str]()
 
     async def notify(text: str) -> bool:
         attempts.append(text)
@@ -317,7 +309,7 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
     channel = SystemChannel(tts, notify, recorded.append, clock)
     for _ in range(200):
         await channel.say(TranscriptionFailed())
-        clock.now += 0.43
+        clock.advance(0.43)
     assert attempts == ["hands cannot speak, so: Speech recognition failed for that turn."] * 9
     assert recorded == []
 
@@ -333,7 +325,7 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
         posted.append(text)
         return True
 
-    channel = SystemChannel(tts, notify, lambda _: None, Clock())
+    channel = SystemChannel(tts, notify, lambda _: None, VirtualClock())
     await asyncio.gather(*(channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio")) for turn in range(200)))
     assert posted == ["hands cannot speak: TTS context 0000-0000 completed with no audio"]
     await asyncio.gather(*(channel.say(TranscriptionFailed()) for _ in range(200)))
@@ -374,7 +366,7 @@ class Told(FrameProcessor):
 
 
 async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in() -> None:
-    owner, told = HoldOwner(Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
+    owner, told = HoldOwner(SYSTEM, Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
     async with running([owner, told]) as run:
         # Three turns sent, one for each transcription.
         gate = Gate()

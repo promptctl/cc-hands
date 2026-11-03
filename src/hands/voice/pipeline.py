@@ -9,7 +9,6 @@ the whole variability of the pipeline as data.
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -21,6 +20,7 @@ from pipecat.processors.aggregators.llm_response_universal import LLMUserAggrega
 from pipecat.transports.local.audio import LocalAudioTransportParams
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from hands.clock import Clock
 from hands.voice.voices import SaidInTTS
 from hands.voice.transcript import TranscriptObserver
 from hands.voice.wakeword import Pretrained, Word
@@ -71,6 +71,7 @@ class Voice:
 
 
 def build_voice(
+    clock: Clock,
     config: VoiceConfig,
     llm: FrameProcessor,
     key: PushToTalk,
@@ -94,11 +95,11 @@ def build_voice(
     # there is no wait for the user to "say more".
     params = PipelineParams(enable_metrics=True)
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
-    phone = Phone(key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
-    transport = KeyedAudioTransport(LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
+    phone = Phone(clock, key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
+    transport = KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record)
     # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is, and made before
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
-    with loads.loading("tts.loaded", record):
+    with loads.loading(clock, "tts.loaded", record):
         annotate(voice=str(config.voice))
         # [LAW:single-enforcer] every utterance is filtered here, whichever of them sent it: Pipecat applies a
         # TTS service's filters to the text of a TTSSpeakFrame and to each aggregated sentence of the model's
@@ -115,11 +116,11 @@ def build_voice(
     # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each hold, and
     # each echo span the run overhears (`Voice.recorder`), in a directory of the run's own, named by when the voice was
     # built: a hold's number is the run's.
-    recorder = Recorder(holds, datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
-    listeners = (streaming.StreamingRecognizer(streaming.load, prints, record), recorder)
-    stt = HoldOwner(Whisper(prompt=prompt, record=record), listeners, record)
+    recorder = Recorder(clock, holds, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
+    listeners = (streaming.StreamingRecognizer(clock, streaming.load, prints, record), recorder)
+    stt = HoldOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
 
-    start = EdgeTurnStart(record)
+    start = EdgeTurnStart(clock, record)
     turns = UserTurnStrategies(
         start=[start],
         stop=[KeyTurnStop()],
@@ -144,7 +145,7 @@ def build_voice(
         params=params,
         # The phone is told each mark of every turn, as the latency log is, and each line of the transcript, and passes
         # them to the page of the call that is up.
-        observers=[LatencyObserver(phone.tell), TranscriptObserver(stt, output, phone.tell), player.watching(tts, output), Audible(output)],
+        observers=[LatencyObserver(clock, phone.tell), TranscriptObserver(stt, output, phone.tell), player.watching(tts, output), Audible(clock, output)],
         idle_timeout_secs=None,
     )
     return Voice(

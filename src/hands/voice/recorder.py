@@ -30,7 +30,7 @@ from typing import Protocol
 import numpy as np
 import soxr
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
 from hands.voice.echo import Cancelled
@@ -151,10 +151,11 @@ class Recorder:
 
     name = "recorder"
 
-    def __init__(self, root: Path, named: str, identify: Callable[[int, Voiced], None], record: Record, cap: int = HOLDS_BYTES) -> None:
+    def __init__(self, clock: Clock, root: Path, named: str, identify: Callable[[int, Voiced], None], record: Record, cap: int = HOLDS_BYTES) -> None:
         self._root = root
         self._named = named
         self._identify = identify
+        self._clock = clock
         self._record = record
         self._cap = cap
         self._spans = 0
@@ -196,7 +197,7 @@ class Recorder:
             self._current += recording(directory, name, sound, facts)
             if self._runs and self._current + sum(self._runs.values()) > self._cap:
                 # Its own unit: what was written is kept whether or not the prune after it fails, which its event says.
-                with contextlib.suppress(Exception), unit("holds.pruned", self._record, begun(SYSTEM)):
+                with contextlib.suppress(Exception), unit("holds.pruned", self._record, begun(self._clock)):
                     self._runs = pruned(self._runs, self._current, self._cap)
             return directory
 
@@ -224,7 +225,7 @@ class Recorder:
         kept as if it had not."""
         self._spans += 1
         span = self._spans
-        with contextlib.suppress(Exception), unit("echo.kept", self._record, begun(SYSTEM)):
+        with contextlib.suppress(Exception), unit("echo.kept", self._record, begun(self._clock)):
             annotate(span=span, seconds=round(sound.seconds, 3), voices=voices(sound))
             facts: dict[str, object] = dict(span=span, hold=None, echo=True)
             directory = await asyncio.to_thread(self._written, f"echo-{span}", sound, facts)

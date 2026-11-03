@@ -12,6 +12,7 @@ from pipecat.frames.frames import Frame, InputAudioRawFrame, InterimTranscriptio
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Running, running
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry, Levels
 from hands.sessions.wide import WideEvent
 from hands.voice import holdowner
@@ -119,7 +120,7 @@ class Rig:
 @asynccontextmanager
 async def rigged(transcriber: Scripted, listeners: Sequence[Heeding] = ()) -> AsyncGenerator[Rig]:
     recorded: list[Entry] = []
-    owner, seen = HoldOwner(transcriber, listeners, recorded.append), Seen()
+    owner, seen = HoldOwner(SYSTEM, transcriber, listeners, recorded.append), Seen()
     async with running([owner, seen]) as run:
         yield Rig(run, owner, seen, recorded)
 

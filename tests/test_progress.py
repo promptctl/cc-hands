@@ -306,7 +306,7 @@ async def test_the_relay_hands_the_focus_on_to_be_played_and_cued_leaves_any_oth
     sessions = Heard()
     for session in (SID, OTHER, MUTED):
         sessions.waiting.put_nowait(Progress(session, frozenset({TURN}), (TESTS,), ""))
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     relaying = asyncio.create_task(relay(sessions, utterances, queue_frame, attending, lambda progress, amount, utterance: played.append((progress, amount, utterance)), lambda: working.append(None)))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len([entry for entry in recorded if isinstance(entry, WideEvent)]) < 2:

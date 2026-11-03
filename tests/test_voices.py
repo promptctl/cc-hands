@@ -13,6 +13,7 @@ from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 
 from conftest import running
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
@@ -60,7 +61,7 @@ def offline(voice: Chosen) -> None:
 
 def unlisted() -> Library:
     """A library that lists nothing: no test lists the real library, so each search finds nothing unless it is given a listing."""
-    return Library(lambda: [])
+    return Library(SYSTEM, lambda: [])
 
 
 def test_a_voice_is_named_as_a_person_says_it_and_one_hands_does_not_have_is_refused() -> None:
@@ -166,7 +167,7 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
 async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_refuses_a_voice_hands_lacks(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     lines, speaker = IdentityFilter(), Speaker(DEFAULT)
-    tools = {tool.name: audited(tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), lambda _voice: None))}
+    tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), lambda _voice: None))}
     async with running([lines, speaker]):
         assert await tools["voices_on_offer"].body() == {"speaking_in": DEFAULT, "voices": VOICES}
         assert await tools["hear_voices"].body(names=["Eve"]) == {"heard": ["eve"], "speaking_in": "charles"}

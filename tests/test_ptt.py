@@ -3,6 +3,7 @@
 import pytest
 
 from conftest import events
+from hands.clock import SYSTEM
 from hands.voice.hold import Move
 from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
@@ -93,7 +94,7 @@ def test_leaving_a_place_mid_hold_throws_the_hold_away() -> None:
 
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     recorded: list[Entry] = []
-    key = PushToTalk(recorded.append)
+    key = PushToTalk(SYSTEM, recorded.append)
     key.move("arm", "held key")
     key.move("start", "held key")
     key.go("phone")  # a call arrives while the user talks at the desk
@@ -115,7 +116,7 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
     assert gate.took("start", "phone") == "drop"
     assert gate.after("start", "phone button") == Gate("up", "phone", dropped=1 if held == "down" else 0)
     recorded: list[Entry] = []
-    key = PushToTalk(recorded.append)
+    key = PushToTalk(SYSTEM, recorded.append)
     key.move("start", "phone button")
     assert key.move("start", "held key") == "drop"
     assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "dropped": True}
@@ -137,7 +138,7 @@ def test_the_other_place_moves_nothing_and_the_gate_says_so() -> None:
 
 
 def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
-    key = PushToTalk(lambda _: None)
+    key = PushToTalk(SYSTEM, lambda _: None)
     assert key.modality == "screen"
     key.go("phone")  # a call arrives
     assert key.modality == "audio-only"
@@ -146,7 +147,7 @@ def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
 
 
 def test_a_turn_is_known_by_the_edge_that_opened_it_until_another_opens() -> None:
-    key = PushToTalk(lambda _: None)
+    key = PushToTalk(SYSTEM, lambda _: None)
     key.go("phone")  # a call arrives: it opens no turn
     assert key.opened == "held key"
     key.move("start", "phone button")
@@ -161,7 +162,7 @@ def test_a_turn_is_known_by_the_edge_that_opened_it_until_another_opens() -> Non
 
 
 def test_a_switch_by_voice_holds_until_hands_moves_between_the_desk_and_the_phone() -> None:
-    key = PushToTalk(lambda _: None)
+    key = PushToTalk(SYSTEM, lambda _: None)
     key.switch("audio-only")
     # Turns at the place it was switched at keep it.
     key.move("start", "held key")
@@ -178,7 +179,7 @@ def test_a_switch_by_voice_holds_until_hands_moves_between_the_desk_and_the_phon
 
 
 async def test_set_modality_switches_it_says_so_and_refuses_what_is_neither() -> None:
-    key = PushToTalk(lambda _: None)
+    key = PushToTalk(SYSTEM, lambda _: None)
     switch = modality_tool(key.switch)
     assert await switch.body(modality="audio-only") == {"modality": "audio-only", "readback": "Okay, audio only."}
     assert key.modality == "audio-only"

@@ -14,7 +14,6 @@ import hmac
 import ipaddress
 import json
 import os
-import secrets
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +24,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.child import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -55,9 +54,9 @@ class Untailed:
     reason: str
 
 
-async def tailnet_name() -> str | Untailed:
+async def tailnet_name(clock: Clock) -> str | Untailed:
     """This machine's name on the tailnet, as Tailscale's own command says it."""
-    status = await _tailscale("status", "--json")
+    status = await _tailscale(clock, "status", "--json")
     match status:
         case Untailed():
             return status
@@ -74,9 +73,9 @@ async def tailnet_name() -> str | Untailed:
             return Untailed("the tailnet has HTTPS certificates turned off, so Tailscale issues none for this machine")
 
 
-async def tailnet(home: Home) -> Tailnet | Untailed:
+async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
     """This machine's tailnet name and a current certificate for it, from Tailscale's own command."""
-    name = await tailnet_name()
+    name = await tailnet_name(clock)
     match name:
         case Untailed():
             return name
@@ -85,7 +84,7 @@ async def tailnet(home: Home) -> Tailnet | Untailed:
     found = Tailnet(name, home.phone / "tailnet.crt", home.phone / "tailnet.key")
     home.phone.mkdir(parents=True, exist_ok=True)
     # Tailscale keeps the certificate and renews it when it is due, so asking again is cheap.
-    issued = await _tailscale("cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
+    issued = await _tailscale(clock, "cert", "--cert-file", str(found.cert), "--key-file", str(found.key), name)
     match issued:
         case Untailed():
             return issued
@@ -93,7 +92,7 @@ async def tailnet(home: Home) -> Tailnet | Untailed:
             return found
 
 
-async def _tailscale(subcommand: str, *arguments: str) -> str | Untailed:
+async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> str | Untailed:
     """What `tailscale subcommand` said, or why it said nothing."""
     # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
     command = shutil.which("tailscale")
@@ -102,7 +101,7 @@ async def _tailscale(subcommand: str, *arguments: str) -> str | Untailed:
     asked = f"tailscale {subcommand}"
     try:
         # [LAW:single-enforcer] ended where every child of hands is: killed and reaped on a timeout, and on a shutdown.
-        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=SYSTEM)
+        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=clock)
     except TimeoutError:
         return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
     except OSError as error:
@@ -112,20 +111,21 @@ async def _tailscale(subcommand: str, *arguments: str) -> str | Untailed:
     return ran.out.decode()
 
 
-def _private(path: Path, data: bytes) -> Path:
+def _private(clock: Clock, path: Path, data: bytes) -> Path:
     """`data` written whole to a new file beside `path`, readable by the user alone, for a rename or a link to put in
     place: a file of the phone's is never seen half written."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    written = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    written = path.with_name(f".{path.name}.{clock.token(4)}")
     with os.fdopen(os.open(written, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
         file.write(data)
     return written
 
 
-def own_certificate(home: Home, now: datetime.datetime) -> tuple[Path, Path]:
+def own_certificate(clock: Clock, home: Home) -> tuple[Path, Path]:
     """The certificate hands shows under any address but its tailnet name: made once, kept in the home, and made
     again at a start that finds it within RENEW_DAYS of its end."""
     cert, key = home.phone / "own.crt", home.phone / "own.key"
+    now = clock.wall()
     if cert.exists() and key.exists():
         ends = x509.load_pem_x509_certificate(cert.read_bytes()).not_valid_after_utc
         if ends - now > datetime.timedelta(days=RENEW_DAYS):
@@ -146,17 +146,17 @@ def own_certificate(home: Home, now: datetime.datetime) -> tuple[Path, Path]:
     )
     # The key goes in first: a start stopped between the two leaves the old certificate, near its end, which the next
     # start makes again, key and all.
-    os.replace(_private(key, private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())), key)
-    os.replace(_private(cert, made.public_bytes(serialization.Encoding.PEM)), cert)
+    os.replace(_private(clock, key, private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())), key)
+    os.replace(_private(clock, cert, made.public_bytes(serialization.Encoding.PEM)), cert)
     return cert, key
 
 
-def phone_key(home: Home) -> str:
+def phone_key(clock: Clock, home: Home) -> str:
     """The phone's key: made once, by whichever of hands and `hands phone` asks first, kept in the home, readable by the
     user alone; raises Rejected where the file holds none."""
     path = home.phone / "key"
     if not path.exists():
-        made = _private(path, secrets.token_urlsafe(24).encode())
+        made = _private(clock, path, clock.token(24).encode())
         try:
             # [LAW:one-source-of-truth] a link, unlike a rename, never replaces: of two keys made at once, the first stands.
             os.link(made, path)

@@ -7,11 +7,11 @@ here reaches a working session.
 
 import hashlib
 import json
-import time
 from typing import Protocol
 
 from aiohttp import web
 
+from hands.clock import Clock
 from hands.core.brainwork import AlreadyEnded, BrainWork, Idle, NotWorking, Running, StopOutcome, Stopping, Working
 from hands.core.wire import Unreadable
 from hands.sessions.audit import Record
@@ -80,7 +80,7 @@ def parse_stop(body: bytes) -> str:
             raise Rejected("a Stop is {turn}, the turn the page was shown")
 
 
-def brain_routes(brain: Watched, key: str, record: Record) -> list[web.RouteDef]:
+def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list[web.RouteDef]:
     """The read of what the brain is doing, and a Stop.
 
     [LAW:nothing-unseen] each read is one `brain.read` event: what the brain was doing and how many calls it was running,
@@ -93,15 +93,15 @@ def brain_routes(brain: Watched, key: str, record: Record) -> list[web.RouteDef]
         work = brain.work()
         return hashlib.sha256(json.dumps(shown(work), sort_keys=True).encode()).hexdigest()[:16], work
 
-    @keyed("brain.read", record, key, counts=("calls",))
+    @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:
-        mark, work = await waited(look, request.query.get("seen"))
+        mark, work = await waited(clock, look, request.query.get("seen"))
         annotate(doing=type(work).__name__)
         count(calls=len(running(work)))
         # The Mac's clock as it answers, beside the mark: the page times the brain's work by it, never by its own.
-        return web.json_response({"seen": mark, "now": time.time(), "work": shown(work)})
+        return web.json_response({"seen": mark, "now": clock.wall().timestamp(), "work": shown(work)})
 
-    @keyed("brain.stop", record, key)
+    @keyed(clock, "brain.stop", record, key)
     async def stop(request: web.Request) -> web.Response:
         try:
             turn = parse_stop(await request.read())

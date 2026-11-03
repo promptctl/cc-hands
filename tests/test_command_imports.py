@@ -23,7 +23,7 @@ from hands.daemon import cli
 def interrupted(seconds):
     raise KeyboardInterrupt
 
-async def untailed():
+async def untailed(_clock):
     from hands.voice.phoneaddress import Untailed
     return Untailed("a stand-in for Tailscale")
 

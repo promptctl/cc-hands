@@ -13,7 +13,7 @@ import pytest
 from conftest import SYSTEM_PATH
 from loguru import logger
 
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli
 from hands.daemon.cli import main
 from hands.sessions import heartbeat, marketplace
@@ -79,7 +79,7 @@ def test_arguments_are_on_the_event_as_parsed(tmp_path: Path, capsys: pytest.Cap
 
 
 def test_a_phone_with_no_address_a_phone_reaches_fails_saying_so(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    async def untailed() -> phoneaddress.Untailed:
+    async def untailed(_clock: Clock) -> phoneaddress.Untailed:
         return phoneaddress.Untailed("a stand-in for Tailscale")
 
     monkeypatch.setattr(phoneaddress, "tailnet_name", untailed)

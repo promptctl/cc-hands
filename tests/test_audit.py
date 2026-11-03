@@ -927,7 +927,7 @@ async def test_an_entry_the_log_cannot_encode_is_a_failure_line_and_the_daemon_c
 
     sink = logged_to(log.record, lambda _: True)
     try:
-        assert "sessions" in await audited(tool(list_sessions), log.record).body()
+        assert "sessions" in await audited(SYSTEM, tool(list_sessions), log.record).body()
     finally:
         logger.remove(sink)
     [line] = lines(path)

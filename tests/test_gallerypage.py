@@ -10,6 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from hands.clock import SYSTEM
 from hands.core.place import Modality
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
@@ -136,7 +137,7 @@ async def page() -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     gallery = Gallery(voices=voices, levels=levels, desk=desk, own=own, speaker=speaker, wake=Pretrained(), models=MODELS)
     app = web.Application()
-    app.add_routes(gallery_routes(gallery, KEY, recorded.append))
+    app.add_routes(gallery_routes(SYSTEM, gallery, KEY, recorded.append))
     async with TestClient(TestServer(app)) as client:
         yield Page(client, voices, levels, desk, speaker, own, recorded)
 
@@ -299,7 +300,7 @@ async def test_the_library_search_returns_matches_and_records_the_listing(page: 
 def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
     # The page's routes are named in one place, so the page's requests and these routes cannot drift apart.
     gallery = Gallery(voices=Voicing(), levels=Listening(), desk=Desk(), own=Own(), speaker=Speaker(), wake=Pretrained(), models=MODELS)
-    routes: list[Any] = [route for route in gallery_routes(gallery, KEY, lambda _entry: None)]
+    routes: list[Any] = [route for route in gallery_routes(SYSTEM, gallery, KEY, lambda _entry: None)]
     assert sorted(f"{route.method} {route.path}" for route in routes) == sorted([
         "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
         "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",

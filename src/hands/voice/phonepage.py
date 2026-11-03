@@ -8,8 +8,6 @@ The page is open to anyone who can reach the port; a call is not. The page sends
 an offer without it is refused.
 """
 
-import asyncio
-import datetime
 import json
 import ssl
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -21,7 +19,7 @@ from typing import Never
 from aiohttp import web
 from loguru import logger
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -48,7 +46,7 @@ def parse_offer(body: object) -> Offer:
             raise Rejected("an offer is {sdp, type: offer, rate, page, claim: take or resume}")
 
 
-def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
+def phone_app(clock: Clock, phone: Phone, key: str, record: Record) -> web.Application:
     """The page, and the one route that takes its calls."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
 
@@ -57,7 +55,7 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
 
     async def offered(request: web.Request) -> web.Response:
         remote = request.remote or "unknown"
-        began = begun(SYSTEM)
+        began = begun(clock)
         if not carries_key(request.headers.get("Authorization", ""), key):
             call_ended(record, began, remote, None, CallRefused("offered without the phone's key"))
             return web.Response(status=401, text="this page's address is missing the phone's key; open it from `hands phone`")
@@ -82,7 +80,7 @@ def phone_app(phone: Phone, key: str, record: Record) -> web.Application:
     return app
 
 
-async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> Never:
+async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callable[[str], Awaitable[None]], store: SummaryStore, home: Home, record: Record, environment: Mapping[str, str], gallery: Gallery) -> Never:
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
     with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `brain`. The
     conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
@@ -92,19 +90,19 @@ async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Await
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served
     under, or, served on the LAN alone, why Tailscale gave it none.
     """
-    key = phone_key(home)
-    app = phone_app(phone, key, record)
-    app.add_routes(brain_routes(brain, key, record))
-    app.add_routes(conversation_routes(Conversation(home.audit), typed, key, record))
-    app.add_routes(backlog_routes(store, key, record, environment))
-    app.add_routes(gallery_routes(gallery, key, record))
+    key = phone_key(clock, home)
+    app = phone_app(clock, phone, key, record)
+    app.add_routes(brain_routes(clock, brain, key, record))
+    app.add_routes(conversation_routes(clock, Conversation(home.audit), typed, key, record))
+    app.add_routes(backlog_routes(clock, store, key, record, environment))
+    app.add_routes(gallery_routes(clock, gallery, key, record))
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     try:
-        with unit("phone.served", record, begun(SYSTEM)):
-            own = _context(*own_certificate(home, datetime.datetime.now(datetime.UTC)))
+        with unit("phone.served", record, begun(clock)):
+            own = _context(*own_certificate(clock, home))
             kept: Callable[[], Coroutine[object, object, Never]]
-            match await tailnet(home):
+            match await tailnet(clock, home):
                 case Tailnet(name=name, cert=cert, key=key):
                     tailed = _context(cert, key)
 
@@ -115,12 +113,12 @@ async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Await
 
                     own.sni_callback = chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
                     annotate(tailnet=name)
-                    kept = partial(_keep_renewed, tailed, home)
+                    kept = partial(_keep_renewed, clock, tailed, home)
                 case Untailed(reason=reason):
                     # [LAW:no-silent-failure] the page is still served on the LAN; why the tailnet name is not, is said.
                     logger.warning(f"the phone's page is served on the LAN alone: {reason}")
                     annotate(untailed=reason)
-                    kept = _keep_served
+                    kept = partial(_keep_served, clock)
             # Every request the site takes is work for no unit open here: the server's tasks copy the context it is
             # started in, and `phone.served` ends as the page comes up.
             with continuing(None):
@@ -133,10 +131,10 @@ async def serve_phone(phone: Phone, brain: Watched, typed: Callable[[str], Await
         await runner.cleanup()
 
 
-async def _keep_renewed(tailed: ssl.SSLContext, home: Home) -> Never:
+async def _keep_renewed(clock: Clock, tailed: ssl.SSLContext, home: Home) -> Never:
     while True:
-        await asyncio.sleep(RENEW_SECONDS)
-        match await tailnet(home):
+        await clock.pause(RENEW_SECONDS)
+        match await tailnet(clock, home):
             case Tailnet(cert=cert, key=key):
                 # A context's chain, loaded again, is the one every handshake after it shows.
                 tailed.load_cert_chain(cert, key)
@@ -144,10 +142,10 @@ async def _keep_renewed(tailed: ssl.SSLContext, home: Home) -> Never:
                 logger.warning(f"the tailnet's certificate for the phone's page was not renewed: {reason}")
 
 
-async def _keep_served() -> Never:
+async def _keep_served(clock: Clock) -> Never:
     while True:
         # Served until cancelled: there is no certificate of Tailscale's to renew.
-        await asyncio.sleep(RENEW_SECONDS)
+        await clock.pause(RENEW_SECONDS)
 
 
 def _context(cert: Path, key: Path) -> ssl.SSLContext:

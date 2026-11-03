@@ -142,7 +142,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
     path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await joined(tmp_path, record)
-    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    tools = [audited(SYSTEM, tool, record) for tool in draft_tools(sessions)]
     user, assistant = turns(LLMUserAggregatorParams())
     record_turns(user, assistant, record)
 
@@ -305,7 +305,7 @@ async def test_what_is_typed_is_in_the_audit_log_before_the_readback(tmp_path: P
     path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
-    tools = [audited(tool, record) for tool in draft_tools(sessions)]
+    tools = [audited(SYSTEM, tool, record) for tool in draft_tools(sessions)]
     await call(tools, "stage_draft", session=id, text="run the tests", resolutions=[])
     await call(tools, "send_draft", session=id)
     written = [json.loads(line) for line in tail(path, 1000)[0]]
@@ -411,7 +411,7 @@ async def test_a_command_is_in_the_audit_log_before_the_readback(tmp_path: Path)
     path = tmp_path / "audit"
     record = AuditLog(path, clock=lambda: datetime.now(UTC)).record
     sessions, id = await wrapped(tmp_path, lambda _: None, record)
-    await call([audited(tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
+    await call([audited(SYSTEM, tool, record) for tool in keyboard_tools(sessions)], "send_command", session=id, command="compact")
     written = [json.loads(line) for line in tail(path, 1000)[0]]
     assert [kind(line) for line in written][-2:] == ["Typing", "tool.run"]
     assert written[-2]["effect"]["input"] == {"type": "Command", "name": "compact", "args": None}

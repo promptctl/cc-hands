@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
@@ -41,7 +42,7 @@ def answering(reply: str, heard: list[str] | None = None):
 async def judged(path: Path, reply: str, names: Names, heard: list[str] | None = None, beside: tuple[Membership, ...] = ()) -> WideEvent:
     recorded: list[Entry] = []
     turn = Finished(member(path), "I fixed how sessions are named.")
-    await judge(turn, names, (turn.membership, *beside), answering(reply, heard), recorded.append)
+    await judge(SYSTEM, turn, names, (turn.membership, *beside), answering(reply, heard), recorded.append)
     [line] = recorded
     assert isinstance(line, WideEvent) and line.event == "name.judged" and line.facts["session"] == SID
     return line
@@ -88,7 +89,7 @@ async def test_a_model_that_fails_leaves_the_name_as_it_is_and_says_why(tmp_path
     async def failing(_text: str) -> str:
         raise SummaryFailed("the model returned no summary")
 
-    await judge(Finished(member(transcript(tmp_path, "auth refactor")), "done"), names, (), failing, recorded.append)
+    await judge(SYSTEM, Finished(member(transcript(tmp_path, "auth refactor")), "done"), names, (), failing, recorded.append)
     [line] = recorded
     assert isinstance(line, WideEvent) and (line.outcome, line.facts["judged"]) == ("failed", Judged.FAILED) and "no summary" in (line.error or "")
     assert names.due(SID) is None

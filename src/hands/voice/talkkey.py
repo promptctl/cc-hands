@@ -9,13 +9,13 @@ grant no tap is made, so the grant is checked at the door (`granted`) and a tap 
 """
 
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import Future
 
 import Quartz
 from loguru import logger
 
+from hands.clock import Clock
 from hands.voice.hold import CommandPressed, CommandReleased, Instant, KeyEvent, Pressed, Released, Typed
 
 # kVK_RightShift. Its presses and releases arrive as flag changes, not key downs, as every modifier's do.
@@ -80,7 +80,7 @@ def event_of(kind: int, keycode: int, flags: int, at: Instant) -> KeyEvent:
     return Typed()
 
 
-def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
+def tap(clock: Clock, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
     """Watch every key on a thread of its own, calling `heard` there with each; returns what stops the watch."""
 
     def callback(_proxy, kind, event, _refcon):
@@ -92,7 +92,7 @@ def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
             heard(Released())
         else:
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-            heard(event_of(kind, keycode, Quartz.CGEventGetFlags(event), time.monotonic()))
+            heard(event_of(kind, keycode, Quartz.CGEventGetFlags(event), clock.now()))
         return event
 
     watched = 0

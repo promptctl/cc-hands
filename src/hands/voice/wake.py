@@ -18,7 +18,7 @@ import aiohttp
 import numpy as np
 from openwakeword.model import Model
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
@@ -99,9 +99,9 @@ class WakeWord:
 
 
 @asynccontextmanager
-async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
+async def loaded(clock: Clock, sample_rate: int, models: Path, word: Word, emit: Callable[[WideEvent], None]) -> AsyncGenerator[WakeWord]:
     """`word`'s model, loaded off the loop as its own unit of work."""
-    with loads.loading("desk.wake_word_loaded", emit):
+    with loads.loading(clock, "desk.wake_word_loaded", emit):
         # [LAW:nothing-unseen] which word the desk listens for, and the file it is heard with.
         annotate(phrase=word.phrase, model=str(model_of(word, models)))
         if sample_rate != SAMPLE_RATE:
@@ -110,7 +110,7 @@ async def loaded(sample_rate: int, models: Path, word: Word, emit: Callable[[Wid
     yield heard
 
 
-def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes, bool], Awaitable[bool]]:
+def listening(clock: Clock, word: WakeWord, speaking: Callable[[], bool], emit: Callable[[WideEvent], None]) -> Callable[[bytes, bool], Awaitable[bool]]:
     """Whether each buffer of the desk's microphone ends with the wake word, heard afresh from a buffer the wake word's
     level `begun` with, with nothing of the room before it."""
 
@@ -128,7 +128,7 @@ def listening(word: WakeWord, speaking: Callable[[], bool], emit: Callable[[Wide
         # [LAW:nothing-unseen] each hearing is its own event, with how sure the model was and whether hands was speaking:
         # a wake on hands' own voice, left over from the echo canceller, reads as one heard while it spoke. Whether it
         # opened a turn is the desk's to say, as its count of starts.
-        with unit("desk.wake_word_heard", emit, wide.begun(SYSTEM)):
+        with unit("desk.wake_word_heard", emit, wide.begun(clock)):
             annotate(score=score, threshold=THRESHOLD, while_speaking=while_speaking)
         return True
 

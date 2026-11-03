@@ -9,7 +9,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.session import Membership
 from hands.sessions.audit import Record
 from hands.sessions.names import Finished, Names
@@ -69,13 +69,13 @@ class NotAName(Exception):
     """The model's reply is not a name hands can give a session."""
 
 
-async def keep_naming(names: Names, live: Callable[[], Sequence[Membership]], name: Summariser, record: Record) -> None:
+async def keep_naming(clock: Clock, names: Names, live: Callable[[], Sequence[Membership]], name: Summariser, record: Record) -> None:
     """Judge each finished turn's session name, one at a time, until cancelled; `live` is every session not ended."""
     while True:
-        await judge(await names.next_finished(), names, live(), name, record)
+        await judge(clock, await names.next_finished(), names, live(), name, record)
 
 
-async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: Summariser, record: Record) -> None:
+async def judge(clock: Clock, turn: Finished, names: Names, live: Sequence[Membership], name: Summariser, record: Record) -> None:
     """Ask whether the session's name still fits the turn it finished, and hold a new one for its next prompt, as one
     unit of work."""
     session = turn.membership.id
@@ -83,7 +83,7 @@ async def judge(turn: Finished, names: Names, live: Sequence[Membership], name: 
     # [LAW:nothing-unseen] `judged` says what came of it: `renamed` decided a new name, given at the session's next
     # prompt; `kept` found the name it has still fits; `unread` could not read the name it has; `failed` had no answer
     # from the model; `refused` had an answer that is not a name, which `reply` holds. The last three fail the unit.
-    with unit("name.judged", record, begun(SYSTEM)):
+    with unit("name.judged", record, begun(clock)):
         annotate(session=session)
         try:
             held = await asyncio.to_thread(lambda: [session_name(each.transcript) for each in (turn.membership, *others)])

@@ -11,6 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import AuditLog, Entry, Replied, Transcribed, segments
 from hands.sessions.wide import WideEvent
 from hands.voice import longpoll
@@ -49,7 +50,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
         typed.append(text)
 
     app = web.Application()
-    app.add_routes(conversation_routes(Conversation(tmp_path / "audit"), typing, KEY, recorded.append))
+    app.add_routes(conversation_routes(SYSTEM, Conversation(tmp_path / "audit"), typing, KEY, recorded.append))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, log, recorded, typed)
@@ -67,7 +68,7 @@ async def test_the_page_is_served_to_anyone(page: Page) -> None:
 
 async def test_the_conversation_is_what_the_user_and_hands_said_and_each_tool_hands_called(page: Page) -> None:
     page.log.record(Transcribed("switch to the wake word"))
-    assert "trigger" in await audited(tool(set_trigger), page.log.record).body(trigger="wake word")
+    assert "trigger" in await audited(SYSTEM, tool(set_trigger), page.log.record).body(trigger="wake word")
     page.log.record(Replied("Okay. Say Hey Jarvis, then what you want.", False))
     read = await page.client.get("/conversation/moments", headers=KEYED)
     assert read.status == 200
@@ -88,7 +89,7 @@ async def test_a_tool_call_that_failed_says_why(page: Page) -> None:
     async def refused() -> dict[str, object]:
         return {"error": "no such session"}
 
-    await audited(tool(refused), page.log.record).body()
+    await audited(SYSTEM, tool(refused), page.log.record).body()
     body = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
     assert [moment["text"] for moment in body["moments"]] == ["{}\nfailed: no such session"]
 
@@ -101,7 +102,7 @@ async def test_a_tool_call_cut_off_says_so(page: Page) -> None:
         await asyncio.Event().wait()
         return {}
 
-    call = asyncio.ensure_future(audited(tool(stalled), page.log.record).body())
+    call = asyncio.ensure_future(audited(SYSTEM, tool(stalled), page.log.record).body())
     await started.wait()
     call.cancel()
     with pytest.raises(asyncio.CancelledError):

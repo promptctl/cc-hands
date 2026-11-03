@@ -15,13 +15,13 @@ This is the one queue what hands tells of the sessions waits in before the model
 own lanes behind it. The system voice is not in it: it reports the model's own failures, so it is queued past the model, at the TTS.
 """
 
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from pipecat.frames.frames import DataFrame, Frame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from hands.clock import Clock
 from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
 from hands.voice.speech import Names, Unprompted, frames, sent
@@ -53,12 +53,12 @@ class Floor(FrameProcessor):
         self,
         names: Names,
         live: Callable[[], Mapping[SessionId, Session]],
-        clock: Callable[[], float] = time.monotonic,
+        clock: Clock,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._names = names
         self._live = live
-        self._now = clock
+        self._now = clock.now
         self._taken: _Taken | None = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:

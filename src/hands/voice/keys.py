@@ -7,7 +7,9 @@ import termios
 import tty
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
+from functools import partial
 
+from hands.clock import Clock
 from hands.voice import talkkey
 from hands.voice.hold import KeyEvent, asked
 
@@ -15,23 +17,23 @@ QUIT = "q"
 
 
 @asynccontextmanager
-async def tapped(into: Callable[[KeyEvent], None], tap: Callable[[Callable[[KeyEvent], None]], Callable[[], None]] = talkkey.tap) -> AsyncGenerator[None]:
+async def tapped(clock: Clock, into: Callable[[KeyEvent], None], tap: Callable[[Clock, Callable[[KeyEvent], None]], Callable[[], None]] = talkkey.tap) -> AsyncGenerator[None]:
     """Hand every event of the talk key to `into` on the event loop while open, each press's Ripe and Overlong too: each
     event as `tap`, macOS's own unless another is given, hears it on a thread of its own."""
     loop = asyncio.get_running_loop()
 
     def arrived(event: KeyEvent) -> None:
         into(event)
-        # [LAW:no-ambient-temporal-coupling] what each event asks to be told later is told at its instant on the loop's own
-        # clock, the monotonic one the press was stamped on; the hold is the one owner of what that means, and ignores the
+        # [LAW:no-ambient-temporal-coupling] what each event asks to be told later is told at its instant on the clock the
+        # press was stamped on; the hold is the one owner of what that means, and ignores the
         # ones a release has made stale.
         for at, later in asked(event):
-            loop.call_at(at, into, later)
+            clock.call_at(at, partial(into, later))
 
     def heard_on_the_tap(event: KeyEvent) -> None:
         loop.call_soon_threadsafe(arrived, event)
 
-    stop = tap(heard_on_the_tap)
+    stop = tap(clock, heard_on_the_tap)
     try:
         yield
     finally:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from pipecat.frames.frames import Frame, TTSSpeakFrame
 
+from hands.clock import SYSTEM
 from hands.core.attention import Attention, Level, Overlay, Route, Switch
 from hands.core.effects import AfterEnd, Audit, Tell
 from hands.core.events import Ended, Joined, Occurred, StartSource
@@ -221,7 +222,7 @@ async def test_the_relay_says_what_is_set_to_be_heard_notes_the_rest_and_records
     sessions = Heard()
     for told in (Tell(SID, SubagentStopped("Explore", None)), Tell(SID, Cleared()), Tell(muted, SubagentStopped("Plan", None))):
         sessions.waiting.put_nowait(told)
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     relaying = asyncio.create_task(relay(sessions, utterances, queue_frame, attending, lambda progress, amount, utterance: None, lambda: None))  # pyright: ignore[reportArgumentType]  (only heard() is asked)
     while len([entry for entry in recorded if isinstance(entry, WideEvent)]) < 2:

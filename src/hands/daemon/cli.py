@@ -148,7 +148,7 @@ def show_phone(home: Home) -> exits.Exit:
     from hands.voice.phoneaddress import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
 
     # The name alone: the certificate is the daemon's to ask Tailscale for, as it serves the page.
-    name = asyncio.run(tailnet_name())
+    name = asyncio.run(tailnet_name(SYSTEM))
     match name:
         case Untailed(reason=reason):
             wide.annotate(untailed=reason)
@@ -156,7 +156,7 @@ def show_phone(home: Home) -> exits.Exit:
         case str():
             pass
     try:
-        key = phone_key(home)
+        key = phone_key(SYSTEM, home)
     except Rejected as error:
         wide.annotate(phone_key=str(error))
         return refused("hands", 1, str(error))

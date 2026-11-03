@@ -6,6 +6,7 @@ from typing import Literal
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from conftest import events, patiently
@@ -49,7 +50,7 @@ class Follower:
         self.reopening = asyncio.Event()
         self.release = asyncio.Event()
         self.release.set()
-        self.task = asyncio.create_task(follow(self.changes, self.current, self, self.say, self.recorded.append))
+        self.task = asyncio.create_task(follow(SYSTEM, self.changes, self.current, self, self.say, self.recorded.append))
 
     async def reopen(self) -> Devices:
         self.reopens += 1

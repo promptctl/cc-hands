@@ -27,6 +27,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from conftest import PAIRS, events, hearing_with, running
 from listening import unidentified
 from test_streaming import NOT_SPEECH, READER, fixture_holds, hearings, pcm
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
 from hands.voice.desk import Leveled, Made
@@ -210,7 +211,7 @@ async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
     whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
     does."""
     record = Recorded(asyncio.get_running_loop())
-    recognizer = streaming.StreamingRecognizer(lambda gating: PAIRS.loaded(lambda: nemotron(gating)), unidentified, record)
+    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda gating: PAIRS.loaded(lambda: nemotron(gating)), unidentified, record)
     await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     return recognizer, record
 
@@ -223,14 +224,14 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     monkeypatch.setattr(silero, "time", clock)
     monkeypatch.setattr(base_smart_turn, "time", clock)
     recognizer, record = recognizing
-    gate = PushToTalk(record)
+    gate = PushToTalk(SYSTEM, record)
     captured = 0
     moves: list[tuple[int, Move]] = []
     [load] = events(record.entries, "streaming.loaded")
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
-    async with running([HoldOwner(Unheard(), (listener,), record), downstream]) as run, engaged.loaded(RATE, record) as models:
+    async with running([HoldOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record) as models:
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
@@ -265,7 +266,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
             pass
 
         driving = asyncio.create_task(
-            engaged.drive(untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), chosen, on_move, on_level, record)
+            engaged.drive(SYSTEM, untapped, overheard, hearing_with(Microphone(models, capture, clock), unwoken), chosen, on_move, on_level, record)
         )
         # Heard to its last frame, past the owner, or the drive failed on the way, which is said; then every hearing the
         # owner was given has its event.

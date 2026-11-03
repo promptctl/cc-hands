@@ -15,6 +15,9 @@ from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, 
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from conftest import PATIENCE_SECS
+from datetime import UTC, datetime
+from hands.virtualclock import VirtualClock
+from hands.clock import SYSTEM
 from hands.daemon import run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
@@ -110,13 +113,13 @@ def test_a_library_voice_not_in_the_cache_while_offline_is_unreachable_not_missi
 
 async def test_a_bare_name_in_the_library_is_not_offered_by_search_since_no_choice_can_make_it(tmp_path: Path) -> None:
     files = ["Charles.wav", "vctk/p225_023_enhanced.wav"]
-    found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(files)), lambda _voice: None).search("", 10)
+    found = await Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(SYSTEM, listing(files)), lambda _voice: None).search("", 10)
     assert found.names == ("vctk/p225_023_enhanced",)
 
 
 async def test_a_search_returns_at_most_the_most_found_whatever_limit_it_is_asked() -> None:
     files = [f"vctk/voice{number}.wav" for number in range(library.MOST_FOUND + 10)]
-    found = await Library(listing(files)).search("", 10_000)
+    found = await Library(SYSTEM, listing(files)).search("", 10_000)
     assert len(found.names) == library.MOST_FOUND
 
 
@@ -132,7 +135,7 @@ async def test_a_stalled_listing_is_waited_for_by_the_next_search_and_never_star
         assert released.wait(PATIENCE_SECS)
         return ["vctk/p225_023_enhanced.wav"]
 
-    stuck = Library(stalled)
+    stuck = Library(SYSTEM, stalled)
     try:
         # [LAW:no-ambient-temporal-coupling] each search times out while the listing stalls in its thread, which `running`
         # says it is, rather than a guess at how soon the thread runs.
@@ -155,7 +158,7 @@ async def test_a_library_voice_that_cannot_be_fetched_is_never_kept(monkeypatch:
     download_that_fails_for(monkeypatch, lambda path: path.startswith(LIBRARY_URL_PREFIX), EntryNotFoundError("no such file"))
     home = Home(tmp_path)
     speaking: list[str] = []
-    voices_owner = Voices(home, IdentityFilter(), voices.fetched, Library(listing([])), speaking.append)
+    voices_owner = Voices(home, IdentityFilter(), voices.fetched, Library(SYSTEM, listing([])), speaking.append)
     with pytest.raises(Rejected):
         await voices_owner.use(LibraryVoice("vctk/nobody"))
     # Neither kept nor spoken in, so no print of it is made either.
@@ -183,26 +186,26 @@ def test_a_kept_built_in_voice_starts_without_any_fetch(monkeypatch: pytest.Monk
 # --- the library: listed once an hour, searched, and a failed listing is not kept -----------------------------------------
 
 async def test_the_library_is_listed_once_within_the_hour_and_again_after_it() -> None:
-    now = [1000.0]
+    clock = VirtualClock(datetime.fromtimestamp(1000.0, UTC))
     calls: list[int] = []
 
     def list_files() -> list[str]:
         calls.append(1)
         return list(LIBRARY_FILES)
 
-    catalogue = Library(list_files, clock=lambda: now[0])
+    catalogue = Library(clock, list_files)
     first = await catalogue.search("vctk", 10)
-    now[0] += library.LISTING_SECONDS - 1
+    clock.advance(library.LISTING_SECONDS - 1)
     second = await catalogue.search("alba", 10)
-    now[0] += 2
+    clock.advance(2)
     third = await catalogue.search("vctk", 10)
     assert len(calls) == 2
     assert (first.from_cache, second.from_cache, third.from_cache) == (False, True, False)
-    assert first.listed_at == 1000.0 and second.listed_at == 1000.0 and third.listed_at == now[0]
+    assert first.listed_at == 1000.0 and second.listed_at == 1000.0 and third.listed_at == 1000.0 + library.LISTING_SECONDS + 1
 
 
 async def test_a_search_matches_names_without_case_and_only_voice_files_up_to_the_limit() -> None:
-    catalogue = Library(listing(LIBRARY_FILES), clock=lambda: 5.0)
+    catalogue = Library(VirtualClock(datetime.fromtimestamp(5.0, UTC)), listing(LIBRARY_FILES))
     found = await catalogue.search("VCTK", 1)
     assert found == Found(("vctk/p225_023_enhanced",), 5.0, False)
     everything = await catalogue.search("", 10)
@@ -218,7 +221,7 @@ async def test_a_failed_listing_is_not_kept_so_the_next_search_lists_again() -> 
             raise OSError("the hub is unreachable")
         return list(LIBRARY_FILES)
 
-    catalogue = Library(flaky, clock=lambda: 1.0)
+    catalogue = Library(VirtualClock(datetime.fromtimestamp(1.0, UTC)), flaky)
     with pytest.raises(OSError, match="unreachable"):
         await catalogue.search("vctk", 10)
     found = await catalogue.search("vctk", 10)
@@ -227,8 +230,8 @@ async def test_a_failed_listing_is_not_kept_so_the_next_search_lists_again() -> 
 
 async def test_the_find_voices_tool_returns_matches_and_when_they_were_listed(tmp_path: Path) -> None:
     recorded: list[Any] = []
-    owner = Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(listing(LIBRARY_FILES), clock=lambda: 7.0), lambda _voice: None)
-    tools = {tool.name: audited(tool, recorded.append) for tool in voice_tools(owner)}
+    owner = Voices(Home(tmp_path), IdentityFilter(), voices.fetched, Library(VirtualClock(datetime.fromtimestamp(7.0, UTC)), listing(LIBRARY_FILES)), lambda _voice: None)
+    tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(owner)}
     assert await tools["find_voices"].body(query="casual") == {"voices": ["alba-mackenna/casual"], "listed_at": 7.0, "from_cache": False}
 
 

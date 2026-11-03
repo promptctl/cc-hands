@@ -17,6 +17,7 @@ from pipecat.frames.frames import Frame
 
 from conftest import SYSTEM_PATH, new_sessions
 
+from hands.clock import SYSTEM
 from hands.core.attention import Attention, Delivery, Level, Overlay, Spoken, Switch, Withheld
 from hands.core.delta import Delta
 from hands.core.events import Joined, Prompted, StatusReported, Stopped
@@ -140,7 +141,7 @@ async def test_the_narrator_tells_a_watched_session_s_turn_and_holds_an_unwatche
     assert await set_overlay_tool(sessions, Overlays(home)).body(session=watched.id, overlay="watched") == {"readback": "I'll tell you each turn watched finishes."}
     queued: asyncio.Queue[Frame] = asyncio.Queue()
     recounts = Recounts()
-    utterances = Utterances(entries.append)
+    utterances = Utterances(SYSTEM, entries.append)
     keeping = asyncio.create_task(utterances.keep())
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), queued.put, Attention, Overlays(home), recounts))
     try:
@@ -169,7 +170,7 @@ async def test_a_session_whose_overlay_cannot_be_read_is_told_as_a_normal_one_an
     sessions = new_sessions(record=entries.append)
     await sessions.apply(Joined(member, "startup"))
     sink = logged_to(entries.append, lambda _: True)
-    utterances = Utterances(entries.append)
+    utterances = Utterances(SYSTEM, entries.append)
     keeping = asyncio.create_task(utterances.keep())
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), asyncio.Queue[Frame]().put, Attention, Overlays(home), Recounts()))
     try:
@@ -360,7 +361,7 @@ async def test_a_muted_session_s_turn_is_held_with_finished_turns_told_and_told_
     await set_overlay_tool(sessions, Overlays(home)).body(session=muted.id, overlay="muted")
     queued: asyncio.Queue[Frame] = asyncio.Queue()
     recounts = Recounts()
-    utterances = Utterances(entries.append)
+    utterances = Utterances(SYSTEM, entries.append)
     keeping = asyncio.create_task(utterances.keep())
     narrating = asyncio.create_task(narrate(sessions, utterances, Tails(sessions), queued.put, lambda: Attention(finished="full"), Overlays(home), recounts))
     try:

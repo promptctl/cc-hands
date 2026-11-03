@@ -12,6 +12,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
 
 from conftest import Running, running
+from hands.clock import SYSTEM
 from hands.core.playback import (
     BOOKMARKS,
     Bookmark,
@@ -217,7 +218,7 @@ async def test_an_act_with_nothing_to_say_again_says_why(act: Callable[[Playback
 async def test_each_playback_tool_answers_with_what_was_said_and_how_many_readings_still_wait() -> None:
     recorded: list[Entry] = []
     player = Player(recorded.append)
-    tools = {tool.name: audited(tool, recorded.append) for tool in playback_tools(player)}
+    tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in playback_tools(player)}
     async with stood(player) as (run, heard):
         # A barge-in overtakes frames still queued, so each waits for what is ahead of it to be heard.
         for frame, seen in ((spoken("A."), 1), (spoken("B."), 2), (InterruptionFrame(), 1), (spoken("C."), 3), (InterruptionFrame(), 2)):

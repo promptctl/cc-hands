@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from conftest import model_facts
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice import voiceprints
@@ -118,7 +119,7 @@ async def test_hands_keeps_the_print_of_the_voice_it_speaks_in_and_the_one_befor
     recorded: list[Entry] = []
     # charles prints as (1, 0), alba as (0, 1), mary as (-1, 0); the speaker's voice, 7 samples, as charles's.
     model = by_length({1: unit(1, 0), 2: unit(0, 1), 3: unit(-1, 0), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1, "alba": 2, "mary": 3}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1, "alba": 2, "mary": 3}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     prints.speaking_in("alba")
     await until(recorded, "voiceprints.enrolled", 2)
@@ -139,7 +140,7 @@ async def test_each_voice_is_enrolled_once_ever_its_tts_loaded_for_that_alone_an
     made: list[str] = []
     model = by_length({1: unit(1, 0), 2: unit(0, 1), 7: unit(1, 0)})
     speech = said_in({"charles": 1, "alba": 2}, made)
-    prints = Voiceprints(lambda: model, speech, tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, speech, tmp_path, recorded.append)
     prints.speaking_in("charles")
     prints.speaking_in("charles")  # chosen again while its print is being made: nothing more
     await until(recorded, "voiceprints.enrolled", 1)
@@ -156,7 +157,7 @@ async def test_each_voice_is_enrolled_once_ever_its_tts_loaded_for_that_alone_an
     assert [event.facts["voice"] for event in entries(recorded, "enrolment.loaded")] == ["charles", "alba"]
     # The next run reads both back, and makes neither.
     later: list[Entry] = []
-    again = Voiceprints(lambda: model, speech, tmp_path, later.append)
+    again = Voiceprints(SYSTEM, lambda: model, speech, tmp_path, later.append)
     again.speaking_in("charles")
     again.speaking_in("alba")
     await until(later, "voiceprints.recalled", 2)
@@ -178,7 +179,7 @@ async def test_until_its_print_is_made_every_speaker_is_unidentified_and_nothing
         return say
 
     model = by_length({1: unit(1, 0), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, speech, tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, speech, tmp_path, recorded.append)
     # Returns while the print is still being said.
     prints.speaking_in("charles")
     prints.identify(HOLD, (voiced(7, 3.0),))
@@ -194,7 +195,7 @@ async def test_a_speaker_heard_over_a_voice_hands_holds_no_print_of_is_unidentif
     recorded: list[Entry] = []
     # The speaker's voice, 7 samples, prints nothing like charles: against charles's print alone, a person.
     model = by_length({1: unit(1, 0), 7: unit(0, 1)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(HOLD, (voiced(7, 3.0, played=("charles", "fantine")),))
@@ -211,7 +212,7 @@ async def test_a_print_that_cannot_be_made_fails_its_unit_and_every_speaker_says
 
         return say
 
-    prints = Voiceprints(lambda: by_length({}), speech, tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: by_length({}), speech, tmp_path, recorded.append)
     prints.speaking_in("charles")
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     assert (enrolled.outcome, enrolled.error, enrolled.facts["voice"], enrolled.facts["seconds"]) == (
@@ -227,7 +228,7 @@ async def test_a_print_that_cannot_be_kept_fails_its_unit_and_is_still_scored_ag
     blocked.write_text("in the way")
     recorded: list[Entry] = []
     model = by_length({1: unit(1, 0), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), blocked, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), blocked, recorded.append)
     prints.speaking_in("charles")
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     assert (enrolled.outcome, enrolled.error) == ("failed", f"NotADirectoryError: [Errno 20] Not a directory: '{blocked / voiceprints.REVISION}'")
@@ -243,7 +244,7 @@ async def test_a_model_that_does_not_load_fails_its_unit_and_every_speaker_says_
     def model() -> Embed:
         raise RuntimeError("the voiceprint model x.onnx did not load")
 
-    prints = Voiceprints(model, said_in({"charles": 1}, made), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, model, said_in({"charles": 1}, made), tmp_path, recorded.append)
     prints.speaking_in("charles")
     [loaded] = await until(recorded, "voiceprints.loaded", 1)
     assert (loaded.outcome, loaded.error) == ("failed", "RuntimeError: the voiceprint model x.onnx did not load")
@@ -259,7 +260,7 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
     recorded: list[Entry] = []
     # Speaker 0 is a person's voice at 5 samples and hands' at 7.
     model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(HOLD, (voiced(5, 1.5),))
@@ -277,7 +278,7 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
 async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_person_in_it(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(HOLD, (voiced(5, 1.5),))
@@ -291,7 +292,7 @@ async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_per
 async def test_an_echo_span_is_identified_as_one_voice_on_an_event_of_its_own(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     model = by_length({1: unit(1, 0), 7: unit(1, 0)})
-    prints = Voiceprints(lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     prints.spanned(3, voiced(7, 3.0, played=("charles",)))
@@ -313,7 +314,7 @@ async def test_the_models_load_is_a_unit_saying_what_it_loaded(tmp_path: Path) -
         loads.append("loaded")
         return voiceprints.load()
 
-    prints = Voiceprints(counted, said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints = Voiceprints(SYSTEM, counted, said_in({"charles": 1}, []), tmp_path, recorded.append)
     # Nothing is loaded until the voice is built, which says the voice hands speaks in.
     await asyncio.sleep(0.05)
     assert loads == []

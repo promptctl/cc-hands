@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
@@ -97,11 +97,11 @@ def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int,
     assert talkkey.event_of(kind, keycode, flags, 5.0) == event
 
 
-async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
+async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Clock, Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
     """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
     hold: Hold = Idle()
-    async with keys.tapped(heard.put_nowait, tap):
+    async with keys.tapped(SYSTEM, heard.put_nowait, tap):
         while True:
             hold, moves = step(hold, await heard.get())
             for move in moves:
@@ -112,7 +112,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
     taps: list[Callable[[KeyEvent], None]] = []
     stopped: list[None] = []
 
-    def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
+    def tap(_clock: Clock, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
         taps.append(heard)
         return lambda: stopped.append(None)
 
@@ -143,7 +143,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
 async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch: pytest.MonkeyPatch) -> None:
     taps: list[Callable[[KeyEvent], None]] = []
 
-    def tap(heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
+    def tap(_clock: Clock, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
         taps.append(heard)
         return lambda: None
 

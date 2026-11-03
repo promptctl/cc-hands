@@ -16,8 +16,7 @@ before its `Uttered` cut it off; an `Uttered` with no `Uttering` before it was c
 """
 
 import asyncio
-import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -25,7 +24,7 @@ from pipecat.frames.frames import DataFrame, Frame, InterruptionFrame, OutputAud
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameProcessor
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.effects import Heard, Story
 from hands.core.session import SessionId
 from hands.sessions.audit import Record
@@ -46,7 +45,7 @@ class Utterance:
     begun: Begun
     facts: dict[str, Fact] = field(default_factory=dict[str, Fact])
     failure: str | None = None
-    # When its first audio was written to the speaker, by time.monotonic().
+    # When its first audio was written to the speaker, by the clock's `now`.
     first_audio: float | None = None
     settled: asyncio.Future[Fate] = field(default_factory=lambda: asyncio.get_running_loop().create_future())
 
@@ -65,13 +64,14 @@ class Utterances:
     """[LAW:single-enforcer] where every utterance is opened and held open until its fate: `heard` begins one as hands
     hears it, and `keep` runs each as a unit of work, emitting its event as it is settled, or as hands stops."""
 
-    def __init__(self, record: Record) -> None:
+    def __init__(self, clock: Clock, record: Record) -> None:
+        self._clock = clock
         self._record = record
         self._heard: asyncio.Queue[Utterance] = asyncio.Queue()
 
     def heard(self, session: SessionId, heard: Heard | Story) -> Utterance:
         """Something `session` gave hands to say unasked, `heard`, beginning now."""
-        utterance = Utterance(begun(SYSTEM), {"session": session, "heard": heard})
+        utterance = Utterance(begun(self._clock), {"session": session, "heard": heard})
         self._heard.put_nowait(utterance)
         return utterance
 
@@ -126,10 +126,10 @@ class Audible(BaseObserver):
     """Reads each utterance's fate off what the output transport pushes: after its `Uttering`, its first audio, and a
     barge-in before its `Uttered`, which settles it."""
 
-    def __init__(self, output: FrameProcessor, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Clock, output: FrameProcessor) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._output = output
-        self._now = clock
+        self._now = clock.now
         # What is on air, in the order it went: each utterance led on and not yet closed, and whether a barge-in cut it.
         self._on: dict[Utterance, bool] = {}
 

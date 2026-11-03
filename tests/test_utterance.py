@@ -13,6 +13,8 @@ from pipecat.frames.frames import Frame, InterruptionFrame, OutputAudioRawFrame,
 from pipecat.observers.base_observer import FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from hands.virtualclock import VirtualClock
+from hands.clock import SYSTEM
 from hands.core.effects import SessionGone
 from hands.core.session import SessionId
 from hands.sessions.audit import Entry
@@ -39,7 +41,7 @@ class Rig:
     audible: Audible
     output: FrameProcessor
     # The output transport's clock, which the test moves.
-    now: list[float]
+    clock: VirtualClock
 
     async def played(self, frames: Sequence[Frame]) -> None:
         """Each frame pushed by the output transport, in order, as it plays it."""
@@ -57,11 +59,11 @@ class Rig:
 @pytest.fixture
 async def rig() -> AsyncGenerator[Rig, None]:
     recorded: list[Entry] = []
-    utterances = Utterances(recorded.append)
-    output, now = FrameProcessor(), [0.0]
+    utterances = Utterances(SYSTEM, recorded.append)
+    output, clock = FrameProcessor(), VirtualClock()
     keeping = asyncio.create_task(utterances.keep())
     try:
-        yield Rig(utterances, recorded, Audible(output, lambda: now[0]), output, now)
+        yield Rig(utterances, recorded, Audible(clock, output), output, clock)
     finally:
         keeping.cancel()
         await asyncio.gather(keeping, return_exceptions=True)
@@ -75,9 +77,9 @@ def said(utterance: Utterance) -> tuple[Frame, ...]:
 async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_from_when_it_was_heard(rig: Rig) -> None:
     utterance = rig.utterances.heard(API, GONE)
     lead, line, close = said(utterance)
-    rig.now[0] = utterance.begun.began + 0.25
+    rig.clock.advance(utterance.begun.began + 0.25 - rig.clock.now())
     await rig.played([lead, AUDIO])
-    rig.now[0] += 1.0
+    rig.clock.advance(1.0)
     await rig.played([AUDIO, close])
     event = await rig.event()
     assert (event.outcome, event.facts["fate"], event.facts["first_audio_ms"], event.facts["session"], event.facts["heard"]) == ("ok", "played", 250.0, API, GONE)
@@ -121,7 +123,7 @@ async def test_audio_that_played_before_an_utterance_was_led_on_is_not_its_first
 
 async def test_an_utterance_open_as_hands_stops_ends_cancelled() -> None:
     recorded: list[Entry] = []
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     utterances.heard(API, SessionGone(API))
     await asyncio.sleep(0.05)
@@ -190,13 +192,13 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
     written: the fate read off its pushes is what the speaker played, with hands' own transport on a fake device."""
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
     recorded: list[Entry] = []
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     utterance = utterances.heard(API, GONE)
     try:
-        async with running([speaker], observers=[Audible(speaker)]) as run:
+        async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
             await run.worker.queue_frames([Uttering((utterance,)), TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
             async with asyncio.timeout(5):
                 while not recorded:
@@ -212,13 +214,13 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
 async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_audio_cuts_it_and_its_close_still_arrives() -> None:
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
     recorded: list[Entry] = []
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     utterance = utterances.heard(API, GONE)
     try:
-        async with running([speaker], observers=[Audible(speaker)]) as run:
+        async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
             # The device takes its first chunk and holds it: the rest of the line waits in the output transport.
             speakers.speaker.holding = True
             await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20)), Uttered((utterance,))])
@@ -242,13 +244,13 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
     """Led on again right behind the barge-in, through the output transport's flush of what it held."""
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, defaults=lambda: DefaultDevices(input=1, output=1), echo=lambda: Room()).output()
     recorded: list[Entry] = []
-    utterances = Utterances(recorded.append)
+    utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
     utterance = utterances.heard(API, GONE)
     try:
-        async with running([speaker], observers=[Audible(speaker)]) as run:
+        async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
             speakers.speaker.holding = True
             await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20))])
             await asyncio.sleep(0.1)

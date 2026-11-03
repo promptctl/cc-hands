@@ -13,6 +13,7 @@ from pipecat.frames.frames import Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import Running, running
+from hands.clock import SYSTEM
 from hands.daemon import config
 from hands.daemon.config import Claude, Config
 from hands.sessions.audit import Entry, SettingsEdited
@@ -257,7 +258,7 @@ async def test_model_in_use_is_the_model_hands_runs_on() -> None:
 async def test_each_model_tool_call_is_one_event_naming_the_model_run_on_and_the_one_switched_to() -> None:
     recorded: list[Entry] = []
     def audited_tools(player: Player) -> dict[str, Tool]:
-        return {tool.name: audited(tool, recorded.append) for tool in model_tools(FakeOwn(), player)}
+        return {tool.name: audited(SYSTEM, tool, recorded.append) for tool in model_tools(FakeOwn(), player)}
 
     tools = audited_tools(player := Player(lambda _entry: None))
     async with spoken(player):

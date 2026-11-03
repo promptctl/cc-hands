@@ -42,12 +42,6 @@ UNMOVED = frozenset(
         "daemon/starting.py", "daemon/update.py",
         "sessions/otlp.py", "sessions/shim.py",
         "spotify.py",
-        "voice/atdesk.py", "voice/backlogpage.py", "voice/brainpage.py", "voice/cues.py", "voice/devices.py", "voice/engaged.py",
-        "voice/floor.py", "voice/holdowner.py", "voice/keyed.py", "voice/keys.py", "voice/latency.py", "voice/library.py",
-        "voice/loads.py", "voice/longpoll.py", "voice/microphone.py", "voice/naming.py", "voice/phone.py", "voice/phoneaddress.py",
-        "voice/phonepage.py", "voice/pipeline.py", "voice/ptt.py", "voice/recorder.py", "voice/sentences.py", "voice/summarising.py",
-        "voice/system.py", "voice/talkkey.py", "voice/tools.py", "voice/turnstart.py", "voice/utterance.py", "voice/vocabulary.py",
-        "voice/voiceprints.py", "voice/wake.py",
     }
 )  # fmt: skip
 

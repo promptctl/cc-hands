@@ -12,13 +12,12 @@ of the running sessions, which they say to move between them.
 
 import asyncio
 import re
-import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from mlx_whisper.tokenizer import get_encoding
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.audit import Primed, Record
 from hands.sessions.child import run
 from hands.sessions.focus import Unreadable, focused
@@ -55,10 +54,11 @@ class Lexicon:
         self._record = record
 
     async def __call__(self) -> str | None:
-        began = time.monotonic()
+        clock = self._sessions.clock
+        began = clock.now()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)
-        primed = await vocabulary(listings, self._focus(), self._environment, began)
+        primed = await vocabulary(clock, listings, self._focus(), self._environment, began)
         self._record(primed)
         # [LAW:dataflow-not-control-flow] no words is no prompt, which is Whisper unprimed.
         return prompt(primed.words) or None
@@ -72,13 +72,13 @@ class Lexicon:
                 return self._sessions.live_session(session)
 
 
-async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
+async def vocabulary(clock: Clock, listings: Sequence[Listing[Session]], focus: Session | Unreadable | None, environment: Mapping[str, str], began: float) -> Primed:
     """The repository words of the focused session, then every running session's project and name, oldest first, the
     oldest dropped until the rest fit the prompt tokens Whisper keeps. `began` is when reading the vocabulary started,
-    `listings` among it, on the monotonic clock."""
+    `listings` among it, on `clock`."""
     match focus:
         case Session() as session:
-            repository, failed = await _repository(session.membership.cwd, environment, began + READING)
+            repository, failed = await _repository(clock, session.membership.cwd, environment, began + READING)
             focus_id = session.membership.id
         case Unreadable(reason=reason):
             repository, failed, focus_id = (), f"the focus: {reason}", None
@@ -89,7 +89,7 @@ async def vocabulary(listings: Sequence[Listing[Session]], focus: Session | Unre
     words = _unique([word for word in (*repository, *sessions) if not _SPECIAL.search(word)])[-WORDS:]
     while (tokens := _tokens(words)) > TOKENS:
         words = words[1:]
-    return Primed(focus_id, words, tokens, failed, time.monotonic() - began)
+    return Primed(focus_id, words, tokens, failed, clock.now() - began)
 
 
 def prompt(words: Sequence[str]) -> str:
@@ -110,15 +110,15 @@ _WHISPER_BPE = get_encoding("multilingual")
 _SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
 
 
-async def _repository(cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
+async def _repository(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
     """The names of the files most recently changed in the repository `cwd` is in, oldest first, then its branch; or
     none, and why, where git could not say. A directory in no repository has none, and that is no failure."""
     try:
         logged, changed, branch = await asyncio.gather(
             # A branch with no commits yet has no history to read, where git log would refuse its unborn HEAD.
-            _git(cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
-            _git(cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
-            _git(cwd, environment, deadline, "branch", "--show-current"),
+            _git(clock, cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
+            _git(clock, cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
+            _git(clock, cwd, environment, deadline, "branch", "--show-current"),
         )
     except NotARepository:
         return (), None
@@ -150,13 +150,13 @@ class NotARepository(GitFailed):
     """The directory is in no git repository."""
 
 
-async def _git(cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
-    left = deadline - time.monotonic()
+async def _git(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline: float, *args: str) -> str:
+    left = deadline - clock.now()
     if left <= 0:
         raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
     try:
         # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=SYSTEM)
+        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=clock)
     except TimeoutError:
         raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
     except OSError as error:

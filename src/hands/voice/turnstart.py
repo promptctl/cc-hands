@@ -15,8 +15,6 @@ ahead of them, so the user aggregator takes none of them in until the reply the 
 """
 
 import asyncio
-import time
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from pipecat.frames.frames import Frame, SystemFrame, UserStartedSpeakingFrame
@@ -24,6 +22,7 @@ from pipecat.processors.aggregators.llm_response_universal import LLMUserAggrega
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import BaseUserTurnStartStrategy
 
+from hands.clock import Clock
 from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import InterimWords, TurnOpened, Words
@@ -52,10 +51,10 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     and Pipecat says nothing of its own as the turn starts, neither that the user started speaking nor an interruption.
     """
 
-    def __init__(self, record: Record, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Clock, record: Record) -> None:
         super().__init__(enable_interruptions=False)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         self._record = record
-        self._now = clock
+        self._now = clock.now
         # Between turns, None: Pipecat ends a turn, and this is told so (`handle_user_turn_stopped`).
         self._turn: _Open | None = None
         # Each cut, for the user aggregator to broadcast, and each written, for it to go on behind (`interrupting`).

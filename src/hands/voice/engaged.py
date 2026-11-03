@@ -15,11 +15,11 @@ the words said while the detector made sure of them are in it.
 """
 
 import asyncio
-import time
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from functools import partial
 from typing import Any, Protocol, cast, get_args
 
 import numpy as np
@@ -29,13 +29,13 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams, VADState
 from pipecat.metrics.metrics import TurnMetricsData
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
 from hands.threads import settles_off_loop
 from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Heard, Keyed, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, Woke, Woken, deadline, listens, step
-from hands.voice.hold import Instant, KeyEvent, Move
+from hands.voice.hold import KeyEvent, Move
 from hands.voice.holds import Edge
 from hands.voice.trigger import Choice
 
@@ -90,7 +90,7 @@ class SmartTurn(BaseSmartTurn):
     judges it. The port is converted from the full-precision build, which Pipecat's benchmark puts ahead of the quantized
     one its own local analyzer runs on the CPU, and judges a segment in a fifth of the time."""
 
-    def __init__(self, sample_rate: int) -> None:
+    def __init__(self, clock: Clock, sample_rate: int) -> None:
         super().__init__(sample_rate=sample_rate)
         self.set_sample_rate(sample_rate)
         self._model = ported()
@@ -98,9 +98,9 @@ class SmartTurn(BaseSmartTurn):
         # thread, on the first verdict there, so one is given on silence as it loads, on the thread every verdict runs on,
         # and a person's first turn is judged at every turn's latency. The port pads or trims every segment to the same
         # frames, so silence builds exactly the kernels every verdict runs.
-        started = time.perf_counter()
+        started = clock.now()
         self._model_executor.submit(self._predict_endpoint, np.zeros(sample_rate, dtype=np.float32)).result()
-        self.warmup_secs = time.perf_counter() - started
+        self.warmup_secs = clock.now() - started
 
     def _predict_endpoint(self, audio_array: np.ndarray) -> dict[str, Any]:
         verdict = self._model.predict_endpoint(audio_array, sample_rate=self.sample_rate)
@@ -110,10 +110,10 @@ class SmartTurn(BaseSmartTurn):
 class Models:
     """Silero's voice activity detector, on the CPU as Pipecat ships it, and Smart Turn on MLX."""
 
-    def __init__(self, sample_rate: int) -> None:
+    def __init__(self, clock: Clock, sample_rate: int) -> None:
         self._vad = SileroVADAnalyzer(sample_rate=sample_rate, params=VADParams(stop_secs=STOP_SECS))
         self._vad.set_sample_rate(sample_rate)
-        self._turn = SmartTurn(sample_rate)
+        self._turn = SmartTurn(clock, sample_rate)
         # As Pipecat syncs it at each start: the speech Silero takes to be sure of is kept before the segment judged.
         self._turn.update_vad_start_secs(self._vad.params.start_secs)
 
@@ -152,17 +152,17 @@ class Models:
 
 
 @asynccontextmanager
-async def loaded(sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
+async def loaded(clock: Clock, sample_rate: int, emit: Callable[[WideEvent], None]) -> AsyncGenerator[Models]:
     """Both models, loaded off the loop as their own unit of work, Smart Turn judging at a turn's latency from the first
     verdict, for as long as the desk hears with them."""
     async with AsyncExitStack() as held:
-        with loads.loading("desk.loaded", emit):
+        with loads.loading(clock, "desk.loaded", emit):
             # [LAW:nothing-unseen] the Smart Turn being loaded, before the load, so one that fails says which; and the
             # pause the detector ends speech at, as it was loaded with it, and how long Smart Turn's warm-up took.
             annotate(smart_turn=SMART_TURN, smart_turn_revision=SMART_TURN_REVISION)
             # On a thread of its own the process does not join at exit (hands.threads), as every model's load is; started
             # inside the unit, so the load's time and growth are all on it.
-            loading = settles_off_loop(lambda: Models(sample_rate), "Models")
+            loading = settles_off_loop(lambda: Models(clock, sample_rate), "Models")
             held.push_async_callback(_let_go, loading)
             models = await asyncio.shield(loading)
             annotate(vad_stop_secs=models.vad_stop_secs, smart_turn_warmup_secs=models.smart_turn_warmup_secs)
@@ -198,6 +198,7 @@ class Overheard:
 
 
 async def drive(
+    clock: Clock,
     tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     overheard: Callable[[], AbstractAsyncContextManager[AsyncIterator[bytes]]],
     hearing: Callable[[], AbstractAsyncContextManager[tuple[Ears, Hears]]],
@@ -205,7 +206,6 @@ async def drive(
     on_move: Callable[[Made], Awaitable[None]],
     on_level: Callable[[Leveled], Awaitable[None]],
     emit: Callable[[WideEvent], None],
-    clock: Callable[[], Instant] = time.monotonic,
 ) -> None:
     """Hand every move the desk makes to `on_move`, and every change of level to `on_level`, until cancelled.
 
@@ -215,7 +215,6 @@ async def drive(
     the room is heard once `hearing` has loaded the models it is heard with, and one that cannot be loaded fails the
     drive.
     """
-    loop = asyncio.get_running_loop()
     events: asyncio.Queue[Event | Overheard | Choice] = asyncio.Queue()
 
     async def overhearing() -> None:
@@ -243,7 +242,7 @@ async def drive(
         while True:
             # [LAW:nothing-unseen] one event for each stint at a level, counting every move, edge, and change of level
             # in it, emitted as the level changes.
-            with unit("desk", emit, wide.begun(SYSTEM), _COUNTED):
+            with unit("desk", emit, wide.begun(clock), _COUNTED):
                 level = desk.level
                 annotate(level=level)
                 while desk.level == level:
@@ -266,7 +265,7 @@ async def drive(
                                 silent_too_long = ears.heard(audio, not isinstance(desk.phase, Keyed) and state == VADState.SPEAKING)
                                 # The wake word's model is run only where it can open a turn.
                                 word = desk.level == "wake word" and await woken(audio, begun)
-                                heard.extend([*_changed(detected, state, clock), *([Woken(clock())] if word else []), *([TurnEnded("silence")] if silent_too_long else [])])
+                                heard.extend([*_changed(detected, state, clock), *([Woken(clock.now())] if word else []), *([TurnEnded("silence")] if silent_too_long else [])])
                                 detected = state
                             case Choice(level=chose, was=was_level):
                                 # A tool call cancelled while it waited, the user cutting the brain off, is answered by
@@ -296,7 +295,7 @@ async def drive(
                             case "judge":
                                 # Only speech the detector heard is judged, and it is heard with the models.
                                 assert ears is not None
-                                if await _judged(ears, emit):
+                                if await _judged(clock, ears, emit):
                                     heard.appendleft(TurnEnded("verdict"))
                                 else:
                                     count(held_open=1)
@@ -313,29 +312,29 @@ async def drive(
                             case Leveled(was=was_level, now=now, by=chooser):
                                 count(**{f"to_{now.replace(' ', '_')}": 1})
                                 # [LAW:nothing-unseen] each change of level is its own event: from, to, and by.
-                                with unit("desk.leveled", emit, wide.begun(SYSTEM)):
+                                with unit("desk.leveled", emit, wide.begun(clock)):
                                     annotate(was=was_level, now=now, by=chooser)
                                 await on_level(act)
                     for at, later in deadline(was.phase, desk.phase):
-                        loop.call_at(at, events.put_nowait, later)
+                        clock.call_at(at, partial(events.put_nowait, later))
 
 
-def _changed(was: VADState, now: VADState, clock: Callable[[], Instant]) -> tuple[Heard, ...]:
+def _changed(was: VADState, now: VADState, clock: Clock) -> tuple[Heard, ...]:
     """What the detector's state moving from `was` to `now` says of the speech."""
     match was, now:
         case VADState.QUIET, VADState.STARTING:
             return (SpeechStarting(),)
         case VADState.QUIET | VADState.STARTING, VADState.SPEAKING:
-            return (SpeechStarted(clock()),)
+            return (SpeechStarted(clock.now()),)
         case VADState.STARTING | VADState.SPEAKING | VADState.STOPPING, VADState.QUIET:
             return (SpeechStopped(),)
         case _:
             return ()
 
 
-async def _judged(ears: Ears, emit: Callable[[WideEvent], None]) -> bool:
+async def _judged(clock: Clock, ears: Ears, emit: Callable[[WideEvent], None]) -> bool:
     """Ask Smart Turn whether the speech that just stopped ends the turn: its own unit of work, with its verdict."""
-    with unit("desk.judged", emit, wide.begun(SYSTEM)):
+    with unit("desk.judged", emit, wide.begun(clock)):
         complete, metrics = await ears.judge()
         # [LAW:nothing-unseen] the verdict, and how sure of it the model was; no metrics is a segment with no audio in it.
         annotate(complete=complete, probability=None if metrics is None else metrics.probability, inference_ms=None if metrics is None else metrics.e2e_processing_time_ms)
