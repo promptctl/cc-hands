@@ -2,6 +2,7 @@
 
 from typing import cast
 
+from hands.virtualclock import VirtualClock
 from hands.core.delta import Delta
 from hands.core.drilldown import LADDER, drill
 from hands.core.narration import narration
@@ -30,7 +31,7 @@ def held(steps: tuple[Step, ...] = STEPS, turn: str = "p1") -> Recounts:
 
 def expand(recounts: Recounts) -> Body:
     """The tool's body, as the model calls it."""
-    return expand_tool(new_sessions(), recounts).body
+    return expand_tool(new_sessions(clock=VirtualClock()), recounts).body
 
 
 def parts(result: Result) -> list[tuple[str, str]]:

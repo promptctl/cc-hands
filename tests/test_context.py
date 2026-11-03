@@ -9,7 +9,7 @@ import pytest
 
 from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
 from hands.brain.asides import AsideFailed, Unanswered
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
 from hands.core.sentences import Digest
 from hands.core.session import SessionId
@@ -44,7 +44,8 @@ from hands.sessions.wide import WideEvent, root
 
 BRAIN = SessionId("brain")
 # The span the stages here route with: which trace a request is in is the stage's, not the keeper's.
-SPAN = root(SYSTEM)
+# Seeded apart from every other clock here, so its ids are no span the keeper or an exchange opens.
+SPAN = root(VirtualClock(seed=1))
 MARKED = {"type": "ephemeral"}
 
 
@@ -171,7 +172,7 @@ def sent(body: object, kind: Kind | None = None, session: SessionId = BRAIN) -> 
 
 def ended(kind: Kind = MainTurn(None)) -> Exchanged:
     message = Message("m", "claude-opus-5-5", (Text("done"),), "end_turn", {})
-    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(SYSTEM))
+    return Exchanged("x", BRAIN, kind, None, "POST", "/v1/messages", 1, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 1, Written(message, True)), False, root(VirtualClock(seed=2)))
 
 
 class Rig:
@@ -179,7 +180,7 @@ class Rig:
         self.asked = Asked()
         self.store = Store()
         self.recorded: list[Entry] = []
-        self.keeper = Keeper(SYSTEM, BRAIN, self.asked.ask, self.store, every, self.recorded.append)
+        self.keeper = Keeper(VirtualClock(), BRAIN, self.asked.ask, self.store, every, self.recorded.append)
         self.kept = Kept(Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
@@ -276,7 +277,7 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
         def route(self, sent: Sent) -> Route:
             return Hold("(stayed silent)", SPAN)
 
-    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
     assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Hold("(stayed silent)", SPAN)
 
 
@@ -287,7 +288,7 @@ async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() ->
 
     store = Store()
     store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, store, 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, store, 3, lambda _entry: None)
     routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
     assert isinstance(routed, Send) and routed.refusal == "final"
     assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1
@@ -302,6 +303,6 @@ async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_t
         def own(self, sent: Sent) -> Send | None:
             return Send(span=SPAN)
 
-    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
     routed = Kept(Unasked(), keeper, Owning()).route(sent(history(6), kind=Fork()))
     assert isinstance(routed, Send) and routed.refusal == "retried" and routed.span == SPAN

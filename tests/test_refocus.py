@@ -3,6 +3,7 @@
 import zlib
 from pathlib import Path
 
+from hands.virtualclock import VirtualClock
 from hands.core.events import Joined
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry, Refocused, level
@@ -16,7 +17,7 @@ ONE, OTHER = SessionId("one"), SessionId("other")
 
 
 async def running_sessions(*names: SessionId) -> Sessions:
-    sessions = new_sessions()
+    sessions = new_sessions(clock=VirtualClock())
     for name in names:
         await sessions.apply(Joined(Membership(name, pid=zlib.crc32(name.encode()), cwd=Path("/code") / name, transcript=Path("/unread") / name), "startup"))
     return sessions
