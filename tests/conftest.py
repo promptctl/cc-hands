@@ -87,8 +87,9 @@ def events(recorded: Sequence[Entry], name: str) -> list[WideEvent]:
 
 
 # [LAW:locality-or-seam] the one place tests build the session registry, so a change to its constructor is one edit here.
-# A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, which has no default
-# so a test on the machine's clock names SYSTEM where the clock boundary sees it, the audit it reads, its typist or sinks. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
+# A test passes, by the constructor's own names, what its behavior rests on: the clock it runs on, the audit it reads,
+# its typist or sinks. The clock has no default: a test on the machine's clock names SYSTEM, where the clock boundary
+# sees it. Left unannotated on purpose: `partial[Sessions]` would stop pyright checking those names and types.
 new_sessions = partial(Sessions, record=lambda _: None)
 
 

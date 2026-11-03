@@ -83,7 +83,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
         ],
     )
     called: list[object] = []
-    clock = VirtualClock()
+    clock = VirtualClock(epoch=BACK)
     tool = audited(clock, catch_up_tool(await sessions_of(clock, "docs", "parser", "deploy", "scratch"), home, lambda: BACK), called.append)
 
     result = await tool.body(minutes=0)
