@@ -114,13 +114,21 @@ _SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
 async def _repository(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline: float) -> tuple[tuple[str, ...], str | None]:
     """The names of the files most recently changed in the repository `cwd` is in, oldest first, then its branch; or
     none, and why, where git could not say. A directory in no repository has none, and that is no failure."""
+    runs = [
+        # A branch with no commits yet has no history to read, where git log would refuse its unborn HEAD.
+        asyncio.ensure_future(_git(clock, cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}")),
+        asyncio.ensure_future(_git(clock, cwd, environment, deadline, "status", "--porcelain=v1", "-z")),
+        asyncio.ensure_future(_git(clock, cwd, environment, deadline, "branch", "--show-current")),
+    ]
     try:
-        logged, changed, branch = await asyncio.gather(
-            # A branch with no commits yet has no history to read, where git log would refuse its unborn HEAD.
-            _git(clock, cwd, environment, deadline, "log", "--ignore-missing", "HEAD", "--name-only", "--format=", "-z", f"-n{COMMITS}"),
-            _git(clock, cwd, environment, deadline, "status", "--porcelain=v1", "-z"),
-            _git(clock, cwd, environment, deadline, "branch", "--show-current"),
-        )
+        try:
+            logged, changed, branch = await asyncio.gather(*runs)
+        except BaseException:
+            # One git's failure ends the others, each child killed and reaped before the failure leaves, as run promises.
+            for ran in runs:
+                ran.cancel()
+            await asyncio.gather(*runs, return_exceptions=True)
+            raise
     except NotARepository:
         return (), None
     except GitFailed as error:

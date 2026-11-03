@@ -182,6 +182,20 @@ async def test_a_git_still_running_when_the_budget_is_spent_primes_the_sessions_
     assert level(primed) == "error"
 
 
+async def test_a_git_that_fails_ends_the_gits_still_running_before_the_vocabulary_is_read(repository: Path, tmp_path: Path, clock: VirtualClock) -> None:
+    failing = tmp_path / "bin"
+    failing.mkdir()
+    (failing / "git").write_text('#!/bin/sh\ncase "$*" in *status*) echo broken >&2; exit 1;; esac\nexec /bin/sleep 60\n')
+    (failing / "git").chmod(0o755)
+    focus = session(repository)
+
+    primed = await vocabulary(clock, [Listing(focus, None)], focus, {**os.environ, "PATH": str(failing)}, clock.now())
+
+    assert primed.failed is not None and "git status" in primed.failed and "exited 1: broken" in primed.failed
+    # No git log or git branch is left waiting out the budget once the vocabulary is read.
+    assert clock.waking == ()
+
+
 async def test_a_focus_that_cannot_be_read_says_so(tmp_path: Path, clock: VirtualClock) -> None:
     primed = await vocabulary(clock, [], Unreadable("garbled"), os.environ, clock.now())
 
@@ -193,7 +207,7 @@ async def test_with_nothing_focused_and_nothing_running_whisper_is_unprimed_and_
     recorded: list[Entry] = []
     home = Home(tmp_path)
     set_focus(home, None)
-    lexicon = Lexicon(clock, new_sessions(record=recorded.append), home, os.environ, recorded.append)
+    lexicon = Lexicon(clock, new_sessions(clock=clock, record=recorded.append), home, os.environ, recorded.append)
 
     assert await lexicon() is None
     assert [(entry.focus, entry.words, entry.failed) for entry in recorded if isinstance(entry, Primed)] == [(None, (), None)]
