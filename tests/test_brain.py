@@ -35,7 +35,8 @@ from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, segment
-from conftest import events, new_sessions, onboard, patiently, pin, pinned_to, unread
+from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
+import turns
 from turns import RECORDINGS, prompts, stops
 from brains import dialogs, failures, permissions, unasked
 
@@ -964,8 +965,26 @@ class _Jammed:
 
 
 def _played(tmp: Path) -> int:
-    """How much of a recorded turn the stand-in has written to the brain's transcripts so far."""
-    return sum(path.stat().st_size for path in (tmp / "brain" / "projects").glob("*/*.jsonl"))
+    """How many lines of a recorded turn the stand-in has said so far, on any of its channels: a replay opens with hooks
+    posted and statuses set before its first transcript record, and each of those is the replay moving."""
+    said = tmp / "said.log"
+    return len(said.read_text()) if said.exists() else 0
+
+
+async def test_a_recorded_turn_whose_opening_outlasts_the_patience_is_waited_on_while_each_line_of_it_is_said(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hooks and statuses a replay says before its first record move the wait: a loaded machine slow through them is
+    slow, not stalled."""
+    opening = next(index for index, line in enumerate(turns.played(RECORDINGS["sent_now_mid_batch"], subscribed=list(HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
+    pause = PATIENCE_SECS * 0.6
+    assert opening * pause > PATIENCE_SECS
+    monkeypatch.setenv("PLAY_PAUSE", str(pause))
+    brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
+    asking = asyncio.create_task(brain.ask("play sent_now_mid_batch", unasked))
+    try:
+        await patiently(lambda: ["played", "sent_now_mid_batch"] in typed(tmp_path), lambda: (len(typed(tmp_path)), _played(tmp_path)))
+    finally:
+        asking.cancel()
+        await brain.stop()
 
 
 @pytest.mark.parametrize("name", RECORDINGS)
