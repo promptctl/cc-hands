@@ -22,14 +22,18 @@ ROOT = Path(__file__).parents[1]
 
 def markers(tests: Path) -> list[str]:
     """One entry per quarantine marker in the source under `tests`, read from the syntax tree, so a marker's text in a string
-    or a comment is not one. Every reference to a `quarantined` attribute or name is a marker, because conftest's marker lookup
-    honours any spelling of it: a reference that is not a call with its ticket as the one string argument stops the gate,
-    so no spelling escapes the dating."""
+    or a comment is not one. Every `quarantined` attribute or name is a marker, and a reference this scan cannot read stops the
+    gate: a bare reference that is not a call, a call without its ticket as the one string, and `getattr(..., "quarantined")`.
+    A spelling built some other way (a computed name, a string passed through a helper) is not seen; conftest would honour it,
+    so it is not covered here."""
     tickets: list[str] = []
     for source in tests.rglob("*.py"):
         nodes = [node for node in ast.walk(ast.parse(source.read_text(), filename=str(source))) if isinstance(node, ast.expr)]
         called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         for node in nodes:
+            # [LAW:no-silent-failure] getattr(mark, "quarantined") reaches the same marker with no attribute to read, so it stops the gate too.
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == "quarantined":
+                raise ValueError(f'{source}:{node.lineno}: quarantined is looked up with getattr, so its ticket cannot be read here: write pytest.mark.quarantined("<ticket id>")')
             if isinstance(node, ast.Call) and _names_quarantined(node.func):
                 ticket = node.args[0] if len(node.args) == 1 and not node.keywords else None
                 if not (isinstance(ticket, ast.Constant) and isinstance(ticket.value, str) and ticket.value):
@@ -63,7 +67,10 @@ def overdue(starts: Mapping[str, datetime], today: date) -> list[str]:
     taken in UTC, so the boundary does not move with the author's offset."""
     late: list[str] = []
     for ticket, start in sorted(starts.items()):
+        # [LAW:no-silent-failure] a start after today is a clock that is wrong, and a negative age would pass the gate forever.
         age = (today - start.astimezone(UTC).date()).days
+        if age < 0:
+            raise ValueError(f"{ticket}: its quarantine starts {-age} days after today, so the history's dates are wrong")
         if age > QUARANTINE_DAYS:
             late.append(f"{ticket}: quarantined for {age} days, past its {QUARANTINE_DAYS}")
     return late

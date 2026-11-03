@@ -100,6 +100,19 @@ def test_both_spellings_of_the_marker_are_read(tmp_path: Path) -> None:
     assert gate.markers(tmp_path / "tests") == ["t-a", "t-b"]
 
 
+def test_a_marker_looked_up_with_getattr_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_getattr.py").write_text('import pytest\n\ngetattr(pytest.mark, "quarantined")("t-a")\n')
+    with pytest.raises(ValueError, match="looked up with getattr"):
+        gate.markers(tmp_path / "tests")
+
+
+def test_a_start_after_today_fails_loudly() -> None:
+    future = datetime(2026, 12, 20, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="starts 48 days after today"):
+        gate.overdue({"t-future": future}, TODAY)
+
+
 def test_a_marker_without_its_ticket_as_a_string_is_refused(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_bare.py").write_text("import pytest\n\n@pytest.mark.quarantined\ndef test_a():\n    pass\n")
