@@ -47,11 +47,11 @@ CLOCKS = ("clock", "_clock")
 ROOTS = ("daemon/cli.py", "sessions/shim.py")
 
 
-def reached(source: str) -> set[str]:
+def reached(source: str, package: str = "hands") -> set[str]:
     """What `source` reaches of the machine's time and randomness, by the name it reaches it with, in code it runs
     and in code it writes out for another interpreter to run."""
     tree = ast.parse(source)
-    named = _imported(tree)
+    named = _imported(tree, package)
     found: set[str] = set()
     for node in ast.walk(tree):
         match node:
@@ -162,7 +162,7 @@ def _patched(args: list[ast.expr], keywords: list[ast.keyword]) -> str:
     return ""
 
 
-def _imported(tree: ast.Module) -> dict[str, str]:
+def _imported(tree: ast.Module, package: str) -> dict[str, str]:
     """Each name the module binds by an import, to the dotted name it was imported as."""
     named: dict[str, str] = {}
     for node in ast.walk(tree):
@@ -172,10 +172,10 @@ def _imported(tree: ast.Module) -> dict[str, str]:
                 named.update({alias.name.split(".")[0]: alias.name.split(".")[0] for alias in aliases if not alias.asname})
             case ast.ImportFrom(module=str(module), names=aliases, level=0):
                 named.update({alias.asname or alias.name: f"{module}.{alias.name}" for alias in aliases})
-            # Every module that imports relatively is one of hands's, so a relative import names one of its modules.
+            # A relative import climbs from the package the module is in, one package per dot after the first.
             case ast.ImportFrom(module=module, names=aliases, level=int(level)) if level > 0:
-                package = f"hands.{module}" if module else "hands"
-                named.update({alias.asname or alias.name: f"{package}.{alias.name}" for alias in aliases})
+                base = ".".join([*package.split(".")[: len(package.split(".")) - (level - 1)], *([module] if module else [])])
+                named.update({alias.asname or alias.name: f"{base}.{alias.name}" for alias in aliases})
             case _:
                 pass
     return named
@@ -204,7 +204,7 @@ def _last(node: ast.expr) -> str:
 def offenders(root: Path = Path(hands.__file__).parent, exempt: tuple[str, ...] = ADAPTERS) -> dict[str, set[str]]:
     modules = sorted(path for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in exempt)
     assert modules
-    reaching = {path.relative_to(root).as_posix(): reached(path.read_text()) for path in modules}
+    reaching = {path.relative_to(root).as_posix(): reached(path.read_text(), ".".join([root.name, *path.relative_to(root).parent.parts])) for path in modules}
     return {name: found for name, found in reaching.items() if found}
 
 
@@ -383,7 +383,7 @@ def test_a_sleep_of_a_false_is_no_yield() -> None:
 
 def test_the_check_reads_a_relative_import_a_named_wait_and_an_f_string_sleep_of_a_hole() -> None:
     source = (
-        "from ..clock import SYSTEM\nfrom . import clock as c\nc.SYSTEM\nt.join(TIMEOUT)\nev.wait(BOUND_SECONDS)\n"
+        "from .clock import SYSTEM\nfrom . import clock as c\nc.SYSTEM\nt.join(TIMEOUT)\nev.wait(BOUND_SECONDS)\n"
         'f"import asyncio\\nasyncio.sleep({DELAY})\\n"\n'
     )
     assert reached(source) == {"hands.clock.SYSTEM", ".join(seconds)", ".wait(seconds)", "asyncio.sleep()"}
@@ -391,3 +391,8 @@ def test_the_check_reads_a_relative_import_a_named_wait_and_an_f_string_sleep_of
 
 def test_a_string_too_deep_to_parse_is_no_code() -> None:
     assert _written("import os\n" + "1+" * 100000 + "1") == set()
+
+
+def test_a_relative_import_climbs_from_the_package_the_module_is_in() -> None:
+    assert reached("from ..clock import SYSTEM\nSYSTEM\n", "hands.voice") == {"hands.clock.SYSTEM"}
+    assert reached("from .clock import SYSTEM\nSYSTEM\n", "hands.voice") == set()
