@@ -17,13 +17,12 @@ Latency from key release to the first audio out is logged for every turn.
 import asyncio
 import shlex
 import sys
-import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
@@ -318,7 +317,7 @@ async def run(
                 if voice is not None:
                     sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
                     await converse(voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
-    return Ended(None if voice is None else _wall(voice.audio.output().sounded_at), sessions.live_count())
+    return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
 async def configured(configure: Callable[[], Configured], survey: Callable[[Configured | CannotStart], None], home: Home, sessions: Sessions, run_start: Start) -> VoiceConfig:
@@ -384,7 +383,7 @@ async def converse(
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
-        heart.beat(pipeline.state, _wall(voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
+        heart.beat(pipeline.state, _wall(sessions.clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay
@@ -439,7 +438,7 @@ async def converse(
         # [LAW:no-ambient-temporal-coupling] a move reads the devices, which are known once the pipeline has opened
         # its streams; the desk is driven from then on.
         await pipeline.started.wait()
-        await serve_desk(key=voice.key, levels=levels, tapped=partial(tapped, sessions.clock), microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=sessions.clock)
+        await serve_desk(key=voice.key, levels=levels, tapped=tapped, microphone=voice.audio.input(), speaker=voice.audio.output, models=home.wake_word, word=wake_word, taken=taken_at_desk, beat=beat, record=record, clock=sessions.clock)
 
     async def answer_the_phone_once_started() -> None:
         # As for the talk key: a call is taken once the pipeline is up to hear it.
@@ -568,8 +567,8 @@ class PipelineWatch:
             self.started.set()
 
 
-def _wall(instant: float | None) -> datetime | None:
+def _wall(clock: Clock, instant: float | None) -> datetime | None:
     """A monotonic instant as the wall-clock time a reader of the heartbeat can compare with its own."""
-    return None if instant is None else datetime.now(UTC) - timedelta(seconds=time.monotonic() - instant)
+    return None if instant is None else clock.wall() - timedelta(seconds=clock.now() - instant)
 
 

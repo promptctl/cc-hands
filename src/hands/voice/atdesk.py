@@ -3,6 +3,7 @@ models it hears with, as the daemon runs it once the pipeline has opened its str
 
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
@@ -42,7 +43,7 @@ async def serve_desk(
     *,
     key: PushToTalk,
     levels: Levels,
-    tapped: Callable[[Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
+    tapped: Callable[[Clock, Callable[[KeyEvent], None]], AbstractAsyncContextManager[None]],
     microphone: Microphone,
     speaker: Callable[[], Speaker],
     models: Path,
@@ -82,4 +83,4 @@ async def serve_desk(
         async with loaded(clock, rate, record) as ears, wake.loaded(clock, rate, models, word, record) as heard:
             yield ears, wake.listening(clock, heard, lambda: speaker().hands_speaking, record)
 
-    await drive(clock, tapped, microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)
+    await drive(clock, partial(tapped, clock), microphone.overheard, hearing, levels.chosen, at_desk, at_level, record)

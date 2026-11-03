@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Protocol
 
-from hands.clock import Clock
 
 import numpy as np
 from loguru import logger
 
+from hands.clock import Clock
 from hands.sessions.audit import Cued, Played, Record
 from hands.voice.desk import Leveled
 from hands.voice.hold import TURN_LIMIT_SECONDS, Move

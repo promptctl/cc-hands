@@ -17,9 +17,9 @@ the words said while the detector made sure of them are in it.
 import asyncio
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from functools import partial
 from dataclasses import dataclass
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from functools import partial
 from typing import Any, Protocol, cast, get_args
 
 import numpy as np

@@ -84,8 +84,8 @@ class Keyboard:
         self._heard = heard
         return lambda: None
 
-    def tapped(self, into: Callable[[KeyEvent], None]) -> AbstractAsyncContextManager[None]:
-        return tapped(SYSTEM, into, self.tap)
+    def tapped(self, clock: Clock, into: Callable[[KeyEvent], None]) -> AbstractAsyncContextManager[None]:
+        return tapped(clock, into, self.tap)
 
     def press(self, *events: KeyEvent) -> None:
         heard = self._heard

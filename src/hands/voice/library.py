@@ -36,6 +36,15 @@ KEYCHAIN_ITEM = "HF_TOKEN"
 
 
 @dataclass(frozen=True)
+class _Listing:
+    """A listing made: when on the monotonic clock, for its freshness, and when on the wall clock, to be said."""
+
+    fresh_since: float
+    listed_at: float
+    names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Found:
     """What a search matched, and when the listing it searched was made; `from_cache` says it was not made for this search."""
 
@@ -57,9 +66,7 @@ class Library:
         self._list_files = list_files
         self._clock = clock
         self._lock = asyncio.Lock()
-        self._names: tuple[str, ...] = ()
-        self._listed_at = 0.0
-        self._fresh_since: float | None = None
+        self._listing: _Listing | None = None
         self._pending: asyncio.Future[list[str]] | None = None
 
     async def search(self, query: str, limit: int) -> Found:
@@ -69,8 +76,9 @@ class Library:
             # Freshness is on the monotonic clock, which a wall-clock step cannot move; `listed_at` is the wall clock's, as it
             # is said to the model as a time.
             now = self._clock.now()
-            if self._fresh_since is not None and now - self._fresh_since < LISTING_SECONDS:
-                listed_at, from_cache = self._listed_at, True
+            listing = self._listing
+            if listing is not None and now - listing.fresh_since < LISTING_SECONDS:
+                from_cache = True
             else:
                 # A listing that timed out keeps running in its thread, so the next search waits for that one rather than
                 # starting another; the pending listing is forgotten once it has finished, failed or not.
@@ -82,13 +90,12 @@ class Library:
                 finally:
                     if self._pending.done():
                         self._pending = None
-                self._names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav") and "/" in name)
-                self._fresh_since = now
-                self._listed_at = listed_at = self._clock.wall().timestamp()
+                names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav") and "/" in name)
+                self._listing = listing = _Listing(now, self._clock.wall().timestamp(), names)
                 from_cache = False
             needle = query.lower()
-            matches = tuple(name for name in self._names if needle in name.lower())[: max(1, min(limit, MOST_FOUND))]
-            return Found(matches, listed_at, from_cache)
+            matches = tuple(name for name in listing.names if needle in name.lower())[: max(1, min(limit, MOST_FOUND))]
+            return Found(matches, listing.listed_at, from_cache)
 
 
 def hub_token(environment: Mapping[str, str]) -> str | None:
