@@ -11,7 +11,7 @@ import pytest
 from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Screen, SessionInFront, in_front, told
 from hands.core.session import SessionId
 from hands.sessions.front import _under  # pyright: ignore[reportPrivateUsage]
-from hands.sessions.terminals import ancestor_terminals, process_table
+from hands.sessions.terminals import ancestor_terminals, ancestors, process_table
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
 TAB, OTHER_TAB, CLIENT, PANE, OTHER_PANE, FRITTER = 1, 2, 3, 10, 11, 20
@@ -95,9 +95,8 @@ def test_the_process_table_holds_roots_processes_too_so_every_line_of_parents_en
     # A terminal app starts each tab's shell through /usr/bin/login, which runs as root: a table of this user's
     # processes alone breaks the line between a session and its app there.
     assert processes[1].uid == 0
-    for process in processes.values():
-        line = process
-        while line.pid != 1:
-            line = processes[line.parent]
+    # The test's own line, which nothing exits from while it runs: a process of another's can be listed with a parent
+    # that has exited and not yet handed it to launchd.
+    assert [process.pid for process in ancestors(os.getpid(), processes)][-1] == 1
     # Its own parent, the kernel, is not in the table, so a walk up ends there.
     assert processes[1].parent not in processes
