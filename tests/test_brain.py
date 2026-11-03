@@ -35,7 +35,8 @@ from hands.core.stopfailure import StopFailed
 from hands.core.attention import Attention
 from hands.sessions.hookconfig import PERMISSION_HOOK_TIMEOUT_SECONDS, POST_TIMEOUT_SECONDS
 from hands.sessions.audit import Entry, segment
-from conftest import events, new_sessions, onboard, patiently, pin, pinned_to, unread
+from conftest import PATIENCE_SECS, events, new_sessions, onboard, patiently, pin, pinned_to, unread
+import turns
 from turns import RECORDINGS, prompts, stops
 from brains import dialogs, failures, permissions, unasked
 
@@ -964,12 +965,26 @@ class _Jammed:
 
 
 def _played(tmp: Path) -> int:
-    """How much of a recorded turn the stand-in has written to the brain's transcripts so far."""
-    return sum(path.stat().st_size for path in (tmp / "brain" / "projects").glob("*/*.jsonl"))
+    """How many lines of a replayed recording the stand-in has started saying: a replay opens with hooks posted and
+    statuses set before its first transcript record, and each of those is the replay moving."""
+    said = tmp / "said.log"
+    return len(said.read_text()) if said.exists() else 0
 
 
-@pytest.mark.parametrize("name", RECORDINGS)
-async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, name: str) -> None:
+def _opening(name: str) -> int:
+    """How many lines a replay of `name` says before its first transcript record."""
+    return next(index for index, line in enumerate(turns.played(RECORDINGS[name], subscribed=list(HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
+
+
+# One replay whose opening outlasts the patience while each line of it, paused before it starts, leaves as much of the
+# patience as it can to spare: a loaded machine slow through the opening is slow, not stalled.
+_SLOW = "sent_now_mid_batch"
+_SLOW_PAUSE = PATIENCE_SECS * 1.2 / _opening(_SLOW)
+
+
+@pytest.mark.parametrize(("name", "pause"), [*((name, 0.0) for name in RECORDINGS), (_SLOW, _SLOW_PAUSE)])
+async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, name: str, pause: float) -> None:
+    monkeypatch.setenv("PLAY_PAUSE", str(pause))
     brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
     asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
     following: asyncio.Task[BrainEnded] | None = None
