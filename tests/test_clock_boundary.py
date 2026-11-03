@@ -1,6 +1,7 @@
 """Only the Clock adapter reads the machine's time, sleeps on it, schedules on it, or mints ids and randomness from it."""
 
 import ast
+import re
 from pathlib import Path
 
 import hands
@@ -30,6 +31,9 @@ TIMED = ("get", "join", "wait", "acquire")
 # The event loop's timers, on whatever loop they are called on: anything not a clock is the loop the machine's time runs.
 LOOP = ("call_later", "call_at", "time")
 
+# Names a module times a wait by, as a test would patch one.
+TIMING = re.compile(r"(SECONDS|SECS|TIMEOUT|DEADLINE|PATIENCE|INTERVAL|DELAY|HUNG)$")
+
 # The names a module is handed its clock by.
 CLOCKS = ("clock", "_clock")
 
@@ -51,6 +55,9 @@ def reached(source: str) -> set[str]:
                 found.add(module)
             case ast.Name() | ast.Attribute() if _qualified(node, named) in SYSTEM:
                 found.add(_qualified(node, named))
+            # A sleep of nothing yields to the loop and waits on no seconds.
+            case ast.Call(func=func, args=[ast.Constant(value=0)]) if _qualified(func, named) == "asyncio.sleep":
+                pass
             case ast.Call(func=func) if _qualified(func, named) in CALLS:
                 found.add(f"{_qualified(func, named)}()")
             # `asyncio.wait`'s timeout is its second argument, and nothing else that function takes.
@@ -62,6 +69,9 @@ def reached(source: str) -> set[str]:
                 found.add(f".{attr}(timeout=)")
             case ast.Call(func=ast.Attribute(value=receiver, attr=attr)) if attr in LOOP and _last(receiver) not in CLOCKS:
                 found.add(f".{attr}()")
+            # A patched timing constant tunes a wait on the machine's seconds instead of advancing a clock.
+            case ast.Call(func=ast.Attribute(attr="setattr"), args=[*_, ast.Constant(value=str(name)), _]) if TIMING.search(name):
+                found.add(f"setattr {name.rsplit('.', 1)[-1]}")
             case _:
                 pass
     return found
@@ -101,9 +111,8 @@ def _last(node: ast.expr) -> str:
             return ""
 
 
-def offenders() -> dict[str, set[str]]:
-    root = Path(hands.__file__).parent
-    modules = sorted(path for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in ADAPTERS)
+def offenders(root: Path = Path(hands.__file__).parent, exempt: tuple[str, ...] = ADAPTERS) -> dict[str, set[str]]:
+    modules = sorted(path for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in exempt)
     assert modules
     reaching = {path.relative_to(root).as_posix(): reached(path.read_text()) for path in modules}
     return {name: found for name, found in reaching.items() if found}
@@ -141,3 +150,116 @@ def test_the_check_catches_each_way_of_reaching_the_machines_time() -> None:
         ".wait(timeout=)", ".get(timeout=)", ".join(timeout=)", "os.urandom()", "threading.Timer()", ".call_at()", ".time()",
         ".call_later()",
     }  # fmt: skip
+
+
+# The clock's own tests, which prove the adapter against the machine it reads: the tests' counterpart of ADAPTERS.
+CLOCK_TESTS = ("test_clock.py",)
+
+# Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it advances.
+UNMOVED = frozenset(
+    {
+        "conftest.py",
+        "fetches.py",
+        "fixtures/standin_daemon.py",
+        "fixtures/watched_run.py",
+        "test_answer_permission.py",
+        "test_asides.py",
+        "test_atdesk.py",
+        "test_attention.py",
+        "test_audit.py",
+        "test_backlogpage.py",
+        "test_brain.py",
+        "test_brain_e2e.py",
+        "test_brainpage.py",
+        "test_catch_up.py",
+        "test_child.py",
+        "test_closesession.py",
+        "test_command_event.py",
+        "test_context.py",
+        "test_conversationpage.py",
+        "test_daemon_config.py",
+        "test_delta.py",
+        "test_devices.py",
+        "test_engaged.py",
+        "test_filing.py",
+        "test_focus.py",
+        "test_front.py",
+        "test_gallerypage.py",
+        "test_hold.py",
+        "test_holdowner.py",
+        "test_input_tools.py",
+        "test_intermediary.py",
+        "test_latency.py",
+        "test_library.py",
+        "test_list_sessions.py",
+        "test_liveness.py",
+        "test_loads.py",
+        "test_microphone.py",
+        "test_naming.py",
+        "test_narrator.py",
+        "test_occurrences.py",
+        "test_otlp.py",
+        "test_own_model.py",
+        "test_patience.py",
+        "test_phone.py",
+        "test_phonepage.py",
+        "test_pinned.py",
+        "test_playback.py",
+        "test_progress.py",
+        "test_proxy.py",
+        "test_ptt.py",
+        "test_read_session.py",
+        "test_readiness.py",
+        "test_recall.py",
+        "test_recorder.py",
+        "test_restart.py",
+        "test_run_end.py",
+        "test_shim.py",
+        "test_smoke.py",
+        "test_spoken.py",
+        "test_spotify.py",
+        "test_stage.py",
+        "test_start.py",
+        "test_startsession.py",
+        "test_status.py",
+        "test_streaming.py",
+        "test_summary_store.py",
+        "test_system.py",
+        "test_tail.py",
+        "test_talking_over.py",
+        "test_tap.py",
+        "test_tool_runs.py",
+        "test_typing.py",
+        "test_update.py",
+        "test_usage.py",
+        "test_utterance.py",
+        "test_vocabulary.py",
+        "test_voice_turns.py",
+        "test_voiceprints.py",
+        "test_voices.py",
+        "test_wake.py",
+        "test_watchdog.py",
+        "test_whisper.py",
+        "test_wide.py",
+        "test_wrapper.py",
+        "timeouts.py",
+    }
+)  # fmt: skip
+
+
+def test_no_test_reaches_the_machines_time() -> None:
+    reaching = offenders(Path(__file__).parent, CLOCK_TESTS)
+    assert {name: found for name, found in reaching.items() if name not in UNMOVED} == {}
+
+
+def test_every_unmoved_test_still_reaches_it_so_the_list_only_shrinks() -> None:
+    assert UNMOVED - offenders(Path(__file__).parent, CLOCK_TESTS).keys() == set()
+
+
+def test_the_check_catches_a_patched_timing_constant_and_passes_a_bare_yield() -> None:
+    source = (
+        'monkeypatch.setattr(holdowner, "HEARING_SECONDS", 0.1)\nmonkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 1)\n'
+        'monkeypatch.setattr(typing, "ANSWER_TIMEOUT", 1)\nmonkeypatch.setattr(pinned, "RELEASES", [])\n'
+        "import asyncio\nasyncio.sleep(0)\n"
+    )
+    assert reached(source) == {"setattr HEARING_SECONDS", "setattr TURN_LIMIT_SECONDS", "setattr ANSWER_TIMEOUT"}
