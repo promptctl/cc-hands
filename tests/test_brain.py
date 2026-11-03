@@ -965,30 +965,27 @@ class _Jammed:
 
 
 def _played(tmp: Path) -> int:
-    """How many lines of a recorded turn the stand-in has said so far, on any of its channels: a replay opens with hooks
-    posted and statuses set before its first transcript record, and each of those is the replay moving."""
+    """How many lines of a replayed recording the stand-in has started saying: a replay opens with hooks posted and
+    statuses set before its first transcript record, and each of those is the replay moving."""
     said = tmp / "said.log"
     return len(said.read_text()) if said.exists() else 0
 
 
-async def test_a_recorded_turn_whose_opening_outlasts_the_patience_is_waited_on_while_each_line_of_it_is_said(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The hooks and statuses a replay says before its first record move the wait: a loaded machine slow through them is
-    slow, not stalled."""
-    opening = next(index for index, line in enumerate(turns.played(RECORDINGS["sent_now_mid_batch"], subscribed=list(HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
-    pause = PATIENCE_SECS * 0.6
-    assert opening * pause > PATIENCE_SECS
+def _opening(name: str) -> int:
+    """How many lines a replay of `name` says before its first transcript record."""
+    return next(index for index, line in enumerate(turns.played(RECORDINGS[name], subscribed=list(HOOKS), session="s", first=0, prompt="p")) if isinstance(line, turns.Written))
+
+
+# One replay whose opening outlasts the patience while each line of it, paused before it starts, leaves as much of the
+# patience as it can to spare: a loaded machine slow through the opening is slow, not stalled.
+_SLOW = "sent_now_mid_batch"
+_SLOW_PAUSE = PATIENCE_SECS * 1.2 / _opening(_SLOW)
+
+
+@pytest.mark.parametrize(("name", "pause"), [*((name, 0.0) for name in RECORDINGS), (_SLOW, _SLOW_PAUSE)])
+async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, name: str, pause: float) -> None:
+    assert _opening(name) * pause > PATIENCE_SECS or not pause
     monkeypatch.setenv("PLAY_PAUSE", str(pause))
-    brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
-    asking = asyncio.create_task(brain.ask("play sent_now_mid_batch", unasked))
-    try:
-        await patiently(lambda: ["played", "sent_now_mid_batch"] in typed(tmp_path), lambda: (len(typed(tmp_path)), _played(tmp_path)))
-    finally:
-        asking.cancel()
-        await brain.stop()
-
-
-@pytest.mark.parametrize("name", RECORDINGS)
-async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, name: str) -> None:
     brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
     asking = asyncio.create_task(brain.ask(f"play {name}", unasked))
     following: asyncio.Task[BrainEnded] | None = None
