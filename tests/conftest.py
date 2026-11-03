@@ -54,6 +54,7 @@ from hands.voice import streaming, voiceprints
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
+import clockwatch
 import timeouts
 
 
@@ -364,6 +365,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if not config.pluginmanager.has_plugin("timeout"):
         raise pytest.UsageError("pytest-timeout bounds every test the suite runs, and it is off: --timeout=0 lifts the bound")
     config.pluginmanager.register(timeouts, "timeouts")
+    clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
         raise pytest.UsageError("the run fetches what its tests need into pytest's cache, and the cache provider is off")
     if claude := shutil.which("claude", path=SYSTEM_PATH):
