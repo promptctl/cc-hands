@@ -37,7 +37,7 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
-from hands.clock import Clock
+from hands.clock import Clock, wait
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
@@ -1342,7 +1342,7 @@ class Brain:
             return f"(nothing: {error})"
 
     async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
-        """Until the first of `ending` is done, or a pause of `seconds` on the brain's one pause has passed.
+        """Until the first of `ending` is done, or a pause of `seconds` on the brain's clock has passed.
 
         [LAW:no-silent-failure] a pause that failed, however the wait ended, says so, and is not taken for the time
         running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on."""
@@ -1381,9 +1381,9 @@ class Brain:
             # On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes, whatever
             # was typed between; so no two are pressed that close, counted from when each went and with room for Claude
             # Code to read the first late. The spacing is waited out while Claude Code acts on the Escape.
-            spacing = self._cleared + EXIT_SECONDS - self._clock.now()
+            spacing = max(self._cleared + EXIT_SECONDS - self._clock.now(), 0.0)
             await self._clock.pause(spacing)
-            annotate(spaced=round(max(spacing, 0.0), 3))
+            annotate(spaced=round(spacing, 3))
             # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
             # queue. The Escape alone stops it, in up to half a second on CI (promptctl-testing-px1f.6i5).
             # [LAW:no-silent-failure] still held past INTERRUPT_SECONDS, it was not stopped, and says what Claude Code
@@ -1664,9 +1664,7 @@ class Brain:
             case Permission() as permission if turn is not None and holds(self._modelled(), request):
                 asked = Asked(permission, request, replying, self._sessions, self.session)
                 turn.asks(asked)
-                with contextlib.suppress(TimeoutError):
-                    async with self._clock.timeout(by - self._clock.now()):
-                        await asyncio.shield(replying)
+                await wait(self._clock, {replying}, by - self._clock.now())
                 asked.settle(Deny(UNANSWERED))
             case Permission() if turn is not None:
                 # Refused as it was held: its turn is ending.

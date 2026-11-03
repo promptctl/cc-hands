@@ -123,9 +123,10 @@ class Asides:
         # What its asker's time running out means where it stands: waiting for a main turn to fork, or for anything else.
         waiting = (Unanswered.TIMED_OUT, "no answer")
         async with contextlib.AsyncExitStack() as taken:
+            # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
+            limit = self._clock.timeout(within.seconds if isinstance(within, Deadline) else None)
             try:
-                # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
-                async with self._clock.timeout(within.seconds if isinstance(within, Deadline) else None) as limit:
+                async with limit:
                     # Waited for before its turn: nothing is asked of a brain that has sent nothing, so no asker holds the
                     # others back on that.
                     waiting = (Unanswered.UNFORKED, "the brain sent no main turn to fork")
@@ -143,6 +144,8 @@ class Asides:
                     turn = await self._newest.turn()
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
+                if not limit.expired():
+                    raise
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
