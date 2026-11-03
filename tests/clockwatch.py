@@ -1,18 +1,21 @@
 """Which test modules reach the machine's time, ids, and randomness as they run, held to UNMOVED.
 
 [LAW:single-enforcer] This is the one check on tests/: a reach is caught by what a test's run calls, not by how its
-source spells the call, so no spelling escapes it. Two reaches no wrapper sees, datetime's reads of the wall clock inside
-its C type and a C lock's timed acquire, are taken from the code scan in tests/test_clock_boundary.py, whose own tests
-hold src and the composition roots, which run under no harness.
+source spells the call. What no wrapper sees is taken from the code scan in tests/test_clock_boundary.py, whose own
+tests hold src and the composition roots, which run under no harness: datetime's reads of the wall clock inside its C
+type, a C lock's timed acquire, and code run in another process, written out by a test or a script under fixtures/. A
+reference to a facility taken before the watch installs, as a default argument or a class attribute, escapes both.
 
-A reach is credited to the innermost frame of a module under tests/. A read the machine's clock makes for hands code,
-through `SystemClock`, with no such frame on the stack, is credited to the origin the running code carries: the module
-whose item was running when the task, the thread, or the executor job that makes it was started. Nothing reads which
-test runs now, so a thread that outlives its test is charged to that test and not to the next.
+A reach made with a frame of a module under tests/ on the stack is charged to the origin the running code carries: the
+module whose item was running when it, or the task, the thread, or the executor job that makes it, was started, so a
+test is charged for what its helpers wait on; the harness's own code, a hook or a finalizer, is charged to its module. A read the machine's clock makes for hands code, through `SystemClock`,
+is charged to that origin with no such frame. Nothing reads which test runs now, so a thread that outlives its test is
+charged to that test and not to the next.
 """
 
 import contextvars
 import functools
+import inspect
 import os
 import random
 import secrets
@@ -24,11 +27,12 @@ from collections import defaultdict
 from collections.abc import Callable, Generator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from types import CodeType
 
 import pytest
 
 from hands.clock import SystemClock
-from test_clock_boundary import offenders
+from test_clock_boundary import offenders, reached, written
 
 # The clock's own tests, which prove the adapter against the machine it reads, and the two checks', whose samples
 # reach it: their reaches are the adapter's, not a test's.
@@ -41,6 +45,7 @@ UNMOVED = frozenset({
     "conftest.py",
     "fetches.py",
     "fixtures/standin_daemon.py",
+    "fixtures/watched_run.py",
     "npm_registry.py",
     "test_answer_permission.py",
     "test_asides.py",
@@ -56,7 +61,9 @@ UNMOVED = frozenset({
     "test_child.py",
     "test_closesession.py",
     "test_command_event.py",
+    "test_command_imports.py",
     "test_conversation.py",
+    "test_cues.py",
     "test_conversationpage.py",
     "test_daemon_config.py",
     "test_delta.py",
@@ -67,6 +74,7 @@ UNMOVED = frozenset({
     "test_focus.py",
     "test_front.py",
     "test_gallerypage.py",
+    "test_hermetic.py",
     "test_hold.py",
     "test_holdowner.py",
     "test_input_tools.py",
@@ -111,8 +119,10 @@ UNMOVED = frozenset({
     "test_system.py",
     "test_tail.py",
     "test_talking_over.py",
+    "test_timeouts.py",
     "test_tap.py",
     "test_tool_runs.py",
+    "test_transcript.py",
     "test_typing.py",
     "test_update.py",
     "test_usage.py",
@@ -134,12 +144,15 @@ SCANNED = frozenset({"datetime.datetime.now()", "datetime.datetime.utcnow()", "d
 
 # The machine's time, ids, and randomness, each read by the module function a test or a library calls.
 FACILITIES: dict[str, tuple[object, tuple[str, ...]]] = {
-    "time": (time, ("monotonic", "monotonic_ns", "time", "time_ns", "sleep", "perf_counter", "perf_counter_ns")),
+    "time": (time, ("monotonic", "monotonic_ns", "time", "time_ns", "sleep", "perf_counter", "perf_counter_ns", "process_time", "process_time_ns", "thread_time", "thread_time_ns", "clock_gettime", "clock_gettime_ns", "localtime", "gmtime", "ctime", "asctime", "strftime")),
     "os": (os, ("urandom",)),
     "uuid": (uuid, ("uuid1", "uuid4")),
     "secrets": (secrets, ("token_bytes", "token_hex", "token_urlsafe", "choice", "randbelow", "randbits")),
     "random": (random, ("random", "uniform", "triangular", "randint", "randrange", "choice", "choices", "shuffle", "sample", "getrandbits", "randbytes", "gauss", "normalvariate", "lognormvariate", "expovariate", "vonmisesvariate", "gammavariate", "betavariate", "paretovariate", "weibullvariate", "binomialvariate")),
 }  # fmt: skip
+
+# Functions that read the machine's time only when not handed one: how many arguments they take before it.
+GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime": 0, "time.strftime": 1}
 
 # Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
@@ -162,6 +175,9 @@ class Watch:
         self._within = threading.local()
         self.record: defaultdict[str, set[str]] = defaultdict(set)
         self._modules: dict[str, str | None] = {}
+        self._ran: set[str] = set()
+        # The code of every test and fixture an item has run: what pytest enters tests/ through for a test.
+        self._tests: set[CodeType] = set()
         self._skipped = False
         self._deselected = False
 
@@ -176,24 +192,33 @@ class Watch:
             )  # fmt: skip
         return self._modules[filename]
 
-    def _innermost(self) -> str | None:
-        frame = sys._getframe(2)  # pyright: ignore[reportPrivateUsage]
+    def _entered(self) -> tuple[str, bool] | None:
+        """The innermost frame's module under tests/, and whether the code it runs in is the harness's: entered from
+        pytest's own frames through anything but a test or a fixture, as a hook or a finalizer is. A task or a thread,
+        whose stack holds no pytest frame, is the code that started it. None with no frame under tests/."""
+        frame, innermost, entry = sys._getframe(), "", None  # pyright: ignore[reportPrivateUsage]
         while frame is not None and (module := self._module(frame.f_code.co_filename)) is not None:
             if module:
-                return module
+                innermost, entry = innermost or module, frame.f_code
             frame = frame.f_back
-        return None
+        return (innermost, frame is not None and entry not in self._tests) if innermost else None
 
-    def _reach(self, facility: str, module: str | None) -> None:
-        if module is not None and module not in CLOCK_TESTS:
-            self.record[module].add(facility)
+    def _charged(self, carried: bool) -> str | None:
+        """The module a reach is charged to: with a frame under tests/ on the stack, the origin, unless the harness
+        makes it, or no item runs, as a module's code runs as it is collected: then the innermost such frame's module.
+        With none, the origin if `carried`, else none."""
+        if (entered := self._entered()) is None:
+            return ORIGIN.get(None) if carried else None
+        innermost, harness = entered
+        return innermost if harness else ORIGIN.get(innermost)
 
-    def _through(self, facility: str, module: str | None, function: Callable[..., object], *args: object, **kwargs: object) -> object:
-        """`function` called, as a reach of `facility` by `module` unless it is made inside another facility: a uuid4
-        reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made, not its parts."""
+    def _through(self, facility: str, charged: Callable[[], str | None], function: Callable[..., object], *args: object, **kwargs: object) -> object:
+        """`function` called, as a reach of `facility` by the module `charged` names unless it is made inside another
+        facility: a uuid4 reads os.urandom and an Event's wait a Condition's, and the reach is the call the test made,
+        not its parts. Only the outer call walks the stack."""
         outer = not getattr(self._within, "facility", False)
-        if outer:
-            self._reach(facility, module)
+        if outer and (module := charged()) is not None and module not in CLOCK_TESTS:
+            self.record[module].add(facility)
         self._within.facility = True
         try:
             return function(*args, **kwargs)
@@ -204,10 +229,12 @@ class Watch:
         """`function`, recording each call as a reach of `facility`: by a test frame alone, or, `carried`, by the
         origin the running code carries when no test frame is on the stack."""
 
+        given = GIVEN.get(facility)
+
         @functools.wraps(function)
         def reached(*args: object, **kwargs: object) -> object:
-            module = self._innermost()
-            return self._through(facility, module if module is not None or not carried else ORIGIN.get(None), function, *args, **kwargs)
+            reads = given is None or len(args) <= given or args[given] is None
+            return self._through(facility, functools.partial(self._charged, carried) if reads else lambda: None, function, *args, **kwargs)
 
         return reached
 
@@ -218,15 +245,16 @@ class Watch:
         def waited(owner: object, *args: object, **kwargs: object) -> object:
             timeout = args[at] if len(args) > at else kwargs.get(keyword)
             # A wait of no seconds is a poll, as a sleep of none is a yield: it waits on no time.
-            module = self._innermost() if isinstance(timeout, int | float) and timeout > 0 else None
-            return self._through(facility, module, method, owner, *args, **kwargs)
+            waits = isinstance(timeout, int | float) and timeout > 0
+            return self._through(facility, functools.partial(self._charged, False) if waits else lambda: None, method, owner, *args, **kwargs)
 
         return waited
 
     def carrying(self, run: Callable[..., object]) -> Callable[..., object]:
-        """`run`, made to carry the origin of the code that starts it, wherever it runs."""
-        context = contextvars.copy_context()
-        if (origin := self._innermost() or ORIGIN.get(None)) is not None:
+        """`run`, made to carry the origin of the code that starts it, wherever it runs, and nothing else of its context:
+        a thread starts in an empty one, as it does unwatched."""
+        context = contextvars.Context()
+        if (origin := self._charged(carried=True)) is not None:
             context.run(ORIGIN.set, origin)
         return functools.partial(context.run, run)
 
@@ -271,22 +299,33 @@ class Watch:
 
     @pytest.hookimpl(wrapper=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, object, object]:
-        token = ORIGIN.set(item.path.relative_to(self.tests).as_posix() if item.path.is_relative_to(self.tests) else "")
+        if not item.path.is_relative_to(self.tests):
+            return (yield)
+        module = item.path.relative_to(self.tests).as_posix()
+        self._ran.add(module)
+        if isinstance(item, pytest.Function):
+            functions: list[Callable[..., object]] = [item.function]  # pyright: ignore[reportUnknownMemberType]
+            functions += (definition.func for definitions in item._fixtureinfo.name2fixturedefs.values() for definition in definitions)  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
+            self._tests.update(inspect.unwrap(function).__code__ for function in functions)
+        token = ORIGIN.set(module)
         try:
             return (yield)
         finally:
             ORIGIN.reset(token)
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        self._skipped |= report.skipped
+        # An xfail ran, and its report says skipped.
+        self._skipped |= report.skipped and not hasattr(report, "wasxfail")
 
     def pytest_deselected(self) -> None:
         self._deselected = True
 
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
-        whole = session.exitstatus == 0 and not self._skipped and not self._deselected and [(session.config.invocation_params.dir / arg).resolve() for arg in session.config.args] == [self.tests]
-        for module, found in offenders(self.tests, (*CLOCK_TESTS, Path(__file__).name)).items():
-            self.record[module] |= found & SCANNED
+        # The whole suite ran when every test module did, each test in it neither skipped nor deselected.
+        modules = {path.relative_to(self.tests).as_posix() for path in self.tests.rglob("test_*.py")}
+        whole = session.exitstatus == 0 and not self._skipped and not self._deselected and modules <= self._ran
+        for module, found in scanned(self.tests).items():
+            self.record[module] |= found
         self.new, self.stale = verdict({module: found for module, found in self.record.items() if found}, self.unmoved, whole)
         if self.new or self.stale:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
@@ -306,6 +345,19 @@ def verdict(record: dict[str, set[str]], unmoved: frozenset[str], whole: bool) -
     of the whole suite, each it holds that never did. A part of the suite sees only its part's reaches, so only the whole
     can prove an entry stale."""
     return {module: found for module, found in record.items() if module not in unmoved}, set(unmoved - record.keys()) if whole else set()
+
+
+@functools.cache
+def scanned(tests: Path) -> dict[str, set[str]]:
+    """What each module under `tests` reaches that no wrapper sees: the scan's facilities in its own code, and any in
+    code run in another process, written out by it or, a script under fixtures/, itself."""
+    exempt = (*CLOCK_TESTS, Path(__file__).name)
+    found = {module: facilities & SCANNED for module, facilities in offenders(tests, exempt).items()}
+    for path in tests.rglob("*.py"):
+        if (module := path.relative_to(tests).as_posix()) not in exempt:
+            source = path.read_text()
+            found.setdefault(module, set()).update(written(source) | (reached(source) if module.startswith("fixtures/") else set()))
+    return {module: facilities for module, facilities in found.items() if facilities}
 
 
 def register(config: pytest.Config, unmoved: frozenset[str]) -> None:

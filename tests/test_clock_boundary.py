@@ -55,11 +55,8 @@ def reached(source: str, package: str = "hands") -> set[str]:
     found: set[str] = set()
     for node in ast.walk(tree):
         match node:
-            # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run; an f-string's
-            # holes are read as a second, which is what a test fills them with, and never as the zero a yield is.
-            case ast.JoinedStr(values=values):
-                found.update(_written("".join(str(v.value) if isinstance(v, ast.Constant) else "1" for v in values)))
-            case ast.Constant(value=str(text)) if "\n" in text or "import" in text:
+            # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run.
+            case ast.JoinedStr() | ast.Constant(value=str()) if (text := _code(node)) is not None:
                 found.update(_written(text))
             case ast.Import(names=aliases):
                 found.update(alias.name for alias in aliases if alias.name.split(".")[0] in MODULES)
@@ -95,6 +92,23 @@ def reached(source: str, package: str = "hands") -> set[str]:
             case _:
                 pass
     return found
+
+
+def _code(node: ast.expr) -> str | None:
+    """The code a string literal holds, if it reads as code: an f-string's holes read as a second, which is what a test
+    fills them with, and never as the zero a yield is."""
+    match node:
+        case ast.JoinedStr(values=values):
+            return "".join(str(v.value) if isinstance(v, ast.Constant) else "1" for v in values)
+        case ast.Constant(value=str(text)) if "\n" in text or "import" in text:
+            return text
+        case _:
+            return None
+
+
+def written(source: str) -> set[str]:
+    """What the code `source` writes out for another interpreter, a pytester module or a `python -c`, reaches."""
+    return {facility for node in ast.walk(ast.parse(source)) if isinstance(node, ast.expr) and (text := _code(node)) is not None for facility in _written(text)}
 
 
 def _written(text: str) -> set[str]:
