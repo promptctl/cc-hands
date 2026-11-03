@@ -140,7 +140,7 @@ UNMOVED = frozenset({
 })  # fmt: skip
 
 # Facilities the code scan finds in tests/, as it names them.
-SCANNED = frozenset({"datetime.datetime.now()", "datetime.datetime.utcnow()", "datetime.datetime.today()", "datetime.date.today()", ".acquire(timeout=)", ".acquire(seconds)"})
+SCANNED = frozenset({"datetime.datetime.now()", "datetime.datetime.utcnow()", "datetime.datetime.today()", "datetime.date.today()", ".acquire(timeout=)", ".acquire(seconds)", ".get(timeout=)"})
 
 # The machine's time, ids, and randomness, each read by the module function a test or a library calls.
 FACILITIES: dict[str, tuple[object, tuple[str, ...]]] = {
@@ -153,6 +153,9 @@ FACILITIES: dict[str, tuple[object, tuple[str, ...]]] = {
 
 # Functions that read the machine's time only when not handed one: how many arguments they take before it.
 GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime": 0, "time.strftime": 1}
+
+# Waits handed their seconds at a place, which wait on none when handed none: a sleep of none is a yield.
+POLLED = {"time.sleep": 0, "threading.Timer": 1}
 
 # Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
@@ -194,14 +197,17 @@ class Watch:
 
     def _entered(self) -> tuple[str, bool] | None:
         """The innermost frame's module under tests/, and whether the code it runs in is the harness's: entered from
-        pytest's own frames through anything but a test or a fixture, as a hook or a finalizer is. A task or a thread,
-        whose stack holds no pytest frame, is the code that started it. None with no frame under tests/."""
-        frame, innermost, entry = sys._getframe(), "", None  # pyright: ignore[reportPrivateUsage]
+        pytest's own frame directly through anything but a test or a fixture of the item's own, as a hook or a finalizer
+        is. A task or a thread, entered from the event loop or the thread's start, is the code that started it. None
+        with no frame under tests/."""
+        frame, innermost, harness = sys._getframe(), "", False  # pyright: ignore[reportPrivateUsage]
         while frame is not None and (module := self._module(frame.f_code.co_filename)) is not None:
             if module:
-                innermost, entry = innermost or module, frame.f_code
+                innermost = innermost or module
+                caller = frame.f_back
+                harness = caller is not None and self._module(caller.f_code.co_filename) is None and frame.f_code not in self._tests
             frame = frame.f_back
-        return (innermost, frame is not None and entry not in self._tests) if innermost else None
+        return (innermost, harness) if innermost else None
 
     def _charged(self, carried: bool) -> str | None:
         """The module a reach is charged to: with a frame under tests/ on the stack, the origin, unless the harness
@@ -229,11 +235,11 @@ class Watch:
         """`function`, recording each call as a reach of `facility`: by a test frame alone, or, `carried`, by the
         origin the running code carries when no test frame is on the stack."""
 
-        given = GIVEN.get(facility)
+        given, polled = GIVEN.get(facility), POLLED.get(facility)
 
         @functools.wraps(function)
         def reached(*args: object, **kwargs: object) -> object:
-            reads = given is None or len(args) <= given or args[given] is None
+            reads = (given is None or len(args) <= given or args[given] is None) and (polled is None or len(args) <= polled or args[polled] != 0)
             return self._through(facility, functools.partial(self._charged, carried) if reads else lambda: None, function, *args, **kwargs)
 
         return reached
@@ -305,7 +311,8 @@ class Watch:
         self._ran.add(module)
         if isinstance(item, pytest.Function):
             functions: list[Callable[..., object]] = [item.function]  # pyright: ignore[reportUnknownMemberType]
-            functions += (definition.func for definitions in item._fixtureinfo.name2fixturedefs.values() for definition in definitions)  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
+            # A fixture of a wider scope is set up and torn down for whichever test comes first or last: the harness's.
+            functions += (definition.func for definitions in item._fixtureinfo.name2fixturedefs.values() for definition in definitions if definition.scope == "function")  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType]
             self._tests.update(inspect.unwrap(function).__code__ for function in functions)
         token = ORIGIN.set(module)
         try:
@@ -327,7 +334,8 @@ class Watch:
         for module, found in scanned(self.tests).items():
             self.record[module] |= found
         self.new, self.stale = verdict({module: found for module, found in self.record.items() if found}, self.unmoved, whole)
-        if self.new or self.stale:
+        # Only a run that would pass fails for the watch: an interrupted or empty one keeps its own status.
+        if (self.new or self.stale) and session.exitstatus == pytest.ExitCode.OK:
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:

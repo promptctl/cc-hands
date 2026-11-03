@@ -17,7 +17,7 @@ def tick():
 
 
 def test_reaches_by_every_route():
-    time.sleep(0)
+    time.sleep(0.001)
     monotonic()
     uuid.uuid4()
     threading.Event().wait(0.001)
@@ -119,3 +119,12 @@ def test_a_hook_is_charged_to_its_own_module_and_not_the_test_it_runs_for(pytest
     result = run(pytester, monkeypatch, hooks=hooks, test_quiet="def test_nothing():\n    pass\n")
     assert "conftest.py: ['time.monotonic']" in result.outlines
     assert not any(line.startswith("test_quiet.py") for line in result.outlines)
+
+
+def test_a_task_a_test_spawns_is_charged_to_the_test_and_a_wait_of_none_to_no_one(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    helper = "import time\n\nasync def poll():\n    time.strftime('%H')\n"
+    user = "import asyncio, threading, time\nfrom helper import poll\n\ndef test_spawns():\n    async def main():\n        await asyncio.create_task(poll())\n    asyncio.run(main())\n\ndef test_yields():\n    time.sleep(0)\n    threading.Timer(0, lambda: None).cancel()\n"
+    lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
+    # The loop asyncio.run drives reads the machine's monotonic clock too.
+    assert "test_user.py: ['time.monotonic', 'time.strftime']" in lines
+    assert not any(line.startswith("helper.py") for line in lines)

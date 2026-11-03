@@ -84,8 +84,8 @@ def reached(source: str, package: str = "hands") -> set[str]:
                 _seconds(first) and _qualified(func, named) != "asyncio.wait"
             ):
                 found.add(f".{attr}(seconds)")
-            # A lock's acquire takes its seconds second, after whether to block at all.
-            case ast.Call(func=ast.Attribute(attr="acquire"), args=[_, second, *_]) if _seconds(second):
+            # A lock's acquire takes its seconds second, after whether to block at all; none is a poll.
+            case ast.Call(func=ast.Attribute(attr="acquire"), args=[_, second, *_]) if _seconds(second) and not (isinstance(second, ast.Constant) and second.value == 0):
                 found.add(".acquire(seconds)")
             case ast.Call(func=ast.Attribute(value=receiver, attr=attr)) if attr in LOOP and _last(receiver) not in CLOCKS:
                 found.add(f".{attr}()")
