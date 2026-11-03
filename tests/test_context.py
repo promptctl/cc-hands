@@ -179,7 +179,7 @@ class Rig:
         self.asked = Asked()
         self.store = Store()
         self.recorded: list[Entry] = []
-        self.keeper = Keeper(BRAIN, self.asked.ask, self.store, every, self.recorded.append)
+        self.keeper = Keeper(SYSTEM, BRAIN, self.asked.ask, self.store, every, self.recorded.append)
         self.kept = Kept(Stage(), self.keeper, NoAsides())
 
     async def turn(self, finished: int) -> Route:
@@ -276,7 +276,7 @@ async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> No
         def route(self, sent: Sent) -> Route:
             return Hold("(stayed silent)", SPAN)
 
-    keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
     assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Hold("(stayed silent)", SPAN)
 
 
@@ -287,7 +287,7 @@ async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() ->
 
     store = Store()
     store.said.update({key(result): "said" for result in aged(history(6), 3)})
-    keeper = Keeper(BRAIN, Asked().ask, store, 3, lambda _entry: None)
+    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, store, 3, lambda _entry: None)
     routed = Kept(Final(), keeper, NoAsides()).route(sent(history(6)))
     assert isinstance(routed, Send) and routed.refusal == "final"
     assert routed.changes[-1] == Tail("standing") and len(routed.changes) > 1
@@ -302,6 +302,6 @@ async def test_a_side_questions_own_request_goes_as_the_question_routes_it_and_t
         def own(self, sent: Sent) -> Send | None:
             return Send(span=SPAN)
 
-    keeper = Keeper(BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
+    keeper = Keeper(SYSTEM, BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
     routed = Kept(Unasked(), keeper, Owning()).route(sent(history(6), kind=Fork()))
     assert isinstance(routed, Send) and routed.refusal == "retried" and routed.span == SPAN

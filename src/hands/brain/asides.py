@@ -11,14 +11,13 @@ Each question is one request through hands' proxy, built as the brain's Claude C
 import asyncio
 import contextlib
 import json
-import time
 from dataclasses import dataclass
 from enum import StrEnum
 
 import aiohttp
 
 from hands.brain.fork import Newest, fork
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
 from hands.core.wire import Text as Said
@@ -79,7 +78,8 @@ Within = Deadline | TimeLimit
 class Asides:
     """What answers hands' side questions: `ask` forks the brain's newest main turn with the question, through the proxy."""
 
-    def __init__(self, proxy_url: str, newest: Newest, record: Record) -> None:
+    def __init__(self, clock: Clock, proxy_url: str, newest: Newest, record: Record) -> None:
+        self._clock = clock
         self._proxy_url = proxy_url
         self._newest = newest
         self._record = record
@@ -101,14 +101,14 @@ class Asides:
         a refusal passed on as the API said it, since its client is hands, which never asks again."""
         sending = self._sending
         # [LAW:one-source-of-truth] its request is told by the very body it was sent as; a fork's kind narrows the compare.
-        return Send(built=True, span=within(SYSTEM, sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else None
+        return Send(built=True, span=within(self._clock, sending[0])) if sending is not None and isinstance(sent.kind, Fork) and sent.body == sending[1] else None
 
     async def ask(self, kind: AsideKind, question: str, within: Within) -> str:
         """The answer to `question`, asked beside the brain's conversation; raises AsideFailed when it has none,
         TIMED_OUT once its asker's time is up."""
         # [LAW:nothing-unseen] one event for each question, however it ends: answered, failed, or left by its asker, in its
         # turn or still waiting for it. Asked inside another unit of work, it is that one's part.
-        with unit("brain.aside", self._record, begun(SYSTEM)):
+        with unit("brain.aside", self._record, begun(self._clock)):
             annotate(kind=kind, question=question)
             try:
                 reply = await self._in_turn(question, within)
@@ -119,13 +119,14 @@ class Asides:
             return reply
 
     async def _in_turn(self, question: str, within: Within) -> str:
-        queued = time.monotonic()
+        queued = self._clock.now()
         # What its asker's time running out means where it stands: waiting for a main turn to fork, or for anything else.
         waiting = (Unanswered.TIMED_OUT, "no answer")
         async with contextlib.AsyncExitStack() as taken:
+            # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
+            limit = self._clock.timeout(within.seconds if isinstance(within, Deadline) else None)
             try:
-                # [LAW:single-enforcer] the one clock its asker's time runs on, from asking or from its turn.
-                async with asyncio.timeout(within.seconds if isinstance(within, Deadline) else None) as clock:
+                async with limit:
                     # Waited for before its turn: nothing is asked of a brain that has sent nothing, so no asker holds the
                     # others back on that.
                     waiting = (Unanswered.UNFORKED, "the brain sent no main turn to fork")
@@ -134,15 +135,17 @@ class Asides:
                     await self._one.acquire()
                     taken.callback(self._one.release)
                     # queued_ms only once it has its turn: the rest of its duration_ms is its request answered.
-                    annotate(queued_ms=since(SYSTEM, queued))
+                    annotate(queued_ms=since(self._clock, queued))
                     match within:
                         case TimeLimit(seconds=seconds):
-                            clock.reschedule(asyncio.get_running_loop().time() + seconds)
+                            limit.reschedule(self._clock.now() + seconds)
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
+                if not limit.expired():
+                    raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 

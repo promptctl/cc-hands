@@ -27,8 +27,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
-from uuid import uuid4
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -39,7 +37,7 @@ from loguru import logger
 
 from hands.brain import pinned
 from hands.brain.mcp import SERVER_NAME
-from hands.clock import SYSTEM
+from hands.clock import Clock, wait
 from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply, SessionGone, Story, Submitted, Summarise, Text, Withdraw
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
@@ -381,7 +379,8 @@ class InTmux:
     it. hands' client only shows it, re-attaching while it runs, and its hangup at hands' end destroys the session
     unless a person is attached."""
 
-    def __init__(self, client: ClaudeCode, tmux: str, socket: Path, session: str, workspace: Path) -> None:
+    def __init__(self, clock: Clock, client: ClaudeCode, tmux: str, socket: Path, session: str, workspace: Path) -> None:
+        self._clock = clock
         self._client = client
         self._tmux = tmux
         self._socket = socket
@@ -415,7 +414,7 @@ class InTmux:
             if not pane.startswith("%"):
                 raise BrainGone("the brain's screen cannot be read: its pane has not said which it is")
             self._pane = pane
-        match await styled(SYSTEM, self._tmux, self._socket, self._pane):
+        match await styled(self._clock, self._tmux, self._socket, self._pane):
             case Unanswered(reason=reason):
                 raise BrainGone(f"the brain's screen cannot be read: {reason}")
             case str() as shown:
@@ -433,7 +432,7 @@ class InTmux:
         await asyncio.shield(self._client.exit)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
-            await asyncio.sleep(0.02)
+            await self._clock.pause(0.02)
         try:
             return int((self._workspace / "status").read_text())
         except (FileNotFoundError, ValueError):
@@ -448,7 +447,8 @@ class InTmux:
         await self._client.stop()
         await self.end_session()
         try:
-            await asyncio.wait_for(asyncio.shield(self.exit), STOP_SECONDS)
+            async with self._clock.timeout(STOP_SECONDS):
+                await asyncio.shield(self.exit)
         except TimeoutError:
             if (shell := self.shell) is not None:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
@@ -457,7 +457,7 @@ class InTmux:
             await asyncio.shield(self.exit)
 
     async def end_session(self) -> None:
-        match await ran_at(SYSTEM, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
+        match await ran_at(self._clock, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
             case Unanswered() as unanswered:
                 logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
             case Ran(returncode=code, err=err) if code != 0 and not _UNHELD.search(err):
@@ -466,7 +466,7 @@ class InTmux:
                 pass
 
 
-async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
+async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
     """Run a slim Claude Code's command in the brain's tmux session on the user's default tmux server, the one `tmux
     attach` reaches, so a person can watch it and type into it.
 
@@ -481,7 +481,7 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
     session = brain_session(station.config_dir)
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
     # was attached is ended first.
-    match await ran_at(SYSTEM, tmux, socket, ("kill-session", "-t", f"={session}")):
+    match await ran_at(clock, tmux, socket, ("kill-session", "-t", f"={session}")):
         case Ran(returncode=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
         case Unanswered() as unanswered:
@@ -543,8 +543,8 @@ async def in_tmux(station: Station, argv: Sequence[str], workspace: Path) -> InT
         # is the size of whoever watches it.
         + f"\nwhile [ ! -e {shlex.quote(str(status))} ] && {tmuxed} has-session -t ={session} 2>/dev/null; do {tmuxed} attach-session -f ignore-size -t ={session} || sleep 0.2; done\n"
     )
-    client = await on_terminal(SYSTEM, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
-    return InTmux(client, tmux, socket, session, workspace)
+    client = await on_terminal(clock, ["/bin/sh", str(workspace / "client.sh")], station.cwd, inherited)
+    return InTmux(clock, client, tmux, socket, session, workspace)
 
 
 class BrainGone(Exception):
@@ -1013,7 +1013,7 @@ class ClaudeTurns:
             self._current = None if self._unknown else next((behind for behind in self._open if not behind.ids), None)
 
 
-def model(record: Record, told: Callable[[Story], None], took: Callable[[Submitted], None]) -> Sessions:
+def model(clock: Clock, record: Record, told: Callable[[Story], None], took: Callable[[Submitted], None]) -> Sessions:
     """The brain's Claude Code session, as the one model of a Claude Code turn reads every working session, in a registry
     of its own: where each prompt's words went handed to `took`, and each turn it tells to `told`, in the order the model
     decided them.
@@ -1023,7 +1023,7 @@ def model(record: Record, told: Callable[[Story], None], took: Callable[[Submitt
     its turns say is the brain's stage's to say, from the wire, never what the model makes of its session.
     """
     # [LAW:one-source-of-truth] the brain's Stop held as long as its hook declares it is waited on (hookconfig).
-    return Sessions(SYSTEM, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
+    return Sessions(clock, record, story_sink=told, heard_sink=_unsaid, submitted_sink=took, stop_hold=TAKE_SECONDS)
 
 
 def _unsaid(_heard: Heard) -> None:
@@ -1045,7 +1045,7 @@ class Brain:
         cwd: Path,
         record: Record,
         launched: Span,
-        pause: Callable[[float], Awaitable[None]],
+        clock: Clock,
     ) -> None:
         self._claude = claude
         self._fritter = fritter
@@ -1060,12 +1060,12 @@ class Brain:
         self._record = record
         # What the brain does that no turn asked for is a part of its launch, in the launch's trace.
         self._launched = launched
-        # [LAW:no-ambient-temporal-coupling] how the brain's bounds pass is the brain's to be handed, and is that alone: a
-        # typing's take and a stop's end wait on one pause, and no other wait of the brain's is one.
-        self._pause = pause
+        # [LAW:no-ambient-temporal-coupling] the brain's one clock, handed to it: every bound it keeps and every wait it
+        # makes is read off it and waited on it.
+        self._clock = clock
         # [LAW:one-source-of-truth] Claude Code's turns in the brain, as the one model of a turn reads them: which runs,
         # which waits in its queue, and which is over.
-        self._sessions = model(record, self._told, self._took)
+        self._sessions = model(clock, record, self._told, self._took)
         # [LAW:single-enforcer] the brain's status and transcript, read as every working session's are, on the same period.
         self._reader = Reader(self._sessions, Tails(self._sessions), self._apply)
         # [LAW:single-enforcer] the input is the user's, and only two things are ever typed into it: a turn, and the
@@ -1080,14 +1080,14 @@ class Brain:
         # what a clear waits on to see Claude Code hold nothing of what it stopped, re-read from the model each time it moves.
         self._moved = asyncio.Event()
         self._typing: set[asyncio.Task[None]] = set()
-        # When the last stop pressed Ctrl-C, on the event loop's clock.
+        # When the last stop pressed Ctrl-C, on the brain's clock.
         self._cleared = float("-inf")
         # [LAW:no-ambient-temporal-coupling] the words of the turn last pasted and not taken, as `kept` reads them, until
         # the next prompt Claude Code takes: it reads its input in order, so only that one can be them, taken late.
         self._untaken: str | None = None
         with continuing(launched):
             self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
-            self._exit = asyncio.ensure_future(self._run_out(begun(SYSTEM)))
+            self._exit = asyncio.ensure_future(self._run_out(begun(self._clock)))
 
     @property
     def pid(self) -> int:
@@ -1103,7 +1103,7 @@ class Brain:
             raise BrainGone(f"the brain had ended before it was asked: {exited(self._exit.result())}")
         loop = asyncio.get_running_loop()
         # Behind a space, as every prompt hands types: a leading / or ! is then the character it is.
-        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(SYSTEM), TAKE_SECONDS, Text(pasted(text)).typed)
+        turn = self._turn = _Turn(loop.create_future(), loop.create_future(), loop.create_future(), asks, begun(self._clock), TAKE_SECONDS, Text(pasted(text)).typed)
         # An asker that stops waiting leaves the turn to be typed and to run to its end, which is still the brain's to hear.
         self._keep(self._send(turn), turn)
         return await asyncio.shield(turn.answered)
@@ -1142,7 +1142,7 @@ class Brain:
         async with self._input:
             # [LAW:nothing-unseen] a stop hands decides itself is one event: the words, the turn they ran in, and whether
             # it was stopped.
-            with unit("brain.late", self._record, begun(SYSTEM)):
+            with unit("brain.late", self._record, begun(self._clock)):
                 turn = self._turn
                 asked = turn is not None and not turn.answered.done() and turn.taken.done()
                 stopped = running in self._claude_turns.open and not asked
@@ -1255,7 +1255,7 @@ class Brain:
         # reads it: a dialog drops the paste or holds it unsent, and SUBMIT resolves to the prompt's submit or to nothing.
         # [LAW:no-ambient-temporal-coupling] one take, from the first look at the screen until Claude Code says it took the
         # turn or ended it.
-        pausing = asyncio.ensure_future(self._pause(turn.take))
+        pausing = asyncio.ensure_future(self._clock.pause(turn.take))
         try:
             # [LAW:single-enforcer] words in the input, whatever left them there (a turn not taken, a person at the pane, an
             # earlier run), are deleted before the paste, so none joins the turn. The look only reads; what is typed, the
@@ -1319,19 +1319,19 @@ class Brain:
         """The input box, once the brain's screen, settled, shows a turn would go into its prompt (`typable`): two captures
         SETTLE_SECONDS apart whose input boxes agree, the second taken only once the first shows one. The sleeps set
         only how often hands looks; no outcome turns on them."""
-        began, looks = time.monotonic(), 0
+        began, looks = self._clock.now(), 0
         try:
             while True:
                 looks += 1
                 if (first := typable(await self._claude.screen())) is not None:
-                    await asyncio.sleep(SETTLE_SECONDS)
+                    await self._clock.pause(SETTLE_SECONDS)
                     if typable(await self._claude.screen()) == first:
                         return first
-                await asyncio.sleep(LOOK_SECONDS)
+                await self._clock.pause(LOOK_SECONDS)
         finally:
             # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many reads that took, found or not: a
             # turn typed at once reads 1.
-            annotate(at_prompt_after=round(time.monotonic() - began, 3), looks=looks)
+            annotate(at_prompt_after=round(self._clock.now() - began, 3), looks=looks)
 
     async def _shown(self) -> str:
         """The brain's screen, for an Untaken's reason: a screen that cannot be read says so there, and never stands in
@@ -1342,11 +1342,11 @@ class Brain:
             return f"(nothing: {error})"
 
     async def _waited(self, seconds: float, *ending: "asyncio.Future[Any]") -> None:
-        """Until the first of `ending` is done, or a pause of `seconds` on the brain's one pause has passed.
+        """Until the first of `ending` is done, or a pause of `seconds` on the brain's clock has passed.
 
         [LAW:no-silent-failure] a pause that failed, however the wait ended, says so, and is not taken for the time
         running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on."""
-        pausing = asyncio.ensure_future(self._pause(seconds))
+        pausing = asyncio.ensure_future(self._clock.pause(seconds))
         try:
             await asyncio.wait({*ending, pausing}, return_when=asyncio.FIRST_COMPLETED)
         finally:
@@ -1366,15 +1366,14 @@ class Brain:
         held = self._modelled()
         # [LAW:nothing-unseen] each clear is one event: whether it was for a turn, and how long Claude Code took to stop
         # what it ran.
-        with unit("brain.clear", self._record, begun(SYSTEM)):
+        with unit("brain.clear", self._record, begun(self._clock)):
             annotate(for_turn=turn is not None)
             # [LAW:no-ambient-temporal-coupling] what runs is ended in the model in the step its Escape goes: every dialog
             # it holds is refused, and each asked until a prompt starts new work, with a refusal that ends the turn whether
             # it reaches Claude Code before the Escape or after it.
             self._sessions.hear(Ending(self.session, DenyAndInterrupt(STOPPED)))
-            loop = asyncio.get_running_loop()
             await self._type(lambda typist: typist.press("escape"))
-            escaped = loop.time()
+            escaped = self._clock.now()
             if turn is not None and (turn is not self._turn or not turn.stopped):
                 logger.warning(f"the brain stopped what Claude Code ran that was no turn's: {None if held is None else held.turn}")
             # Escape puts a prompt stopped before any reply back in the input, and with it what was typed queued behind the
@@ -1382,9 +1381,9 @@ class Brain:
             # On an input left empty it arms Claude Code's exit instead, which a second Ctrl-C within 800ms takes, whatever
             # was typed between; so no two are pressed that close, counted from when each went and with room for Claude
             # Code to read the first late. The spacing is waited out while Claude Code acts on the Escape.
-            spacing = self._cleared + EXIT_SECONDS - loop.time()
-            await asyncio.sleep(spacing)
-            annotate(spaced=round(max(spacing, 0.0), 3))
+            spacing = max(self._cleared + EXIT_SECONDS - self._clock.now(), 0.0)
+            await self._clock.pause(spacing)
+            annotate(spaced=round(spacing, 3))
             # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
             # queue. The Escape alone stops it, in up to half a second on CI (promptctl-testing-px1f.6i5).
             # [LAW:no-silent-failure] still held past INTERRUPT_SECONDS, it was not stopped, and says what Claude Code
@@ -1403,7 +1402,7 @@ class Brain:
             else:
                 waiting.result()
                 # Read once any spacing has passed: where `spaced` was the longer wait, Claude Code stopped sooner than this.
-                annotate(stopped_in=round(loop.time() - escaped, 3))
+                annotate(stopped_in=round(self._clock.now() - escaped, 3))
                 # [LAW:single-enforcer] Claude Code holds nothing now, so a turn of `ClaudeTurns` still open is one no
                 # telling will end: words the Escape put back in the input, which the Ctrl-C clears, before they ran. Each
                 # ends here, in the step the model reads it so, before any turn Claude Code opens later can be among them.
@@ -1414,7 +1413,7 @@ class Brain:
             # still reading to take the two together: a Ctrl-C a busy Claude Code reads in one chunk with the ESC is
             # Alt+Ctrl-C, and neither key does anything.
             await self._type(lambda typist: typist.press("ctrl_c"))
-            self._cleared = loop.time()
+            self._cleared = self._clock.now()
             if unstopped is None:
                 # The Escape put whatever Claude Code queued back in the input and the Ctrl-C cleared it: untaken words
                 # are in neither now, so none can come late.
@@ -1545,7 +1544,7 @@ class Brain:
             self._refused(body)
             return DECLINED
         try:
-            hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(uuid4().hex))
+            hook = parse_own_hook(body, pid=self._pid, cwd=self._cwd, at=self._sessions.now(), heard=self._sessions.stamp(), request=RequestId(self._clock.uuid()))
         except Rejected as error:
             return self._unread(event, error)
         if hook.session != self.session:
@@ -1557,11 +1556,10 @@ class Brain:
             case Hook():
                 # Answered once it is applied, whatever it says, as a working session's hook is (serve_hooks): Claude Code
                 # goes on only once the model has it, so nothing it writes after is read before it.
-                loop = asyncio.get_running_loop()
-                arrived = loop.time()
+                arrived = self._clock.now()
                 held = await self._reader.hooked(hook)
                 await self._heard()
-                self._ordered(hook, held, loop.time() - arrived)
+                self._ordered(hook, held, self._clock.now() - arrived)
                 return {}
 
     def _ordered(self, hook: Hook, held: StopHeld | None, took: float) -> None:
@@ -1590,7 +1588,7 @@ class Brain:
         match event:
             case "PermissionRequest":
                 # [LAW:nothing-unseen] one event, though hands could not read which turn's it is.
-                with unit("brain.permission", self._record, begun(SYSTEM)):
+                with unit("brain.permission", self._record, begun(self._clock)):
                     fail(f"hands could not read the permission request: {error}")
                 return hook_output(Deny(UNREAD))
             case "UserPromptSubmit" | "Stop":
@@ -1607,7 +1605,7 @@ class Brain:
             case PermissionHook():
                 reply = Deny(NOBODY)
                 # [LAW:nothing-unseen] one event, as every permission the brain posts is, though no turn of the brain's asked it.
-                with unit("brain.permission", self._record, begun(SYSTEM)):
+                with unit("brain.permission", self._record, begun(self._clock)):
                     annotate(session=hook.session, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
                 return hook_output(reply)
             case Hook():
@@ -1621,7 +1619,7 @@ class Brain:
         settled through the model before the reply is waited on, so the wait cannot hang on hands' own failure.
         [LAW:nothing-unseen] each is one event, written once its hook's reply is known: a part of the turn it was held
         for, or of the brain's launch where no turn of the user's was in flight to ask in."""
-        began = begun(SYSTEM)
+        began = begun(self._clock)
         turn: _Turn | None = None
         raised: BaseException | None = None
         try:
@@ -1634,7 +1632,7 @@ class Brain:
         else:
             # [LAW:no-ambient-temporal-coupling] its hook's day runs from its hold, as Claude Code's clock on the hook runs
             # from its post, however long the read below takes.
-            by = asyncio.get_running_loop().time() + BRAIN_REPLY_BY_SECONDS
+            by = self._clock.now() + BRAIN_REPLY_BY_SECONDS
             try:
                 # [LAW:no-ambient-temporal-coupling] owned by the turn the model says goes by its id once Claude Code is
                 # read through now, as a turn's hook is decided (Reader.hooked): a turn dequeued under a new id asks before a
@@ -1650,13 +1648,13 @@ class Brain:
                 self._sessions.answer(hook.asked.request, Deny(BROKEN))
             reply = refused(await asyncio.shield(replying))
         # Timed from its hold, and a part of the turn it was held for, which is known only once Claude Code is read through.
-        ended("brain.permission", self._record, replace(began, span=within(SYSTEM, self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
+        ended("brain.permission", self._record, replace(began, span=within(self._clock, self._part_of(turn))), raised, prompt=hook.prompt, tool=hook.tool, request=hook.asked.request, decision=reply)
         return reply
 
     async def _decide(self, hook: PermissionHook, turn: _Turn | None, replying: "asyncio.Future[HookReply]", by: float) -> None:
         """What hands decides of a held dialog, each settled through the model: put to the user in the turn it is a part
         of, or refused because nobody can be asked, its turn broke, nobody sees a dialog of questions or a plan, or nobody
-        answered by `by`, the end of its hook's day on the loop's clock. A dialog the model already refused, of a turn
+        answered by `by`, the end of its hook's day on the brain's clock. A dialog the model already refused, of a turn
         hands is ending, is never put to the user."""
         request = hook.asked.request
         match hook.asked.on:
@@ -1666,7 +1664,7 @@ class Brain:
             case Permission() as permission if turn is not None and holds(self._modelled(), request):
                 asked = Asked(permission, request, replying, self._sessions, self.session)
                 turn.asks(asked)
-                await asyncio.wait({replying}, timeout=by - asyncio.get_running_loop().time())
+                await wait(self._clock, {replying}, by - self._clock.now())
                 asked.settle(Deny(UNANSWERED))
             case Permission() if turn is not None:
                 # Refused as it was held: its turn is ending.
@@ -1686,7 +1684,7 @@ class Brain:
     def _dialog(self, event: str, prompt: str | None, owner: _Turn | None) -> Generator[None]:
         """A dialog the brain posted, as one unit of work `event`: a part of its `owner`, the turn in flight it was posted
         for, or else of the brain's launch, for one a turn before it left behind or one posted between turns."""
-        with continuing(self._part_of(owner)), unit(event, self._record, begun(SYSTEM)):
+        with continuing(self._part_of(owner)), unit(event, self._record, begun(self._clock)):
             annotate(prompt=prompt)
             yield
 
@@ -1707,7 +1705,7 @@ class Brain:
             said = Payload.parse(body)
             prompt, server = said.optional_text("prompt_id"), said.optional_text("mcp_server_name")
         except Rejected as error:
-            with unit("brain.elicitation", self._record, begun(SYSTEM)):
+            with unit("brain.elicitation", self._record, begun(self._clock)):
                 fail(f"hands could not read the Elicitation hook: {error}")
             return
         with self._dialog("brain.elicitation", prompt, self._owner(prompt)):
@@ -1837,12 +1835,12 @@ class Brain:
                 turn.answered.exception()
 
 
-async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitable[None]] = asyncio.sleep) -> Brain:
-    """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; `pause` is how
-    the time a typed turn has to be taken passes."""
+async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
+    """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; every bound
+    the brain keeps, a typed turn's take among them, passes on `clock`."""
     station = launch.station
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
-    with unit("brain.launch", record, begun(SYSTEM)):
+    with unit("brain.launch", record, begun(clock)):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
         match launch.conversation:
             case Fresh(untranscribed=untranscribed):
@@ -1876,9 +1874,9 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
         running: InTmux | None = None
         try:
             try:
-                running = await in_tmux(station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+                running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
                 annotate(tmux_session=brain_session(station.config_dir))
-                typist, wrapper = await _typist(running, sockets, launch.session)
+                typist, wrapper = await _typist(clock, running, sockets, launch.session)
                 annotate(pid=wrapper)
             except Unstartable:
                 # A conversation the brain could not come up in never fails the starts after it: the next begins anew, and
@@ -1897,7 +1895,7 @@ async def start(launch: Launch, record: Record, pause: Callable[[float], Awaitab
             shutil.rmtree(sockets, ignore_errors=True)
             raise
         launched = here()
-    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, pause)
+    brain = Brain(running, wrapper, launch.session, typist, listener, sockets, station.config_dir, station.cwd, record, launched, clock)
     posting.set_result(brain.posted)
     return brain
 
@@ -1925,16 +1923,16 @@ async def _listen(posting: "asyncio.Future[Callable[[str, bytes], Awaitable[Mapp
     return runner, f"http://{host}:{port}"
 
 
-async def _typist(running: InTmux, sockets: Path, session: SessionId) -> tuple[Typist, int]:
+async def _typist(clock: Clock, running: InTmux, sockets: Path, session: SessionId) -> tuple[Typist, int]:
     """The brain as fritter types into it, once its input is up: the socket fritter opened under `sockets`, and the claude
     it started; and that fritter's pid.
 
     [LAW:no-ambient-temporal-coupling] up is the brain's own word, the bracketed paste Claude Code turns on once it reads
     its input, not a guess at how long that takes: a
     turn typed into a terminal not yet raw has its Return made a newline, which Claude Code takes as one more line."""
-    deadline = asyncio.get_running_loop().time() + START_SECONDS
+    deadline = clock.now() + START_SECONDS
     waiting = "fritter had not started the brain and opened its socket"
-    while asyncio.get_running_loop().time() < deadline and not running.exit.done():
+    while clock.now() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
         wrapper = running.fritter
         child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
@@ -1945,7 +1943,7 @@ async def _typist(running: InTmux, sockets: Path, session: SessionId) -> tuple[T
                 return typist, wrapper
             except Untyped as error:
                 waiting = f"the brain had not turned its input on ({error})"
-        await asyncio.sleep(0.05)
+        await clock.pause(0.05)
     # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
     if running.exit.done():
         raise Unstartable(f"{exited(running.exit.result())} while {waiting}; it showed:\n{running.shown()}")

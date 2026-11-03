@@ -37,7 +37,6 @@ CLOCKS = ("clock", "_clock")
 # promptctl-testing-c3u.eps; the last one deletes this list. A module may leave it and never join it.
 UNMOVED = frozenset(
     {
-        "brain/asides.py", "brain/context.py", "brain/mcp.py", "brain/process.py", "brain/stage.py",
         "daemon/cli.py", "daemon/config.py", "daemon/menubar.py", "daemon/notify.py", "daemon/run.py", "daemon/smoke.py",
         "daemon/starting.py", "daemon/update.py",
         "sessions/otlp.py", "sessions/shim.py",

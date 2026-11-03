@@ -17,13 +17,12 @@ the next turn, and hands answers them in the turn's own voice.
 
 import asyncio
 import json
-import time
 from functools import partial
 from itertools import cycle
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Protocol, cast
 
 from loguru import logger
@@ -44,7 +43,7 @@ from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
 from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.attention import Attention
 from hands.voice.narrator import set_to
 from hands.core.brainwork import AlreadyEnded, BrainWork, Epoch, Idle, NotWorking, Running, StopOutcome, Stopping, Working
@@ -423,8 +422,7 @@ class BrainStage(FrameProcessor):
         spans: CallSpans,
         cut_off: Callable[[], asyncio.Future[Bookmark]],
         aloud: Callable[[], Attention],
-        clock: Callable[[], Seconds] = time.monotonic,
-        pause: Callable[[Seconds], Awaitable[None]] = asyncio.sleep,
+        clock: Clock,
     ) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         self._brain = brain
@@ -446,9 +444,7 @@ class BrainStage(FrameProcessor):
         self._cut_off = cut_off
         # [LAW:one-source-of-truth] what the user set hands to say unprompted, read as the narrator reads it (`set_to`).
         self._aloud = aloud
-        self._now = clock
-        # Waits out a call's time before the turn is acknowledged.
-        self._pause = pause
+        self._clock = clock
         self._acknowledgements = cycle(ACKNOWLEDGEMENTS)
         self._answers = cycle(ANSWERS)
         self._tools = {wire_name(tool): tool for tool in tools}
@@ -501,7 +497,7 @@ class BrainStage(FrameProcessor):
                 # [LAW:no-ambient-temporal-coupling] the screen is read from as the words arrive, not as their turn is
                 # taken: the user may look elsewhere, or switch to audio-only, while it waits.
                 released, self._released, self._answering = self._released, None, None
-                arrived = self._now()
+                arrived = self._clock.now()
                 match released:
                     case None:
                         let_go, opened = None, self._opened()
@@ -529,10 +525,10 @@ class BrainStage(FrameProcessor):
                 await self.push_frame(frame, direction)
             case VADUserStoppedSpeakingFrame():
                 # The key let go on words to be transcribed: the end of the user's words, and the start of their wait.
-                self._released = (self._now(), self._opened())
+                self._released = (self._clock.now(), self._opened())
                 await self.push_frame(frame, direction)
             case Narrated() | Aloud():
-                self._hands.append((frame, self._now()))
+                self._hands.append((frame, self._clock.now()))
                 self._waiting.set()
             case InterruptionFrame():
                 # [LAW:no-ambient-temporal-coupling] the turn stops being spoken before the pipeline is told, so no word of
@@ -561,7 +557,7 @@ class BrainStage(FrameProcessor):
         while True:
             waiting, arrived, released = await self._upcoming()
             # Taken from its lane: how long it waited there, which reading the screen is not.
-            taken = self._now()
+            taken = self._clock.now()
             match waiting:
                 case (str() as text, reading):
                     asker = await reading
@@ -589,9 +585,9 @@ class BrainStage(FrameProcessor):
                         await self.push_frame(frame)
 
     async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
-        began = self._now()
+        began = self._clock.now()
         front = await self._front()
-        return UserAsked(modality, opened, front, (self._now() - began) * 1000)
+        return UserAsked(modality, opened, front, (self._clock.now() - began) * 1000)
 
     async def _upcoming(self) -> tuple[tuple[str, asyncio.Task[UserAsked]] | Narrated | Aloud, Seconds, Seconds | None]:
         """What is next: the user's words while any wait, since what they said goes ahead of what hands has to tell, all
@@ -618,7 +614,7 @@ class BrainStage(FrameProcessor):
         and `utterances` what the turn says of the sessions. `released` is when the user let go of the key on the words
         the turn asks, None for a turn not asked aloud, and `taken` when the turn left its lane. Returns why the turn
         failed, None where it did not."""
-        return await self._event(partial(self._typed, text, asker, unsaid, utterances, arrived, released, taken), begun(SYSTEM))
+        return await self._event(partial(self._typed, text, asker, unsaid, utterances, arrived, released, taken), begun(self._clock))
 
     async def _event(self, turn: Callable[[], Awaitable[str | None]], began: Begun) -> str | None:
         # [LAW:nothing-unseen] every turn passes through here, whoever asked it, a turn nobody did included, and however it ends.
@@ -628,7 +624,7 @@ class BrainStage(FrameProcessor):
     def _begin(self, asker: Asker, utterances: tuple[Utterance, ...], span: Span, since: Seconds) -> _Turn:
         """A turn of the stage's, speaking from the start: its words, and its acknowledgement, which only a turn the user
         asked and has heard nothing of is given (`_Turn.unheard`)."""
-        turn = _Turn(asyncio.Queue(), [], asker, utterances, span, since, Epoch(time.time()))
+        turn = _Turn(asyncio.Queue(), [], asker, utterances, span, since, Epoch(self._clock.wall().timestamp()))
         turn.speaking = asyncio.create_task(self._speak(turn), name="the brain's words")
         turn.acknowledging = asyncio.create_task(self._acknowledge(turn), name="the turn's acknowledgement")
         return turn
@@ -649,8 +645,8 @@ class BrainStage(FrameProcessor):
         """A turn Claude Code opened that no turn of hands' waits on, from its first request: spoken as any turn is,
         through the one event every turn has, ending as its turn of `ClaudeTurns` does."""
         with continuing(None):
-            began = begun(SYSTEM)
-        now = self._now()
+            began = begun(self._clock)
+        now = self._clock.now()
         turn = self._begin(Unawaited(running.opener), (), began.span, now)
         run = partial(self._turn_of, turn, running.ended, "", "", (), now, None, now)
 
@@ -698,7 +694,7 @@ class BrainStage(FrameProcessor):
                     self._running = None
                 if turn.running is not None and self._turns.get(turn.running) is turn:
                     del self._turns[turn.running]
-                ended = self._now()
+                ended = self._clock.now()
                 # [LAW:no-ambient-temporal-coupling] nothing acknowledges a turn once it is over.
                 turn.acknowledging.cancel()
                 turn.over()
@@ -853,7 +849,7 @@ class BrainStage(FrameProcessor):
                     turn.reach(point)
                 case _Aside(line=line, since=since):
                     # Hands' answer to the user's own words, which quiet holds nothing of: said, alone.
-                    turn.asides.append((line, _ms(self._now() - since)))
+                    turn.asides.append((line, _ms(self._clock.now() - since)))
                     await self._floor.wait()
                     await self.push_frame(TTSSpeakFrame(line, append_to_context=False))
             words = await turn.said.get()
@@ -871,7 +867,7 @@ class BrainStage(FrameProcessor):
                         turn.unacknowledged.clear()
                     await self.push_frame(LLMTextFrame(words))
                 case _Aside(line=line, since=since):
-                    turn.asides.append((line, _ms(self._now() - since)))
+                    turn.asides.append((line, _ms(self._clock.now() - since)))
                     # Kept out of the replies the audit log records: the brain never said it.
                     await self._aside(turn, TTSSpeakFrame(line, append_to_context=False))
                     await self._reply(turn, True)
@@ -965,7 +961,7 @@ class BrainStage(FrameProcessor):
         stay_silent held."""
         # Another session's request is made for no unit of the stage's: the root of a trace of its own.
         if sent.session != self._brain.session:
-            return Send(span=root(SYSTEM))
+            return Send(span=root(self._clock))
         # [LAW:single-enforcer] every request Claude Code sends for the brain is final, whatever its kind and whether a turn
         # asked it: asked again, Claude Code would keep the user waiting minutes on its retries, and a spent limit it
         # would wait out to continue the task on its own at the reset, hours on, with nobody asking (hands-wire-zi2).
@@ -973,13 +969,13 @@ class BrainStage(FrameProcessor):
         # A request the brain makes while a turn is asked of it, a subagent's or a fork's among them, is that turn's part.
         if not isinstance(sent.kind, MainTurn):
             facing = self._facing()
-            return Send(refusal="final", span=root(SYSTEM) if facing is None else within(SYSTEM, facing.span))
+            return Send(refusal="final", span=root(self._clock) if facing is None else within(self._clock, facing.span))
         turn = self._of(self._brain.current())
         if turn is None:
             # [LAW:no-silent-failure] the brain asked the model something with no turn written to it: heard, never spoken.
             logger.warning(f"the brain sent a main turn (exchange {sent.exchange}) with no turn asked of it; nothing it says will be spoken")
-            return Send(refusal="final", span=root(SYSTEM))
-        now = self._now()
+            return Send(refusal="final", span=root(self._clock))
+        now = self._clock.now()
         carried = tool_answers(sent.body)
         # A call's result leaving is the end of its run, whether the request carrying it goes on or is held.
         for answer in carried:
@@ -1007,8 +1003,8 @@ class BrainStage(FrameProcessor):
             turn.opening, turn.calls, turn.failure, turn.reply = {}, {}, None, ""
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
-            return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(SYSTEM, turn.span))
-        return Hold(SILENT, within(SYSTEM, turn.span))
+            return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(self._clock, turn.span))
+        return Hold(SILENT, within(self._clock, turn.span))
 
     def _of(self, running: ClaudeTurn | None) -> _Turn | None:
         """The turn of the stage's whose request this is: the one already running `running`, the turn of Claude Code's
@@ -1040,7 +1036,7 @@ class BrainStage(FrameProcessor):
         """Acknowledges the turn once its tool work has run its time, however many calls it took, if the user has heard
         nothing of it: they hear it was taken, rather than silence until its answer."""
         await turn.working.wait()
-        await self._pause(ACKNOWLEDGE_SECONDS)
+        await self._clock.pause(ACKNOWLEDGE_SECONDS)
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 
@@ -1075,7 +1071,7 @@ class BrainStage(FrameProcessor):
         turn = self._running
         if turn is None:
             return
-        now = self._now()
+        now = self._clock.now()
         # [LAW:dataflow-not-control-flow] any block of the turn's own reply ending, whatever block it is.
         turn.held_reply = turn.held_reply or (isinstance(observed, Heard) and isinstance(observed.event, BlockStopped) and observed.exchange in turn.exchanges)
         match observed:
@@ -1118,7 +1114,7 @@ class BrainStage(FrameProcessor):
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if exchange in turn.exchanges and index in turn.opening:
                 opened = turn.opening.pop(index)
                 turn.calls[opened.call] = opened.tool
-                ran = turn.tools[opened.call] = _Call(opened.tool, tool_input(opened.tool, opened.json), now, datetime.now(UTC), within(SYSTEM, turn.span))
+                ran = turn.tools[opened.call] = _Call(opened.tool, tool_input(opened.tool, opened.json), now, self._clock.wall(), within(self._clock, turn.span))
                 self._spans.opened(opened.call, ran.span)
                 turn.working.set()
             case Heard(exchange=exchange, event=BlockStopped(index=index)) if turn.voicing == (exchange, index):
