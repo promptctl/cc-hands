@@ -26,16 +26,16 @@ def place_of(edge: Edge) -> Place:
 def turn_start(opener: Opener) -> TurnStart:
     """When a turn `opener` opens cuts off what hands is saying.
 
-    Sound the desk heard can be nobody: hands' own reply left over from the echo canceller, a cough, a door. So a turn the
-    voice opens cuts only once a listener hears words in it (`hands.voice.streaming`). One the user's hand opens cuts at once, since holding a key or a
-    button and letting go with nothing said is how the user stops hands; and so does one the wake word opens, said on
-    purpose, and heard through the echo canceller while hands speaks as the voice is. Words typed and sent are as deliberate as a press, and are
-    words already.
+    Sound the desk heard can be nobody, or hands itself: its own reply left over from the echo canceller, its own saying of
+    the wake phrase, a cough, a door. So a turn the voice opens, engaged conversation's or the wake word's, cuts only once
+    a speaker who is not hands is heard in it (`hands.voice.voiceprints.cleared`). One the user's hand opens cuts at once,
+    since holding a key or a button and letting go with nothing said is how the user stops hands. Words typed and sent are
+    as deliberate as a press, and are words already.
     """
     match opener:
-        case "engaged conversation":
-            return "on words"
-        case "held key" | "phone button" | "wake word" | "typed":
+        case "engaged conversation" | "wake word":
+            return "on a person"
+        case "held key" | "phone button" | "typed":
             return "on the hold"
 
 

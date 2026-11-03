@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pipecat.frames.frames import (
     DataFrame,
     Frame,
-    InterimTranscriptionFrame,
     TranscriptionFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
@@ -48,13 +47,18 @@ class HoldDiscarded(VADUserStoppedSpeakingFrame):
 
 class Words(TranscriptionFrame, UninterruptibleFrame):
     """What the transcriber heard said in a hold. The user's own, so no interruption drops it: one can land while the turn's words
-    are still on their way to it, since a turn the voice opened cuts hands off only once they are heard."""
+    are still on their way to it, since a turn the voice opened cuts hands off only once a speaker in it is heard."""
 
 
-class InterimWords(InterimTranscriptionFrame, UninterruptibleFrame):
-    """Words a listener heard in a hold still open, Pipecat's interim transcription: someone is speaking, so a turn the voice
-    opened cuts hands off on them while the user speaks, not once they stop. Never sent: the hold's Words, heard whole as
-    it closes, are what the turn says. The user's own, as Words are, so no interruption drops it."""
+@dataclass(kw_only=True)
+class Cut(DataFrame, UninterruptibleFrame):
+    """A speaker cleared to cut hands off was heard in this hold (`hands.voice.voiceprints.cleared`), `first` seconds
+    after it opened, under none in what it kept from before: a turn the voice opened cuts hands off on it. Pushed by the
+    hold owner alone, while the hold is open or as it closes, ahead of its words; the user's own, as Words are, so no
+    interruption drops it."""
+
+    hold: Hold
+    first: float
 
 
 @dataclass(kw_only=True)

@@ -54,8 +54,8 @@ async def kept(recorder: Recorder, hold: Hold, sound: Sound, recorded: list[Entr
     """The hold told to the recorder as the owner tells it, whole as it ends, and its writing run as the owner runs a
     hearing."""
     owner = HoldOwner(SYSTEM, Unused(), (recorder,), recorded.append)
-    assert recorder.opened(hold, Sound(b"", b"", ())) == () and recorder.heard(sound) == ()
-    [write] = recorder.ended(hold, "sent", sound)
+    assert recorder.opened(hold, Sound(b"", b"", ()), lambda _first: None) == () and recorder.heard(sound) == ()
+    [write] = recorder.ended(hold, "sent", sound, lambda _first: None)
     # As the owner's hearing lane runs it: one that fails is said on its event, and the lane hears on.
     with contextlib.suppress(Exception):
         await owner._heard(recorder, hold, write, begun(SYSTEM))  # pyright: ignore[reportPrivateUsage]

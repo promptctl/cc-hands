@@ -4,7 +4,7 @@
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.holds import Hold
+from hands.voice.holds import Cleared, Hold, Settle
 from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
@@ -26,13 +26,13 @@ def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
 
 
 class Unidentifying:
-    """Nobody identified: what a test of the words alone measures is the words."""
+    """Nobody identified: what a test of the words alone measures is the words. Each hold ends with nobody cleared."""
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def identify(self, hold: Hold, voiced: tuple[Voiced, ...], cleared: Cleared) -> None:
         pass
 
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        pass
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...], settle: Settle) -> None:
+        settle(None)
 
 
 unidentified = Unidentifying()

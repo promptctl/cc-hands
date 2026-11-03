@@ -4,9 +4,9 @@ Every turn starts as the hold that opens it opens, so its words gather from the 
 from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
-heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the hold owner pushes words for
-it, Pipecat's transcription start: the first a listener hears in a hold still open (`InterimWords`), or the hold's own words as it
-closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
+heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the hold owner says a
+speaker who is not hands was heard in it (`Cut`): while the hold is open, or as it closes, where it heard none before.
+Words cut nothing, since hands' own voice makes words too. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
 be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
 (`hands.voice.turnstop.Words`, `hands.voice.conversation.UserWords`): an interruption stops hands, never the user. And it lands just
@@ -25,7 +25,8 @@ from pipecat.turns.user_start import BaseUserTurnStartStrategy
 from hands.clock import Clock
 from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import InterimWords, TurnOpened, Words
+from hands.voice.holds import Hold
+from hands.voice.turnstop import Cut, TurnOpened
 
 
 class CutWritten(SystemFrame):
@@ -35,12 +36,15 @@ class CutWritten(SystemFrame):
 
 @dataclass
 class _Open:
-    """The turn open: when the edge that opened it has it cut, when it opened, and how long after that it cut, None until
-    it has."""
+    """The turn open: when the edge that opened it has it cut, when it opened, when each of its holds did; how long
+    after the turn opened it cut, None until it has, and how long after the speaker who cut it was first heard, None
+    where no speaker did."""
 
     start: TurnStart
     opened: float
+    holds: dict[Hold, float]
     cut: float | None = None
+    heard: float | None = None
 
 
 class EdgeTurnStart(BaseUserTurnStartStrategy):
@@ -64,19 +68,21 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame, self._turn:
             case TurnOpened(hold=hold), None:
-                start = turn_start(hold.opener)
-                self._turn = _Open(start, self._now())
+                start, now = turn_start(hold.opener), self._now()
+                self._turn = _Open(start, now, {hold: now})
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._cut_where(start, self._turn)
             case TurnOpened(hold=hold), _Open() as turn:
                 # A hold pressed while the hold owner is still on the last joins its turn, and cuts as its own edge says.
+                turn.holds[hold] = self._now()
                 await self._cut_where(turn_start(hold.opener), turn)
-            case Words() | InterimWords(), _Open() as turn:
-                # Words, in whichever hold, heard while it was open or as it closed, are someone speaking.
-                await self._cut(turn)
-            case Words() | InterimWords(), None:
-                # [LAW:no-silent-failure] a turn ends only once the hold owner is done with every hold, behind each one's words.
-                raise RuntimeError("the hold owner pushed words outside any user turn")
+            case Cut(hold=hold, first=first), _Open() as turn:
+                # A person, in whichever hold of the turn, heard while it was open or as it closed. [LAW:nothing-unseen]
+                # the cut's delay from their first voice, which the hold that opened before them may have kept.
+                await self._cut(turn, self._now() - (turn.holds[hold] + first))
+            case Cut(), None:
+                # [LAW:no-silent-failure] a turn ends only once the hold owner is done with every hold, behind each one's cut.
+                raise RuntimeError("the hold owner cut outside any user turn")
             case CutWritten(), _:
                 await self._call_event_handler("on_cut_written")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
             case _:
@@ -85,9 +91,9 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
 
     async def handle_user_turn_stopped(self) -> None:
         match self._turn:
-            case _Open(start=start, cut=cut):
+            case _Open(start=start, cut=cut, heard=heard):
                 # [LAW:nothing-unseen] every turn is a line: how its edge had it cut, and when, or that it cut nothing.
-                self._record(UserTurn(start, cut))
+                self._record(UserTurn(start, cut, heard))
                 self._turn = None
             case None:
                 # [LAW:no-silent-failure] Pipecat stops only a turn it started, and nothing but this starts one.
@@ -96,15 +102,15 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     async def _cut_where(self, start: TurnStart, turn: _Open) -> None:
         match start:
             case "on the hold":
-                await self._cut(turn)
-            case "on words":
+                await self._cut(turn, None)
+            case "on a person":
                 pass
 
-    async def _cut(self, turn: _Open) -> None:
-        """Cut hands off, once a turn."""
+    async def _cut(self, turn: _Open, heard: float | None) -> None:
+        """Cut hands off, once a turn, `heard` seconds after the speaker who cut it was first heard."""
         match turn.cut:
             case None:
-                turn.cut = self._now() - turn.opened
+                turn.cut, turn.heard = self._now() - turn.opened, heard
                 await self._call_event_handler("on_cut")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
             case _:
                 pass

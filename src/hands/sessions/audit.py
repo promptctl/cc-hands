@@ -136,18 +136,20 @@ class CutOff:
     waiting: int
 
 
-# When a user turn cuts off what hands is saying: as the hold that opens it opens, Pipecat's VAD start; or once a listener
-# hears words in it while it is open (`hands.voice.streaming`), Pipecat's transcription start.
-TurnStart = Literal["on the hold", "on words"]
+# When a user turn cuts off what hands is saying: as the hold that opens it opens, Pipecat's VAD start; or once a speaker
+# who is not hands is heard in it (`hands.voice.voiceprints.cleared`).
+TurnStart = Literal["on the hold", "on a person"]
 
 
 @dataclass(frozen=True)
 class UserTurn:
     """A user turn as it ended: when the edge that opened it had it cut off what hands was saying, and how many seconds
-    after it opened it did; None where it never did, a turn the voice opened that no words were heard in."""
+    after it opened it did, None where it never did, a turn the voice opened that no person was heard in; and how many
+    seconds after the speaker who cut it was first heard it did, None where no speaker cut it."""
 
     start: TurnStart
     cut: float | None
+    heard: float | None
 
 
 @dataclass(frozen=True)
