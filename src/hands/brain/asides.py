@@ -145,7 +145,7 @@ class Asides:
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
                 if not limit.expired():
-                    raise
+                    raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
