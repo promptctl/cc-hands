@@ -28,16 +28,21 @@ def markers(tests: Path) -> list[str]:
     so it is not covered here."""
     tickets: list[str] = []
     for source in tests.rglob("*.py"):
-        nodes = [node for node in ast.walk(ast.parse(source.read_text(), filename=str(source))) if isinstance(node, ast.expr)]
+        text = source.read_text()
+        nodes = [node for node in ast.walk(ast.parse(text, filename=str(source))) if isinstance(node, ast.expr)]
         called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         for node in nodes:
             # [LAW:no-silent-failure] getattr(mark, "quarantined") reaches the same marker with no attribute to read, so it stops the gate too.
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == "quarantined":
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == "quarantined":
                 raise ValueError(f'{source}:{node.lineno}: quarantined is looked up with getattr, so its ticket cannot be read here: write pytest.mark.quarantined("<ticket id>")')
             if isinstance(node, ast.Call) and _names_quarantined(node.func):
                 ticket = node.args[0] if len(node.args) == 1 and not node.keywords else None
                 if not (isinstance(ticket, ast.Constant) and isinstance(ticket.value, str) and ticket.value):
                     raise ValueError(f'{source}:{node.lineno}: quarantined needs its ticket as the one string: quarantined("<ticket id>")')
+                # [LAW:one-source-of-truth] the start is searched for in the double-quoted spelling alone, so a ticket written any
+                # other way would have its clock started at the respelling; it is refused instead.
+                if not (ast.get_source_segment(text, ticket) or "").startswith('"'):
+                    raise ValueError(f'{source}:{node.lineno}: quarantined spells its ticket with double quotes, so its start can be found: quarantined("<ticket id>")')
                 tickets.append(ticket.value)
             elif _names_quarantined(node) and id(node) not in called:
                 raise ValueError(f'{source}:{node.lineno}: quarantined must be called with its ticket: quarantined("<ticket id>")')

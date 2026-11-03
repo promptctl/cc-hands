@@ -107,6 +107,20 @@ def test_a_marker_looked_up_with_getattr_is_refused(tmp_path: Path) -> None:
         gate.markers(tmp_path / "tests")
 
 
+def test_a_getattr_with_a_default_is_refused_too(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_getattr.py").write_text('import pytest\n\ngetattr(pytest.mark, "quarantined", None)("t-g")\n')
+    with pytest.raises(ValueError, match="looked up with getattr"):
+        gate.markers(tmp_path / "tests")
+
+
+def test_a_ticket_spelled_with_single_quotes_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_single.py").write_text("import pytest\n\n@pytest.mark.quarantined('t-s')\ndef test_a():\n    pass\n")
+    with pytest.raises(ValueError, match="double quotes"):
+        gate.markers(tmp_path / "tests")
+
+
 def test_a_start_after_today_fails_loudly() -> None:
     future = datetime(2026, 12, 20, tzinfo=timezone.utc)
     with pytest.raises(ValueError, match="starts 48 days after today"):
