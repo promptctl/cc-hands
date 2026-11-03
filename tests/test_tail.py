@@ -807,14 +807,20 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
     sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Joined(member(transcript), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
-    tailing = asyncio.create_task(Reader(sessions, Tails(sessions), sessions.apply).keep_reading(0.01))
-    try:
-        await sessions.apply(said_idle(at=2.0))
-        with transcript.open("a") as more:
-            more.write(lines(CUT_OFF))
-        assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
-    finally:
-        tailing.cancel()
+    applied: list[Event] = []
+
+    def apply(event: Event) -> "asyncio.Future[None]":
+        applied.append(event)
+        return sessions.apply(event)
+
+    reader = Reader(sessions, Tails(sessions), apply)
+    await reader.read()
+    await sessions.apply(said_idle(at=2.0))
+    with transcript.open("a") as more:
+        more.write(lines(CUT_OFF))
+    await reader.read()
+    assert [event.prompt for event in applied if isinstance(event, Interrupted)] == [PromptId("p1")]
+    assert await asyncio.wait_for(sessions.story(), 5.0) == Summarise(SID, PromptId("p1"), None, ids=frozenset({PromptId("p1")}))
     live = sessions.live_session(SID)
     assert live is not None and isinstance(live.state, Idle)
 

@@ -341,7 +341,8 @@ async def test_a_hook_the_daemon_refuses_exits_nonzero_with_its_reason(home: Hom
 async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Home) -> None:
     recorded: list[Entry] = []
     clock = VirtualClock()
-    registry = new_sessions(clock=clock, stop_hold=0.2)
+    hold = 0.2
+    registry = new_sessions(clock=clock, stop_hold=hold)
     runner = await serve_hooks(home, registry, Names(), recorded.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
@@ -354,9 +355,13 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
         # status is; no record comes, so the hold passes once the test spends it.
         await registry.apply(StatusReported(SID, Report(Busy(), Stamp(1000)), at=registry.now()))
         held = asyncio.create_task(shim(home, {**STOP, "prompt_id": "p3"}))
-        await clock.scheduled(clock.at + 0.2)
-        clock.advance(0.2)
-        await held
+        try:
+            # Bounded: a Stop decided as it is heard schedules no hold, and the test fails here, not at the suite timeout.
+            await asyncio.wait_for(clock.scheduled(clock.at + hold), 2.0)
+            clock.advance(hold)
+            await held
+        finally:
+            held.cancel()
     finally:
         await runner.cleanup()
     rejected = "rejected hook: hook event 'Notification' is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins"
@@ -370,7 +375,7 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
     ]
     [let_go] = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.facts.get("stop") == "let go"]
     # The event lasts as long as the hook held its session: the whole hold.
-    assert let_go.duration_ms == 200 and let_go.facts["session"] == SID
+    assert let_go.duration_ms == hold * 1000 and let_go.facts["session"] == SID
 
 
 async def test_a_socket_left_by_a_dead_daemon_is_reclaimed(home: Home) -> None:
@@ -434,7 +439,7 @@ async def test_an_untapped_session_s_commands_are_given_nothing(home: Home, tmp_
 async def test_a_finished_turn_has_its_session_named_and_the_name_is_handed_to_claude_code_at_the_next_prompt_once(home: Home) -> None:
     names = Names()
     given: list[Entry] = []
-    registry = new_sessions(clock=VirtualClock(), stop_hold=0.05)
+    registry = new_sessions(clock=VirtualClock())
     runner = await serve_hooks(home, registry, names, given.append, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
@@ -494,7 +499,7 @@ async def test_a_name_is_not_given_over_a_title_that_cannot_be_read(home: Home, 
 
 async def test_a_turn_that_closed_on_no_reply_is_not_named(home: Home) -> None:
     names = Names()
-    registry = new_sessions(clock=VirtualClock(), stop_hold=0.05)
+    registry = new_sessions(clock=VirtualClock())
     runner = await serve_hooks(home, registry, names, lambda _: None, Reader(registry, Tails(registry), registry.apply))
     try:
         await shim(home, START)
