@@ -56,22 +56,26 @@ def reached(source: str) -> set[str]:
     for node in ast.walk(tree):
         match node:
             # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run; an f-string's
-            # holes are read as a number, which is what a test fills them with.
+            # holes are read as a second, which is what a test fills them with, and never as the zero a yield is.
             case ast.JoinedStr(values=values):
-                found.update(_written("".join(v.value if isinstance(v, ast.Constant) else "0" for v in values)))
-            case ast.Constant(value=str(text)):
+                found.update(_written("".join(v.value if isinstance(v, ast.Constant) else "1" for v in values)))
+            case ast.Constant(value=str(text)) if "\n" in text or "import" in text:
                 found.update(_written(text))
             case ast.Assign(targets=targets, value=value) | ast.AnnAssign(target=_ as targets, value=ast.expr() as value):
-                patched = [target for target in (targets if isinstance(targets, list) else [targets]) if _patches(target, value)]
+                patched = [
+                    target
+                    for target in (targets if isinstance(targets, list) else [targets])
+                    if isinstance(target, ast.Attribute) and _timing(target.attr, value)
+                ]
                 found.update(f"setattr {target.attr}" for target in patched)
             case ast.Call(func=func, args=args, keywords=keywords) if _last(func) in ("setattr", "object", "patch") and (
                 name := _patched(args, keywords)
             ):
                 found.add(f"setattr {name.rsplit('.', 1)[-1]}")
-            case ast.Call(func=ast.Attribute(attr="multiple"), keywords=keywords) if any(
-                keyword.arg and _timing(keyword.arg, keyword.value) for keyword in keywords
-            ):
-                found.update(f"setattr {keyword.arg}" for keyword in keywords if keyword.arg and _timing(keyword.arg, keyword.value))
+            case ast.Call(func=ast.Attribute(attr="multiple"), keywords=keywords) if timed := [
+                keyword.arg for keyword in keywords if keyword.arg and _timing(keyword.arg, keyword.value)
+            ]:
+                found.update(f"setattr {name}" for name in timed)
             case ast.Import(names=aliases):
                 found.update(alias.name for alias in aliases if alias.name.split(".")[0] in MODULES)
             case ast.ImportFrom(module=str(module), level=0) if module.split(".")[0] in MODULES:
@@ -108,19 +112,28 @@ def reached(source: str) -> set[str]:
 def _written(text: str) -> set[str]:
     try:
         return reached(textwrap.dedent(text))
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
         return set()
 
 
 def _seconds(node: ast.expr) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(node.value, int | float) and not isinstance(node.value, bool)
+    """A number of seconds, written out or named as a timing constant."""
+    match node:
+        case ast.Constant(value=bool()):
+            return False
+        case ast.Constant(value=int() | float()):
+            return True
+        case ast.Name(id=name) | ast.Attribute(attr=name):
+            return name.isupper() and bool(TIMING.search(name))
+        case _:
+            return False
 
 
 def _yields(call: ast.Call) -> bool:
     """A sleep of nothing yields to the loop and waits on no seconds."""
     match call:
         case ast.Call(args=[delay], keywords=[]) | ast.Call(args=[], keywords=[ast.keyword(arg="delay", value=delay)]):
-            return _seconds(delay) and delay.value == 0
+            return isinstance(delay, ast.Constant) and _seconds(delay) and delay.value == 0
         case _:
             return False
 
@@ -149,10 +162,6 @@ def _patched(args: list[ast.expr], keywords: list[ast.keyword]) -> str:
     return ""
 
 
-def _patches(target: ast.expr, value: ast.expr) -> bool:
-    return isinstance(target, ast.Attribute) and _timing(target.attr, value)
-
-
 def _imported(tree: ast.Module) -> dict[str, str]:
     """Each name the module binds by an import, to the dotted name it was imported as."""
     named: dict[str, str] = {}
@@ -163,6 +172,10 @@ def _imported(tree: ast.Module) -> dict[str, str]:
                 named.update({alias.name.split(".")[0]: alias.name.split(".")[0] for alias in aliases if not alias.asname})
             case ast.ImportFrom(module=str(module), names=aliases, level=0):
                 named.update({alias.asname or alias.name: f"{module}.{alias.name}" for alias in aliases})
+            # Every module that imports relatively is one of hands's, so a relative import names one of its modules.
+            case ast.ImportFrom(module=module, names=aliases, level=int(level)) if level > 0:
+                package = f"hands.{module}" if module else "hands"
+                named.update({alias.asname or alias.name: f"{package}.{alias.name}" for alias in aliases})
             case _:
                 pass
     return named
@@ -268,7 +281,7 @@ UNMOVED: dict[str, frozenset[str]] = {
         "test_input_tools.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
         "test_intermediary.py": frozenset({'hands.clock.SYSTEM'}),
         "test_latency.py": frozenset({'hands.clock.SYSTEM'}),
-        "test_library.py": frozenset({'hands.clock.SYSTEM', 'setattr LISTING_TIMEOUT_SECONDS'}),
+        "test_library.py": frozenset({'.wait(seconds)', 'hands.clock.SYSTEM', 'setattr LISTING_TIMEOUT_SECONDS'}),
         "test_list_sessions.py": frozenset({'hands.clock.SYSTEM'}),
         "test_liveness.py": frozenset({'.time()', 'asyncio.wait_for()', 'time'}),
         "test_loads.py": frozenset({'hands.clock.SYSTEM'}),
@@ -366,3 +379,15 @@ def test_the_check_catches_a_wait_by_its_seconds_and_code_written_for_another_in
 
 def test_a_sleep_of_a_false_is_no_yield() -> None:
     assert reached("import asyncio\nasyncio.sleep(False)\n") == {"asyncio.sleep()"}
+
+
+def test_the_check_reads_a_relative_import_a_named_wait_and_an_f_string_sleep_of_a_hole() -> None:
+    source = (
+        "from ..clock import SYSTEM\nfrom . import clock as c\nc.SYSTEM\nt.join(TIMEOUT)\nev.wait(BOUND_SECONDS)\n"
+        'f"import asyncio\\nasyncio.sleep({DELAY})\\n"\n'
+    )
+    assert reached(source) == {"hands.clock.SYSTEM", ".join(seconds)", ".wait(seconds)", "asyncio.sleep()"}
+
+
+def test_a_string_too_deep_to_parse_is_no_code() -> None:
+    assert _written("import os\n" + "1+" * 100000 + "1") == set()
