@@ -11,7 +11,7 @@ import pytest
 from hands.core.front import Candidate, FrontUnread, NoSessionInFront, Screen, SessionInFront, in_front, told
 from hands.core.session import SessionId
 from hands.sessions.front import _under  # pyright: ignore[reportPrivateUsage]
-from hands.sessions.terminals import ancestor_terminals, process_table
+from hands.sessions.terminals import ancestor_terminals, ancestors, process_table
 
 # Terminals by device number: two tabs, a tmux client in a third, and the panes behind it.
 TAB, OTHER_TAB, CLIENT, PANE, OTHER_PANE, FRITTER = 1, 2, 3, 10, 11, 20
@@ -90,14 +90,15 @@ def test_the_kernel_says_each_process_terminal_and_the_terminals_a_session_runs_
     assert [found.pid for found in _under(process.pid, processes)] == [grandchild.pid]
 
 
-def test_the_process_table_holds_roots_processes_too_so_every_line_of_parents_ends_at_launchd() -> None:
+def test_the_process_table_holds_roots_processes_too_and_the_tests_own_line_of_parents_ends_at_launchd() -> None:
     processes = process_table()
     # A terminal app starts each tab's shell through /usr/bin/login, which runs as root: a table of this user's
     # processes alone breaks the line between a session and its app there.
     assert processes[1].uid == 0
-    for process in processes.values():
-        line = process
-        while line.pid != 1:
-            line = processes[line.parent]
+    assert any(process.uid == 0 for process in processes.values() if process.pid != 1)
+    # Only the test's own line is walked: a walk over every process on the machine was seen to break at a parent missing
+    # from the table, with other processes exiting as it was read.
+    line = list(ancestors(os.getpid(), processes))
+    assert line[-1].pid == 1, line
     # Its own parent, the kernel, is not in the table, so a walk up ends there.
     assert processes[1].parent not in processes
