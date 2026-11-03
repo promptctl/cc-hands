@@ -58,7 +58,7 @@ def reached(source: str, package: str = "hands") -> set[str]:
             # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run; an f-string's
             # holes are read as a second, which is what a test fills them with, and never as the zero a yield is.
             case ast.JoinedStr(values=values):
-                found.update(_written("".join(v.value if isinstance(v, ast.Constant) else "1" for v in values)))
+                found.update(_written("".join(str(v.value) if isinstance(v, ast.Constant) else "1" for v in values)))
             case ast.Constant(value=str(text)) if "\n" in text or "import" in text:
                 found.update(_written(text))
             case ast.Assign(targets=targets, value=value) | ast.AnnAssign(target=_ as targets, value=ast.expr() as value):
