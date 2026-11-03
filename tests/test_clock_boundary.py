@@ -2,6 +2,7 @@
 
 import ast
 import re
+import textwrap
 from functools import cache
 from pathlib import Path
 
@@ -35,6 +36,9 @@ LOOP = ("call_later", "call_at", "time")
 # Names a module times a wait by, as a test would patch one.
 TIMING = re.compile(r"(SECONDS|SECS|TIMEOUT|DEADLINE|PATIENCE|INTERVAL|DELAY|HUNG)$")
 
+# Modules a star import brings every wait of in by its bare name.
+STARRED = ("asyncio", "datetime", "threading")
+
 # The names a module is handed its clock by.
 CLOCKS = ("clock", "_clock")
 
@@ -51,27 +55,33 @@ def reached(source: str) -> set[str]:
     found: set[str] = set()
     for node in ast.walk(tree):
         match node:
-            # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run.
-            case ast.Constant(value=str(text)) if "\n" in text or ";" in text:
+            # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run; an f-string's
+            # holes are read as a number, which is what a test fills them with.
+            case ast.JoinedStr(values=values):
+                found.update(_written("".join(v.value if isinstance(v, ast.Constant) else "0" for v in values)))
+            case ast.Constant(value=str(text)):
                 found.update(_written(text))
-            case ast.Assign(targets=targets) if any(_patches(target) for target in targets):
-                found.update(f"setattr {target.attr}" for target in targets if _patches(target))
-            case ast.Call(func=func, args=args) if _last(func) in ("setattr", "object", "patch") and (name := _patched(args)):
+            case ast.Assign(targets=targets, value=value) | ast.AnnAssign(target=_ as targets, value=ast.expr() as value):
+                patched = [target for target in (targets if isinstance(targets, list) else [targets]) if _patches(target, value)]
+                found.update(f"setattr {target.attr}" for target in patched)
+            case ast.Call(func=func, args=args, keywords=keywords) if _last(func) in ("setattr", "object", "patch") and (
+                name := _patched(args, keywords)
+            ):
                 found.add(f"setattr {name.rsplit('.', 1)[-1]}")
+            case ast.Call(func=ast.Attribute(attr="multiple"), keywords=keywords) if any(
+                keyword.arg and _timing(keyword.arg, keyword.value) for keyword in keywords
+            ):
+                found.update(f"setattr {keyword.arg}" for keyword in keywords if keyword.arg and _timing(keyword.arg, keyword.value))
             case ast.Import(names=aliases):
                 found.update(alias.name for alias in aliases if alias.name.split(".")[0] in MODULES)
             case ast.ImportFrom(module=str(module), level=0) if module.split(".")[0] in MODULES:
                 found.add(module)
+            # Every name a star brings in is the module's, so each of its waits is reached unnamed.
+            case ast.ImportFrom(module=str(module), names=[ast.alias(name="*")], level=0) if module in STARRED:
+                found.add(f"{module}.*")
             case ast.Name() | ast.Attribute() if _qualified(node, named) in SYSTEM:
                 found.add(_qualified(node, named))
-            # A sleep of nothing yields to the loop and waits on no seconds.
-            case ast.Call(func=func, args=[ast.Constant(value=int(zero))], keywords=[]) if zero == 0 and not isinstance(
-                zero, bool
-            ) and _qualified(func, named) == "asyncio.sleep":
-                pass
-            case ast.Call(func=func, args=[], keywords=[ast.keyword(arg="delay", value=ast.Constant(value=int(zero)))]) if (
-                zero == 0 and not isinstance(zero, bool) and _qualified(func, named) == "asyncio.sleep"
-            ):
+            case ast.Call(func=func) if _qualified(func, named) == "asyncio.sleep" and _yields(node):
                 pass
             case ast.Call(func=func) if _qualified(func, named) in CALLS:
                 found.add(f"{_qualified(func, named)}()")
@@ -82,11 +92,12 @@ def reached(source: str) -> set[str]:
                 keyword.arg == "timeout" for keyword in keywords
             ):
                 found.add(f".{attr}(timeout=)")
-            # An event's or a process's wait takes its seconds first.
-            case ast.Call(func=ast.Attribute(attr="wait") as func, args=[ast.Constant(value=int() | float()), *_]) if (
-                _qualified(func, named) != "asyncio.wait"
+            # A thread's join, an event's wait, and a future's result take their seconds first, as a number no
+            # `str.join` or `asyncio.wait` is handed.
+            case ast.Call(func=ast.Attribute(attr="join" | "wait" | "result" as attr) as func, args=[first, *_]) if (
+                _seconds(first) and _qualified(func, named) != "asyncio.wait"
             ):
-                found.add(".wait(seconds)")
+                found.add(f".{attr}(seconds)")
             case ast.Call(func=ast.Attribute(value=receiver, attr=attr)) if attr in LOOP and _last(receiver) not in CLOCKS:
                 found.add(f".{attr}()")
             case _:
@@ -96,36 +107,50 @@ def reached(source: str) -> set[str]:
 
 def _written(text: str) -> set[str]:
     try:
-        return reached(text)
+        return reached(textwrap.dedent(text))
     except (SyntaxError, ValueError):
         return set()
 
 
-# A patched timing constant tunes a wait on the machine's seconds instead of advancing a clock: one named for its
-# seconds, or one set to a fraction of a second or a span, whatever it is named.
+def _seconds(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, int | float) and not isinstance(node.value, bool)
+
+
+def _yields(call: ast.Call) -> bool:
+    """A sleep of nothing yields to the loop and waits on no seconds."""
+    match call:
+        case ast.Call(args=[delay], keywords=[]) | ast.Call(args=[], keywords=[ast.keyword(arg="delay", value=delay)]):
+            return _seconds(delay) and delay.value == 0
+        case _:
+            return False
+
+
+# A patched timing constant tunes a wait on the machine's seconds instead of advancing a clock: a constant named for
+# its seconds, or one set to a fraction of a second or a span, whatever it is named.
 def _timing(name: str, value: ast.expr) -> bool:
+    constant = name.rsplit(".", 1)[-1]
     match value:
         case ast.Constant(value=float()) | ast.Call(func=ast.Name(id="timedelta") | ast.Attribute(attr="timedelta")):
-            return name.rsplit(".", 1)[-1].isupper()
+            return constant.isupper()
         case _:
-            return bool(TIMING.search(name.upper()))
+            return constant.isupper() and bool(TIMING.search(constant))
 
 
-def _patched(args: list[ast.expr]) -> str:
+def _patched(args: list[ast.expr], keywords: list[ast.keyword]) -> str:
     """The constant a `setattr`, a `monkeypatch.setattr` or a `patch.object` call patches to a timing, or nothing."""
-    for at, arg in enumerate(args[:-1]):
+    new = next((keyword.value for keyword in keywords if keyword.arg == "new"), None)
+    for at, arg in enumerate(args):
+        value = args[at + 1] if at + 1 < len(args) else new
         match arg:
-            case ast.Constant(value=str(name)) if _timing(name, args[at + 1]):
+            case ast.Constant(value=str(name)) if value is not None and _timing(name, value):
                 return name
             case _:
                 pass
     return ""
 
 
-def _patches(target: ast.expr) -> bool:
-    return isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.attr.isupper() and bool(
-        TIMING.search(target.attr)
-    )
+def _patches(target: ast.expr, value: ast.expr) -> bool:
+    return isinstance(target, ast.Attribute) and _timing(target.attr, value)
 
 
 def _imported(tree: ast.Module) -> dict[str, str]:
@@ -210,7 +235,7 @@ CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py")
 # Test modules whose verdict still waits on the machine's time, each with exactly what it reaches, struck off as each
 # moves onto a VirtualClock it advances.
 UNMOVED: dict[str, frozenset[str]] = {
-        "conftest.py": frozenset({'.time()', 'asyncio.sleep()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr HUNG'}),
+        "conftest.py": frozenset({'.time()', 'asyncio.sleep()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'setattr HUNG', 'time'}),
         "fetches.py": frozenset({'time'}),
         "fixtures/standin_daemon.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
         "fixtures/watched_run.py": frozenset({'setattr HUNG', 'time'}),
@@ -247,7 +272,7 @@ UNMOVED: dict[str, frozenset[str]] = {
         "test_list_sessions.py": frozenset({'hands.clock.SYSTEM'}),
         "test_liveness.py": frozenset({'.time()', 'asyncio.wait_for()', 'time'}),
         "test_loads.py": frozenset({'hands.clock.SYSTEM'}),
-        "test_microphone.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'time'}),
+        "test_microphone.py": frozenset({'.join(seconds)', 'asyncio.sleep()', 'hands.clock.SYSTEM', 'time'}),
         "test_naming.py": frozenset({'hands.clock.SYSTEM'}),
         "test_narrator.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
         "test_occurrences.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
@@ -318,15 +343,26 @@ def test_the_check_catches_each_way_of_patching_a_timing_constant() -> None:
         'setattr(m, "A_SECONDS", 1)\npatch.object(m, "B_SECONDS", 1)\nm.C_SECONDS = 0.1\nmp.setattr(m, "D_SECONDS", 1, False)\n'
         'mp.setattr(progress, "SETTLE", 0.01)\nmp.setattr(heartbeat, "HEARTBEAT", timedelta(seconds=0))\n'
         'mock.patch("hands.x.E_TIMEOUT", 1)\nmp.setattr(m, "LINES", 3)\nmp.setattr(m, "lowered", 0.5)\n'
+        'patch.object(m, "F_SECONDS", new=1)\npatch.multiple(m, G_DELAY=1, OTHER=2)\nprogress.LONGEST = 0.5\n'
+        'hands.voice.hold.H_SECONDS = 1\nmp.setattr(m, "stop_delay", fake)\n'
     )
-    names = ("A_SECONDS", "B_SECONDS", "C_SECONDS", "D_SECONDS", "SETTLE", "HEARTBEAT", "E_TIMEOUT")
+    names = ("A_SECONDS", "B_SECONDS", "C_SECONDS", "D_SECONDS", "SETTLE", "HEARTBEAT", "E_TIMEOUT", "F_SECONDS", "G_DELAY", "LONGEST", "H_SECONDS")
     assert reached(source) == {f"setattr {name}" for name in names}
 
 
 def test_the_check_catches_a_wait_by_its_seconds_and_code_written_for_another_interpreter() -> None:
     source = (
-        "import asyncio\nfut.result(timeout=1)\nev.wait(1)\nasyncio.wait(fs)\nasyncio.sleep(0.0)\nasyncio.sleep(False)\n"
-        "asyncio.sleep(delay=0)\n"
-        'pytester.makepyfile("import time\\ntime.sleep(1.3)\\n")\nrun([sys.executable, "-c", "import asyncio; asyncio.sleep(2)"])\n'
+        "import asyncio\nfut.result(timeout=1)\nev.wait(1)\nasyncio.wait(fs)\nasyncio.sleep(0.0)\nasyncio.sleep(delay=0)\n"
+        "t.join(0.05)\nfut.result(1)\n', '.join(parts)\n"
+        'pytester.makepyfile("import time\\ntime.sleep(1.3)\\n")\nrun([sys.executable, "-c", "import secrets"])\n'
+        'f"import datetime\\ndatetime.datetime.now({n})"\ndedent("""\\n    import uuid\\n""")\n'
+        "from threading import *\n"
     )
-    assert reached(source) == {".result(timeout=)", ".wait(seconds)", "asyncio.sleep()", "time"}
+    assert reached(source) == {
+        ".result(timeout=)", ".wait(seconds)", ".join(seconds)", ".result(seconds)", "time", "secrets",
+        "datetime.datetime.now()", "uuid", "threading.*",
+    }  # fmt: skip
+
+
+def test_a_sleep_of_a_false_is_no_yield() -> None:
+    assert reached("import asyncio\nasyncio.sleep(False)\n") == {"asyncio.sleep()"}
