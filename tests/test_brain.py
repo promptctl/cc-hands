@@ -703,9 +703,16 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
     assert permission.parent_id == launched.span_id
 
 
+def _bare() -> Brain:
+    """A Brain no launch built, holding what every turn's take reads from `__init__`: the tests set the rest."""
+    brain = object.__new__(Brain)
+    brain._untaken = None  # pyright: ignore[reportPrivateUsage]
+    return brain
+
+
 async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
     recorded: list[Entry] = []
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -967,7 +974,7 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
 
 
 async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_are_still_heard() -> None:
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
@@ -985,7 +992,7 @@ async def test_a_hook_with_a_field_that_does_not_parse_is_passed_over_and_hooks_
 
 def test_a_brain_turn_without_hands_tools_is_an_error() -> None:
     recorded: list[Entry] = []
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -1300,7 +1307,7 @@ def _hooked(event: str, id: str, **fields: object) -> bytes:
 async def test_words_filed_under_a_running_turn_are_answered_by_the_turn_that_answers_them(delivered: bool, answer: str, matched: str) -> None:
     # [LAW:one-source-of-truth] which turn answers them is the model's to say, from Claude Code's queue records: the turn
     # they were typed into, when a remove took them out of the queue before its Stop, or the turn they ran as after it.
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1333,7 +1340,7 @@ async def test_a_permission_of_a_turn_dequeued_under_a_new_id_is_asked_in_it_tho
     # next reads the record that opened the turn it asks in.
     transcript = tmp_path / "projects" / "-brain-cwd" / "b1.jsonl"
     transcript.parent.mkdir(parents=True)
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     recorded: list[Entry] = []
@@ -1390,7 +1397,7 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
     async def reading() -> None:
         raise OSError("the transcript went")
 
-    brain = object.__new__(Brain)
+    brain = _bare()
 
     brain._claude = Ended()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     brain._exit = asyncio.ensure_future(exited())  # pyright: ignore[reportPrivateUsage]
@@ -1415,7 +1422,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
             raise ValueError("the log is full")
         recorded.append(entry)
 
-    brain = object.__new__(Brain)
+    brain = _bare()
 
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
@@ -1454,7 +1461,7 @@ async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hook
 
 
 async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_runs() -> None:
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     _modelled(brain)
@@ -1477,7 +1484,7 @@ async def test_a_break_of_a_turn_already_over_ends_nothing_the_turn_in_flight_ru
 
 async def test_a_permission_another_session_posts_to_the_brain_is_refused_and_is_one_event_naming_that_session() -> None:
     recorded: list[Entry] = []
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -2057,7 +2064,7 @@ def _permission_hook(prompt: str, path: str = "/tmp/x") -> bytes:
 
 async def _in_turn(recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, _Turn]:  # pyright: ignore[reportPrivateUsage]
     """A brain built bare, with a turn in flight that Claude Code took as p1, which the model holds running."""
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._record = recorded.append  # pyright: ignore[reportPrivateUsage]
@@ -2306,7 +2313,7 @@ NOTICE = "<task-notification>\n<task-id>b74jw7b5h</task-id>\n<status>completed</
 def _owning() -> Brain:
     """A brain built bare, its model and its `ClaudeTurns` as `Brain` builds them, heard only through what the model hands
     over: the words each prompt hook filed (`_took`), and each telling (`_told`)."""
-    brain = object.__new__(Brain)
+    brain = _bare()
     brain.session = SessionId("b1")
     brain._pid, brain._cwd = 4242, Path("/brain/cwd")  # pyright: ignore[reportPrivateUsage]
     brain._turn = None  # pyright: ignore[reportPrivateUsage]
@@ -2345,6 +2352,65 @@ async def test_words_claude_code_takes_before_a_turn_pasted_its_own_are_never_th
     turn.pasted = False
     _took(brain, "p1", "hello")
     assert (turn.taken.done(), [running.opener for running in brain._claude_turns.open]) == (False, ["other"])  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_words_of_an_untaken_turn_that_claude_code_takes_next_are_stopped(queued: bool) -> None:
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "hello"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "hello", queued=queued)
+    (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: late.ended.done())
+    assert (type(late.ended.exception()), keys.pressed, brain._claude_turns.open) == (process.Unran, ["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_words_of_an_untaken_turn_taken_after_a_task_s_result_are_still_stopped() -> None:
+    # A task's result posts its hook as it is delivered, not read from the input: the untaken words are still next in it.
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "hello"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "<task-notification>done</task-notification>")
+    _took(brain, "p1", "hello", queued=True)
+    (notified,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: notified.ended.done())
+    assert (keys.pressed, brain._claude_turns.open) == (["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_words_of_an_untaken_turn_taken_after_a_stop_cleared_the_input_are_a_person_s_and_run_on() -> None:
+    # A stop's Escape and Ctrl-C clear Claude Code's queue and input, so the untaken words cannot come late after one.
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "yes"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    await brain._clear(None)  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "yes")
+    assert (len(brain._claude_turns.open), keys.pressed, brain._typing) == (1, ["escape", "ctrl_c"], set())  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_words_of_an_untaken_turn_a_turn_asked_since_was_filed_into_run_on_to_answer_it() -> None:
+    # The next turn's words, read after the late ones, run in the same turn of Claude Code's: stopping it would end a turn
+    # its asker asked.
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "hello"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "hello")
+    asked = _typed_turn(brain, "what's the weather")
+    _took(brain, "p1", "what's the weather", queued=True)
+    await until(lambda: not brain._typing)  # pyright: ignore[reportPrivateUsage]
+    (late,) = brain._claude_turns.open  # pyright: ignore[reportPrivateUsage]
+    assert (asked.running, asked.answered.done(), keys.pressed) == (late, False, [])
+
+
+async def test_words_of_an_untaken_turn_taken_after_other_words_are_a_person_s_and_run_on() -> None:
+    # Claude Code reads its input in order: once it took other words, the untaken ones cannot come late, and the same words
+    # typed at the pane later are a person's.
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "yes"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "something else")
+    _told(brain, "p1", ["p1"])
+    _took(brain, "p2", "yes")
+    assert (len(brain._claude_turns.open), keys.pressed, brain._typing) == (1, [], set())  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_a_telling_that_names_no_prompt_ends_the_turn_its_ids_are() -> None:
