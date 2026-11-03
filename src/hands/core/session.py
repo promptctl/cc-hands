@@ -50,7 +50,7 @@ def pasted(text: str) -> PromptText:
 
 # The named chords a session can be sent, as distinct from text. Which bytes each one is
 # belongs to whatever does the typing, not here; this is the vocabulary hands speaks.
-Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_u", "ctrl_q", "up", "down", "tab", "shift_tab"]
+Keystroke = Literal["escape", "enter", "ctrl_c", "ctrl_e", "ctrl_h", "ctrl_k", "ctrl_u", "ctrl_q", "up", "down", "tab", "shift_tab"]
 # The chords that send a typed prompt, the only ones fritter takes as a text request's `submit`.
 Submit = Literal["enter", "ctrl_q"]
 

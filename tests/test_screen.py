@@ -3,7 +3,7 @@ each surface."""
 
 import pytest
 
-from hands.core.screen import typable
+from hands.core.screen import Box, plain, typable
 
 RULE = "─" * 40
 NBSP = " "
@@ -44,4 +44,62 @@ def test_a_turn_does_not_go_into_the_prompt(shown: str) -> None:
 
 def test_the_box_is_what_settles_while_a_turn_draws_above_it() -> None:
     box = f"{RULE}\n❯{NBSP}\n{RULE}\n  esc to interrupt"
-    assert typable(f"✻ Thinking… (3s)\n● streamed\n{box}") == typable(f"✽ Thinking… (4s)\n● streamed more\n{box}") == box
+    assert typable(f"✻ Thinking… (3s)\n● streamed\n{box}") == typable(f"✽ Thinking… (4s)\n● streamed more\n{box}") == Box(box, 1, drafted=False)
+
+
+DIM, INVERSE, RESET = "\x1b[2m", "\x1b[7m", "\x1b[0m"
+
+
+def _boxed(*rows: str) -> str:
+    return "\n".join([RULE, *rows, RULE, f"{DIM}  ? for shortcuts{RESET}"])
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(f"❯{NBSP}{INVERSE}T{RESET}{DIM}ry \"fix lint errors\"{RESET}", id="the placeholder, with the cursor on it"),
+        pytest.param(f"❯{NBSP}{DIM}Try \"fix lint errors\"{RESET}", id="the placeholder, unfocused"),
+        pytest.param(f"{DIM}❯{NBSP}Try{RESET}", id="dim set before the pointer"),
+        pytest.param(f"❯{NBSP}{INVERSE} {RESET}", id="the cursor alone"),
+        pytest.param(f"❯{NBSP}", id="nothing drawn"),
+        pytest.param(f"❯{NBSP}\x1b[38;2;2;7;2m{DIM}Try{RESET}", id="a colour whose numbers read as dim and inverse"),
+        pytest.param(f"❯{NBSP}\x1b[58:5:3;2mTry{RESET}", id="dim behind a colon-joined colour"),
+        pytest.param(f"\x1b[38;5;4m❯{RESET}{NBSP}{DIM}Try{RESET}", id="the pointer styled apart from its space"),
+        pytest.param(f"❯{NBSP}\x1b]8;;file:///a\x1b\\{DIM}Try{RESET}\x1b]8;;\x1b\\", id="a hyperlink, which draws nothing"),
+    ],
+)
+def test_an_empty_input_holds_no_words(row: str) -> None:
+    box = typable(_boxed(row))
+    assert box is not None and not box.drafted
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([f"❯{NBSP}fix it{INVERSE} {RESET}"], id="words, the cursor at their end"),
+        pytest.param([f"❯{NBSP}fi{INVERSE}x{RESET} it"], id="the cursor mid-word"),
+        pytest.param([f"❯{NBSP}{INVERSE}a{RESET}"], id="one character, the cursor on it"),
+        pytest.param([f"❯{NBSP}", f"  second line{INVERSE} {RESET}"], id="words on a later row only"),
+        pytest.param([f"❯{NBSP}\x1b[38;5;2mcoloured{RESET}"], id="words in a colour"),
+        pytest.param([f"❯{NBSP}", f"  ─── notes", f"  words{INVERSE} {RESET}"], id="a draft row that starts with a rule"),
+    ],
+)
+def test_words_in_the_input_are_drafted(rows: list[str]) -> None:
+    box = typable(_boxed(*rows))
+    assert box is not None and box.drafted
+
+
+def test_the_box_s_rows_are_plain_text() -> None:
+    box = typable(_boxed(f"❯{NBSP}{DIM}Try{RESET}"))
+    assert box is not None and "\x1b" not in box.rows and plain(f"{DIM}a{RESET}b") == "ab"
+
+
+def test_the_box_counts_the_rows_its_input_fills() -> None:
+    box = typable(_boxed(f"❯{NBSP}one", "  ─── two", "  three"))
+    assert box is not None and box.input == 3
+
+
+def test_attributes_carry_across_rows_as_tmux_writes_them() -> None:
+    # tmux writes no SGR where a row starts in the attributes the row above ended in.
+    box = typable("\n".join([f"{DIM}{RULE}", f"❯{NBSP}Try", f"{RESET}{RULE}"]))
+    assert box is not None and not box.drafted

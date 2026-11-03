@@ -544,11 +544,10 @@ async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_unt
     try:
         with pytest.raises(Untaken, match="Do you want to create ambush.txt"):
             await asyncio.wait_for(brain.ask("hello", unasked), 10)
-        # The untaken turn's words are cleared before the input is let go, though here the dialog dropped them.
-        await until(lambda: ["ctrl_c", ""] in typed(tmp_path))
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["dropped", " hello"], ["unbound"], ["escape", ""], ["ctrl_c", ""]]
+    # Nothing is pressed to clear what the screen never showed: the dialog dropped the words.
+    assert typed(tmp_path) == [["dropped", " hello"], ["unbound"]]
 
 
 async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what_it_showed_with_nothing_typed() -> None:
@@ -561,7 +560,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
             await asyncio.sleep(0.01)
 
     brain._pause = looked  # pyright: ignore[reportPrivateUsage]
-    with pytest.raises(Untaken, match="showed no prompt to type the turn at.*`hands login` answers them") as untaken:
+    with pytest.raises(Untaken, match="showed no empty prompt to type the turn at.*`hands login` answers them") as untaken:
         await brain.ask("and now?", unasked)
     assert DIALOG_SHOWN in str(untaken.value)
     assert keys.pressed == []
@@ -609,6 +608,55 @@ async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_a
     finally:
         await brain.stop()
     assert [line[1].strip() for line in typed(tmp_path) if line[0] == "prompt"] == ["and now?"]
+    # The untaken words were deleted by the next turn's look, with the input's editing keys: no Escape, no Ctrl-C.
+    assert [line[0] for line in typed(tmp_path) if line[0] not in ("prompt", "unbound", "dropped")] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h"]
+
+
+async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_deleted_before_a_turn_is_pasted_and_that_turn_runs_on() -> None:
+    recorded: list[Entry] = []
+    brain = _owning()
+    keys = _keyed(brain, recorded)
+    # Claude Code runs a turn it opened itself, and words are left in its input, drawn plain.
+    _took(brain, "n1", NOTICE)
+    keys.shown = DRAFTED_SHOWN
+    pressed = keys.press
+
+    def press(key: str) -> None:
+        pressed(key)
+        if key == "ctrl_h":
+            keys.shown = PROMPT_SHOWN
+
+    keys.press = press
+
+    async def pasted(_seconds: float) -> None:
+        # The take runs out once the turn is pasted: the turn ends, and its event is recorded.
+        while len(keys.pressed) < 5:
+            await asyncio.sleep(0.01)
+
+    brain._pause = pasted  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(Untaken):
+        await brain.ask("and now?", unasked)
+    assert [key.strip() for key in keys.pressed] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h", "and now?"]
+    assert len(brain._claude_turns.opened_itself) == 1  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: len(events(recorded, "brain.turn")) == 1)
+    [turn] = events(recorded, "brain.turn")
+    assert "a person's words" in str(turn.facts["emptied"])
+
+
+async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_showed_and_never_pasted() -> None:
+    brain = _owning()
+    keys = _keyed(brain, [])
+    keys.shown = DRAFTED_SHOWN
+
+    async def looked(_seconds: float) -> None:
+        while keys.looked < 6:
+            await asyncio.sleep(0.01)
+
+    brain._pause = looked  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(Untaken, match="showed no empty prompt") as untaken:
+        await brain.ask("and now?", unasked)
+    assert "a person's words" in str(untaken.value) and "\x1b" not in str(untaken.value)
+    assert not any("and now?" in key for key in keys.pressed) and "escape" not in keys.pressed and "ctrl_c" not in keys.pressed
 
 
 async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -746,6 +794,7 @@ async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_non
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt", "escape", "ctrl_c"])
     finally:
         await brain.stop()
+    await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")
     # The turn its Escape stopped was told, under the id it ran under, before it was over.
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
@@ -798,6 +847,7 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
     finally:
         performing.set()
         await brain.stop()
+    await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["stopped"], turn.facts["taken"], turn.facts["told"]) == ("ok", True, "p1", "p1")
     # [LAW:nothing-unseen] the stop's clear is its own event: for a turn, no wait to space its Ctrl-C from one before, and
@@ -835,6 +885,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     # The model's account says what it holds of the brain's dialogs: none, each refused as the stop went, and the stop
     # still ending what Claude Code runs.
     assert f"dialogs=(), ending=DenyAndInterrupt(message={STOPPED!r})" in str(raised.value)
+    await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
 
@@ -2354,6 +2405,7 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
 
 # The brain's screen with its prompt taking keys, and with a permission dialog up in its place.
 PROMPT_SHOWN = f"{'─' * 40}\n❯ \n{'─' * 40}"
+DRAFTED_SHOWN = f"{'─' * 40}\n❯\u00a0a person's words\x1b[7m \x1b[0m\n{'─' * 40}"
 DIALOG_SHOWN = " Write file\n Do you want to create notes.txt?\n ❯ 1. Yes\n   2. No"
 
 
@@ -2431,6 +2483,7 @@ async def test_a_brain_stop_let_go_undecided_fails_every_turn_open_and_the_turn_
     with pytest.raises(process.OrderLost):
         await asking
     assert brain._claude_turns.open == ()  # pyright: ignore[reportPrivateUsage]
+    await until(lambda: len(events(recorded, "brain.turn")) == 1)
     [turn] = events(recorded, "brain.turn")
     assert (turn.outcome, turn.facts["order_lost"], turn.facts["ids"]) == ("failed", "the Stop of q was let go before it was decided", ("p1",))
 
