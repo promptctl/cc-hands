@@ -12,7 +12,7 @@ import ast
 import subprocess
 import sys
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 # A quarantine may last this many days from its start before CI fails on it.
@@ -21,47 +21,61 @@ ROOT = Path(__file__).parents[1]
 
 
 def markers(tests: Path) -> list[str]:
-    """One entry per `quarantined("<ticket id>")` marker in the source under `tests`, read from the syntax tree, so a
-    marker's text in a string or a comment is not one. Matches `pytest.mark.quarantined` and `mark.quarantined` alike, the
-    two spellings conftest's marker lookup honours, and refuses a marker that does not name its ticket as a string."""
+    """One entry per quarantine marker in the source under `tests`, read from the syntax tree, so a marker's text in a string
+    or a comment is not one. Every reference to a `quarantined` attribute or name is a marker, because conftest's marker lookup
+    honours any spelling of it: a reference that is not a call with its ticket as the one string argument stops the gate,
+    so no spelling escapes the dating."""
     tickets: list[str] = []
     for source in tests.rglob("*.py"):
-        nodes = list(ast.walk(ast.parse(source.read_text(), filename=str(source))))
+        nodes = [node for node in ast.walk(ast.parse(source.read_text(), filename=str(source))) if isinstance(node, ast.expr)]
         called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
         for node in nodes:
-            if isinstance(node, ast.Attribute) and ast.unparse(node).endswith("mark.quarantined") and id(node) not in called:
-                raise ValueError(f'{source}:{node.lineno}: quarantined needs its ticket as a string: quarantined("<ticket id>")')
-            if isinstance(node, ast.Call) and ast.unparse(node.func).endswith("mark.quarantined"):
-                ticket = node.args[0] if node.args else None
+            if isinstance(node, ast.Call) and _names_quarantined(node.func):
+                ticket = node.args[0] if len(node.args) == 1 and not node.keywords else None
                 if not (isinstance(ticket, ast.Constant) and isinstance(ticket.value, str) and ticket.value):
-                    raise ValueError(f'{source}:{node.lineno}: quarantined needs its ticket as a string: quarantined("<ticket id>")')
+                    raise ValueError(f'{source}:{node.lineno}: quarantined needs its ticket as the one string: quarantined("<ticket id>")')
                 tickets.append(ticket.value)
+            elif _names_quarantined(node) and id(node) not in called:
+                raise ValueError(f'{source}:{node.lineno}: quarantined must be called with its ticket: quarantined("<ticket id>")')
     return tickets
 
 
+def _names_quarantined(node: ast.expr) -> bool:
+    """Whether `node` is a `quarantined` attribute or name, under whatever module alias the file gives pytest's mark."""
+    return (isinstance(node, ast.Attribute) and node.attr == "quarantined") or (isinstance(node, ast.Name) and node.id == "quarantined")
+
+
 def started(root: Path, ticket: str) -> datetime:
-    """When the history first recorded this ticket's marker: the author date of the earliest commit, repo-wide, that
-    changes how many times the marker's text occurs. No pathspec, so a file moved keeps its clock."""
+    """When the history first recorded this ticket's marker: the earliest author date of any commit, repo-wide, that changes
+    how many times the marker's text occurs. The minimum over every listed date, not the first line, because git lists by
+    commit order and a commit can be listed first with a later author date. No pathspec, so a file moved keeps its clock."""
     dates = subprocess.run(
-        ["git", "log", "-S", f'quarantined("{ticket}")', "--reverse", "--format=%aI"],
+        ["git", "log", "-S", f'quarantined("{ticket}")', "--format=%aI"],
         cwd=root, capture_output=True, text=True, check=True,
     ).stdout.split()
     if not dates:
         raise ValueError(f"no commit in this history changes the quarantine of {ticket}: its marker is not committed here")
-    return datetime.fromisoformat(dates[0])
+    return min(datetime.fromisoformat(listed) for listed in dates)
 
 
 def overdue(starts: Mapping[str, datetime], today: date) -> list[str]:
-    """Each quarantine whose start is more than QUARANTINE_DAYS before `today`, with its age, sorted by ticket."""
+    """Each quarantine whose start is more than QUARANTINE_DAYS before `today`, with its age, sorted by ticket. Each start is
+    taken in UTC, so the boundary does not move with the author's offset."""
     late: list[str] = []
     for ticket, start in sorted(starts.items()):
-        age = (today - start.date()).days
+        age = (today - start.astimezone(UTC).date()).days
         if age > QUARANTINE_DAYS:
             late.append(f"{ticket}: quarantined for {age} days, past its {QUARANTINE_DAYS}")
     return late
 
 
 def main(root: Path, today: date) -> int:
+    # [LAW:no-silent-failure] a shallow history shows a commit's tree as added, so the tip would date every quarantine as fresh.
+    shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"], cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if shallow == "true":
+        raise ValueError("this checkout is shallow, so its history cannot date a quarantine: fetch the full history")
     found = markers(root / "tests")
     # [LAW:no-silent-failure] a quarantine's clock is its ticket's, so two tests under one ticket would share it, and a test
     # added later would inherit the older test's start and fail at once. One ticket, one test: refused, with the fix named.
@@ -77,4 +91,4 @@ def main(root: Path, today: date) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(ROOT, date.today()))
+    sys.exit(main(ROOT, datetime.now(UTC).date()))

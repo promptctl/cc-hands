@@ -103,7 +103,7 @@ def test_both_spellings_of_the_marker_are_read(tmp_path: Path) -> None:
 def test_a_marker_without_its_ticket_as_a_string_is_refused(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_bare.py").write_text("import pytest\n\n@pytest.mark.quarantined\ndef test_a():\n    pass\n")
-    with pytest.raises(ValueError, match="needs its ticket as a string"):
+    with pytest.raises(ValueError, match="must be called with its ticket"):
         gate.markers(tmp_path / "tests")
 
 
