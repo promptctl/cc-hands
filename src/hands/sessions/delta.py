@@ -21,14 +21,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import dropwhile
 from pathlib import Path
-from typing import Literal, Protocol, cast, overload
+from typing import Literal, Protocol, cast
 
 from loguru import logger
 
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
-from hands.sessions.child import run
+from hands.sessions.child import run, settled
 from hands.clock import Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
@@ -298,7 +298,7 @@ class Deltas:
             annotate(session=session)
             count(captures_waited=len(under_way))
             try:
-                mark, waited = await _settled(self._mark(cwd, deadline), self._waited(under_way, deadline))
+                mark, waited = await settled(self._mark(cwd, deadline), self._waited(under_way, deadline))
             finally:
                 # However the mark ended, a hook that gave up included: the turn has begun either way, so nothing still
                 # being read can be ordered before it, and nothing waits on such a capture again.
@@ -400,7 +400,7 @@ class Deltas:
             with self._event(session):
                 # [LAW:single-enforcer] the capture is one of the reading's parts, run and waited out with the rest, so
                 # nothing it reads lands on the reading's event after it has ended.
-                _, (reading, delta, asked) = await _settled(
+                _, (reading, delta, asked) = await settled(
                     self._captured(capture, began + self._reading), self._between(start, capture, began + self._reading, began + self._patience - SPARE)
                 )
                 self._told(reading)
@@ -454,7 +454,7 @@ class Deltas:
     async def _standing(self, root: Path, at: datetime, deadline: float) -> Standing | None:
         """Where the repository stands, its HEAD and its refs read side by side, as of `at`, when the read of it began: None
         where git would not say where HEAD is."""
-        head, refs = await _settled(self._git(root, "rev-parse", "--verify", "--quiet", "HEAD", deadline=deadline), self._refs(root, deadline))
+        head, refs = await settled(self._git(root, "rev-parse", "--verify", "--quiet", "HEAD", deadline=deadline), self._refs(root, deadline))
         if head is None and not await self._unborn(root, deadline):
             # [LAW:parse-dont-validate] read as a repository with no commit, a place that is really one git could not
             # answer for compares against no commit at all: every commit ever made in it is then reachable from where
@@ -490,7 +490,7 @@ class Deltas:
         ended = await capture.standing
         # The forge beside the tree and not after it: it is a network away where git is a disk away, and the narrator gives
         # up on the whole reading at once, so a forge read after the tree spends the commit's time on a pull request.
-        commits, (files, patch), (changes, asked) = await _settled(
+        commits, (files, patch), (changes, asked) = await settled(
             self._commits(mark, ended, deadline), self._worked(mark, capture.tree, deadline), self._moved(mark, ended, deadline, forging)
         )
         # Read once every part is in, when the capture is over and no start can overtake it any more.
@@ -578,7 +578,7 @@ class Deltas:
         tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
         # A ref the turn left where it found it was pushed nothing, whatever its log says.
         moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
-        made, *pushes = await _settled(
+        made, *pushes = await settled(
             self._made(mark.root, mark.refs.named, branch, tracking, since, deadline),
             *(self._pushed(mark.root, name, mark.refs.named.get(name), refs.named[name], deadline) for name in moved),
         )
@@ -735,30 +735,6 @@ class Deltas:
         began = self._clock.now()
         await wait(self._clock, [capture.tree for capture in captures], max(0.0, deadline - began))
         return round(self._clock.now() - began, 3)
-
-
-@overload
-async def _settled[A, B](first: Awaitable[A], second: Awaitable[B], /) -> tuple[A, B]: ...
-@overload
-async def _settled[A, B, C](first: Awaitable[A], second: Awaitable[B], third: Awaitable[C], /) -> tuple[A, B, C]: ...
-@overload
-async def _settled[T](*sides: Awaitable[T]) -> tuple[T, ...]: ...
-async def _settled(*sides: Awaitable[object]) -> tuple[object, ...]:
-    """Every side of a reading run together and waited out, then what each gave; where any raised, all they raised.
-
-    [LAW:single-enforcer] the one way a reading runs its sides at once. Waited out, so a side that raises does not end the
-    reading while another runs on and writes to its event after it has ended [LAW:no-ambient-temporal-coupling]. Not a
-    TaskGroup: on shutdown it cancels its children a second time, and a child told twice to stop leaves its git unreaped.
-    """
-    gave = await asyncio.gather(*sides, return_exceptions=True)
-    raised = [side for side in gave if isinstance(side, BaseException)]
-    # A side cancelled on its own, as the loop's shutdown cancels every task at once, is the reading cancelled: raised
-    # as a cancellation, it is told as one and goes on up, where in a group it would be told as a failure.
-    if any(isinstance(side, asyncio.CancelledError) for side in raised):
-        raise asyncio.CancelledError
-    if raised:
-        raise BaseExceptionGroup("what a turn changed could not be read", raised)
-    return tuple(gave)
 
 
 def _request(entry: object, since: datetime, until: datetime) -> PullRequested | None:
