@@ -43,7 +43,7 @@ def named(path: Path, *names: str) -> None:
 
 async def call(sessions: Sessions, tmp_path: Path) -> object:
     # No tmux server of the test's own runs: every session is in none.
-    return await list_sessions_tool(sessions.clock, sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
+    return await list_sessions_tool(sessions, Overlays(Home(tmp_path / "home")), Home(tmp_path / "home"), {"TMUX_TMPDIR": str(tmp_path)}).body()
 
 
 async def test_live_sessions_are_named_by_their_project_then_their_newest_name(tmp_path: Path) -> None:
@@ -193,7 +193,6 @@ async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    clock = VirtualClock()
-    tool = list_sessions_tool(clock, new_sessions(clock=clock), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

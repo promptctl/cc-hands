@@ -46,8 +46,7 @@ READING = 1.0
 class Lexicon:
     """Reads Whisper's vocabulary as each hold is transcribed, and records what it read."""
 
-    def __init__(self, clock: Clock, sessions: Sessions, home: Home, environment: Mapping[str, str], record: Record) -> None:
-        self._clock = clock
+    def __init__(self, sessions: Sessions, home: Home, environment: Mapping[str, str], record: Record) -> None:
         self._sessions = sessions
         self._home = home
         # The daemon's environment, which git is found and run in.
@@ -55,7 +54,7 @@ class Lexicon:
         self._record = record
 
     async def __call__(self) -> str | None:
-        clock = self._clock
+        clock = self._sessions.clock
         began = clock.now()
         # Read off the loop: a name is read from its session's transcript.
         listings = await asyncio.to_thread(self._sessions.live)
