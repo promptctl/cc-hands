@@ -25,13 +25,13 @@ import os
 import re
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from hands.clock import Clock
 from hands.daemon.starting import invocation
 from hands.sessions.home import Home
 from hands.sessions.wrapper import Installing
@@ -196,7 +196,7 @@ def run(argv: Sequence[str], cwd: Path) -> Done:
     return Done(completed.returncode, completed.stdout, completed.stderr)
 
 
-def detach() -> Callable[[int], bool]:
+def detach(clock: Clock) -> Callable[[int], bool]:
     """Go on in a process of its own, outside the caller's process tree, session, and process group; and what answers
     the caller, still waiting in the process it started, with the exit to end with.
 
@@ -231,7 +231,7 @@ def detach() -> Callable[[int], bool]:
         os._exit(0)
     # [LAW:no-ambient-temporal-coupling] out of the caller's tree once its parent has exited, not after a guess at how long that takes.
     while os.getppid() == middle:
-        time.sleep(LOOK_SECONDS)
+        clock.rest(LOOK_SECONDS)
     return lambda code: answered(write, code)
 
 

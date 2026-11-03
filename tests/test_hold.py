@@ -187,7 +187,7 @@ def test_a_run_without_the_input_monitoring_grant_is_refused_at_the_door(tmp_pat
 
 def asking(home: Path, then: str) -> str:
     """Python that asks the lock for `home`, as a run that is no restart's, then runs `then` on its answer, `answer`."""
-    return f"from pathlib import Path\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nanswer = cli.hold(Home(Path({str(home)!r})), lambda event: None, restarted=False)\n{then}\n"
+    return f"from pathlib import Path\nfrom hands.clock import SYSTEM\nfrom hands.daemon import cli\nfrom hands.sessions.home import Home\nanswer = cli.hold(SYSTEM, Home(Path({str(home)!r})), lambda event: None, restarted=False)\n{then}\n"
 
 
 def holds(home: Path, said: str) -> str:
@@ -260,7 +260,7 @@ def test_a_holder_that_lets_go_between_the_two_asks_is_asked_again_and_counted(t
 
         monkeypatch.setattr(cli, "holder", let_go_once)
         events: list[wide.WideEvent] = []
-        assert cli.hold(Home(tmp_path), events.append, restarted=False) == cli.Running(holder.pid)
+        assert cli.hold(SYSTEM, Home(tmp_path), events.append, restarted=False) == cli.Running(holder.pid)
         [asked] = events
         assert (asked.event, asked.outcome, asked.counts) == ("hands.hold", "ok", {"retries": 1})
     finally:

@@ -138,7 +138,7 @@ async def test_a_start_still_importing_pipecat_beats_starting_until_the_run_it_l
         imported.wait()
         return run
 
-    launched = asyncio.create_task(launch(load, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
+    launched = asyncio.create_task(launch(load, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False, clock=SYSTEM), SYSTEM))
     # The import finishes only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -159,7 +159,7 @@ async def test_a_stop_during_the_pipecat_import_ends_the_run_as_stopped(tmp_path
         never.wait()
         raise AssertionError("the import never finished")
 
-    launched = asyncio.create_task(launch(load, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False)))
+    launched = asyncio.create_task(launch(load, heart, lambda: (), unedited, lambda _entry: None, Start(restarted=False, clock=SYSTEM), SYSTEM))
     while heartbeat.read(heart.path) is None:
         await asyncio.sleep(0.005)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -312,7 +312,7 @@ def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: P
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
     beats: list[None] = []
-    beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 0.01))
+    beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 0.01, SYSTEM))
     await asyncio.sleep(0.055)
     beating.cancel()
     assert 3 <= len(beats) <= 6

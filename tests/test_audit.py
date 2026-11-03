@@ -6,7 +6,6 @@ import json
 import shutil
 import threading
 import tracemalloc
-import types
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -56,6 +55,13 @@ STOP_HEARD = Stamp(1500)
 STOP_REQUEST = RequestId("stop")
 
 AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
+
+
+class Interrupting(VirtualClock):
+    """A clock whose first rest is a Ctrl-C, as `hands log` is stopped while it follows."""
+
+    def rest(self, seconds: float) -> None:
+        raise KeyboardInterrupt
 
 
 def member() -> Membership:
@@ -428,11 +434,7 @@ def test_hands_log_says_how_many_lines_it_had_to_print_first_and_where_following
     home.audit.mkdir()
     segment(home.audit, 0).write_text('{"n":1}\n{"n":2}\n{"n":3}\n')
 
-    def interrupted(_: float) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"]) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting()) == 0
     [command] = [line for line in lines(home.audit) if line.get("event") == "hands.command"]
     assert (command["facts"]["tailed"], command["facts"]["followed_from"]) == (2, 24)
 
@@ -443,11 +445,7 @@ def test_hands_log_prints_a_line_holding_a_line_separator_as_one_line(
     home = Home(tmp_path)
     AuditLog(home.audit, clock=lambda: AT).record(Transcribed("a\u2028b\u2029c\x85d"))
 
-    def interrupted(_: float) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "1"]) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "1"], Interrupting()) == 0
     [printed] = capsys.readouterr().out.splitlines()
     assert json.loads(printed)["text"] == "a\u2028b\u2029c\x85d"
 
@@ -507,11 +505,7 @@ def test_following_stops_at_ctrl_c_after_printing_the_newest_lines(tmp_path: Pat
     home.audit.mkdir()
     segment(home.audit, 0).write_text("a\nb\nc\n")
 
-    def interrupted(_: float) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
-    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"]) == 0
+    assert cli.main(["--home", str(tmp_path), "log", "-n", "2"], Interrupting()) == 0
     assert capsys.readouterr().out == "b\nc\n"
 
 
@@ -906,12 +900,8 @@ def test_hands_log_prints_a_control_json_left_raw_as_its_escape_and_the_line_is_
     home.audit.mkdir()
     segment(home.audit, 0).write_text(json.dumps({"t": "a\x9b2J\x7f\u202eb\x1b"}, ensure_ascii=False) + "\n")
 
-    def interrupted(*_: object) -> None:
-        raise KeyboardInterrupt
-
     monkeypatch.setattr(cli, "LOG_POLL_SECONDS", 0)
-    monkeypatch.setattr(cli, "time", types.SimpleNamespace(sleep=interrupted))
-    assert cli.main(["--home", str(tmp_path), "log"]) == 0
+    assert cli.main(["--home", str(tmp_path), "log"], Interrupting()) == 0
     printed = capsys.readouterr().out
     assert printed == '{"t": "a\\u009b2J\\u007f\\u202eb\\u001b"}\n'
     assert json.loads(printed) == {"t": "a\x9b2J\x7f\u202eb\x1b"}

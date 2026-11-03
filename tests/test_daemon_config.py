@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import new_sessions, onboard, patiently
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon import cli, config, run
 from hands.daemon.config import ANTHROPIC_MODEL, CLAUDE_MODELS, Claude, Config
 from hands.daemon.starting import CannotStart, Ended, QuitKey, Start, Stop, Failing, start
@@ -212,9 +212,9 @@ def test_a_model_flag_hands_cannot_run_on_refuses_the_start_at_the_door(tmp_path
 
     home = Home(tmp_path / ".hands")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    assert cli.door(home, Start(restarted=False), "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
+    assert cli.door(home, Start(restarted=False, clock=SYSTEM), "claude-opus-5-5") == config.load(home, "claude-opus-5-5")
     with pytest.raises(CannotStart, match="^--model 'opus': "):
-        cli.door(home, Start(restarted=False), "opus")
+        cli.door(home, Start(restarted=False, clock=SYSTEM), "opus")
 
 
 @pytest.mark.parametrize(("given", "loads", "carried"), [((), None, ()), (("--model", " -local-model "), "-local-model", ("--model=-local-model",))])
@@ -233,7 +233,7 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     def again(argv: list[str]) -> None:
         raise Again(argv)
 
-    def hold(_home: Home, _record: object, *, restarted: bool) -> None:
+    def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
 
     def run_here(*_arguments: object) -> tuple[str, int]:
@@ -258,7 +258,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\n')
     recorded: list[Entry] = []
     running = config.load(home, "claude-opus-5-5")
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, period=0.01), 0.3))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, SYSTEM, period=0.01), 0.3))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n')
     await asyncio.sleep(0.05)
@@ -266,7 +266,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "opus"\n')
     with pytest.raises(TimeoutError):
         await watching
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, _reachable, running, SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nbackend = "claude"\nmodel = "claude-haiku-4-5-20251001"\n[talk]\npersonality = "Dry."\n')
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
@@ -328,10 +328,10 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         answered.wait()
         return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
 
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
     exporting_down = heartbeat.Degradation("can't export traces", "the collector has not taken all of its traces")
-    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop()))
+    starting = asyncio.create_task(start(lambda: run.configured(prompted, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (exporting_down,), Stop(), SYSTEM))
     # The prompt is answered only once the start has said "starting" three times while it waited.
     beats: set[datetime] = set()
     while len(beats) < 3:
@@ -369,7 +369,7 @@ async def test_a_stop_during_the_configuration_read_ends_the_start(tmp_path: Pat
 
     stop = Stop()
     stop.tell(QuitKey())
-    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), stop) is None
+    assert await start(lambda: run.configured(prompted, lambda _: None, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), stop, SYSTEM) is None
     never.set()
 
 
@@ -382,7 +382,7 @@ def test_a_refused_configuration_stops_the_start(tmp_path: Path) -> None:
 
     surveyed: list[run.Configured | CannotStart] = []
     with pytest.raises(CannotStart, match="no key"):
-        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), Stop()))
+        asyncio.run(start(lambda: run.configured(refused, surveyed.append, home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     # Every other step is still said: the readiness check is given the refusal, as the backend's step.
     [refusal] = surveyed
     assert isinstance(refusal, CannotStart) and str(refusal) == "no key"
@@ -400,7 +400,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
         return run.Configured(config, run.Settings(b"", Config()))
 
     monkeypatch.setattr(run, "sweep", swept)
-    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False)), heart, sessions.live_count, lambda: (), Stop()))
+    asyncio.run(start(lambda: run.configured(configure, lambda _: order.append("survey"), home, sessions, Start(restarted=False, clock=SYSTEM)), heart, sessions.live_count, lambda: (), Stop(), SYSTEM))
     assert order == ["sweep", "configure", "survey"]
 
 
@@ -415,11 +415,11 @@ async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch:
     def refused(_environment: Mapping[str, str]) -> run.Configured:
         raise CannotStart("no key")
 
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     recorded: list[Entry] = []
     try:
         with pytest.raises(CannotStart, match="no key"), run_start.ending(recorded.append):
-            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable))
+            await run.run(refused, lambda _: None, home, heart, recorded.append, lambda: (), Stop(), False, {}, run_start, config.OwnModel(home, _NO_FILE, _reachable), SYSTEM)
     finally:
         shutil.rmtree(root)
     # Refused at its settings, after every server was up: the start says where each listened.
@@ -448,12 +448,12 @@ def test_a_start_refused_says_why_in_the_audit_log_and_in_hands_status(tmp_path:
     monkeypatch.setattr(cli, "start_indicator", unshown)
     monkeypatch.setattr(cli, "reap", kept)
 
-    def loaded(home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
+    def loaded(clock: Clock, home: Home, settings: config.Settings, heart: heartbeat.Heart, record: audit.Record, _degraded: Callable[[], tuple[heartbeat.Degradation, ...]], _after_crash: bool, run_start: Start) -> cli.Run:
         sessions = new_sessions(record=record)
 
         async def refused(stop: Stop) -> Ended:
             configure = partial(run.configured_from, home, settings, {"HANDS_LLM": "claude"})
-            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop)
+            await start(lambda: run.configured(configure, lambda _: None, home, sessions, run_start), heart, sessions.live_count, lambda: (), stop, clock)
             raise AssertionError("a start with HANDS_LLM set went on")
 
         return refused
@@ -533,7 +533,7 @@ def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_rest
     assert str(home.config) in reason
     # Refused at the door, before the settings name a collector: the hold's event and the start's are on the log alone.
     assert [(line["event"], line["error"]) for line in map(json.loads, audit.tail(home.audit, 10)[0])] == [("hands.hold", None), ("hands.start", f"CannotStart: {reason}")]
-    assert cli.crashed_before(home)
+    assert cli.crashed_before(SYSTEM, home)
     # A restart's run holds the heartbeat from the outset, the run before it having beat starting under its pid.
     assert cli.main(["--home", str(home.root), "run", "--restarted", "0"]) == 1
     capsys.readouterr()
@@ -576,7 +576,7 @@ def test_a_home_whose_fritter_is_the_one_hands_carries_or_none_passes_the_door(c
         home.fritter.write_bytes(b"#!/bin/sh\n")
         monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     assert cli.door(home, run_start, None) == config.load(home)
     events: list[WideEvent] = []
     run_start.ended(events.append, None)
@@ -593,7 +593,7 @@ def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_
     shutil.copy2(wrapper.PACKAGED, home.fritter)
     home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     with pytest.raises(CannotStart, match=re.escape(f"{home.shim} is not the shim this hands writes") + ".*run `hands install-fritter`, then run hands again.$"):
         cli.door(home, run_start, None)
     events: list[WideEvent] = []
@@ -601,7 +601,7 @@ def test_a_home_whose_shim_is_not_the_one_hands_writes_refuses_the_start_at_the_
     assert [event.facts["shim"] for event in events] == ["stale"]
     # The shim `hands install-fritter` writes passes.
     wrapper.install(home)
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     assert cli.door(home, run_start, None) == config.load(home)
     run_start.ended(events.append, None)
     assert [event.facts["shim"] for event in events] == ["stale", "current"]
@@ -616,7 +616,7 @@ def test_a_stale_shim_in_a_hands_built_without_its_fritter_is_refused_naming_the
     home.shim.write_text(wrapper.shim_script(home.fritter, home.wire).replace("export DISABLE_AUTOUPDATER=1\n", ""))
     monkeypatch.setattr(wrapper, "PACKAGED", tmp_path / "package" / "bin" / "fritter")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     with pytest.raises(CannotStart) as refused:
         cli.door(home, run_start, None)
     rebuild = f"hands' package carries no fritter at {wrapper.PACKAGED}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
@@ -634,7 +634,7 @@ def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_sayin
     home.bin.mkdir(parents=True)
     home.fritter.symlink_to(tmp_path / "gone")
     monkeypatch.setattr(talkkey, "granted", lambda: True)
-    run_start = Start(restarted=False)
+    run_start = Start(restarted=False, clock=SYSTEM)
     with pytest.raises(CannotStart, match=f"cannot tell whether {re.escape(str(home.fritter))} is the fritter this hands carries: "):
         cli.door(home, run_start, None)
     events: list[WideEvent] = []
@@ -680,7 +680,7 @@ def _reachable(_settings: Config) -> None:
 
 async def _edited_within(home: Home, recorded: list[Entry], seconds: float = 0.5) -> SettingsEdited | None:
     try:
-        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, config.load(home), period=0.01), seconds)
+        return await asyncio.wait_for(config.edited(home, recorded.append, _reachable, config.load(home), SYSTEM, period=0.01), seconds)
     except TimeoutError:
         return None
 
@@ -774,7 +774,7 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []
 
 
@@ -783,7 +783,7 @@ async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tm
     onboard(home.brain)
     monkeypatch.setenv("LOGGED_IN", "0")
     recorded: list[Entry] = []
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, recorded.append, partial(cli.reachable, home), config.load(home), SYSTEM, period=0.01), 2.0))
     await asyncio.sleep(0.05)
     home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
     while not recorded:
@@ -819,7 +819,7 @@ async def test_an_edit_saved_over_while_it_is_weighed_is_not_taken(tmp_path: Pat
             home.config.write_text('[llm]\nbackend = "claud"\n')
 
     # Polled, not spun: a watch with no period would hold the loop against the thread this test waits on.
-    watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), period=0.01))
+    watching = asyncio.create_task(config.edited(home, recorded.append, overwritten, config.load(home), SYSTEM, period=0.01))
     try:
         home.config.write_text('[llm]\nmodel = "claude-opus-5-5"\n')
         # Moved by each backend check, the hop to a thread that a loaded machine is slowest to take.
@@ -846,5 +846,5 @@ async def test_an_edit_saved_over_while_weighed_and_back_again_is_taken(tmp_path
 
     monkeypatch.setattr(config, "_held", held)
     recorded: list[Entry] = []
-    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, period=0) == SettingsEdited(path=str(home.config), refused=None)
+    assert await config.edited(home, recorded.append, _reachable, _NO_FILE, SYSTEM, period=0) == SettingsEdited(path=str(home.config), refused=None)
     assert recorded == []

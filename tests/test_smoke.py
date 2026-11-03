@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from hands.clock import SYSTEM, Clock
 from hands.core.effects import Fritter, Summarise, Text, Type
 from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
@@ -154,7 +155,7 @@ class Dropped:
 
 async def test_a_call_that_drops_stops_the_stage_being_said_and_says_why() -> None:
     peer = RTCPeerConnection()
-    caller = Caller(peer, Dropped())  # pyright: ignore[reportArgumentType]  (the channel's send is all the caller uses)
+    caller = Caller(peer, Dropped(), SYSTEM)  # pyright: ignore[reportArgumentType]  (the channel's send is all the caller uses)
     caller.tasks.append(asyncio.create_task(caller.keep_sending(), name="the smoke test's voice"))
     try:
         with pytest.raises(NotReached) as raised:
@@ -233,7 +234,7 @@ def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     monkeypatch.setattr(transcription, "load", lambda: None)
 
-    async def synthesized(_text: str) -> bytes:
+    async def synthesized(_clock: Clock, _text: str) -> bytes:
         return b""
 
     started: list[dict[str, str]] = []

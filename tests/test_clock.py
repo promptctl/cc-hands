@@ -1,11 +1,13 @@
 """Waiting on a clock a test moves: what is awaited is never cancelled, and the time is up only when the clock says so."""
 
 import asyncio
+import queue
+import uuid
 
 import pytest
 
 from conftest import BrokenClock, VirtualClock
-from hands.clock import SYSTEM, wait
+from hands.clock import SYSTEM, dashed, wait
 
 
 async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_time_has_passed() -> None:
@@ -106,3 +108,53 @@ async def test_a_virtual_timeout_that_came_due_refuses_a_new_deadline_as_asyncio
                 await asyncio.sleep(0)
             except asyncio.CancelledError:
                 limit.reschedule(5.0)
+
+
+def test_a_rest_on_a_virtual_clock_moves_its_time() -> None:
+    clock = VirtualClock()
+    clock.rest(30.0)
+    assert clock.now() == 30.0
+
+
+def test_a_take_on_a_virtual_clock_gives_what_is_queued_and_is_empty_at_once_moving_no_time() -> None:
+    clock = VirtualClock()
+    waiting: queue.SimpleQueue[str] = queue.SimpleQueue()
+    waiting.put("queued")
+    assert clock.take(waiting, 5.0) == "queued"
+    with pytest.raises(queue.Empty):
+        clock.take(waiting, 5.0)
+    assert clock.now() == 0.0
+
+
+def test_a_take_on_the_system_clock_waits_for_what_is_queued() -> None:
+    waiting: queue.SimpleQueue[str] = queue.SimpleQueue()
+    waiting.put("queued")
+    assert SYSTEM.take(waiting, 5.0) == "queued"
+
+
+def test_a_dashed_id_is_the_uuid_its_clock_minted() -> None:
+    assert uuid.UUID(dashed(VirtualClock(seed=1))) == uuid.UUID(VirtualClock(seed=1).uuid())
+
+
+def test_a_rest_after_every_wait_on_the_clock_ended_moves_it() -> None:
+    clock = VirtualClock()
+
+    async def waited() -> None:
+        async with clock.timeout(5):
+            pass
+
+    asyncio.run(waited())
+    clock.rest(1)
+    assert clock.now() == 1
+
+
+def test_a_rest_while_a_loop_waits_on_the_clock_is_refused() -> None:
+    clock = VirtualClock()
+
+    async def waiting() -> None:
+        paused = clock.pause(5)
+        with pytest.raises(RuntimeError):
+            clock.rest(1)
+        paused.cancel()
+
+    asyncio.run(waiting())

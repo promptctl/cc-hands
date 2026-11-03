@@ -18,10 +18,12 @@ from conftest import SYSTEM_PATH
 # holds nothing installed, so what `check` finds is the same on every machine.
 CHILD = """
 import json, sys, types
+from hands.clock import SYSTEM, SystemClock
 from hands.daemon import cli
 
-def interrupted(seconds):
-    raise KeyboardInterrupt
+class Interrupting(SystemClock):
+    def rest(self, seconds):
+        raise KeyboardInterrupt
 
 async def untailed(_clock):
     from hands.voice.phoneaddress import Untailed
@@ -33,8 +35,7 @@ def logged_in(config_dir, base_url, inherited, method):
     return Login(Account("claude.ai", "someone@example.com"), None)
 
 home, command, out = sys.argv[1:]
-if command == "log":
-    cli.time = types.SimpleNamespace(sleep=interrupted)
+clock = Interrupting() if command == "log" else SYSTEM
 if command == "phone":
     from hands.voice import phoneaddress
     phoneaddress.tailnet_name = untailed
@@ -42,7 +43,7 @@ if command == "phone":
 if command == "login":
     from hands.brain import process
     process.login = logged_in
-code = cli.main(["--home", home, command])
+code = cli.main(["--home", home, command], clock)
 with open(out, "w") as file:
     json.dump({"code": code, "pipecat": sorted(m for m in sys.modules if m.split(".")[0] == "pipecat")}, file)
 """

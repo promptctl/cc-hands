@@ -25,7 +25,7 @@ from hands.sessions.registry import Sessions
 
 def main() -> None:
     home = Home(Path(sys.argv[1]))
-    run_start = Start(restarted="--restarted" in sys.argv[2:])
+    run_start = Start(restarted="--restarted" in sys.argv[2:], clock=SYSTEM)
     heart = heartbeat.Heart(home.status, os.getpid(), datetime.now(UTC), heartbeat.HEARTBEAT, kick_watchdog=lambda: None, clock=SYSTEM)
     heart.beat("starting", None, 0, listening=False, degraded=())
     audit = AuditLog(home.audit, clock=lambda: datetime.now(UTC))
@@ -35,14 +35,14 @@ def main() -> None:
         sessions = Sessions(clock=SYSTEM, record=audit.record)
         # As hands' run does before its models load: the sessions already running are listed from the home.
         await sweep(home, sessions, frozenset())
-        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds()))
+        beating = asyncio.create_task(keep_beating(lambda: heart.beat("running", None, sessions.live_count(), listening=False, degraded=()), heart.period.total_seconds(), SYSTEM))
         # As hands' run is once its pipeline has started.
         run_start.ended(audit.record, None)
         await stop.wait()
         beating.cancel()
         return Ended(None, sessions.live_count())
 
-    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, lambda _settings: None, settings, period=0.05), audit.record, run_start)):
+    match asyncio.run(launch(lambda: run, heart, lambda: (), lambda: edited(home, audit.record, lambda _settings: None, settings, SYSTEM, period=0.05), audit.record, run_start, SYSTEM)):
         case "quit":
             return
         case "restart":

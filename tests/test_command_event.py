@@ -160,7 +160,7 @@ def sinks() -> set[int]:
     return set(handlers)
 
 
-def warned(home: Home) -> Literal[0]:
+def warned(_clock: Clock, home: Home) -> Literal[0]:
     """`hands status`, standing in as a command that warns."""
     logger.warning("warned inside the command")
     return 0
@@ -190,6 +190,6 @@ def test_what_opening_the_audit_log_warns_of_is_shown_on_the_terminal(tmp_path: 
         raise PermissionError(f"not {self}'s owner")
 
     monkeypatch.setattr(Path, "chmod", refused)
-    with cli.logging_to(Home(tmp_path)):
+    with cli.logging_to(SYSTEM, Home(tmp_path)):
         pass
     assert "cannot be made the user's alone" in capsys.readouterr().err

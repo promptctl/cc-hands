@@ -48,7 +48,7 @@ class Launched:
         self.heart = heartbeat.Heart(tmp_path / "status.json", pid=4242, started_at=NOW, period=timedelta(milliseconds=10), kick_watchdog=lambda: None, clock=SYSTEM)
         self.recorded: list[audit.Entry] = []
         self.running = asyncio.Event()
-        run_start = Start(restarted=False)
+        run_start = Start(restarted=False, clock=SYSTEM)
 
         async def run(stop: Stop) -> Ended:
             if ready:
@@ -61,7 +61,7 @@ class Launched:
                 do(step, stop)
             return Ended(None, 0)
 
-        self.task = asyncio.create_task(launch(lambda: run, self.heart, lambda: (), unedited, self.recorded.append, run_start))
+        self.task = asyncio.create_task(launch(lambda: run, self.heart, lambda: (), unedited, self.recorded.append, run_start, SYSTEM))
 
 
 def do(step: Step, stop: Stop) -> None:
@@ -148,7 +148,7 @@ async def test_a_run_that_returns_with_no_cause_told_fails_saying_so(tmp_path: P
         return Ended(None, 0)
 
     with pytest.raises(LookupError, match="no cause told"):
-        await launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False))
+        await launch(lambda: run, heart, lambda: (), unedited, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
     assert ran(recorded) == [("failed", ("escaped",), "failed")]
 
 
@@ -222,6 +222,6 @@ async def test_a_settings_watch_that_raises_as_the_run_ends_fails_it_on_its_even
         return Ended(None, 0)
 
     with pytest.raises(ConnectionError, match="the device went away"):
-        await launch(lambda: run, heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False))
+        await launch(lambda: run, heart, lambda: (), watch_that_closes_badly, recorded.append, Start(restarted=False, clock=SYSTEM), SYSTEM)
     assert ran(recorded) == [("failed", ("q key", "settings unreadable"), "failed")]
     assert not stopped(heart)

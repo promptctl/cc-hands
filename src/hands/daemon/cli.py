@@ -10,11 +10,9 @@ import struct
 import sys
 import tempfile
 import threading
-import time
 from collections.abc import Callable, Coroutine, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
@@ -22,7 +20,7 @@ from typing import TYPE_CHECKING, Literal, TextIO, cast
 
 from loguru import logger
 
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
@@ -94,7 +92,7 @@ def to_terminal(stream: TextIO) -> tuple[int, int]:
 
 
 @contextmanager
-def logging_to(home: Home) -> Generator[audit.AuditLog]:
+def logging_to(clock: Clock, home: Home) -> Generator[audit.AuditLog]:
     """[LAW:single-enforcer] the one logging setup of every hands process: the terminal, and `home`'s audit log beside it
     keeping every warning and error the terminal shows, for as long as it is held; the audit log.
 
@@ -104,7 +102,7 @@ def logging_to(home: Home) -> Generator[audit.AuditLog]:
     """
     added = list(to_terminal(sys.stderr))
     try:
-        audit_log = audit_log_of(home)
+        audit_log = audit_log_of(clock, home)
         added.append(audit.logged_to(audit_log.record, on_terminal))
         yield audit_log
     finally:
@@ -141,14 +139,14 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
     return both
 
 
-def show_phone(home: Home) -> exits.Exit:
+def show_phone(clock: Clock, home: Home) -> exits.Exit:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
 
     from hands.voice.phoneaddress import Untailed, lan_addresses, page_urls, phone_key, tailnet_name
 
     # The name alone: the certificate is the daemon's to ask Tailscale for, as it serves the page.
-    name = asyncio.run(tailnet_name(SYSTEM))
+    name = asyncio.run(tailnet_name(clock))
     match name:
         case Untailed(reason=reason):
             wide.annotate(untailed=reason)
@@ -156,7 +154,7 @@ def show_phone(home: Home) -> exits.Exit:
         case str():
             pass
     try:
-        key = phone_key(SYSTEM, home)
+        key = phone_key(clock, home)
     except Rejected as error:
         wide.annotate(phone_key=str(error))
         return refused("hands", 1, str(error))
@@ -177,7 +175,8 @@ def entry() -> int:
     return main()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, bound here alone.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -223,14 +222,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"hands: {error}", file=sys.stderr)
         return 2
     # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs.
-    with logging_to(home) as audit_log:
+    with logging_to(clock, home) as audit_log:
         match arguments.command:
             case "run":
-                return run_daemon(home, audit_log, arguments.restarted, arguments.model)
+                return run_daemon(clock, home, audit_log, arguments.restarted, arguments.model)
             case "tmux-status":
-                return show_segment(home)
+                return show_segment(clock, home)
             case _:
-                return commanded(home, audit_log.record, arguments)
+                return commanded(clock, home, audit_log.record, arguments)
 
 
 def model_id(text: str) -> str:
@@ -240,13 +239,13 @@ def model_id(text: str) -> str:
     return model
 
 
-def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
+def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: int | None, model: str | None) -> int:
     """`hands run`: the daemon, whose units of work are its start and every one it runs, never one command's.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event: held open over the run, that event would
     make every unit of work the daemon runs a part of its trace, and a restart, exec'd in its place, never ends it.
     """
-    match hold(home, audit_log.record, restarted=restarted is not None):
+    match hold(clock, home, audit_log.record, restarted=restarted is not None):
         case Running(pid=pid):
             # Told where it was run, and nothing of the home touched: the heartbeat, the sockets, and the indicator
             # are the running daemon's. A run that never held the home was never a start, so it writes no hands.start.
@@ -254,7 +253,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
             return 1
         case None:
             pass
-    run_start = Start(restarted=restarted is not None)
+    run_start = Start(restarted is not None, clock)
     # [LAW:nothing-unseen] the --model that outranks the file's, None where there was none, said by a start refused first.
     run_start.heard(model_flag=model)
     # Refused at the door, a run holds no heartbeat yet, and leaves the one there to what wrote it: a running hands,
@@ -264,12 +263,12 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
     held: heartbeat.Heart | None = None
     with run_start.ending(audit_log.record):
         with watchdog.watching(home.hang, watchdog.HUNG) as watched:
-            heart = heartbeat.Heart(home.status, os.getpid(), SYSTEM.wall(), heartbeat.HEARTBEAT, watched.kick, SYSTEM)
+            heart = heartbeat.Heart(home.status, os.getpid(), clock.wall(), heartbeat.HEARTBEAT, watched.kick, clock)
             try:
                 held = None if restarted is None else heart
                 # Read once the home is this run's, before its first heartbeat replaces it. A restart's run before it was
                 # told to stop, which is no crash, however long the start took that its last heartbeat may read as gone quiet.
-                after_crash = restarted is None and crashed_before(home)
+                after_crash = restarted is None and crashed_before(clock, home)
                 run_start.heard(after_crash=after_crash)
                 settings = door(home, run_start, model)
             except CannotStart as cannot:
@@ -277,7 +276,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
                 refuse(cannot, held)
                 return 1
             try:
-                ran: tuple[Ending, int] | CannotStart = run_here(home, restarted, after_crash, settings, heart, audit_log, run_start)
+                ran: tuple[Ending, int] | CannotStart = run_here(clock, home, restarted, after_crash, settings, heart, audit_log, run_start)
             except* CannotStart as cannot:
                 # The run's launch ended the start, failed with this reason, on the edge the settings chose. A start is
                 # refused once, and said so even where another error raised with it is raised on past this block.
@@ -298,7 +297,7 @@ def run_daemon(home: Home, audit_log: audit.AuditLog, restarted: int | None, mod
                     again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
-def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
+def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
     """Run the command `arguments` name as one unit of work, and its exit code.
 
     [LAW:nothing-unseen] the one layer every command but `run` and `tmux-status` passes through, so each invocation is one hands.command
@@ -307,10 +306,10 @@ def commanded(home: Home, record: audit.Record, arguments: argparse.Namespace) -
     to the audit log alone, as every process but the daemon's run writes its events: a command never waits on a
     collector, or on a config.toml the daemon has yet to accept.
     """
-    with wide.unit("hands.command", record, wide.begun(SYSTEM)):
+    with wide.unit("hands.command", record, wide.begun(clock)):
         # The home the command ran on, wherever it came from: --home, HANDS_HOME, or ~/.hands.
         wide.annotate(command=arguments.command, home=home.root, **as_facts(arguments))
-        ended = dispatch(home, arguments, record)
+        ended = dispatch(clock, home, arguments, record)
         wide.annotate(exit_code=exits.code_of(ended))
         match ended:
             case exits.Failed(code=code, why=why):
@@ -338,40 +337,40 @@ def as_fact(value: object) -> wide.Fact:
             raise TypeError(f"an argument parsed as a {type(other).__name__}, which no hands.command event carries")
 
 
-def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
+def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: audit.Record) -> exits.Exit:
     """Run the command `arguments` name, other than `run`, recording through `record`; its exit code."""
     match arguments.command:
         case "status":
-            return report(home)
+            return report(clock, home)
         case "check":
             from hands.voice import talkkey
 
-            return check(home, talkkey.granted(), arguments.verbose)
+            return check(clock, home, talkkey.granted(), arguments.verbose)
         case "log":
-            return tail_log(home, arguments.lines)
+            return tail_log(clock, home, arguments.lines)
         case "file-tickets":
-            return file_tickets(home, Path.cwd(), arguments.epic, record)
+            return file_tickets(clock, home, Path.cwd(), arguments.epic, record)
         case "recall":
-            return recall_moments(home, record, arguments.words, arguments.most)
+            return recall_moments(clock, home, record, arguments.words, arguments.most)
         case "phone":
-            return show_phone(home)
+            return show_phone(clock, home)
         case "login":
-            return login(home, arguments.method, record)
+            return login(clock, home, arguments.method, record)
         case "install-fritter":
-            return install_fritter(home, record)
+            return install_fritter(clock, home, record)
         case "install-brain":
-            return install_brain(home, record)
+            return install_brain(clock, home, record)
         case "plugin":
-            return render_plugin(home, record)
+            return render_plugin(clock, home, record)
         case "restart":
-            return asked_to_restart(home)
+            return asked_to_restart(clock, home)
         case "update":
-            return updated(home)
+            return updated(clock, home)
         case "smoke":
             # Imported here so that no other command loads aiortc.
             from hands.daemon.smoke import run_smoke
 
-            return run_smoke(home)
+            return run_smoke(clock, home)
         case "indicator":
             # Imported here so that nothing else in `hands` loads AppKit.
             # [LAW:no-ambient-temporal-coupling] the parent is read before AppKit loads, not after: a parent that exits
@@ -379,7 +378,7 @@ def dispatch(home: Home, arguments: argparse.Namespace, record: audit.Record) ->
             parent = os.getppid() if arguments.parent is None else arguments.parent
             from hands.daemon.menubar import show
 
-            return show(home, parent)
+            return show(clock, home, parent)
         case other:
             raise AssertionError(f"argparse admitted an unknown command {other!r}")
 
@@ -439,7 +438,7 @@ class Running:
     pid: int
 
 
-def hold(home: Home, record: Callable[[wide.WideEvent], None], *, restarted: bool) -> Running | None:
+def hold(clock: Clock, home: Home, record: Callable[[wide.WideEvent], None], *, restarted: bool) -> Running | None:
     """Lock the home for the rest of this process, or the daemon that holds it; None once this process holds it.
 
     [LAW:single-enforcer] the one test of whether a daemon runs on the home, made before anything of the home is
@@ -451,7 +450,7 @@ def hold(home: Home, record: Callable[[wide.WideEvent], None], *, restarted: boo
     before the settings are read. A home a daemon holds is the lock's answer, not a failure, since hands is running;
     except to a restart's run, the process that held the home: it lost the lock, and hands ends with it.
     """
-    with wide.unit("hands.hold", record, wide.begun(SYSTEM), ("retries",)):
+    with wide.unit("hands.hold", record, wide.begun(clock), ("retries",)):
         wide.annotate(pid=os.getpid(), restarted=restarted)
         home.root.mkdir(parents=True, exist_ok=True)
         # Never closed: closing any descriptor of the file would let the process's lock go. A restart's run locks again
@@ -503,7 +502,7 @@ def holder(descriptor: int) -> int | None:
     return None if kind == fcntl.F_UNLCK else pid
 
 
-def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
+def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool, settings: Settings, heart: heartbeat.Heart, audit_log: audit.AuditLog, run_start: Start) -> tuple[Ending, int]:
     """hands run in this process until it is told to stop: how it was, and the pid of the menu-bar indicator beside it.
     Raises CannotStart where it cannot start, once its heartbeat says starting."""
     # [LAW:no-ambient-temporal-coupling] the first heartbeat goes out before Pipecat is imported and its models load,
@@ -515,10 +514,10 @@ def run_here(home: Home, restarted: int | None, after_crash: bool, settings: Set
     shown = start_indicator(home)
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
-    exports = Exports(audit_log.record, SYSTEM)
-    with exporting(settings.config.collector, exports.record, SYSTEM) as exported:
+    exports = Exports(audit_log.record, clock)
+    with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings), record, run_start))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -527,7 +526,7 @@ type Run = Callable[[Stop], Coroutine[object, object, Ended]]
 
 
 async def launch(
-    load: Callable[[], Run], heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start
+    load: Callable[[], Run], heart: heartbeat.Heart, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], edited: Callable[[], Coroutine[object, object, audit.SettingsEdited]], record: audit.Record, run_start: Start, clock: Clock
 ) -> Ending:
     """The run `load` makes, with that load, which imports Pipecat, as the first step of its start; then how it was told
     to end, or, where it failed, every failing cause's error raised together as one group.
@@ -540,7 +539,7 @@ async def launch(
     emitted here as it ends: every cause told, in order, and the end read off them, which is what this returns or raises.
     The last heartbeat is written here, by the one place that knows whether a restart follows it.
     """
-    began = wide.begun(SYSTEM)
+    began = wide.begun(clock)
     stop = Stop()
 
     def heard(watch: asyncio.Task[audit.SettingsEdited]) -> None:
@@ -565,7 +564,7 @@ async def launch(
         with run_start.ending(record):
             try:
                 # No session has joined before the hooks are served, which is after the import.
-                run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop)
+                run = await start(lambda: off_loop(load, "the Pipecat import"), heart, lambda: 0, degraded, stop, clock)
                 last = Ended(None, 0) if run is None else await run(stop)
                 await cancelled({watching})
                 match stop.end:
@@ -603,7 +602,7 @@ def reachable(home: Home, settings: Config) -> None:
     backend(settings.llm, home, os.environ)
 
 
-def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
+def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
@@ -619,9 +618,9 @@ def loaded(home: Home, settings: Settings, heart: heartbeat.Heart, record: audit
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
-        survey(readiness.check(home, path, True, reached, running, keyboards))
+        survey(readiness.check(home, path, True, reached, running, partial(keyboards, clock)))
 
-    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)))
+    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -693,8 +692,8 @@ def said_exited(status: int) -> None:
     logger.error(f"the menu-bar indicator exited ({os.waitstatus_to_exitcode(status)}) while hands runs; hands is not shown in the menu bar")
 
 
-def report(home: Home) -> exits.Exit:
-    now = datetime.now(UTC)
+def report(clock: Clock, home: Home) -> exits.Exit:
+    now = clock.wall()
     verdict = heartbeat.look(home.status, now)
     # [LAW:nothing-unseen] what the exit code was decided by.
     wide.annotate(verdict=verdict)
@@ -711,21 +710,21 @@ def report(home: Home) -> exits.Exit:
     return ended
 
 
-def show_segment(home: Home) -> int:
+def show_segment(clock: Clock, home: Home) -> int:
     """`hands tmux-status`: one look at the heartbeat, drawn as a tmux status-line segment.
 
     [LAW:nothing-unseen] it is a command not inside a hands.command event, as the menu bar's looks are not: tmux runs
     one per client every status-interval, so an event for each would repeat the heartbeat into the audit log at that
     rate and push the daemon's own history out of its two segments.
     """
-    print(indicator.segment(heartbeat.look(home.status, datetime.now(UTC))))
+    print(indicator.segment(heartbeat.look(home.status, clock.wall())))
     # A status line shows the segment whatever the exit, so the segment carries the verdict and the exit nothing.
     return 0
 
 
-def check(home: Home, granted: bool, verbose: bool) -> exits.Exit:
+def check(clock: Clock, home: Home, granted: bool, verbose: bool) -> exits.Exit:
     reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, datetime.now(UTC)), keyboards)
+    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(keyboards, clock))
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
@@ -746,9 +745,9 @@ def undone(findings: Sequence[readiness.Finding]) -> str:
     return "; ".join(f"{finding.step}: {finding.said.partition("\n")[0]}" for finding in findings)
 
 
-def keyboards(pids: Sequence[int]) -> list[Keyboard]:
+def keyboards(clock: Clock, pids: Sequence[int]) -> list[Keyboard]:
     """The tmux pane whose keys reach each of `pids`, read on a loop of its own: the readiness check runs on none."""
-    return asyncio.run(tmux.keyboards(SYSTEM, pids, os.environ))
+    return asyncio.run(tmux.keyboards(clock, pids, os.environ))
 
 
 def survey(findings: Sequence[readiness.Finding]) -> None:
@@ -786,10 +785,10 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
             return "?", "WARNING"
 
 
-def asked_to_restart(home: Home) -> exits.Exit:
+def asked_to_restart(clock: Clock, home: Home) -> exits.Exit:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
-    outcome = restarted(home)
-    line = said(outcome, datetime.now(UTC))
+    outcome = restarted(clock, home)
+    line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
     print(line, file=out)
     return ended
@@ -804,19 +803,19 @@ def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
             return sys.stderr, exits.Failed(1, line)
 
 
-def restarted(home: Home) -> Outcome:
+def restarted(clock: Clock, home: Home) -> Outcome:
     """Ask the running daemon to start again, and wait for it to be back, or for it to be plain it will not be."""
-    outcome = restart(home, lambda: datetime.now(UTC), lambda: time.sleep(LOOK_SECONDS))
+    outcome = restart(home, clock.wall, lambda: clock.rest(LOOK_SECONDS))
     # What the heartbeat said, and how long the restart took or was waited on.
     wide.annotate(outcome=outcome)
     return outcome
 
 
-def updated(home: Home) -> exits.Exit:
+def updated(clock: Clock, home: Home) -> exits.Exit:
     """`hands update`: install master, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
     prefix = Path(sys.prefix)
     # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on.
-    match heartbeat.look(home.status, datetime.now(UTC)):
+    match heartbeat.look(home.status, clock.wall()):
         case heartbeat.Up(status=heartbeat.Status(runs_from=restarts_from)):
             pass
         case _:
@@ -837,9 +836,9 @@ def updated(home: Home) -> exits.Exit:
             for each in advised:
                 print(f"hands update: {each.step}: {each.said}", file=sys.stderr)
     print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
-    answer = update.detach()
-    outcome = restarted(home)
-    line = said(outcome, datetime.now(UTC))
+    answer = update.detach(clock)
+    outcome = restarted(clock, home)
+    line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
     match outcome:
         # [LAW:one-source-of-truth] the run's own word on where it runs from, so the commit is said only of a run on it.
@@ -873,12 +872,12 @@ def refused(speaker: str, code: Literal[1, 2, 3], why: str) -> exits.Failed:
     return exits.Failed(code, why)
 
 
-def audit_log_of(home: Home) -> audit.AuditLog:
+def audit_log_of(clock: Clock, home: Home) -> audit.AuditLog:
     """The audit log of `home`, on the wall clock: every command's events, and a run's, land in the one log."""
-    return audit.AuditLog(home.audit, clock=lambda: datetime.now(UTC))
+    return audit.AuditLog(home.audit, clock=clock.wall)
 
 
-def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
+def login(clock: Clock, home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads the brain's process and its aiohttp.
     from hands.brain.process import LoginFailed, NotLoggedIn, Unstartable, starting_settings
     from hands.brain.process import login as brain_login
@@ -886,7 +885,7 @@ def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
 
     # [LAW:nothing-unseen] a login is a unit of work: the login asked for, whether it wrote the brain's settings, whether
     # it took Claude Code's first run, and the account it ended on.
-    with wide.unit("brain.login", record, wide.begun(SYSTEM)):
+    with wide.unit("brain.login", record, wide.begun(clock)):
         wide.annotate(asked=method)
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
@@ -904,10 +903,10 @@ def login(home: Home, method: "Method", record: audit.Record) -> exits.Exit:
     return 0
 
 
-def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
+def install_fritter(clock: Clock, home: Home, record: audit.Record) -> exits.Exit:
     # [LAW:nothing-unseen] an install is a unit of work: the fritter it copied from, where it put it and the claude
     # beside it, and whether PATH finds that claude.
-    with wide.unit("fritter.install", record, wide.begun(SYSTEM)):
+    with wide.unit("fritter.install", record, wide.begun(clock)):
         wide.annotate(packaged=wrapper.PACKAGED)
         try:
             installed = wrapper.install(home)
@@ -938,13 +937,13 @@ def install_fritter(home: Home, record: audit.Record) -> exits.Exit:
                 return exits.Failed(wrapper.Installing.UNFOUND, said)
 
 
-def install_brain(home: Home, record: audit.Record) -> exits.Exit:
+def install_brain(clock: Clock, home: Home, record: audit.Record) -> exits.Exit:
     # Imported here, so that no other command loads what the fetch needs.
     from hands.brain import pinned
 
     # [LAW:nothing-unseen] an install is a unit of work: the release it pins, the build of it this Mac runs, where it put
     # it, whether it fetched it, and, where it did, why the copy there was not the pin.
-    with wide.unit("brain.install", record, wide.begun(SYSTEM)):
+    with wide.unit("brain.install", record, wide.begun(clock)):
         wide.annotate(version=pinned.VERSION)
         try:
             wide.annotate(build=pinned.build(platform.machine()))
@@ -960,12 +959,12 @@ def install_brain(home: Home, record: audit.Record) -> exits.Exit:
         return 0
 
 
-def render_plugin(home: Home, record: audit.Record) -> Literal[0]:
+def render_plugin(clock: Clock, home: Home, record: audit.Record) -> Literal[0]:
     # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
     # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
     # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
     # report and never costs a session its hooks.
-    with wide.unit("plugin.render", record, wide.begun(SYSTEM)):
+    with wide.unit("plugin.render", record, wide.begun(clock)):
         wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
         rendered = marketplace.render(home, sys.executable)
         wide.annotate(plugin=rendered.plugin, written=rendered.written)
@@ -978,7 +977,7 @@ def render_plugin(home: Home, record: audit.Record) -> Literal[0]:
 LOG_POLL_SECONDS = 0.25
 
 
-def tail_log(home: Home, lines: int) -> Literal[0]:
+def tail_log(clock: Clock, home: Home, lines: int) -> Literal[0]:
     newest, offset = audit.tail(home.audit, lines)
     # [LAW:nothing-unseen] how many lines the log had to print first, and the log offset following began at.
     wide.annotate(tailed=len(newest), followed_from=offset)
@@ -987,7 +986,7 @@ def tail_log(home: Home, lines: int) -> Literal[0]:
         # line JSON, and one line to any reader.
         for line in newest:
             print(line.translate(VISIBLE), flush=True)
-        for line in audit.follow(home.audit, offset, lambda: time.sleep(LOG_POLL_SECONDS)):
+        for line in audit.follow(home.audit, offset, lambda: clock.rest(LOG_POLL_SECONDS)):
             print(line.translate(VISIBLE), flush=True)
     except KeyboardInterrupt:
         return 0
@@ -1004,7 +1003,7 @@ def tail_log(home: Home, lines: int) -> Literal[0]:
 FILED_COUNTS = ("lines", "unreadable", "unparsed", "retold", "sightings", "groups", "filed", "commented", "unchanged")
 
 
-def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
+def file_tickets(clock: Clock, home: Home, project: Path, epic: str, record: audit.Record) -> exits.Exit:
     """`hands file-tickets`: a ticket in `project`'s backlog for each group of warnings and errors in the audit log that
     no open ticket has, under `epic`, and a comment on the ticket that has one seen again since it was last told.
 
@@ -1013,7 +1012,7 @@ def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> 
     """
     # [LAW:nothing-unseen] one unit a pass, every count zero included, and how far back the log reached: a pass with
     # nothing new and one run after its lines rolled off the log read differently.
-    with wide.unit("tickets.file", record, wide.begun(SYSTEM), FILED_COUNTS):
+    with wide.unit("tickets.file", record, wide.begun(clock), FILED_COUNTS):
         wide.annotate(project=project, epic=epic)
         found = grouping.read(audit.forwards(home.audit))
         wide.annotate(oldest=found.oldest, newest=found.newest)
@@ -1021,17 +1020,17 @@ def file_tickets(home: Home, project: Path, epic: str, record: audit.Record) -> 
             lines=found.lines, unreadable=found.unreadable, unparsed=found.unparsed, retold=found.retold,
             sightings=sum(len(group.sightings) for group in found.groups), groups=len(found.groups),
         )
-        ended = asyncio.run(_filed(project, epic, found.groups, filing.where(home.audit, Path.home())))
+        ended = asyncio.run(_filed(clock, project, epic, found.groups, filing.where(home.audit, Path.home())))
         if isinstance(ended, exits.Failed):
             wide.fail(ended.why)
     return ended
 
 
-async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
+async def _filed(clock: Clock, project: Path, epic: str, groups: Sequence[grouping.Group], logs: str) -> exits.Exit:
     """File what `filing` decides for `groups` in `project`'s backlog, one at a time, saying each; the first lit refuses
     stops the pass, and what was filed before it stays filed, which the next pass reads back."""
     try:
-        read = await backlog.read_backlog(SYSTEM, project)
+        read = await backlog.read_backlog(clock, project)
     except (backlog.LitFailed, Rejected) as failed:
         return refused("hands file-tickets", 1, f"cannot read the backlog: {failed}")
     match read:
@@ -1049,12 +1048,12 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
         try:
             match each:
                 case filing.New(group=group):
-                    filed = await backlog.file_ticket(SYSTEM, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
+                    filed = await backlog.file_ticket(clock, project, epic, under.topic, filing.title(group), filing.description(group, logs), group.label)
                     wide.count(filed=1)
                     print(f"filed {filed}: {filing.title(group)}".translate(VISIBLE))
                 case filing.Again(ticket=ticket, group=group):
                     # Signed as the session file-tickets is run from, whose work it is.
-                    await backlog.comment(SYSTEM, project, ticket, filing.comment(group, logs), backlog.Inherited())
+                    await backlog.comment(clock, project, ticket, filing.comment(group, logs), backlog.Inherited())
                     wide.count(commented=1)
                     print(f"commented on {ticket}: {filing.title(group)}".translate(VISIBLE))
         except backlog.LitFailed as failed:
@@ -1063,11 +1062,11 @@ async def _filed(project: Path, epic: str, groups: Sequence[grouping.Group], log
     return 0
 
 
-def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most: int) -> Literal[0]:
+def recall_moments(clock: Clock, home: Home, record: audit.Record, words: Sequence[str], most: int) -> Literal[0]:
     """Print the moments `hands recall` found, one a line, each at the time it happened here."""
     # [LAW:nothing-unseen] a recall is a unit of work: what it was asked, how much of the log it read, and what it found,
     # zeros included.
-    with wide.unit("memory.recall", record, wide.begun(SYSTEM), ("lines", "unreadable", "moments", "matched", "printed")):
+    with wide.unit("memory.recall", record, wide.begun(clock), ("lines", "unreadable", "moments", "matched", "printed")):
         wide.annotate(words=tuple(words), most=most)
         found = recall.recall(home.audit, words, most)
         wide.annotate(since=found.since)
@@ -1080,9 +1079,9 @@ def recall_moments(home: Home, record: audit.Record, words: Sequence[str], most:
     return 0
 
 
-def crashed_before(home: Home) -> bool:
+def crashed_before(clock: Clock, home: Home) -> bool:
     """Whether the last run ended without being stopped: its heartbeat names a pid that is gone, or one that went quiet."""
-    now = datetime.now(UTC)
+    now = clock.wall()
     verdict = heartbeat.look(home.status, now)
     if isinstance(verdict, heartbeat.Unreadable):
         print(f"hands run: not counted as a crash, since {heartbeat.describe(verdict, now)}", file=sys.stderr)

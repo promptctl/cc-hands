@@ -17,16 +17,13 @@ backend said it and whether in its own words or a tool's readback: it is what th
 import asyncio
 import json
 import os
-import random
 import shutil
 import ssl
 import tempfile
-import time
 import wave
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -36,7 +33,7 @@ from aiortc import MediaStreamTrack, RTCConfiguration, RTCDataChannel, RTCPeerCo
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, AudioResampler
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.session import Membership, SessionId
 from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
@@ -188,6 +185,7 @@ class Caller:
 
     peer: RTCPeerConnection
     channel: RTCDataChannel
+    clock: Clock
     ear: Ear = field(default_factory=Ear)
     # [LAW:no-ambient-temporal-coupling] the button and the audio go out over one ordered channel, from one queue, so a
     # release follows every frame said before it, as the page's does.
@@ -207,8 +205,7 @@ class Caller:
     async def keep_sending(self) -> None:
         """A frame every FRAME_SECS for as long as the call is up, silence where nothing is being said: hands hangs up a
         call that goes quiet, as it does a page that is closed."""
-        loop = asyncio.get_running_loop()
-        start, sent = loop.time(), 0
+        start, sent = self.clock.now(), 0
         silence = bytes(FRAME_BYTES)
         while True:
             said = self.pending.popleft() if self.pending else silence
@@ -219,13 +216,13 @@ class Caller:
                 case bytes():
                     # Paced by the count sent against the clock at the first, as hands paces what it sends the page.
                     sent += 1
-                    await asyncio.sleep(max(0.0, start + sent * FRAME_SECS - loop.time()))
+                    await self.clock.pause(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
                 case str():
                     # A press or a release goes out with the frame after it, as the page's button does.
                     pass
 
     async def say(self, stage: Stage, audio: bytes) -> float:
-        """Hold the button, say `audio`, and let go once it has all gone; when it was let go of, by the loop's clock.
+        """Hold the button, say `audio`, and let go once it has all gone; when it was let go of, by the call's clock.
         Raises NotReached at `stage` where the call stops before it has."""
         self.drained.clear()
         self.pending.extend(["press", *(audio[at : at + FRAME_BYTES] for at in range(0, len(audio), FRAME_BYTES)), "release"])
@@ -235,10 +232,9 @@ class Caller:
         finally:
             drained.cancel()
         self.up(stage)
-        return asyncio.get_running_loop().time()
+        return self.clock.now()
 
     async def keep_hearing(self, track: MediaStreamTrack) -> None:
-        loop = asyncio.get_running_loop()
         resampler = AudioResampler(format="s16", layout="mono", rate=RATE)
         while True:
             try:
@@ -248,7 +244,7 @@ class Caller:
             if not isinstance(frame, AudioFrame):
                 raise TypeError("hands' audio track carried something that is not audio")
             for out in resampler.resample(frame):
-                self.ear.heard(out.to_ndarray().astype(np.int16).tobytes(), loop.time())
+                self.ear.heard(out.to_ndarray().astype(np.int16).tobytes(), self.clock.now())
 
 
 @dataclass
@@ -258,8 +254,12 @@ class Run:
     home: Home
     word: str
     offset: int
+    clock: Clock
     lines: list[Line] = field(default_factory=list[Line])
-    began: float = field(default_factory=time.monotonic)
+    began: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.began = self.clock.now()
 
     def read(self) -> None:
         """The audit lines the daemon has written since the last read."""
@@ -273,27 +273,28 @@ class Run:
 
     def reached(self, stage: Stage, shown: str) -> None:
         # [LAW:nothing-unseen] when each stage was reached, from the start of the run, and what showed it, on the command's event.
-        annotate(**{f"{stage}_ms": round((time.monotonic() - self.began) * 1000), stage: shown, "reached": stage})
+        annotate(**{f"{stage}_ms": round((self.clock.now() - self.began) * 1000), stage: shown, "reached": stage})
         print(f"ok {stage}: {shown}", flush=True)
 
 
-async def until[T](stage: Stage, seconds: float, found: Callable[[], Awaitable[T | None]], why: Callable[[], str]) -> T:
+async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[], Awaitable[T | None]], why: Callable[[], str]) -> T:
     """What `found` finds, once it finds it within `seconds`; raises NotReached with `why` when it does not."""
-    deadline = time.monotonic() + seconds
+    deadline = clock.now() + seconds
     while (seen := await found()) is None:
-        if time.monotonic() > deadline:
+        if clock.now() > deadline:
             raise NotReached(stage, why())
-        await asyncio.sleep(POLL_SECONDS)
+        await clock.pause(POLL_SECONDS)
     return seen
 
 
-async def smoke(home: Home, environment: Mapping[str, str]) -> Exit:
+async def smoke(clock: Clock, home: Home, environment: Mapping[str, str]) -> Exit:
     """Run the test, printing each stage as it is reached; 0 once every stage is, and the first that is not, failed."""
-    word = random.choice(WORDS)
+    # Picked by the clock's randomness, so a run on a seeded clock picks the same word every time.
+    word = WORDS[int(clock.token(4), 16) % len(WORDS)]
     folder = (home.root / FOLDER).resolve()
     annotate(word=word, folder=folder)
     _, offset = audit.tail(home.audit, 0)
-    smoked = Run(home, word, offset)
+    smoked = Run(home, word, offset, clock)
     try:
         await _stages(smoked, folder, environment)
     except NotReached as missed:
@@ -312,12 +313,12 @@ async def smoke(home: Home, environment: Mapping[str, str]) -> Exit:
 
 async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> None:
     home = smoked.home
-    verdict = heartbeat.look(home.status, datetime.now(UTC))
+    verdict = heartbeat.look(home.status, smoked.clock.wall())
     match verdict:
         case heartbeat.Up():
-            smoked.reached("up", heartbeat.describe(verdict, datetime.now(UTC)))
+            smoked.reached("up", heartbeat.describe(verdict, smoked.clock.wall()))
         case _:
-            raise NotReached("up", f"{heartbeat.describe(verdict, datetime.now(UTC))}; start it with `hands run`")
+            raise NotReached("up", f"{heartbeat.describe(verdict, smoked.clock.wall())}; start it with `hands run`")
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL)
@@ -325,7 +326,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
-    said = [await _synthesized(text) for text in SAID]
+    said = [await _synthesized(smoked.clock, text) for text in SAID]
     # The folder holds the one file, named for this run's word, and nothing else.
     try:
         shutil.rmtree(folder)
@@ -335,11 +336,11 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     folder.mkdir(parents=True)
     (folder / f"{smoked.word}.txt").write_text("")
     # The claude on PATH, the shim or not, is started as hands starts every claude: its auto-updater off.
-    session = await on_terminal(SYSTEM, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
+    session = await on_terminal(smoked.clock, [claude], folder, {**as_from_a_terminal(environment), **EVERY_RUN, "HANDS_HOME": str(home.root)})
     try:
         member = await _joined(smoked, folder, claude, session)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
-        caller = Caller(peer, peer.createDataChannel("talk", ordered=True))
+        caller = Caller(peer, peer.createDataChannel("talk", ordered=True), smoked.clock)
         try:
             await _called(home, caller)
             smoked.reached("called", f"hands answered a call at https://127.0.0.1:{PHONE_PORT}")
@@ -374,7 +375,7 @@ async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -
         return joined(members(home), session.pid, process_table())
 
     member = await until(
-        "joined", JOIN_SECONDS, found,
+        smoked.clock, "joined", JOIN_SECONDS, found,
         lambda: f"`{claude}` started in {folder} never joined hands: no hook of its wrote a membership to {home.memberships}; it showed:\n{session.shown()}",
     )
     annotate(session=member.id)
@@ -401,7 +402,7 @@ async def _called(home: Home, caller: Caller) -> None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=CALL_SECONDS)) as client, client.post(
             f"https://127.0.0.1:{PHONE_PORT}/offer",
             json={"sdp": caller.peer.localDescription.sdp, "type": "offer", "rate": RATE, "page": "the smoke test", "claim": "take"},
-            headers={"Authorization": f"Bearer {phone_key(SYSTEM, home)}"},
+            headers={"Authorization": f"Bearer {phone_key(caller.clock, home)}"},
             ssl=trusted,
         ) as answered:
             if answered.status != 200:
@@ -415,7 +416,7 @@ async def _called(home: Home, caller: Caller) -> None:
         case other:
             raise NotReached("called", f"hands answered the offer with {other!r}, which is no answer")
     try:
-        async with asyncio.timeout(CALL_SECONDS):
+        async with caller.clock.timeout(CALL_SECONDS):
             await opened.wait()
     except TimeoutError:
         raise NotReached("called", f"the call's channel did not open within {CALL_SECONDS:.0f}s; the connection is {caller.peer.connectionState}") from None
@@ -424,7 +425,6 @@ async def _called(home: Home, caller: Caller) -> None:
 
 async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence[bytes]) -> None:
     asking, sending, questioning = said
-    loop = asyncio.get_running_loop()
 
     def logged(stage: Logged, since: int, what: str) -> Callable[[], Awaitable[str]]:
         async def found() -> str | None:
@@ -432,7 +432,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
             smoked.read()
             return proof(stage, smoked.lines[since:], session)
 
-        return lambda: until(stage, FINISH_SECONDS if stage == "finished" else TURN_SECONDS, found, lambda: f"no {what} in the audit log in the time allowed")
+        return lambda: until(smoked.clock, stage, FINISH_SECONDS if stage == "finished" else TURN_SECONDS, found, lambda: f"no {what} in the audit log in the time allowed")
 
     async def told_back(stage: Stage, released: float, holds: str) -> str:
         """What hands said back after `released`, transcribed, once it holds the word `holds`."""
@@ -441,14 +441,14 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
         async def found() -> str | None:
             caller.up(stage)
-            last = caller.ear.finished_speaking(released, loop.time())
+            last = caller.ear.finished_speaking(released, smoked.clock.now())
             if last is None or last in transcribed_to:
                 return None
             transcribed_to.append(last)
             heard[:] = [await _transcribed(caller.ear.since(released))]
             return f"hands said {heard[0]!r}" if holds in heard[0].casefold() else None
 
-        return await until(stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
+        return await until(smoked.clock, stage, TURN_SECONDS, found, lambda: f"what hands said back never named {holds!r}: it said {heard[0]!r}" if heard else "hands said nothing back on the call")
 
     # The request: heard, and hands answering aloud about the session.
     since = smoked.mark()
@@ -463,7 +463,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     smoked.reached("finished", await logged("finished", since, f"Stop hook from session {session}")())
 
     async def quiet() -> bool | None:
-        return True if caller.ear.last_voiced is None or loop.time() - caller.ear.last_voiced >= QUIET_SECS else None
+        return True if caller.ear.last_voiced is None or smoked.clock.now() - caller.ear.last_voiced >= QUIET_SECS else None
 
     # [LAW:no-ambient-temporal-coupling] hands may tell the user of the session's finished turn unasked; the question waits
     # for that telling's fate to be settled, held or played to its end, then for the call to go quiet, so the question
@@ -471,7 +471,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     telling = await logged("told", since, f"settled telling of session {session}'s turn (utterance)")()
     annotate(telling=telling)
     print(f"   {telling}", flush=True)
-    await until("told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after telling of the session's turn")
+    await until(smoked.clock, "told", TURN_SECONDS, quiet, lambda: "hands never stopped speaking after telling of the session's turn")
 
     # The question: what the session said, told back aloud.
     released = await caller.say("told", questioning)
@@ -484,18 +484,18 @@ async def _transcribed(audio: bytes) -> str:
     return " ".join(segment.text for segment in heard).strip()
 
 
-async def _synthesized(text: str) -> bytes:
+async def _synthesized(clock: Clock, text: str) -> bytes:
     """`text` in macOS's own voice, as 16-bit mono at RATE."""
     with tempfile.TemporaryDirectory(prefix="hands-smoke-") as directory:
         spoken = Path(directory) / "said.wav"
         # The test's own voice, no part of hands: its failure is the test's, raised, never named as a stage of the pipeline.
-        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=SYSTEM)
+        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=clock)
         if ran.returncode != 0:
             raise RuntimeError(f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())
 
 
-def run_smoke(home: Home) -> Exit:
+def run_smoke(clock: Clock, home: Home) -> Exit:
     """`hands smoke`, as the CLI runs it."""
-    return asyncio.run(smoke(home, os.environ))
+    return asyncio.run(smoke(clock, home, os.environ))

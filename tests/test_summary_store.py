@@ -445,7 +445,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
 async def tools(project: Path, store: SummaryStore) -> dict[str, Any]:
     sessions = new_sessions()
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=project, transcript=project / "s1.jsonl"), "startup"))
-    return {tool.name: tool.body for tool in backlog_tools(sessions, store)}
+    return {tool.name: tool.body for tool in backlog_tools(sessions.clock, sessions, store)}
 
 
 async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_for_them(project: Path, tmp_path: Path) -> None:

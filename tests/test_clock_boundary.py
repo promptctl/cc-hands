@@ -33,16 +33,9 @@ LOOP = ("call_later", "call_at", "time")
 # The names a module is handed its clock by.
 CLOCKS = ("clock", "_clock")
 
-# [LAW:escape-local-minima] exception: the modules not yet moved onto Clock, each moved and struck off by a child of
-# promptctl-testing-c3u.eps; the last one deletes this list. A module may leave it and never join it.
-UNMOVED = frozenset(
-    {
-        "daemon/cli.py", "daemon/config.py", "daemon/menubar.py", "daemon/notify.py", "daemon/run.py", "daemon/smoke.py",
-        "daemon/starting.py", "daemon/update.py",
-        "sessions/otlp.py", "sessions/shim.py",
-        "spotify.py",
-    }
-)  # fmt: skip
+# The composition roots, each binding the machine's clock for its process and reaching nothing else of the machine's time:
+# every hands command's, and the hook shim's, a process of its own that must not import the CLI in Claude Code's path.
+ROOTS = ("daemon/cli.py", "sessions/shim.py")
 
 
 def reached(source: str) -> set[str]:
@@ -117,11 +110,17 @@ def offenders() -> dict[str, set[str]]:
 
 
 def test_only_the_clock_adapter_reaches_real_time_and_randomness() -> None:
-    assert {name: found for name, found in offenders().items() if name not in UNMOVED} == {}
+    assert {name: found for name, found in offenders().items() if name not in ROOTS} == {}
 
 
-def test_a_module_moved_onto_the_clock_is_struck_off_the_unmoved() -> None:
-    assert sorted(UNMOVED - offenders().keys()) == []
+def test_only_a_composition_root_names_the_machines_clock_and_it_reaches_nothing_else() -> None:
+    assert {name: found for name, found in offenders().items() if name in ROOTS} == {root: {"hands.clock.SYSTEM"} for root in ROOTS}
+
+
+def test_each_composition_root_binds_the_machines_clock_once() -> None:
+    root = Path(hands.__file__).parent
+    uses = {name: sum(isinstance(node, ast.Name) and node.id == "SYSTEM" for node in ast.walk(ast.parse((root / name).read_text()))) for name in ROOTS}
+    assert uses == dict.fromkeys(ROOTS, 1)
 
 
 def test_the_check_catches_each_way_of_reaching_the_machines_time() -> None:

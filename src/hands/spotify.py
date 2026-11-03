@@ -6,14 +6,13 @@ AppleScript Spotify answers plays what is named by its link but finds nothing by
 """
 
 import re
-import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
 import aiohttp
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.child import Ran, run
 from hands.sessions.wide import annotate
 
@@ -54,9 +53,9 @@ class Refused(Exception):
 type Tell = Callable[[Sequence[str], Sequence[str]], Awaitable[Ran]]
 
 
-async def osascript(script: Sequence[str], argv: Sequence[str]) -> Ran:
+async def osascript(clock: Clock, script: Sequence[str], argv: Sequence[str]) -> Ran:
     # Every value goes in as an argument, never spliced into the script, so nothing in it needs quoting.
-    return await run("osascript", *(part for line in script for part in ("-e", line)), "--", *argv, timeout=TELL_SECONDS, clock=SYSTEM)
+    return await run("osascript", *(part for line in script for part in ("-e", line)), "--", *argv, timeout=TELL_SECONDS, clock=clock)
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,7 @@ class Player:
     """The Spotify app, told through AppleScript. Only `play` starts it: everything else, asked of a Spotify that is not
     running, says so and starts nothing."""
 
-    def __init__(self, tell: Tell = osascript) -> None:
+    def __init__(self, tell: Tell) -> None:
         self._tell = tell
 
     async def now_playing(self) -> Playing:
@@ -191,7 +190,7 @@ class Catalogue:
     """Spotify's catalogue, searched as a developer app: a client-credentials token, fetched when there is none or it
     has run out, and held until then."""
 
-    def __init__(self, held: Credentials | Missing, clock: Callable[[], float] = time.monotonic, token_url: str = TOKEN_URL, search_url: str = SEARCH_URL) -> None:
+    def __init__(self, held: Credentials | Missing, clock: Clock, token_url: str = TOKEN_URL, search_url: str = SEARCH_URL) -> None:
         self._held = held
         self._clock = clock
         self._token_url = token_url
@@ -218,7 +217,7 @@ class Catalogue:
         return [_found(kind, item) for item in answered[f"{kind}s"]["items"] if item is not None]
 
     async def _token_for(self, http: aiohttp.ClientSession, held: Credentials) -> str:
-        now = self._clock()
+        now = self._clock.now()
         if self._token is not None and now < self._token[1]:
             annotate(spotify_token="held")
             return self._token[0]
