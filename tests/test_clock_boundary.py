@@ -309,7 +309,6 @@ UNMOVED: dict[str, frozenset[str]] = {
         "test_smoke.py": frozenset({'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
         "test_spoken.py": frozenset({'hands.clock.SYSTEM'}),
         "test_spotify.py": frozenset({'hands.clock.SYSTEM'}),
-        "test_stage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
         "test_start.py": frozenset({'hands.clock.SYSTEM'}),
         "test_startsession.py": frozenset({'hands.clock.SYSTEM'}),
         "test_status.py": frozenset({'asyncio.sleep()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
