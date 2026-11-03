@@ -95,8 +95,10 @@ def test_the_process_table_holds_roots_processes_too_so_every_line_of_parents_en
     # A terminal app starts each tab's shell through /usr/bin/login, which runs as root: a table of this user's
     # processes alone breaks the line between a session and its app there.
     assert processes[1].uid == 0
-    # The test's own line, which nothing exits from while it runs: a process of another's can be listed with a parent
-    # that has exited and not yet handed it to launchd.
-    assert [process.pid for process in ancestors(os.getpid(), processes)][-1] == 1
+    # A process can be listed with a parent that has exited and not yet handed it to launchd; read again, that process
+    # has exited too or been handed over, so its line ends at launchd.
+    broken = [pid for pid in processes if list(ancestors(pid, processes))[-1].pid != 1]
+    again = process_table()
+    assert [pid for pid in broken if pid in again and list(ancestors(pid, again))[-1].pid != 1] == []
     # Its own parent, the kernel, is not in the table, so a walk up ends there.
     assert processes[1].parent not in processes
