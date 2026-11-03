@@ -2376,6 +2376,16 @@ async def test_words_of_an_untaken_turn_taken_after_a_task_s_result_are_still_st
     assert (keys.pressed, brain._claude_turns.open) == (["escape", "ctrl_c"], ())  # pyright: ignore[reportPrivateUsage]
 
 
+async def test_words_of_an_untaken_turn_taken_after_a_stop_cleared_the_input_are_a_person_s_and_run_on() -> None:
+    # A stop's Escape and Ctrl-C clear Claude Code's queue and input, so the untaken words cannot come late after one.
+    brain = _owning()
+    keys = _keyed(brain, [])
+    brain._over(_typed_turn(brain, "yes"), Untaken("the brain did not take the turn typed into it"))  # pyright: ignore[reportPrivateUsage]
+    await brain._clear(None)  # pyright: ignore[reportPrivateUsage]
+    _took(brain, "p1", "yes")
+    assert (len(brain._claude_turns.open), keys.pressed, brain._typing) == (1, ["escape", "ctrl_c"], set())  # pyright: ignore[reportPrivateUsage]
+
+
 async def test_words_of_an_untaken_turn_taken_after_other_words_are_a_person_s_and_run_on() -> None:
     # Claude Code reads its input in order: once it took other words, the untaken ones cannot come late, and the same words
     # typed at the pane later are a person's.

@@ -1400,6 +1400,9 @@ class Brain:
             # Alt+Ctrl-C, and neither key does anything.
             await self._type(lambda typist: typist.press("ctrl_c"))
             self._cleared = loop.time()
+            # The Escape put whatever Claude Code queued back in the input and the Ctrl-C cleared it: untaken words are in
+            # neither now, so none can come late.
+            self._untaken = None
             if unstopped is not None:
                 raise unstopped
 
@@ -1730,8 +1733,9 @@ class Brain:
             running = self._claude_turns.behind(opener(submitted.words), awaited=False)
         # Otherwise filed into a turn Claude Code still runs: they run in it, or behind it if its telling finds them waiting.
         if late:
-            # [LAW:nothing-unseen] a stop hands decides itself, said with the prompt that took the words.
-            logger.warning(f"the words of a turn the brain did not take were taken late, under {submitted.prompt}: the turn they run in is stopped")
+            # [LAW:nothing-unseen] a stop hands decides itself is one event, with the prompt that took the words.
+            with unit("brain.late", self._record, begun(SYSTEM)):
+                annotate(prompt=submitted.prompt)
             self._keep(self._halt(running), None)
         if turn is not None and ours:
             turn.taken_under, turn.queued = submitted.prompt, submitted.queued
