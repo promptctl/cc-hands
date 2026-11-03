@@ -193,7 +193,6 @@ async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    clock = VirtualClock()
-    tool = list_sessions_tool(new_sessions(clock=clock), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(new_sessions(clock=VirtualClock()), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

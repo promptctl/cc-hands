@@ -9,7 +9,7 @@ import asyncio
 import functools
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -144,7 +144,7 @@ def intermediary_tools(
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
-        catch_up_tool(sessions, home, sessions.clock.wall),
+        catch_up_tool(sessions, home),
         attention_tool(home),
         modality_tool(switch),
         *listening_tools(levels, wake),
@@ -763,7 +763,7 @@ def _shown(value: object) -> object:
             return value
 
 
-def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -> Tool:
+def catch_up_tool(sessions: Sessions, home: Home) -> Tool:
     async def catch_up(minutes: int = 0) -> Result:
         """What the user missed: every session that finished work while they were away and the newest words each closed
         a turn with, the sessions that ended, what their hooks said happened, and what hands announced.
@@ -781,7 +781,7 @@ def catch_up_tool(sessions: Sessions, home: Home, now: Callable[[], datetime]) -
         """
         if minutes < 0:
             return {"error": f"minutes is how far back to look, so it cannot be {minutes}"}
-        at = now()
+        at = sessions.clock.wall()
         opening = catchup.LastSpoke() if minutes == 0 else at - timedelta(minutes=minutes)
         try:
             missed = await asyncio.to_thread(catchup.missed, home.audit, opening)

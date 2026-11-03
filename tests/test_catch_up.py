@@ -56,7 +56,7 @@ async def sessions_of(clock: Clock, *names: str) -> Sessions:
 
 
 async def catch_up(sessions: Sessions, home: Home, minutes: int = 0) -> object:
-    return await catch_up_tool(sessions, home, lambda: BACK).body(minutes=minutes)
+    return await catch_up_tool(sessions, home).body(minutes=minutes)
 
 
 NOTHING: dict[str, object] = {"since_minutes_ago": None, "unreadable_lines": 0, "finished": [], "ended": [], "occurred": [], "announced": []}
@@ -84,7 +84,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
     )
     called: list[object] = []
     clock = VirtualClock(epoch=BACK)
-    tool = audited(clock, catch_up_tool(await sessions_of(clock, "docs", "parser", "deploy", "scratch"), home, lambda: BACK), called.append)
+    tool = audited(clock, catch_up_tool(await sessions_of(clock, "docs", "parser", "deploy", "scratch"), home), called.append)
 
     result = await tool.body(minutes=0)
 
@@ -120,7 +120,7 @@ async def test_what_a_hook_said_happened_is_caught_up_on_whether_or_not_it_was_s
             (BACK, Transcribed("what did I miss")),
         ],
     )
-    result = cast(dict[str, object], await catch_up(await sessions_of(VirtualClock(), "docs"), home))
+    result = cast(dict[str, object], await catch_up(await sessions_of(VirtualClock(epoch=BACK), "docs"), home))
     assert result["occurred"] == [
         {"session": "docs", "times": 1, "type": "AutoDenied", "tool": "Bash", "reason": "[Data Exfiltration]", "input": cut(json.dumps({"command": long}), CATCH_UP_LEAST)},
         # Counted by kind, with the newest said.
@@ -141,7 +141,7 @@ async def test_minutes_reaches_back_past_what_the_user_said(tmp_path: Path) -> N
         ],
     )
 
-    assert await catch_up(await sessions_of(VirtualClock(), "docs"), home, minutes=60) == {
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK), "docs"), home, minutes=60) == {
         **NOTHING,
         "since_minutes_ago": 60,
         "finished": [{"session": "docs", "turns": 1, "closing": "Within the hour."}],
@@ -149,7 +149,7 @@ async def test_minutes_reaches_back_past_what_the_user_said(tmp_path: Path) -> N
 
 
 async def test_minutes_back_from_now_is_never_negative(tmp_path: Path) -> None:
-    assert await catch_up(await sessions_of(VirtualClock()), Home(tmp_path), minutes=-60) == {"error": "minutes is how far back to look, so it cannot be -60"}
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK)), Home(tmp_path), minutes=-60) == {"error": "minutes is how far back to look, so it cannot be -60"}
 
 
 async def test_a_line_a_failed_write_left_torn_is_counted_and_the_rest_read(tmp_path: Path) -> None:
@@ -160,7 +160,7 @@ async def test_a_line_a_failed_write_left_torn_is_counted_and_the_rest_read(tmp_
         log.write('{"at": "2026-10-03T14:00:00+00:00", "type": "Announced", "text": "Fixed \u2014'.encode()[:-1])
     written(home, [(LEFT, told("docs", "d1", "Done.")), (BACK, Transcribed("what did I miss"))])
 
-    assert await catch_up(await sessions_of(VirtualClock(), "docs"), home) == {
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK), "docs"), home) == {
         **NOTHING,
         "since_minutes_ago": 10,
         "unreadable_lines": 1,
@@ -173,11 +173,11 @@ async def test_with_no_earlier_words_it_reads_the_whole_log_and_names_sessions_h
     long = "word " * 4000
     written(home, [(LEFT, told("gone", "g1", long)), (BACK, Transcribed("what did I miss"))])
 
-    assert await catch_up(await sessions_of(VirtualClock()), home) == {**NOTHING, "finished": [{"session": "gone", "turns": 1, "closing": cut(long, CATCH_UP_CLOSINGS)}]}
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK)), home) == {**NOTHING, "finished": [{"session": "gone", "turns": 1, "closing": cut(long, CATCH_UP_CLOSINGS)}]}
 
 
 async def test_a_log_not_yet_written_is_nothing_missed(tmp_path: Path) -> None:
-    assert await catch_up(await sessions_of(VirtualClock()), Home(tmp_path)) == NOTHING
+    assert await catch_up(await sessions_of(VirtualClock(epoch=BACK)), Home(tmp_path)) == NOTHING
 
 
 async def test_a_hundred_sessions_finishing_are_each_named_and_share_the_words(tmp_path: Path) -> None:
@@ -186,6 +186,6 @@ async def test_a_hundred_sessions_finishing_are_each_named_and_share_the_words(t
     names = [f"s{n}" for n in range(100)]
     written(home, [(LEFT, Transcribed("back soon")), *((LEFT, told(name, "p", long)) for name in names), (BACK, Transcribed("what did I miss"))])
 
-    result = await catch_up(await sessions_of(VirtualClock(), *names), home)
+    result = await catch_up(await sessions_of(VirtualClock(epoch=BACK), *names), home)
 
     assert [(done["session"], done["closing"]) for done in result["finished"]] == [(name, cut(long, max(CATCH_UP_LEAST, CATCH_UP_CLOSINGS // 100))) for name in names]  # type: ignore[index]
