@@ -846,8 +846,9 @@ while True:
     if not data:
         break
     pending += data
-    # Claude Code reads what reaches it close together as one burst.
-    time.sleep(0.05)
+    # Claude Code reads what reaches it close together as one burst, and draws a frame of it 4ms after input
+    # (docs/claude-code-screen.md, Frames): the brain's settle has to hold against that pacing, so the fake keeps it.
+    time.sleep(0.004)
     while select.select([0], [], [], 0)[0]:
         more = os.read(0, 65536)
         if not more:
