@@ -1290,8 +1290,12 @@ class Brain:
         (docs/claude-code-behavior.md). Whether they emptied it is the next look's to say."""
         # [LAW:nothing-unseen] on the turn's own event: what the input held that the turn would have joined.
         annotate(emptied=box.rows)
+        def empty(typist: Typist) -> None:
+            for key in _EMPTY_ROW * box.input:
+                typist.press(key)
+
         # Written whole, in one call, as the paste is.
-        await self._type(lambda typist: [typist.press(key) for _ in range(box.input) for key in _EMPTY_ROW])
+        await self._type(empty)
 
     async def _at_prompt(self) -> Box:
         """The input box, once the brain's screen, settled, shows a turn would go into its prompt (`typable`): two captures
