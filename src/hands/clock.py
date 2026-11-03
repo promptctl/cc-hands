@@ -89,8 +89,9 @@ def stamp(clock: Clock) -> Stamp:
 
 def dashed(clock: Clock) -> str:
     """A fresh id in the 8-4-4-4-12 form Claude Code requires of a session's."""
-    digits = clock.uuid()
-    return "-".join((digits[:8], digits[8:12], digits[12:16], digits[16:20], digits[20:]))
+    import uuid
+
+    return str(uuid.UUID(hex=clock.uuid()))
 
 
 class SystemClock:

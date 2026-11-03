@@ -52,7 +52,10 @@ class VirtualClock:
         return uuid.UUID(int=self._random.getrandbits(128), version=4).hex
 
     def rest(self, seconds: float) -> None:
-        # Off any loop, nothing waits on this clock's pauses to be woken: the time moves, and no real second passes.
+        # Off any loop, nothing waits on this clock's pauses to be woken: the time moves, and no real second passes. A
+        # pause or call a loop waits on would come due unwoken, so a clock shared that way is refused, not run.
+        if self._pauses or self._calls:
+            raise RuntimeError("rest moves a clock a loop is waiting on; that loop's test moves it with advance")
         self.at += seconds
 
     def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
