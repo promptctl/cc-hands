@@ -270,7 +270,7 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     rig = await brain(recorded)
     # Before the brain has sent a main turn there is nothing to fork: the question waits for one, inside its asker's time.
     early = asyncio.create_task(rig.asides.ask(AsideKind.NAME, "early", Deadline(0.3)))
-    await rig.clock.paused(0.3)
+    await rig.clock.scheduled(0.3)
     rig.clock.advance(0.3)
     with pytest.raises(AsideFailed, match=r"the brain sent no main turn to fork within Deadline\(seconds=0.3\)"):
         await early
@@ -407,7 +407,7 @@ async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs
     # Both wait for the brain's first main turn at once: neither holds the other back while there is nothing to fork, so
     # the one 0.3 s both were given ends them both.
     early = [asyncio.create_task(rig.asides.ask(AsideKind.NAME, question, Deadline(0.3))) for question in ("one", "two")]
-    await rig.clock.paused(0.3, count=2)
+    await rig.clock.scheduled(0.3, count=2)
     assert not any(task.done() for task in early)
     rig.clock.advance(0.3)
     for task in early:
@@ -423,7 +423,7 @@ async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs
     patient = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "patient", TimeLimit(0.3)))
     left = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "left", Deadline(10)))
     # The slow one's deadline and the one left's, both begun now: the patient one's runs from its turn, not yet come.
-    await rig.clock.paused(rig.clock.now() + 10, count=2)
+    await rig.clock.scheduled(rig.clock.now() + 10, count=2)
     rig.clock.advance(0.4)
     left.cancel()
     gate.set()

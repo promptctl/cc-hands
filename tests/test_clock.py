@@ -168,12 +168,25 @@ def test_a_virtual_clock_moves_only_forward() -> None:
     assert clock.now() == 2.0
 
 
-async def test_a_deadline_is_waited_on_as_a_pause_is_and_as_many_times_as_it_is_begun() -> None:
+async def test_a_deadline_is_waited_on_as_many_times_as_it_is_scheduled_and_never_stands_in_for_a_pause() -> None:
     clock = VirtualClock()
-    seen = asyncio.create_task(clock.paused(3.0, count=2))
+    paused = asyncio.create_task(clock.paused(3.0))
+    scheduled = asyncio.create_task(clock.scheduled(3.0, count=2))
     clock.call_at(3.0, lambda: None)
     await asyncio.sleep(0)
-    assert not seen.done()
+    assert not scheduled.done() and not paused.done()
+    clock.call_at(3.0, lambda: None)
+    await scheduled
+    assert not paused.done()
     clock.pause(3.0)
-    await seen
-    assert clock.begun == [3.0]
+    await paused
+    assert clock.begun == (3.0,)
+
+
+def test_a_virtual_clock_rests_only_forward_and_never_onto_nan() -> None:
+    clock = VirtualClock()
+    with pytest.raises(ValueError, match="only forward"):
+        clock.rest(-1.0)
+    with pytest.raises(ValueError, match="only forward"):
+        clock.advance(float("nan"))
+    assert clock.now() == 0.0
