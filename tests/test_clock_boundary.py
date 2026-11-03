@@ -323,7 +323,6 @@ UNMOVED: dict[str, frozenset[str]] = {
         "test_update.py": frozenset({'.wait(timeout=)', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
         "test_usage.py": frozenset({'hands.clock.SYSTEM'}),
         "test_utterance.py": frozenset({'.wait(seconds)', 'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
-        "test_vocabulary.py": frozenset({'hands.clock.SYSTEM', 'time'}),
         "test_voice_turns.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr TRANSCRIBING_SECONDS', 'setattr TURN_LIMIT_SECONDS'}),
         "test_voiceprints.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
         "test_voices.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'time'}),
