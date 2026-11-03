@@ -814,7 +814,6 @@ async def test_the_tail_hands_each_interrupt_it_reads_to_the_registry_which_tell
         return sessions.apply(event)
 
     reader = Reader(sessions, Tails(sessions), apply)
-    await reader.read()
     await sessions.apply(said_idle(at=2.0))
     with transcript.open("a") as more:
         more.write(lines(CUT_OFF))

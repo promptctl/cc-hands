@@ -355,13 +355,9 @@ async def test_each_hook_posted_is_one_event_saying_how_it_was_answered(home: Ho
         # status is; no record comes, so the hold passes once the test spends it.
         await registry.apply(StatusReported(SID, Report(Busy(), Stamp(1000)), at=registry.now()))
         held = asyncio.create_task(shim(home, {**STOP, "prompt_id": "p3"}))
-        try:
-            # Bounded: a Stop decided as it is heard schedules no hold, and the test fails here, not at the suite timeout.
-            await asyncio.wait_for(clock.scheduled(clock.at + hold), 2.0)
-            clock.advance(hold)
-            await held
-        finally:
-            held.cancel()
+        await clock.scheduled(clock.at + hold)
+        clock.advance(hold)
+        await held
     finally:
         await runner.cleanup()
     rejected = "rejected hook: hook event 'Notification' is not one hands handles; a session that loaded hands' hooks before hands stopped hooking it takes the current ones with /reload-plugins"
