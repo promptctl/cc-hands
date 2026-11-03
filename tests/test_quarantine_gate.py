@@ -84,11 +84,27 @@ def test_an_edit_of_the_marker_line_does_not_reset_the_clock(repo: Path) -> None
     assert gate.main(repo, TODAY) == 1
 
 
-def test_a_second_copy_of_the_marker_does_not_move_the_start(repo: Path) -> None:
+def test_two_tests_under_one_ticket_fail_the_gate_loudly(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (repo / "tests" / "test_second.py").write_text(MARKED)
     commit(repo, "a second test under the same ticket", author=TODAY_NOON)
-    assert gate.started(repo, "t-old") == THE_ADD
     assert gate.main(repo, TODAY) == 1
+    assert "quarantines more than one test" in capsys.readouterr().out
+
+
+def test_both_spellings_of_the_marker_are_read(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_spellings.py").write_text(
+        'import pytest\nfrom pytest import mark\n\n@pytest.mark.quarantined("t-a")\ndef test_a():\n    pass\n\n'
+        '@mark.quarantined("t-b")\ndef test_b():\n    pass\n'
+    )
+    assert gate.markers(tmp_path / "tests") == ["t-a", "t-b"]
+
+
+def test_a_marker_without_its_ticket_as_a_string_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_bare.py").write_text("import pytest\n\n@pytest.mark.quarantined\ndef test_a():\n    pass\n")
+    with pytest.raises(ValueError, match="needs its ticket as a string"):
+        gate.markers(tmp_path / "tests")
 
 
 def test_a_recommit_with_a_new_committer_date_does_not_reset_the_clock(repo: Path) -> None:

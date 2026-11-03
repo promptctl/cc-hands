@@ -15,7 +15,8 @@ mid-call. Run one case at a time. Running many copies at once loads the machine 
 def test_the_flaky_one() -> None: ...
 ```
 
-- The marker names the ticket that will fix or delete the test. It is required.
+- The marker names the ticket that will fix or delete the test. It is required, and each ticket covers one test: a second
+  test under the same ticket fails CI, so give it its own ticket.
 - A quarantined test still runs and still reports. A failure in setup, call, or teardown is recorded as an expected
   failure, with the ticket as its reason and the original traceback kept, so the run stays green.
 - The quarantine's start is the commit that first added the marker. `tests/quarantine_gate.py` fails CI once a
