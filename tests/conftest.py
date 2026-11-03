@@ -39,7 +39,6 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.brain.process import SETTLE_SECONDS
 from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.front import FrontUnread, InFront
@@ -847,10 +846,9 @@ while True:
     if not data:
         break
     pending += data
-    # Claude Code reads what reaches it close together as one burst. A window as long as the brain's settle would show
-    # two steady looks of a screen the keys have not yet made, so it is half that; the race is narrowed, not closed, until
-    # these tests pace the brain on a clock they move (promptctl-testing-c3u.miy).
-    time.sleep({SETTLE_SECONDS / 2})
+    # Claude Code reads what reaches it close together as one burst, and draws a frame of it 4ms after input
+    # (docs/claude-code-screen.md, Frames): the brain's settle has to hold against that pacing, so the fake keeps it.
+    time.sleep(0.004)
     while select.select([0], [], [], 0)[0]:
         more = os.read(0, 65536)
         if not more:
