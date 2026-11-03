@@ -1781,18 +1781,22 @@ When a turn cuts is the edge's that opened its hold (`turn_start` in
 `hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
 from the gate, as it carries the key. A hold the user's hand opens, the held key or the
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
-nothing said is how the user stops hands. So does the wake word's, said on purpose and
-heard through the echo canceller while hands speaks. A hold engaged conversation opens cuts
-only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
-Nemotron Speech Streaming paired with Nemotron 3 Diarization on MLX, one session for the run,
-fed only the holds), Pipecat's
-transcription start, because under
-engaged conversation the desk's detector hears through the echo canceller, and the
-reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
-on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
-reading held no words for Whisper. The streaming model decodes silence, hiss and clicks to
-no words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech,
-and it hears that as words. Such a turn cuts nothing, so nothing has to be
+nothing said is how the user stops hands. A hold the voice opens, the wake word's or
+engaged conversation's, cuts only once a speaker who is not hands is heard in it
+(`hands.voice.voiceprints.cleared`), because the desk hears through the echo canceller, and
+the reply's own sound left over from it, hands' own saying of the wake phrase among it, or a
+cough or a door, opens a hold. Between 23:52 on 2026-10-05 and 02:53 UTC on the MacBook's
+speakers, 14 of 33 voice barge-ins on a reading held no words for Whisper. The streaming model
+(`hands.voice.streaming`, NVIDIA's Nemotron Speech Streaming paired with Nemotron 3 Diarization
+on MLX, one session for the run, fed only the holds) decodes silence, hiss and clicks to no
+words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech, and
+it hears that as words, so words alone cut only where hands played nothing over the speaker
+who said them. Where it did, the speaker cuts once their voiceprint says a person, about a
+second of them in, while the hold is open (`Cut`, pushed by the hold owner alone, and only for
+the hold still open); a speaker too brief for that, a wake phrase said alone over hands, is
+judged at the hold's close, which waits up to `IDENTIFIED_SECONDS` for it. Hands' own voice cuts
+nothing, and neither does a speaker hands played over who cannot be scored yet. Such a turn
+cuts nothing, so nothing has to be
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
@@ -1801,8 +1805,9 @@ their way to the model, so they are uninterruptible: an interruption stops hands
 the user. And the user aggregator takes none of them in until the assistant aggregator,
 at the end of the pipeline, says the reply the cut stopped is written as
 cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
-off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
-long after it opened it did, or that it never did. A turn ends once the hold owner is done with every
+off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, how
+long after it opened it did, or that it never did, and how long after the first word of the
+speaker who cut it. A turn ends once the hold owner is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
 one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no
@@ -1865,8 +1870,8 @@ the hold kept from before it opened, each frame while it is open, and its end. A
 slow work, while the hold is open or after it closes, is a hearing the owner runs on that
 listener's own lane, so a slow listener holds up only itself, under a bound of a minute
 from when the listener returned it.
-Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether its
-words cut hands off, which only words heard while their hold is still open do. The
+Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether it
+cut hands off, which only words that clear their speaker, heard while their hold is still open, do. The
 transcriber is given each spoken hold the key sent, whole, in the order the holds ended;
 each hold, spoken or typed, is one `hold` event, from its end to its resolution: what opened
 it, what the gate did with it, how long and loud it was, and what its transcription came to.
@@ -1890,8 +1895,8 @@ its first work (`streaming.loaded`), so the voice starts without them and holds 
 are heard behind them; models that fail to load, or decoding that fails, fail the end of that
 hold and every hold's after it, with why.
 
-Each speaker in each hold is identified by their voice, measured beside the cut and not yet acting
-on it (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
+Each speaker in each hold is identified by their voice, which decides the cut of a hold the voice
+opened (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
 is active in at the threshold their stream is masked by, are read out of it as it takes each
 chunk, and the hold's samples in those frames are that speaker's voice in the hold; a frame two
 speakers share is in both, and counted as shared. A speaker is handed to the voiceprint lane
@@ -1902,8 +1907,12 @@ CPU, against hands' own voiceprints, and says who each was on a `voiceprints.ide
 the score, the seconds heard, and the window scored with how much of it was shared, the input a
 refit fits on. One table of score floors by length decides: under 1 s, `Unheard`; from 1 s under
 0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
-otherwise `Unsure`. A person stays one for the rest of their hold, kept by hold number, since a
-hold's end can be identified after the next hold opens.
+otherwise `Unsure`. At the hold's end only, a closing row (`CLOSING`) adds from 0.5 s under
+0.19 a `Person`, so a wake phrase said alone over hands is told at its length. A person stays one for the rest of their hold, kept by hold number, since a
+hold's end can be identified after the next hold opens. The lane tells the hold owner of each
+person it finds over hands while their hold is open, from its own thread; the owner takes it on
+the event loop and cuts only while that hold is still open. Each hold's end is settled on every
+path, nobody cleared where the identification failed.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print

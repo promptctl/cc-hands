@@ -11,8 +11,9 @@ Measured on zoj's recordings (promptctl-voice-i15t.99s.zoj, re-measured by scrip
 through the room scores 0.79 to 0.93 over long windows, another voice -0.04 to 0.16, and the two overlap below about a
 second of speech, so how much of a speaker was heard decides what their score can say (`FLOORS`).
 
-Who each speaker is is measured beside the cut and decides nothing yet. It is worked out on a lane of its own, after the
-words it is about have gone out, so no hearing's words ever wait on a voiceprint.
+Who each speaker is decides the cut of a turn the voice opened: only a speaker who is not hands cuts hands off
+(`cleared`). It is worked out on a lane of its own, after the words it is about have gone out, so no hearing's words ever
+wait on a voiceprint; the lane tells the hold owner of each speaker it clears as it clears them.
 """
 
 from collections.abc import Callable
@@ -29,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
-from hands.voice.holds import RATE, Hold, Samples
+from hands.voice.holds import RATE, Cleared, Hold, Samples, Settle
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
 MODEL = "csukuangfj/speaker-embedding-models"
@@ -129,6 +130,13 @@ class Floor:
 FLOORS = (Floor(1.0, 0.25), Floor(1.5, 0.55), Floor(3.0, 0.70))
 ALONE, PERSON, HANDS = FLOORS
 
+# The row a hold's last identification, at its end, adds under the table for a speaker heard under a second: a wake
+# phrase said alone over hands, then silence, is never heard long enough for the table, so it is told from hands' echo at
+# its length or not at all. At 0.8 s the echo scored as low as 0.19: under that is not hands. Only at the end, where
+# nothing more of the speaker is coming to decide by; as provisional as the table, and refitted with it.
+CLOSING = Floor(0.5, 0.19)
+ENDING = (CLOSING, *FLOORS)
+
 # The most of a speaker's voice, their latest, a score is taken on: the table's longest row, past which nothing was
 # measured, and the bound on what scoring costs, about 18 ms for each second scored.
 WINDOW = HANDS.seconds
@@ -139,10 +147,10 @@ def reached(seconds: float) -> int:
     return sum(row.seconds <= seconds for row in FLOORS)
 
 
-def decided(scored: float, seconds: float, window: Window) -> Who:
+def decided(scored: float, seconds: float, window: Window, floors: tuple[Floor, ...]) -> Who:
     """Who a speaker is whose latest voice, `window` of it, scored `scored` against hands', `seconds` of them heard in
-    all. [LAW:dataflow-not-control-flow] one row of the table decides, the longest the speaker has reached."""
-    floor = next(row for row in reversed(FLOORS) if row.seconds <= seconds)
+    all. [LAW:dataflow-not-control-flow] one row of `floors` decides, the longest the speaker has reached."""
+    floor = next(row for row in reversed(floors) if row.seconds <= seconds)
     match scored < floor.score, seconds >= HANDS.seconds:
         case True, _:
             return Person(scored, seconds, window)
@@ -152,17 +160,36 @@ def decided(scored: float, seconds: float, window: Window) -> Who:
             return Unsure(scored, seconds, window)
 
 
+def cleared(who: Who, played: bool) -> bool:
+    """Whether a speaker, `played` over by hands or not, clears hands to be cut off.
+
+    [LAW:single-enforcer] the one rule of who cuts hands off. A speaker hands played nothing over has no echo of hands
+    in them, so whoever they are clears it, as their words do before any voiceprint. One hands played over may be hands'
+    own echo, so only a person clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not
+    be scored at all (the model loading, a print being made) cut nothing, and their `voiceprints.identified` unit says
+    why."""
+    match played, who:
+        case False, _:
+            return True
+        case True, Person():
+            return True
+        case True, Hands() | Unsure() | Unheard() | Unidentified():
+            return False
+
+
 @dataclass(frozen=True)
 class Voiced:
     """One speaker in a hold, as the stream heard them: their number in the run, the latest WINDOW of their voice in
     the hold, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
-    and every voice of hands' TTS played over any of them."""
+    every voice of hands' TTS played over any of them, and how many seconds after the hold opened they were first
+    heard, under none in what it kept from before."""
 
     speaker: int
     voice: Samples
     seconds: float
     shared: float
     played: tuple[str, ...]
+    first: float
 
 
 @dataclass(frozen=True)
@@ -173,23 +200,24 @@ class Speaker:
     who: Who
 
 
-def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced) -> Who:
-    """Who a speaker is against hands' `prints`, the highest score of any deciding. Under a second, nothing is scored."""
-    match voiced.seconds < ALONE.seconds:
+def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced, floors: tuple[Floor, ...]) -> Who:
+    """Who a speaker is against hands' `prints`, by `floors`, the highest score of any deciding. Under their first row,
+    nothing is scored."""
+    match voiced.seconds < floors[0].seconds:
         case True:
             return Unheard(voiced.seconds)
         case False:
             voiceprint = embed(voiced.voice)
             window = Window(round(len(voiced.voice) / RATE, 3), round(voiced.shared, 3))
-            return decided(max(score(voiceprint, each) for each in prints), voiced.seconds, window)
+            return decided(max(score(voiceprint, each) for each in prints), voiced.seconds, window, floors)
 
 
 class Identifier(Protocol):
-    """What identifies the speakers the stream hears: each as they reach a row of the table, and every one at the end
-    of their hold."""
+    """What identifies the speakers the stream hears: each as they reach a row of the table, `cleared` told of those it
+    clears to cut hands off; and every one at the end of their hold, `settle` told what that came to."""
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
+    def identify(self, hold: Hold, voiced: tuple[Voiced, ...], cleared: Cleared) -> None: ...
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...], settle: Settle) -> None: ...
 
 
 # What hands says to make its own voiceprint in a voice: about twelve seconds of the kind of thing it says, never played.
@@ -367,20 +395,36 @@ class Voiceprints:
             case samples, embed:
                 return embed(samples)
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def identify(self, hold: Hold, voiced: tuple[Voiced, ...], cleared: Cleared) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
-        `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
+        `voiceprints.identified` unit, which hangs off the unit open here; `cleared` told, from the lane, when the
+        first of them cleared to cut hands off was first heard. Returns at once."""
         began = begun(self._clock)
-        self._lane.give(lambda: self._identified(hold, voiced, began))
 
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
-        remembered."""
+        def identified() -> None:
+            match self._identified(hold, voiced, FLOORS, began):
+                case None:
+                    pass
+                case first:
+                    cleared(first)
+
+        self._lane.give(identified)
+
+    def ended(self, hold: Hold, voiced: tuple[Voiced, ...], settle: Settle) -> None:
+        """Who each speaker in `hold` is, at its end, by the table and its closing row: its last identification, after
+        which no speaker of it is remembered, and `settle` told what it came to.
+
+        [LAW:no-silent-failure] `settle` is told on every path, nobody cleared where the identification failed, which
+        its unit says why of: the hold owner closes the hold on it, and would otherwise wait out its whole bound."""
         began = begun(self._clock)
 
         def last() -> None:
-            self._identified(hold, voiced, began)
-            self._people.pop(hold.number, None)
+            first: float | None = None
+            try:
+                first = self._identified(hold, voiced, ENDING, began)
+            finally:
+                self._people.pop(hold.number, None)
+                settle(first)
 
         self._lane.give(last)
 
@@ -391,7 +435,7 @@ class Voiceprints:
 
         def identified() -> None:
             try:
-                speakers = (Speaker(voiced.speaker, self._judged(voiced)),)
+                speakers = (Speaker(voiced.speaker, self._judged(voiced, FLOORS)),)
             except Exception as error:
                 ended("voiceprints.identified", self._record, began, error, span=span)
                 return
@@ -399,24 +443,29 @@ class Voiceprints:
 
         self._lane.give(identified)
 
-    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...], began: Begun) -> None:
+    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...], floors: tuple[Floor, ...], began: Begun) -> float | None:
+        """Who each speaker in `voiced` is, by `floors`, told as one unit: when the first of them cleared to cut hands
+        off was first heard, None for none, and for none where identifying them failed."""
         if not voiced:
-            return
+            return None
         try:
-            speakers = tuple(Speaker(each.speaker, self._who(hold, each)) for each in voiced)
+            speakers = tuple(Speaker(each.speaker, self._who(hold, each, floors)) for each in voiced)
         except Exception as error:
             ended("voiceprints.identified", self._record, began, error, hold=hold.number)
-            return
-        ended("voiceprints.identified", self._record, began, None, hold=hold.number, speakers=speakers)
+            return None
+        first = min((each.first for each, speaker in zip(voiced, speakers, strict=True) if cleared(speaker.who, bool(each.played))), default=None)
+        # [LAW:nothing-unseen] who each speaker is, and when the first of them who cuts hands off was first heard.
+        ended("voiceprints.identified", self._record, began, None, hold=hold.number, speakers=speakers, cuts=first)
+        return first
 
-    def _who(self, hold: Hold, voiced: Voiced) -> Who:
+    def _who(self, hold: Hold, voiced: Voiced, floors: tuple[Floor, ...]) -> Who:
         """[LAW:single-enforcer] once a person in a hold, a speaker is one for the rest of it."""
         people = self._people.setdefault(hold.number, {})
         match people.get(voiced.speaker):
             case Person() as known:
                 return known
             case None:
-                who = self._judged(voiced)
+                who = self._judged(voiced, floors)
                 match who:
                     case Person():
                         people[voiced.speaker] = who
@@ -424,14 +473,14 @@ class Voiceprints:
                         pass
                 return who
 
-    def _judged(self, voiced: Voiced) -> Who:
+    def _judged(self, voiced: Voiced, floors: tuple[Floor, ...]) -> Who:
         match self._embed, self._against(voiced.played):
             case Unloaded(why=why), _:
                 return Unidentified(voiced.seconds, why)
             case _, Unprinted(why=why):
                 return Unidentified(voiced.seconds, why)
             case embed, tuple() as prints:
-                return scored(embed, prints, voiced)
+                return scored(embed, prints, voiced, floors)
 
     def _against(self, played: tuple[str, ...]) -> tuple[Print, ...] | Unprinted:
         """Every voiceprint hands holds, so long as it holds the one of the voice it speaks in now and of each voice it

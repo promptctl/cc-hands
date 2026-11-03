@@ -90,7 +90,7 @@ def build_voice(
     # it mutes the microphone at the transport, and the hold owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
     # aggregator runs no VAD of its own. The turn opens on the press, and cuts
-    # hands off there or, where the voice pressed it, on its first words
+    # hands off there or, where the voice pressed it, once a person is heard in it
     # (`hands.voice.turnstart`); it closes on the release, which is final, so
     # there is no wait for the user to "say more".
     params = PipelineParams(enable_metrics=True)
