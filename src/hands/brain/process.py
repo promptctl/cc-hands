@@ -1082,6 +1082,9 @@ class Brain:
         self._typing: set[asyncio.Task[None]] = set()
         # When the last stop pressed Ctrl-C, on the event loop's clock.
         self._cleared = float("-inf")
+        # [LAW:no-ambient-temporal-coupling] the words of the turn last pasted and not taken, as `kept` reads them, until
+        # the next prompt Claude Code takes: it reads its input in order, so only that one can be them, taken late.
+        self._untaken: str | None = None
         with continuing(launched):
             self._reading = asyncio.ensure_future(self._reader.keep_reading(READ_SECONDS))
             self._exit = asyncio.ensure_future(self._run_out(begun(SYSTEM)))
@@ -1133,7 +1136,7 @@ class Brain:
         return False
 
     async def _halt(self, running: ClaudeTurn) -> None:
-        """Stops a turn Claude Code opened itself, with the input held: over once its telling ends it (`_clear`). The input
+        """Stops an open turn no turn in flight waits on, with the input held: over once its telling ends it (`_clear`). The input
         is held until the turn in flight is taken, so a turn typed behind `running` is stopped with it, as a turn is
         stopped (`_escape`): its words ran in `running`, or waited behind it, and the Escape stops them either way."""
         async with self._input:
@@ -1709,6 +1712,9 @@ class Brain:
         turn it was filed under."""
         turn = self._turn
         ours = turn is not None and turn.pasted and not turn.answered.done() and not turn.taken.done() and kept(submitted.words) == kept(turn.typed)
+        # Words of a turn its asker heard was not taken, which Claude Code took late: the turn they run in is stopped
+        # through the one stop (`_halt`), whatever it is filed under.
+        late, self._untaken = not ours and kept(submitted.words) == self._untaken, None
         if not submitted.queued:
             running = self._claude_turns.opened(submitted.prompt, TYPED if ours else opener(submitted.words), ours)
         elif ours:
@@ -1718,11 +1724,12 @@ class Brain:
             running.awaited = True
         elif self._claude_turns.filed(submitted.prompt) is None:
             # Words of no turn's queued behind one already told, a task's result among them: they run as the turn behind it.
-            self._claude_turns.behind(opener(submitted.words), awaited=False)
-            return
+            running = self._claude_turns.behind(opener(submitted.words), awaited=False)
         else:
             # Filed into a turn Claude Code still runs: they run in it, or behind it if its telling finds them waiting.
-            return
+            running = self._claude_turns.filed(submitted.prompt)
+        if late and running is not None:
+            self._keep(self._halt(running), None)
         if turn is not None and ours:
             turn.taken_under, turn.queued = submitted.prompt, submitted.queued
             turn.running = running
@@ -1793,6 +1800,8 @@ class Brain:
             self._turn = None
         if turn.answered.done():
             return
+        if isinstance(outcome, Untaken) and turn.pasted:
+            self._untaken = kept(turn.typed)
         # Words of its waiting to run as the turn behind, which no telling has named, never run now: Ctrl-C cleared them
         # from the input as its stop went, or nothing is left to run them.
         if (running := turn.running) is not None and not running.ids and running in self._claude_turns.open:
