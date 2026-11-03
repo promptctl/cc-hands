@@ -2,6 +2,7 @@
 
 import ast
 import re
+from functools import cache
 from pathlib import Path
 
 import hands
@@ -24,9 +25,9 @@ CALLS = frozenset(
 # The machine's clock itself, which only a composition root hands on.
 SYSTEM = frozenset({"hands.clock.SYSTEM", "hands.clock.SystemClock"})
 
-# Waits a thread or a task makes on the machine's seconds, on whatever it waits on, told by their `timeout=`: told by
-# their arguments alone, a `str.join` or a `dict.get` would be one.
-TIMED = ("get", "join", "wait", "acquire")
+# Waits a thread or a task makes on the machine's seconds, on whatever it waits on, told by their
+# `timeout=`: told by their arguments alone, a `str.join` or a `dict.get` would be one.
+TIMED = ("get", "join", "wait", "acquire", "result")
 
 # The event loop's timers, on whatever loop they are called on: anything not a clock is the loop the machine's time runs.
 LOOP = ("call_later", "call_at", "time")
@@ -43,12 +44,20 @@ ROOTS = ("daemon/cli.py", "sessions/shim.py")
 
 
 def reached(source: str) -> set[str]:
-    """What `source` reaches of the machine's time and randomness, by the name it reaches it with."""
+    """What `source` reaches of the machine's time and randomness, by the name it reaches it with, in code it runs
+    and in code it writes out for another interpreter to run."""
     tree = ast.parse(source)
     named = _imported(tree)
     found: set[str] = set()
     for node in ast.walk(tree):
         match node:
+            # Code written as a string, for pytester or `python -c`, reaches whatever it would reach run.
+            case ast.Constant(value=str(text)) if "\n" in text or ";" in text:
+                found.update(_written(text))
+            case ast.Assign(targets=targets) if any(_patches(target) for target in targets):
+                found.update(f"setattr {target.attr}" for target in targets if _patches(target))
+            case ast.Call(func=func, args=args) if _last(func) in ("setattr", "object", "patch") and (name := _patched(args)):
+                found.add(f"setattr {name.rsplit('.', 1)[-1]}")
             case ast.Import(names=aliases):
                 found.update(alias.name for alias in aliases if alias.name.split(".")[0] in MODULES)
             case ast.ImportFrom(module=str(module), level=0) if module.split(".")[0] in MODULES:
@@ -56,7 +65,13 @@ def reached(source: str) -> set[str]:
             case ast.Name() | ast.Attribute() if _qualified(node, named) in SYSTEM:
                 found.add(_qualified(node, named))
             # A sleep of nothing yields to the loop and waits on no seconds.
-            case ast.Call(func=func, args=[ast.Constant(value=0)]) if _qualified(func, named) == "asyncio.sleep":
+            case ast.Call(func=func, args=[ast.Constant(value=int(zero))], keywords=[]) if zero == 0 and not isinstance(
+                zero, bool
+            ) and _qualified(func, named) == "asyncio.sleep":
+                pass
+            case ast.Call(func=func, args=[], keywords=[ast.keyword(arg="delay", value=ast.Constant(value=int(zero)))]) if (
+                zero == 0 and not isinstance(zero, bool) and _qualified(func, named) == "asyncio.sleep"
+            ):
                 pass
             case ast.Call(func=func) if _qualified(func, named) in CALLS:
                 found.add(f"{_qualified(func, named)}()")
@@ -67,14 +82,50 @@ def reached(source: str) -> set[str]:
                 keyword.arg == "timeout" for keyword in keywords
             ):
                 found.add(f".{attr}(timeout=)")
+            # An event's or a process's wait takes its seconds first.
+            case ast.Call(func=ast.Attribute(attr="wait") as func, args=[ast.Constant(value=int() | float()), *_]) if (
+                _qualified(func, named) != "asyncio.wait"
+            ):
+                found.add(".wait(seconds)")
             case ast.Call(func=ast.Attribute(value=receiver, attr=attr)) if attr in LOOP and _last(receiver) not in CLOCKS:
                 found.add(f".{attr}()")
-            # A patched timing constant tunes a wait on the machine's seconds instead of advancing a clock.
-            case ast.Call(func=ast.Attribute(attr="setattr"), args=[*_, ast.Constant(value=str(name)), _]) if TIMING.search(name):
-                found.add(f"setattr {name.rsplit('.', 1)[-1]}")
             case _:
                 pass
     return found
+
+
+def _written(text: str) -> set[str]:
+    try:
+        return reached(text)
+    except (SyntaxError, ValueError):
+        return set()
+
+
+# A patched timing constant tunes a wait on the machine's seconds instead of advancing a clock: one named for its
+# seconds, or one set to a fraction of a second or a span, whatever it is named.
+def _timing(name: str, value: ast.expr) -> bool:
+    match value:
+        case ast.Constant(value=float()) | ast.Call(func=ast.Name(id="timedelta") | ast.Attribute(attr="timedelta")):
+            return name.rsplit(".", 1)[-1].isupper()
+        case _:
+            return bool(TIMING.search(name.upper()))
+
+
+def _patched(args: list[ast.expr]) -> str:
+    """The constant a `setattr`, a `monkeypatch.setattr` or a `patch.object` call patches to a timing, or nothing."""
+    for at, arg in enumerate(args[:-1]):
+        match arg:
+            case ast.Constant(value=str(name)) if _timing(name, args[at + 1]):
+                return name
+            case _:
+                pass
+    return ""
+
+
+def _patches(target: ast.expr) -> bool:
+    return isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.attr.isupper() and bool(
+        TIMING.search(target.attr)
+    )
 
 
 def _imported(tree: ast.Module) -> dict[str, str]:
@@ -111,6 +162,7 @@ def _last(node: ast.expr) -> str:
             return ""
 
 
+@cache
 def offenders(root: Path = Path(hands.__file__).parent, exempt: tuple[str, ...] = ADAPTERS) -> dict[str, set[str]]:
     modules = sorted(path for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in exempt)
     assert modules
@@ -152,108 +204,104 @@ def test_the_check_catches_each_way_of_reaching_the_machines_time() -> None:
     }  # fmt: skip
 
 
-# The clock's own tests, which prove the adapter against the machine it reads: the tests' counterpart of ADAPTERS.
-CLOCK_TESTS = ("test_clock.py",)
+# The clock's own tests, which prove the adapter against the machine it reads, and this check's, whose samples reach it: the tests' counterpart of ADAPTERS.
+CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py")
 
-# Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it advances.
-UNMOVED = frozenset(
-    {
-        "conftest.py",
-        "fetches.py",
-        "fixtures/standin_daemon.py",
-        "fixtures/watched_run.py",
-        "test_answer_permission.py",
-        "test_asides.py",
-        "test_atdesk.py",
-        "test_attention.py",
-        "test_audit.py",
-        "test_backlogpage.py",
-        "test_brain.py",
-        "test_brain_e2e.py",
-        "test_brainpage.py",
-        "test_catch_up.py",
-        "test_child.py",
-        "test_closesession.py",
-        "test_command_event.py",
-        "test_context.py",
-        "test_conversationpage.py",
-        "test_daemon_config.py",
-        "test_delta.py",
-        "test_devices.py",
-        "test_engaged.py",
-        "test_filing.py",
-        "test_focus.py",
-        "test_front.py",
-        "test_gallerypage.py",
-        "test_hold.py",
-        "test_holdowner.py",
-        "test_input_tools.py",
-        "test_intermediary.py",
-        "test_latency.py",
-        "test_library.py",
-        "test_list_sessions.py",
-        "test_liveness.py",
-        "test_loads.py",
-        "test_microphone.py",
-        "test_naming.py",
-        "test_narrator.py",
-        "test_occurrences.py",
-        "test_otlp.py",
-        "test_own_model.py",
-        "test_patience.py",
-        "test_phone.py",
-        "test_phonepage.py",
-        "test_pinned.py",
-        "test_playback.py",
-        "test_progress.py",
-        "test_proxy.py",
-        "test_ptt.py",
-        "test_read_session.py",
-        "test_readiness.py",
-        "test_recall.py",
-        "test_recorder.py",
-        "test_restart.py",
-        "test_run_end.py",
-        "test_shim.py",
-        "test_smoke.py",
-        "test_spoken.py",
-        "test_spotify.py",
-        "test_stage.py",
-        "test_start.py",
-        "test_startsession.py",
-        "test_status.py",
-        "test_streaming.py",
-        "test_summary_store.py",
-        "test_system.py",
-        "test_tail.py",
-        "test_talking_over.py",
-        "test_tap.py",
-        "test_tool_runs.py",
-        "test_typing.py",
-        "test_update.py",
-        "test_usage.py",
-        "test_utterance.py",
-        "test_vocabulary.py",
-        "test_voice_turns.py",
-        "test_voiceprints.py",
-        "test_voices.py",
-        "test_wake.py",
-        "test_watchdog.py",
-        "test_whisper.py",
-        "test_wide.py",
-        "test_wrapper.py",
-        "timeouts.py",
-    }
-)  # fmt: skip
-
-
-def test_no_test_reaches_the_machines_time() -> None:
-    reaching = offenders(Path(__file__).parent, CLOCK_TESTS)
-    assert {name: found for name, found in reaching.items() if name not in UNMOVED} == {}
+# Test modules whose verdict still waits on the machine's time, each with exactly what it reaches, struck off as each
+# moves onto a VirtualClock it advances.
+UNMOVED: dict[str, frozenset[str]] = {
+        "conftest.py": frozenset({'.time()', 'asyncio.sleep()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr HUNG'}),
+        "fetches.py": frozenset({'time'}),
+        "fixtures/standin_daemon.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "fixtures/watched_run.py": frozenset({'setattr HUNG', 'time'}),
+        "test_answer_permission.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()'}),
+        "test_asides.py": frozenset({'.time()', 'asyncio.sleep()', 'hands.clock.SYSTEM'}),
+        "test_atdesk.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'time'}),
+        "test_attention.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_audit.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr LOG_POLL_SECONDS'}),
+        "test_backlogpage.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'uuid'}),
+        "test_brain.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'hands.clock.SystemClock', 'setattr BRAIN_REPLY_BY_SECONDS', 'setattr DRAIN_SECONDS', 'setattr START_SECONDS', 'setattr STOP_SECONDS', 'setattr TAKE_SECONDS', 'time'}),
+        "test_brain_e2e.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_brainpage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr POLL_SECONDS', 'setattr WAIT_SECONDS'}),
+        "test_catch_up.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_child.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'time'}),
+        "test_closesession.py": frozenset({'.time()', 'setattr END_SECONDS', 'time'}),
+        "test_command_event.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_command_imports.py": frozenset({'hands.clock.SYSTEM', 'hands.clock.SystemClock'}),
+        "test_context.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_conversationpage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr WAIT_SECONDS'}),
+        "test_daemon_config.py": frozenset({'asyncio.sleep()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_delta.py": frozenset({'.time()', '.wait(timeout=)', 'asyncio.sleep()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_devices.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
+        "test_engaged.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
+        "test_filing.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_focus.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_front.py": frozenset({'time'}),
+        "test_gallerypage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
+        "test_hold.py": frozenset({'.time()', 'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'setattr HOLD_SECONDS', 'setattr TURN_LIMIT_SECONDS'}),
+        "test_holdowner.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM', 'setattr HEARING_SECONDS'}),
+        "test_input_tools.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_intermediary.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_latency.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_library.py": frozenset({'hands.clock.SYSTEM', 'setattr LISTING_TIMEOUT_SECONDS'}),
+        "test_list_sessions.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_liveness.py": frozenset({'.time()', 'asyncio.wait_for()', 'time'}),
+        "test_loads.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_microphone.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'time'}),
+        "test_naming.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_narrator.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_occurrences.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
+        "test_otlp.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_own_model.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_patience.py": frozenset({'.call_later()', 'setattr PATIENCE_SECS', 'time'}),
+        "test_phone.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr QUIET_SECS'}),
+        "test_phonepage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr TAILSCALE_TIMEOUT_SECONDS', 'time'}),
+        "test_pinned.py": frozenset({'asyncio.sleep()', 'setattr STALL_SECONDS'}),
+        "test_playback.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_progress.py": frozenset({'asyncio.sleep()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_proxy.py": frozenset({'asyncio.sleep()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_ptt.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_read_session.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_readiness.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_recall.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_recorder.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_restart.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_run_end.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_shim.py": frozenset({'asyncio.wait_for()', 'datetime.datetime.now()'}),
+        "test_smoke.py": frozenset({'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_spoken.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_spotify.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_stage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM'}),
+        "test_start.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_startsession.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_status.py": frozenset({'asyncio.sleep()', 'asyncio.wait_for()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_streaming.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_summary_store.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr LIT_TIMEOUT_SECONDS'}),
+        "test_system.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_tail.py": frozenset({'asyncio.wait_for()'}),
+        "test_talking_over.py": frozenset({'hands.clock.SYSTEM', 'time'}),
+        "test_tap.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
+        "test_timeouts.py": frozenset({'asyncio.sleep()', 'time'}),
+        "test_tool_runs.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_typing.py": frozenset({'.join(timeout=)', 'hands.clock.SYSTEM', 'setattr ANSWER_TIMEOUT', 'time'}),
+        "test_update.py": frozenset({'.wait(timeout=)', 'datetime.datetime.now()', 'hands.clock.SYSTEM', 'time'}),
+        "test_usage.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_utterance.py": frozenset({'.wait(seconds)', 'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
+        "test_vocabulary.py": frozenset({'hands.clock.SYSTEM', 'time'}),
+        "test_voice_turns.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr TRANSCRIBING_SECONDS', 'setattr TURN_LIMIT_SECONDS'}),
+        "test_voiceprints.py": frozenset({'.wait(timeout=)', 'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
+        "test_voices.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'time'}),
+        "test_wake.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'hands.clock.SYSTEM'}),
+        "test_watchdog.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_whisper.py": frozenset({'hands.clock.SYSTEM'}),
+        "test_wide.py": frozenset({'datetime.datetime.now()', 'hands.clock.SYSTEM'}),
+        "test_wrapper.py": frozenset({'.wait(timeout=)'}),
+        "timeouts.py": frozenset({'time'}),
+}  # fmt: skip
 
 
-def test_every_unmoved_test_still_reaches_it_so_the_list_only_shrinks() -> None:
-    assert UNMOVED - offenders(Path(__file__).parent, CLOCK_TESTS).keys() == set()
+def test_no_test_reaches_the_machines_time_but_what_unmoved_records() -> None:
+    assert offenders(Path(__file__).parent, CLOCK_TESTS) == UNMOVED
 
 
 def test_the_check_catches_a_patched_timing_constant_and_passes_a_bare_yield() -> None:
@@ -263,3 +311,22 @@ def test_the_check_catches_a_patched_timing_constant_and_passes_a_bare_yield() -
         "import asyncio\nasyncio.sleep(0)\n"
     )
     assert reached(source) == {"setattr HEARING_SECONDS", "setattr TURN_LIMIT_SECONDS", "setattr ANSWER_TIMEOUT"}
+
+
+def test_the_check_catches_each_way_of_patching_a_timing_constant() -> None:
+    source = (
+        'setattr(m, "A_SECONDS", 1)\npatch.object(m, "B_SECONDS", 1)\nm.C_SECONDS = 0.1\nmp.setattr(m, "D_SECONDS", 1, False)\n'
+        'mp.setattr(progress, "SETTLE", 0.01)\nmp.setattr(heartbeat, "HEARTBEAT", timedelta(seconds=0))\n'
+        'mock.patch("hands.x.E_TIMEOUT", 1)\nmp.setattr(m, "LINES", 3)\nmp.setattr(m, "lowered", 0.5)\n'
+    )
+    names = ("A_SECONDS", "B_SECONDS", "C_SECONDS", "D_SECONDS", "SETTLE", "HEARTBEAT", "E_TIMEOUT")
+    assert reached(source) == {f"setattr {name}" for name in names}
+
+
+def test_the_check_catches_a_wait_by_its_seconds_and_code_written_for_another_interpreter() -> None:
+    source = (
+        "import asyncio\nfut.result(timeout=1)\nev.wait(1)\nasyncio.wait(fs)\nasyncio.sleep(0.0)\nasyncio.sleep(False)\n"
+        "asyncio.sleep(delay=0)\n"
+        'pytester.makepyfile("import time\\ntime.sleep(1.3)\\n")\nrun([sys.executable, "-c", "import asyncio; asyncio.sleep(2)"])\n'
+    )
+    assert reached(source) == {".result(timeout=)", ".wait(seconds)", "asyncio.sleep()", "time"}
