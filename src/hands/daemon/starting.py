@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NoReturn
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.daemon.restart import RESTART_SIGNAL
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
@@ -161,8 +161,8 @@ class Start:
     start's trace.
     """
 
-    def __init__(self, restarted: bool) -> None:
-        self._began = begun(SYSTEM)
+    def __init__(self, restarted: bool, clock: Clock) -> None:
+        self._began = begun(clock)
         self._facts: dict[str, Fact] = {"pid": os.getpid(), "restarted": restarted}
         self._ended = False
 
@@ -243,7 +243,7 @@ def again(argv: list[str]) -> NoReturn:
     os.execv(argv[0], argv)
 
 
-async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop
+async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: heartbeat.Heart, live: Callable[[], int], degraded: Callable[[], tuple[heartbeat.Degradation, ...]], stop: Stop, clock: Clock
 ) -> T | None:
     """What `prepare` makes, while the loop beats "starting"; None when told to stop first.
 
@@ -253,7 +253,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     a stuck loop as not responding.
     """
     preparing = asyncio.create_task(prepare())
-    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded()), heart.period.total_seconds()))
+    starting = asyncio.create_task(keep_beating(lambda: heart.beat("starting", None, live(), listening=False, degraded=degraded()), heart.period.total_seconds(), clock))
     quitting = asyncio.create_task(stop.wait())
     try:
         await asyncio.wait({preparing, starting, quitting}, return_when=asyncio.FIRST_COMPLETED)
@@ -268,8 +268,8 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
     return preparing.result() if preparing.done() and not preparing.cancelled() else None
 
 
-async def keep_beating(beat: Callable[[], None], period: float) -> None:
+async def keep_beating(beat: Callable[[], None], period: float, clock: Clock) -> None:
     """Write the heartbeat now and once a period after, until cancelled."""
     while True:
         beat()
-        await asyncio.sleep(period)
+        await clock.pause(period)

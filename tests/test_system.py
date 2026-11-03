@@ -398,7 +398,7 @@ async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypa
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:
-        assert await post_notification("hello") is False
+        assert await post_notification("hello", SYSTEM) is False
     finally:
         logger.remove(sink)
     assert errors == [f"osascript did not post 'hello' in {notify.POST_TIMEOUT_SECONDS:.0f}s"]
@@ -425,7 +425,7 @@ def test_a_run_crashed_when_its_last_heartbeat_was_not_a_stop_and_it_is_not_beat
     now = datetime.now(UTC)
     if pipeline is not None:
         heartbeat.write(home.status, heartbeat.Status(dead_pid() if pid == GONE else int(pid), now, now - timedelta(seconds=written_ago), heartbeat.HEARTBEAT, pipeline, None, 0, False, (), None))
-    assert crashed_before(home) is crashed
+    assert crashed_before(SYSTEM, home) is crashed
 
 
 def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -> None:
@@ -433,11 +433,11 @@ def test_a_heartbeat_whose_pid_a_later_process_took_is_a_crash(tmp_path: Path) -
     day_ago = datetime.now(UTC) - timedelta(days=1)
     # This process holds the pid, but it started long after the run that wrote the heartbeat.
     heartbeat.write(home.status, heartbeat.Status(os.getpid(), day_ago, day_ago, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
-    assert crashed_before(home) is True
+    assert crashed_before(SYSTEM, home) is True
 
 
 def test_a_heartbeat_that_does_not_parse_is_not_taken_for_a_crash(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path)
     home.status.write_text("{")
-    assert crashed_before(home) is False
+    assert crashed_before(SYSTEM, home) is False
     assert "not counted as a crash" in capsys.readouterr().err

@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 
 import tomlkit
 
+from hands.clock import Clock
 from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
@@ -89,7 +90,7 @@ def load(home: Home, model: str | None = None) -> Settings:
     return Settings(held, _settings(home, held, model), model)
 
 
-async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, period: float = EDIT_SECONDS) -> SettingsEdited:
+async def edited(home: Home, record: Record, reachable: Callable[[Config], object], running: Settings, clock: Clock, period: float = EDIT_SECONDS) -> SettingsEdited:
     """The edit, once the file holds settings other than `running`, the ones the run was started on: written, rewritten,
     or removed.
 
@@ -103,7 +104,7 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
     seen: bytes | _Unreadable | None = running.held
     weighed = seen
     while True:
-        await asyncio.sleep(period)
+        await clock.pause(period)
         if (now := _held(home)) != seen:
             seen = now
             continue

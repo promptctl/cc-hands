@@ -290,7 +290,7 @@ class Exporter:
         deadline = self._clock.now() + self._linger
         while len(batch) < BATCH_SPANS and (left := deadline - self._clock.now()) > 0:
             try:
-                taken = lane.queue.get(timeout=left)
+                taken = self._clock.take(lane.queue, left)
             except queue.Empty:
                 break
             if isinstance(taken, _Closed):

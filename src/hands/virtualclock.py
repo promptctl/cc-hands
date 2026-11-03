@@ -1,6 +1,7 @@
 """`Clock` on a time a test moves, and ids and randomness from a seed, the same on every run."""
 
 import asyncio
+import queue
 import random
 import uuid
 from collections.abc import Callable
@@ -49,6 +50,15 @@ class VirtualClock:
 
     def uuid(self) -> str:
         return uuid.UUID(int=self._random.getrandbits(128), version=4).hex
+
+    def rest(self, seconds: float) -> None:
+        # Off any loop, nothing waits on this clock's pauses to be woken: the time moves, and no real second passes.
+        self.at += seconds
+
+    def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
+        """What `source` holds already, else `queue.Empty` at once: the taker is another thread than the loop that moves
+        this clock, so its wait moves nothing, and a linger on this clock waits no real seconds."""
+        return source.get_nowait()
 
     def advance(self, seconds: float) -> None:
         self.at += seconds

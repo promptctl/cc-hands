@@ -138,7 +138,7 @@ async def test_a_model_kept_is_an_edit_the_run_starts_again_on(tmp_path: Path) -
     home = Home(tmp_path)
     home.config.write_text(SPOKEN_FILE)
     running_on = config.load(home)
-    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda _config: None, running_on, period=0.01), 2.0))
+    watching = asyncio.create_task(asyncio.wait_for(config.edited(home, lambda _entry: None, lambda _config: None, running_on, SYSTEM, period=0.01), 2.0))
     config.OwnModel(home, running_on, lambda _config: None).weigh("claude-opus-5-5")()
     assert await watching == SettingsEdited(path=str(home.config), refused=None)
 

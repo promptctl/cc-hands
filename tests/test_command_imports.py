@@ -18,10 +18,12 @@ from conftest import SYSTEM_PATH
 # holds nothing installed, so what `check` finds is the same on every machine.
 CHILD = """
 import json, sys, types
+from hands.clock import SystemClock
 from hands.daemon import cli
 
-def interrupted(seconds):
-    raise KeyboardInterrupt
+class Interrupting(SystemClock):
+    def rest(self, seconds):
+        raise KeyboardInterrupt
 
 async def untailed(_clock):
     from hands.voice.phoneaddress import Untailed
@@ -34,7 +36,7 @@ def logged_in(config_dir, base_url, inherited, method):
 
 home, command, out = sys.argv[1:]
 if command == "log":
-    cli.time = types.SimpleNamespace(sleep=interrupted)
+    cli.SYSTEM = Interrupting()
 if command == "phone":
     from hands.voice import phoneaddress
     phoneaddress.tailnet_name = untailed

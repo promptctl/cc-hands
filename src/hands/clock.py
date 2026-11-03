@@ -23,6 +23,7 @@ from hands.core.status import Stamp
 
 if TYPE_CHECKING:
     import asyncio
+    import queue
 
 
 class Scheduled(Protocol):
@@ -71,10 +72,25 @@ class Clock(Protocol):
         """A fresh id, as 32 hex digits."""
         ...
 
+    def rest(self, seconds: float) -> None:
+        """Blocks the calling thread until `seconds` have passed: the wait of code that runs off any event loop."""
+        ...
+
+    def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
+        """The next item of `source`, waited for on the calling thread at most `seconds`; raises `queue.Empty` once
+        they have passed with nothing taken."""
+        ...
+
 
 def stamp(clock: Clock) -> Stamp:
     """The wall clock in the milliseconds Claude Code stamps its statuses with."""
     return Stamp(int(clock.wall().timestamp() * 1000))
+
+
+def dashed(clock: Clock) -> str:
+    """A fresh id in the 8-4-4-4-12 form Claude Code requires of a session's."""
+    digits = clock.uuid()
+    return "-".join((digits[:8], digits[8:12], digits[12:16], digits[16:20], digits[20:]))
 
 
 class SystemClock:
@@ -117,6 +133,12 @@ class SystemClock:
         import uuid
 
         return uuid.uuid4().hex
+
+    def rest(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
+        return source.get(timeout=seconds)
 
 
 SYSTEM = SystemClock()

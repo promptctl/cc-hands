@@ -20,6 +20,7 @@ from typing import Any, TextIO
 import pytest
 
 from hands.brain.process import PLUGIN
+from hands.clock import Clock
 from hands.daemon import cli, update
 from hands.daemon.restart import Outcome, Restarted
 from hands.daemon.starting import invocation
@@ -239,9 +240,10 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
 # An update gone on in a process of its own that ends, as a crash or a kill ends it, before it answers its caller.
 UNANSWERED = """
 import os
+from hands.clock import SYSTEM
 from hands.daemon import update
 
-update.detach()
+update.detach(SYSTEM)
 os._exit(3)
 """
 
@@ -310,7 +312,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
 
     answers: list[int] = []
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", lambda: answering(answers))
+    monkeypatch.setattr(update, "detach", detaching(lambda: answering(answers)))
 
     # Nothing ends the caller, so the caller hears it, and exits saying hands was not restarted.
     assert cli.main(["--home", str(home.root), "update"]) == 1
@@ -323,6 +325,11 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
     facts = event["facts"]
     assert (facts["command"], facts["exit_code"], facts["sha"], facts["outcome"]["type"]) == ("update", 1, SHA, "NotRunning")
     assert event["error"] == f"exited 1: {err.removesuffix('\n')}"
+
+
+def detaching(answer: Callable[[], Callable[[int], bool]]) -> Callable[[Clock], Callable[[int], bool]]:
+    """`update.detach`, standing in: what `answer` makes, on whatever clock it is given."""
+    return lambda _clock: answer()
 
 
 def answering(answers: list[int], *, taken: bool = True) -> Callable[[int], bool]:
@@ -354,7 +361,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     home = Home(tmp_path / "home")
     detached: list[bool] = []
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", lambda: detached.append(True) or answering([]))
+    monkeypatch.setattr(update, "detach", detaching(lambda: detached.append(True) or answering([])))
     # A daemon started by a checkout's `uv run hands run` starts again on the checkout, whatever the update installed.
     restarting_from(monkeypatch, runs_from)
 
@@ -375,7 +382,7 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     unfound = Done(Installing.UNFOUND, f"copied fritter to {home.fritter}\nwrote {home.shim}\n", f"{said}\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, unfound)
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", lambda: answering([]))
+    monkeypatch.setattr(update, "detach", detaching(lambda: answering([])))
     restarting_from(monkeypatch, Path(sys.prefix))
 
     assert cli.main(["--home", str(home.root), "update"]) == 0
@@ -431,7 +438,7 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
     home = Home(tmp_path / "home")
     gone, why = caller()
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False))
+    monkeypatch.setattr(update, "detach", detaching(lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False)))
     restarting_from(monkeypatch, Path(sys.prefix))
 
     assert cli.main(["--home", str(home.root), "update"]) == 0
