@@ -1911,7 +1911,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
-    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         # The brain is behind the proxy, so it is given its usage read off the wire.
@@ -1927,7 +1927,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
-    async with mind(claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
         # Its usage is heard under the session it resumed, not one begun for it.
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
@@ -1944,7 +1944,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     refocus = Refocus(new_sessions(record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
+        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
 
     launched: list[Launch] = []
 
@@ -1967,7 +1967,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut, Attention):
+        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut, Attention):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
@@ -1987,7 +1987,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
-        async with mind(claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_cut, Attention):
+        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_cut, Attention):
             pass
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"

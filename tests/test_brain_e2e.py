@@ -251,7 +251,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     out = Spoken()
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     try:
-        async with mind(config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off, Attention) as minded:
+        async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:

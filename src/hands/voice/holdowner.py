@@ -20,7 +20,6 @@ from typing import Any, cast
 from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame, InputAudioRawFrame, StartFrame, VADUserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
-from pipecat.utils.time import time_now_iso8601
 
 from hands.clock import Clock
 from hands.core.place import Place
@@ -315,7 +314,7 @@ class HoldOwner(FrameProcessor):
         try:
             match ending:
                 case _Written(text=text):
-                    self._out.put_nowait(Words(text, "", time_now_iso8601(), _LANGUAGE))
+                    self._out.put_nowait(Words(text, "", self._clock.wall().isoformat(timespec="milliseconds"), _LANGUAGE))
                     facts["transcript"] = "words"
                 case _Spoken(hold=hold, fate=fate, sound=sound):
                     match fate:
@@ -351,7 +350,7 @@ class HoldOwner(FrameProcessor):
                 # Not said: Brandon does not need to hear it (2026-09-27).
                 return "none"
             case words:
-                self._out.put_nowait(Words(words, "", time_now_iso8601(), _LANGUAGE))
+                self._out.put_nowait(Words(words, "", self._clock.wall().isoformat(timespec="milliseconds"), _LANGUAGE))
                 return "words"
 
     async def _hear(self, listener: Listener, hearings: "asyncio.Queue[tuple[Hold, Hearing, Begun]]") -> None:
@@ -377,7 +376,7 @@ class HoldOwner(FrameProcessor):
             # one step, with nothing awaited between.
             match heard.words, self._open(hold):
                 case str() as words, True:
-                    self._out.put_nowait(InterimWords(words, "", time_now_iso8601(), _LANGUAGE))
+                    self._out.put_nowait(InterimWords(words, "", self._clock.wall().isoformat(timespec="milliseconds"), _LANGUAGE))
                     annotate(heard="words", cut=True)
                 case str(), False:
                     annotate(heard="words", cut=False)

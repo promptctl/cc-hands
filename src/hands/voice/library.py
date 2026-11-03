@@ -58,16 +58,18 @@ class Library:
         self._clock = clock
         self._lock = asyncio.Lock()
         self._names: tuple[str, ...] = ()
-        self._listed_at: float | None = None
+        self._listed_at = 0.0
+        self._fresh_since: float | None = None
         self._pending: asyncio.Future[list[str]] | None = None
 
     async def search(self, query: str, limit: int) -> Found:
         """The names containing `query`, at most MOST_FOUND of them. Only names with a folder are offered: a bare name is not a
         voice a choice can make (see voices.LIBRARY_PATH), so offering it would be a lie."""
         async with self._lock:
-            # The wall clock's: `listed_at` is said to the model as a time.
-            now = self._clock.wall().timestamp()
-            if self._listed_at is not None and now - self._listed_at < LISTING_SECONDS:
+            # Freshness is on the monotonic clock, which a wall-clock step cannot move; `listed_at` is the wall clock's, as it
+            # is said to the model as a time.
+            now = self._clock.now()
+            if self._fresh_since is not None and now - self._fresh_since < LISTING_SECONDS:
                 listed_at, from_cache = self._listed_at, True
             else:
                 # A listing that timed out keeps running in its thread, so the next search waits for that one rather than
@@ -81,7 +83,8 @@ class Library:
                     if self._pending.done():
                         self._pending = None
                 self._names = tuple(name.removesuffix(".wav") for name in files if name.endswith(".wav") and "/" in name)
-                self._listed_at = listed_at = now
+                self._fresh_since = now
+                self._listed_at = listed_at = self._clock.wall().timestamp()
                 from_cache = False
             needle = query.lower()
             matches = tuple(name for name in self._names if needle in name.lower())[: max(1, min(limit, MOST_FOUND))]

@@ -32,7 +32,7 @@ from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
@@ -181,7 +181,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], cut_off: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
@@ -192,7 +192,7 @@ async def mind(
     talk = conversation(llm.config_dir, SessionId(str(uuid4())))
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
     usage = Usage(talk.session)
-    tools = [*tools, *brain_tools, audited(SYSTEM, usage_tool(usage), record)]
+    tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
     server = await serve_mcp(tools, record, spans)
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
@@ -310,7 +310,7 @@ async def run(
                 audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
+            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
