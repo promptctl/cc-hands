@@ -7,12 +7,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import cast
 
 import pytest
+from conftest import patiently
 from aiohttp import web
 from loguru import logger
 
 from hands.brain.asides import AsideFailed, AsideKind, Asides, Deadline, TimeLimit, Unanswered
 from hands.brain.fork import REMINDER, RUNNING, Newest, Turn, fork
-from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import CLASS_HEADER, Exchanged, cache_marked, Fork, Forwarded, MainTurn, Message, Observed, Reached, Route, Send, Sent, Text, Thinking, ToolUse, Written, classify
@@ -102,9 +102,10 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     newest = Newest(BRAIN)
     waiting = asyncio.create_task(newest.turn())
     message = reply(Text("Done."))
+    clock = VirtualClock()
 
     def exchanged(exchange: str, session: SessionId) -> Exchanged:
-        return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root(SYSTEM))
+        return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root(clock))
 
     # Another session's main turn, and a fork of the brain's, are never what a question forks from.
     for observed in (
@@ -170,7 +171,9 @@ async def written(request: web.Request, chunks: list[bytes]) -> web.StreamRespon
 class Brain:
     """hands' proxy before a stand-in for the API, with Asides listening on its wire, and the brain's main turn sent through it."""
 
-    def __init__(self, proxy_url: str, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[Answer], routed: list[Span]) -> None:
+    def __init__(self, clock: VirtualClock, proxy_url: str, asides: Asides, asked: list[tuple[dict[str, str], dict[str, object]]], answers: list[Answer], routed: list[Span]) -> None:
+        # The one clock the proxy, its wire, and Asides run on, moved only by the test.
+        self.clock = clock
         self.url = proxy_url
         self.asides = asides
         self.asked = asked
@@ -207,16 +210,17 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         upstream.app.router.add_route("*", "/{path:.*}", api)
         await upstream.setup()
         await web.TCPSite(upstream, "127.0.0.1", 0).start()
-        wire = Wire(SYSTEM, lambda _observed: None)
-        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=VirtualClock(epoch=datetime.fromtimestamp(0, UTC)))
-        asides = Asides(SYSTEM, proxy.url, Newest(BRAIN), recorded.append)
+        clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
+        wire = Wire(clock, lambda _observed: None)
+        proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
+        asides = Asides(clock, proxy.url, Newest(BRAIN), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
                 # As Kept routes: the question's own request by the question, the rest as the stage routes every request
                 # of the brain's that is not a main turn.
                 owned = asides.own(sent)
-                route = Send(refusal="final", span=root(SYSTEM)) if owned is None else owned
+                route = Send(refusal="final", span=root(clock)) if owned is None else owned
                 routed.append(route.span)
                 return route
 
@@ -230,7 +234,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
             joined.__exit__(None, None, None)
 
         cleanups.extend([asides.close, proxy.close, upstream.cleanup, leave])
-        return Brain(proxy.url, asides, asked, answers, routed)
+        return Brain(clock, proxy.url, asides, asked, answers, routed)
 
     yield start
     for cleanup in cleanups:
@@ -265,8 +269,11 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
     recorded: list[Entry] = []
     rig = await brain(recorded)
     # Before the brain has sent a main turn there is nothing to fork: the question waits for one, inside its asker's time.
+    early = asyncio.create_task(rig.asides.ask(AsideKind.NAME, "early", Deadline(0.3)))
+    await rig.clock.scheduled(0.3)
+    rig.clock.advance(0.3)
     with pytest.raises(AsideFailed, match=r"the brain sent no main turn to fork within Deadline\(seconds=0.3\)"):
-        await rig.asides.ask(AsideKind.NAME, "early", Deadline(0.3))
+        await early
     await rig.main_turn()
     rig.answers.append(stream("", stop="tool_use"))
     with pytest.raises(AsideFailed, match="ended 'tool_use'"):
@@ -397,23 +404,27 @@ async def test_a_reply_that_breaks_off_fails_the_question_and_nothing_else(brain
 async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs_from_its_turn(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
-    loop = asyncio.get_running_loop()
-    # Both wait for the brain's first main turn at once: neither holds the other back while there is nothing to fork.
-    started = loop.time()
+    # Both wait for the brain's first main turn at once: neither holds the other back while there is nothing to fork, so
+    # the one 0.3 s both were given ends them both.
     early = [asyncio.create_task(rig.asides.ask(AsideKind.NAME, question, Deadline(0.3))) for question in ("one", "two")]
+    await rig.clock.scheduled(0.3, count=2)
+    assert not any(task.done() for task in early)
+    rig.clock.advance(0.3)
     for task in early:
         with pytest.raises(AsideFailed, match="no main turn"):
             await task
-    assert loop.time() - started < 0.55
     await rig.main_turn()
     gate = asyncio.Event()
     rig.answers.extend([held(gate, "Slow."), stream("Patient.")])
     slow = asyncio.create_task(rig.asides.ask(AsideKind.SUMMARY, "slow", Deadline(10)))
-    await asyncio.sleep(0.05)
+    # Its request is at the API, so it holds the turn.
+    await patiently(lambda: len(rig.asked) == 2, lambda: len(rig.asked))
     # Queued behind the slow one for longer than its own seconds: they start at its turn, so it is still answered.
     patient = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "patient", TimeLimit(0.3)))
     left = asyncio.create_task(rig.asides.ask(AsideKind.LINE, "left", Deadline(10)))
-    await asyncio.sleep(0.4)
+    # The slow one's deadline and the one left's, both begun now: the patient one's runs from its turn, not yet come.
+    await rig.clock.scheduled(rig.clock.now() + 10, count=2)
+    rig.clock.advance(0.4)
     left.cancel()
     gate.set()
     assert await slow == "Slow."
@@ -421,7 +432,7 @@ async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs
     with pytest.raises(asyncio.CancelledError):
         await left
     by = {event.facts["question"]: event for event in events(recorded)}
-    assert cast(float, by["patient"].facts["queued_ms"]) >= 350
+    assert by["patient"].facts["queued_ms"] == pytest.approx(400)
     assert by["left"].outcome == "cancelled" and "queued_ms" not in by["left"].facts
 
 
@@ -433,3 +444,17 @@ async def test_a_questions_own_request_is_part_of_its_unit_of_work(brain: Callab
     [event] = events(recorded)
     # The brain's main turn is routed as the stage routes it; the question's request inside the question.
     assert [span.parent_id for span in rig.routed] == [None, event.span_id]
+
+
+async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_timed_out() -> None:
+    class TimesOut(Newest):
+        async def turn(self) -> Turn:
+            raise TimeoutError("a wait of its own")
+
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BRAIN), lambda _entry: None)
+    try:
+        with pytest.raises(AsideFailed, match="not its asker's time") as failed:
+            await asides.ask(AsideKind.LINE, "q", Deadline(10))
+        assert failed.value.why == Unanswered.BROKEN
+    finally:
+        await asides.close()

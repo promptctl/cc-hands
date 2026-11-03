@@ -4,7 +4,7 @@ import asyncio
 import queue
 import random
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
 from hands.clock import Scheduled, Timeout
@@ -19,8 +19,9 @@ class VirtualClock:
         self._epoch = epoch
         self._random = random.Random(seed)
         self._pauses: list[tuple[float, asyncio.Future[None]]] = []
-        self._watched: list[tuple[float, asyncio.Future[None]]] = []
+        self._watched: list[tuple[Callable[[], Sequence[float]], float, int, asyncio.Future[None]]] = []
         self._calls: list[_Call] = []
+        self._begun: list[float] = []
 
     def now(self) -> float:
         return self.at
@@ -31,6 +32,7 @@ class VirtualClock:
     def pause(self, seconds: float) -> asyncio.Future[None]:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
+        self._begun.append(seconds)
         self._seen()
         # A pause already due wakes at once, as `asyncio.sleep(0)` does.
         self._wake()
@@ -39,6 +41,7 @@ class VirtualClock:
     def call_at(self, when: float, callback: Callable[[], object]) -> Scheduled:
         call = _Call(when, callback)
         self._calls.append(call)
+        self._seen()
         self._wake()
         return call
 
@@ -56,7 +59,7 @@ class VirtualClock:
         # pause or call a loop waits on would come due unwoken, so a clock shared that way is refused, not run.
         if self.waking or any(call.live for call in self._calls):
             raise RuntimeError("rest moves a clock a loop is waiting on; that loop's test moves it with advance")
-        self.at += seconds
+        self._move(self.at + seconds)
 
     def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
         """What `source` holds already, else `queue.Empty` at once: the taker is another thread than the loop that moves
@@ -64,17 +67,42 @@ class VirtualClock:
         return source.get_nowait()
 
     def advance(self, seconds: float) -> None:
-        self.at += seconds
+        self.advance_to(self.at + seconds)
+
+    def advance_to(self, when: float) -> None:
+        """The clock at `when` exactly, waking what comes due by then."""
+        self._move(when)
         self._wake()
 
-    async def paused(self, until: float) -> None:
-        """Once a pause that wakes at `until` is waiting on this clock, however long the unit takes to come to it: a test
-        moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling], and a
-        unit that never comes to it is ended by the suite's timeout."""
+    def _move(self, when: float) -> None:
+        # Monotonic, as the time it stands in for: a rewind would stamp what follows before what came first, and a NaN
+        # would leave every pause and call never due.
+        if not when >= self.at:
+            raise ValueError(f"a clock moves only forward; {when} is not on or after {self.at}")
+        self.at = when
+
+    async def paused(self, until: float, count: int = 1) -> None:
+        """Once `count` pauses that wake at `until` are waiting on this clock, however long the unit takes to come to them:
+        a test moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling],
+        and a unit that never comes to it is ended by the suite's timeout."""
+        await self._watch(lambda: self.waking, until, count)
+
+    async def scheduled(self, until: float, count: int = 1) -> None:
+        """Once `count` calls that come due at `until`, as a timeout's deadline does, are scheduled on this clock: as
+        `paused`, for what `call_at` waits out."""
+        await self._watch(lambda: [call.when for call in self._calls if call.live], until, count)
+
+    async def _watch(self, waiting: Callable[[], Sequence[float]], until: float, count: int) -> None:
         seen = asyncio.get_running_loop().create_future()
-        self._watched.append((until, seen))
+        self._watched.append((waiting, until, count, seen))
         self._seen()
         await seen
+
+    @property
+    def begun(self) -> tuple[float, ...]:
+        """How long each pause ever begun on this clock was to last, done or not: what a test reads to say one never
+        began."""
+        return tuple(self._begun)
 
     @property
     def waking(self) -> tuple[float, ...]:
@@ -96,11 +124,10 @@ class VirtualClock:
             call.fire(loop)
 
     def _seen(self) -> None:
-        waking = self.waking
-        for until, seen in self._watched:
-            if until in waking and not seen.done():
+        for waiting, until, count, seen in self._watched:
+            if list(waiting()).count(until) >= count and not seen.done():
                 seen.set_result(None)
-        self._watched = [(until, seen) for until, seen in self._watched if not seen.done()]
+        self._watched = [watch for watch in self._watched if not watch[3].done()]
 
 
 class _Call:

@@ -132,6 +132,13 @@ def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None
     return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or RealWall())
 
 
+async def settled(steps: int = 100) -> None:
+    """The loop given `steps` turns, and no time: what a unit on a virtual clock does next without waiting on that clock
+    or on a party outside the process it has done by then, so a test can assert what has not happened."""
+    for _ in range(steps):
+        await asyncio.sleep(0)
+
+
 async def patiently(done: Callable[[], bool], moved: Callable[[], object]) -> None:
     """Until `done` holds, failing once `moved` has stood still through PATIENCE_SECS of the wait's looking.
 
