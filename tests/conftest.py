@@ -248,7 +248,7 @@ def stood_in(kept: Path) -> voiceprints.Voiceprints:
     def speech() -> voiceprints.Synthesize:
         return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
 
-    return voiceprints.Voiceprints(model, speech, kept, lambda _entry: None)
+    return voiceprints.Voiceprints(SYSTEM, model, speech, kept, lambda _entry: None)
 
 
 async def unprimed() -> None:

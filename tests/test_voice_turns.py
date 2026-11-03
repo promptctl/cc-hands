@@ -36,6 +36,8 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import events, model_facts, patiently, running, stood_in, unprimed
+from hands.virtualclock import VirtualClock
+from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
@@ -175,16 +177,6 @@ class Streamed:
         return streaming.Closed(frozenset(), ())
 
 
-@dataclass
-class Clock:
-    """The floor's clock, read where the test sets it."""
-
-    now: float = 0.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 # A key position, or "dropped": the turn open thrown away, and the key at rest.
 Captured = Key | Literal["dropped"]
 
@@ -195,7 +187,7 @@ class Rig:
     stt: HoldOwner
     out: Recorded
     recorded: list[Entry]
-    clock: Clock
+    clock: VirtualClock
     # Each live session, as the floor reads it when it lets go.
     live: dict[SessionId, Session]
     # What each transcription, oldest first, will find; it waits for the test to say.
@@ -285,17 +277,18 @@ async def rigged(
         primed.append(None)
 
     voice = built.build_voice(
+        SYSTEM,
         built.VoiceConfig(llm=ClaudeCodeBackend(model="unused", config_dir=tmp_path, account=Account("claude.ai", None)), voice=voices.DEFAULT),
         llm=llm,
-        key=PushToTalk(recorded.append),
+        key=PushToTalk(SYSTEM, recorded.append),
         player=Player(recorded.append),
-        floor=Floor(lambda id: id, dict),
+        floor=Floor(lambda id: id, dict, SYSTEM),
         prompt=vocabulary,
         prints=stood_in(tmp_path / "voiceprints"),
         holds=tmp_path / "holds",
         record=recorded.append,
     )
-    out, clock, live = Recorded(), Clock(), dict[SessionId, Session]()
+    out, clock, live = Recorded(), VirtualClock(), dict[SessionId, Session]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
@@ -311,7 +304,7 @@ async def rigged(
     told: list[Mark] = []
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
-    async with running(stages, [LatencyObserver(told.append), *watching]) as run:
+    async with running(stages, [LatencyObserver(SYSTEM, told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
 
 
@@ -1008,7 +1001,7 @@ HOLDS: list[tuple[Edge, list[Captured], list[Captured]]] = [
 async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(
     rig: Rig, by: Edge, held: list[Captured], let_go_of: list[Captured], order: list[str]
 ) -> None:
-    rig.clock.now = 10.0
+    rig.clock.at = 10.0
     # A turn the voice opens holds the floor from its opening, though it takes nothing over until its words are heard.
     await rig.hold(held, by=by)
     await rig.until(lambda: rig.out.holds == [1])
@@ -1016,7 +1009,7 @@ async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_t
     await rig.worker.queue_frames([gone, TextFrame("marker")])
     # Frames keep their order, so the marker past the floor with the announcement not is the announcement held.
     await rig.until(lambda: "marker" in rig.out.order)
-    rig.clock.now = 13.5
+    rig.clock.at = 13.5
     await rig.hold(let_go_of, by=by)
     await rig.texts.put("what time is it")
     await rig.until(lambda: "said: The session api is gone." in rig.out.order)
@@ -1029,7 +1022,7 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
     first: the floor stays the user's through the turn that press opened."""
     out = Recorded()
     one, two = Hold(1, "held key"), Hold(2, "engaged conversation")
-    async with running([Floor(lambda id: id, dict), out], []) as run:
+    async with running([Floor(lambda id: id, dict, SYSTEM), out], []) as run:
         await run.worker.queue_frames([TurnOpened(hold=one), TurnResolved(hold=one)])
         await until(out, lambda: out.resolved == [1])
         # The aggregator stops the first turn behind its hold's resolution, as the second hold opens.
@@ -1071,11 +1064,11 @@ async def test_two_sessions_finishing_during_one_held_key_are_told_asks_first_an
     await rig.until(lambda: rig.out.started == 1)
     # web's first request was answered at the keyboard while the key was down; its second still waits.
     held = [finished(API, "Fixed the parser."), asking(WEB, "w1"), finished(API, "Pushed it."), asking(WEB, "w2")]
-    rig.clock.now = 2.0
+    rig.clock.at = 2.0
     await rig.worker.queue_frames([*held, TextFrame("marker")])
     await rig.until(lambda: "marker" in rig.out.order)
     # Each is held from when it came, not from the press.
-    rig.clock.now = 5.0
+    rig.clock.at = 5.0
     await rig.hold(["up"])
     await rig.texts.put("what time is it")
     await rig.until(lambda: len(rig.out.told) == 2)
@@ -1117,7 +1110,7 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
 
 
 def owned() -> HoldOwner:
-    return HoldOwner(Whisper(prompt=unprimed, record=lambda _: None), (), lambda _: None)
+    return HoldOwner(SYSTEM, Whisper(clock=SYSTEM, prompt=unprimed, record=lambda _: None), (), lambda _: None)
 
 
 async def test_the_hold_owner_hears_only_the_keyed_microphone() -> None:

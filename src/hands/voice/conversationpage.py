@@ -19,6 +19,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from hands.clock import Clock
 from hands.sessions.audit import Record, past
 from hands.sessions.payload import Rejected
 from hands.sessions.recall import Moment, Moments, Reading
@@ -92,7 +93,7 @@ def parse_typed(body: bytes) -> str:
             raise Rejected("words typed are {text}, with something in it")
 
 
-def conversation_routes(conversation: Conversation, typed: Callable[[str], Awaitable[None]], key: str, record: Record) -> list[web.RouteDef]:
+def conversation_routes(clock: Clock, conversation: Conversation, typed: Callable[[str], Awaitable[None]], key: str, record: Record) -> list[web.RouteDef]:
     """The page, the read of the conversation, and the words typed into it.
 
     [LAW:nothing-unseen] each read is one `conversation.read` event, how long it waited and how many moments it gave;
@@ -103,19 +104,19 @@ def conversation_routes(conversation: Conversation, typed: Callable[[str], Await
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
-    @keyed("conversation.read", record, key, counts=("moments",))
+    @keyed(clock, "conversation.read", record, key, counts=("moments",))
     async def read(request: web.Request) -> web.Response:
         try:
             seen = parse_seen(request.query.get("seen"))
         except Rejected as error:
             fail(str(error))
             return web.Response(status=400, text=str(error))
-        changes, moments = await waited(conversation.caught_up, seen)
+        changes, moments = await waited(clock, conversation.caught_up, seen)
         annotate(changes=changes)
         count(moments=len(moments))
         return web.json_response({"changes": changes, "moments": [_shown(moment) for moment in moments]})
 
-    @keyed("conversation.typed", record, key)
+    @keyed(clock, "conversation.typed", record, key)
     async def sent(request: web.Request) -> web.Response:
         try:
             text = parse_typed(await request.read())

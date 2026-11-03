@@ -10,6 +10,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from hands.clock import SYSTEM
 from hands.core.brainwork import AlreadyEnded, BrainWork, Epoch, Idle, Running, StopOutcome, Stopping, Working
 from hands.core.wire import Unreadable
 from hands.sessions.audit import Entry
@@ -60,7 +61,7 @@ async def page(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[Page]:
     brain = Brain()
     recorded: list[Entry] = []
     app = web.Application()
-    app.add_routes(brain_routes(brain, KEY, recorded.append))
+    app.add_routes(brain_routes(SYSTEM, brain, KEY, recorded.append))
     async with TestClient(TestServer(app)) as client:
         yield Page(client, brain, recorded)
 

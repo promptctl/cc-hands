@@ -4,6 +4,7 @@ from typing import Literal, TypedDict
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice.tool import Result, Tool, tool
@@ -73,20 +74,20 @@ def run(recorded: list[Entry]) -> WideEvent:
 
 async def test_an_audited_tool_keeps_its_schema() -> None:
     plain = tool(echo)
-    wrapped = audited(plain, lambda _: None)
+    wrapped = audited(SYSTEM, plain, lambda _: None)
     assert (wrapped.name, wrapped.description, wrapped.input_schema, wrapped.then) == (plain.name, plain.description, plain.input_schema, plain.then)
 
 
 async def test_a_call_that_returns_is_one_event_with_what_it_was_given_and_handed_back() -> None:
     recorded: list[Entry] = []
-    assert await audited(tool(echo), recorded.append).body(text="hi") == {"said": "hi"}
+    assert await audited(SYSTEM, tool(echo), recorded.append).body(text="hi") == {"said": "hi"}
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("ok", None, {"tool": "echo", "called": Called({"text": "hi"}, {"said": "hi"})})
 
 
 async def test_a_call_whose_result_refuses_it_is_one_failed_event_saying_why() -> None:
     recorded: list[Entry] = []
-    result = await audited(tool(refusing), recorded.append).body(session="x")
+    result = await audited(SYSTEM, tool(refusing), recorded.append).body(session="x")
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("failed", "no running session has the id 'x'", {"tool": "refusing", "called": Called({"session": "x"}, result)})
 
@@ -94,7 +95,7 @@ async def test_a_call_whose_result_refuses_it_is_one_failed_event_saying_why() -
 async def test_a_call_with_arguments_the_body_does_not_take_is_refused_to_the_model_and_one_failed_event() -> None:
     recorded: list[Entry] = []
     body = tool(echo)
-    result = await audited(body, recorded.append).body(words="hi")
+    result = await audited(SYSTEM, body, recorded.append).body(words="hi")
     assert result == {"error": "echo was called with the wrong arguments: missing a required argument: 'text'"}
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("failed", result["error"], {"tool": "echo", "called": Called({"words": "hi"}, result)})
@@ -125,7 +126,7 @@ FITTING: dict[str, object] = {"text": "hi", "loud": False, "times": 2, "tone": "
 async def test_an_argument_that_is_not_what_the_schema_says_is_refused_before_the_body_runs_and_one_failed_event(given: dict[str, object], refusal: str) -> None:
     recorded: list[Entry] = []
     arguments = {**FITTING, **given}
-    result = await audited(tool(typed), recorded.append).body(**arguments)
+    result = await audited(SYSTEM, tool(typed), recorded.append).body(**arguments)
     assert result == {"error": refusal}
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("failed", refusal, {"tool": "typed", "called": Called(arguments, result)})
@@ -138,7 +139,7 @@ async def test_arguments_that_are_what_the_schema_says_reach_the_body() -> None:
 
 async def test_a_null_is_an_argument_left_out_and_takes_its_default_with_the_event_keeping_what_was_sent() -> None:
     recorded: list[Entry] = []
-    result = await audited(tool(counted), recorded.append).body(text="hi", times=None)
+    result = await audited(SYSTEM, tool(counted), recorded.append).body(text="hi", times=None)
     assert result == {"said": ["hi"]}
     event = run(recorded)
     assert (event.outcome, event.facts) == ("ok", {"tool": "counted", "called": Called({"text": "hi", "times": None}, result)})
@@ -146,7 +147,7 @@ async def test_a_null_is_an_argument_left_out_and_takes_its_default_with_the_eve
 
 async def test_a_call_that_raises_is_one_failed_event_with_what_raised_and_where_and_raises_on() -> None:
     recorded: list[Entry] = []
-    wrapped: Tool = audited(tool(broken), recorded.append)
+    wrapped: Tool = audited(SYSTEM, tool(broken), recorded.append)
     with pytest.raises(RuntimeError):
         await wrapped.body(session="s1")
     event = run(recorded)

@@ -8,6 +8,7 @@ from pathlib import Path
 import aiohttp
 import pytest
 
+from hands.clock import SYSTEM
 from hands.brain.mcp import CallSpans, serve_mcp
 from hands.core.effects import Input, Text, Type
 from hands.core.events import Joined
@@ -49,8 +50,8 @@ async def two_sessions(tmp: Path, typed: list[Type[Input]]) -> Sessions:
 
 def tools(sessions: Sessions, home: Home, record: Record = lambda _: None, acting: Callable[[], None] = lambda: None) -> dict[str, Tool]:
     """The tools as the daemon gives them, focus defaulting and each call its event in `record`."""
-    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(lambda: []), lambda _voice: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": str(home.root)}, acting)
-    return {tool.name: audited(tool, record) for tool in given}
+    given = intermediary_tools(sessions, SummaryStore(Sentences(home.root / "sentences.db")), home, Recounts(), Player(lambda _entry: None), Refocus(sessions, home, lambda _entry: None), PushToTalk(SYSTEM, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(home, Settings(None, Config()), lambda _config: None), Voices(home, Player(lambda _entry: None).lines, lambda _voice: None, Library(SYSTEM, lambda: []), lambda _voice: None), Catalogue(Missing("no credentials in tests")), {"TMUX_TMPDIR": str(home.root)}, acting)
+    return {tool.name: audited(SYSTEM, tool, record) for tool in given}
 
 
 async def test_every_call_is_heard_acting_but_staying_silent(tmp_path: Path) -> None:

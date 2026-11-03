@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import pytest
 from aiohttp import web
 
+from hands.clock import SYSTEM
 from hands.sessions.child import Ran
 from hands.sessions.wide import WideEvent
 from hands.spotify import Catalogue, Credentials, Missing, Player, Refused, credentials, link
@@ -186,7 +187,7 @@ async def test_a_search_holds_its_token_until_it_runs_out_and_its_event_says_whi
     recorded: list[object] = []
     async with spotify_api(granted, searched) as url:
         catalogue = Catalogue(Credentials("id", "secret"), lambda: now[0], token_url=f"{url}/token", search_url=f"{url}/search")
-        [search] = [audited(tool, recorded.append) for tool in spotify_tools(Player(Osascript()), catalogue) if tool.name == "spotify_search"]
+        [search] = [audited(SYSTEM, tool, recorded.append) for tool in spotify_tools(Player(Osascript()), catalogue) if tool.name == "spotify_search"]
         assert await search.body(query="paranoid android") == {"found": [{"name": "Paranoid Android", "by": "Radiohead", "link": f"spotify:track:{TRACK}"}]}
         # A playlist Spotify cannot show comes as a null, and is no find.
         assert await search.body(query="top hits", kind="playlist") == {"found": [{"name": "Today's Top Hits", "by": "Spotify", "link": f"spotify:playlist:{PLAYLIST}"}]}

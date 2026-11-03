@@ -10,7 +10,6 @@ whoever was given to be told: the phone's page, which shows them to the user
 holding it. It performs no other effect.
 """
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -28,6 +27,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
+from hands.clock import Clock
 from hands.voice.mark import Mark
 from hands.voice.turnstop import HoldDiscarded, Words
 
@@ -78,9 +78,10 @@ class Turn:
 class LatencyObserver(BaseObserver):
     """Log each milestone's distance from the key release, per turn, and tell `told` each mark of a turn as it lands."""
 
-    def __init__(self, told: Callable[[Mark], None]) -> None:
+    def __init__(self, clock: Clock, told: Callable[[Mark], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
+        self._clock = clock
         self._told = told
         self._window: Window | None = None
         self._turn = Turn()
@@ -94,7 +95,7 @@ class LatencyObserver(BaseObserver):
         self._holding = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
-        now = time.monotonic()
+        now = self._clock.now()
         frame = data.frame
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._holding = True

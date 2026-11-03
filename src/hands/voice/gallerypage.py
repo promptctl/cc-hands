@@ -14,6 +14,7 @@ from typing import Protocol, TypeVar, cast, get_args
 
 from aiohttp import web
 
+from hands.clock import Clock
 from hands.core.place import Modality
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
@@ -113,7 +114,7 @@ def _refusal(error: Exception) -> web.Response:
     return web.Response(status=400 if isinstance(error, Rejected) else 503, text=str(error))
 
 
-def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.RouteDef]:
+def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> list[web.RouteDef]:
     """The page, its read of the voices and options, and one route per choice.
 
     [LAW:nothing-unseen] the read is one `gallery.read` event; each choice one event of its own, `gallery.hear`,
@@ -124,7 +125,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
     async def shown(_request: web.Request) -> web.Response:
         return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-store"})
 
-    @keyed("gallery.read", record, key)
+    @keyed(clock, "gallery.read", record, key)
     async def read_state(_request: web.Request) -> web.Response:
         try:
             speaking = await gallery.voices.speaking_in()
@@ -138,7 +139,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
             "models": gallery.models, "running_on": gallery.own.running(),
         })
 
-    @keyed("gallery.hear", record, key)
+    @keyed(clock, "gallery.hear", record, key)
     async def hear_voice(request: web.Request) -> web.Response:
         try:
             heard = parse_voice(parse_field(await request.read(), "voice"))
@@ -148,7 +149,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
         annotate(heard=str(heard), speaking_in=str(speaking))
         return web.json_response({"heard": str(heard), "speaking_in": str(speaking)})
 
-    @keyed("gallery.use", record, key)
+    @keyed(clock, "gallery.use", record, key)
     async def use_voice(request: web.Request) -> web.Response:
         try:
             voice = parse_voice(parse_field(await request.read(), "voice"))
@@ -158,7 +159,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
         annotate(voice=str(voice))
         return web.json_response({"speaking_in": str(voice)})
 
-    @keyed("gallery.library", record, key)
+    @keyed(clock, "gallery.library", record, key)
     async def find_voices(request: web.Request) -> web.Response:
         query = request.query.get("q", "")
         try:
@@ -172,7 +173,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
         annotate(query=query, matches=len(found.names), listed_at=found.listed_at, from_cache=found.from_cache)
         return web.json_response({"voices": list(found.names), "listed_at": found.listed_at, "from_cache": found.from_cache})
 
-    @keyed("gallery.level", record, key)
+    @keyed(clock, "gallery.level", record, key)
     async def choose_level(request: web.Request) -> web.Response:
         try:
             level = parse_level(parse_field(await request.read(), "level"))
@@ -182,7 +183,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
         annotate(level=level, was=was)
         return web.json_response({"level": level, "was": was, "readback": described(level, gallery.wake)})
 
-    @keyed("gallery.modality", record, key)
+    @keyed(clock, "gallery.modality", record, key)
     async def choose_modality(request: web.Request) -> web.Response:
         try:
             modality = parse_modality(parse_field(await request.read(), "modality"))
@@ -192,7 +193,7 @@ def gallery_routes(gallery: Gallery, key: str, record: Record) -> list[web.Route
         annotate(modality=modality)
         return web.json_response({"modality": modality})
 
-    @keyed("gallery.model", record, key)
+    @keyed(clock, "gallery.model", record, key)
     async def choose_model(request: web.Request) -> web.Response:
         try:
             model = parse_field(await request.read(), "model")

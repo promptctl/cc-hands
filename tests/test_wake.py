@@ -95,7 +95,7 @@ async def test_the_wake_word_opens_turns_with_no_key_and_off_stops_the_desk_list
         made.append(move.move)
 
     chosen = await wake_word_level()
-    driving = asyncio.create_task(drive(untapped, overheard, hearing_with(ScriptedEars(), woken), chosen, on_move, level, events.append))
+    driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ScriptedEars(), woken), chosen, on_move, level, events.append))
     # Talk in the room opens nothing; the wake word opens a turn, the pause after it ends nothing, and the verdict on
     # the stop after what was asked sends it; and again.
     for each in (b"S", b"q", b"w", b"q", b"S", b"q", b"S", b"q", b"w", b"q", b"S", b"q"):
@@ -136,7 +136,7 @@ def test_the_detector_hears_the_room_while_hands_speaks_and_each_waking_says_whe
     word = FakeWord()
     speaking = [True]
     events: list[WideEvent] = []
-    woken = listening(word, lambda: speaking[0], events.append)
+    woken = listening(SYSTEM, word, lambda: speaking[0], events.append)
 
     async def heard() -> list[bool]:
         with unit("desk", events.append, begun(SYSTEM), ("heard",)):
@@ -165,7 +165,7 @@ def wakes(word: WakeWord, audio: bytes) -> bool:
 
 async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
+    async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained(), events.append) as word:
         assert wakes(word, said("Hey Jarvis. What is the status of the build?"))
         assert not wakes(word, said("I was talking with Jarvis earlier about the build, and it was fine."))
     assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("desk.wake_word_loaded", "ok", "Hey Jarvis")]
@@ -173,7 +173,7 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
 
 async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: Path) -> None:
     events: list[WideEvent] = []
-    async with loaded(SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
+    async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
         assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
         assert not wakes(word, said("Hey Jarvis. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
@@ -185,7 +185,7 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
     trained.parent.mkdir()
     trained.write_bytes((models / PRETRAINED["Hey Mycroft"]).read_bytes())
     events: list[WideEvent] = []
-    async with loaded(SAMPLE_RATE, models, Trained("Hey Computer", trained), events.append) as word:
+    async with loaded(SYSTEM, SAMPLE_RATE, models, Trained("Hey Computer", trained), events.append) as word:
         assert wakes(word, said("Hey Mycroft. What is the status of the build?"))
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Computer", str(trained))]
 
@@ -193,7 +193,7 @@ async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_t
 async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     events: list[WideEvent] = []
     with pytest.raises(ValueError, match="16000 Hz"):
-        async with loaded(48_000, Path("unread"), Pretrained(), events.append):
+        async with loaded(SYSTEM, 48_000, Path("unread"), Pretrained(), events.append):
             pass
     assert [(event.event, event.outcome) for event in events] == [("desk.wake_word_loaded", "failed")]
 
@@ -229,8 +229,8 @@ async def test_what_is_asked_after_the_wake_word_is_judged_whether_asked_in_one_
     async def on_move(move: Made) -> None:
         made.append(move.move)
 
-    async with ears_loaded(SAMPLE_RATE, events.append) as ears, loaded(SAMPLE_RATE, models, Pretrained(), events.append) as word:
-        driving = asyncio.create_task(drive(untapped, overheard, hearing_with(ears, listening(word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
+    async with ears_loaded(SYSTEM, SAMPLE_RATE, events.append) as ears, loaded(SYSTEM, SAMPLE_RATE, models, Pretrained(), events.append) as word:
+        driving = asyncio.create_task(drive(SYSTEM, untapped, overheard, hearing_with(ears, listening(SYSTEM, word, lambda: False, events.append)), await wake_word_level(), on_move, level, events.append))
         async with asyncio.timeout(60.0):
             while "stop" not in made:
                 await asyncio.sleep(0.01)

@@ -9,7 +9,7 @@ import asyncio
 import functools
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -17,7 +17,7 @@ from typing import Literal, TypedDict
 
 from loguru import logger
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
@@ -85,14 +85,14 @@ _APPROVALS: Mapping[str, ModeAfterPlan] = {"approve": "resume", "auto-accept edi
 _COMMAND_NAME = re.compile(r"/?([A-Za-z0-9][A-Za-z0-9_:-]*)")
 
 
-def audited(tool: Tool, record: Record) -> Tool:
+def audited(clock: Clock, tool: Tool, record: Record) -> Tool:
     """The tool, each call one wide event: the tool's name, what it was given, and what the model was handed back, ending
     failed where the body raised or the result refuses the call."""
 
     # [LAW:single-enforcer] one unit on every body, whichever adapter calls it, so no call goes unseen [LAW:nothing-unseen].
     @functools.wraps(tool.body)
     async def call(**arguments: object) -> Result:
-        with unit("tool.run", record, begun(SYSTEM)):
+        with unit("tool.run", record, begun(clock)):
             annotate(tool=tool.name, called=Called(arguments, None))
             result = await tool.body(**arguments)
             annotate(called=Called(arguments, result))
@@ -144,7 +144,7 @@ def intermediary_tools(
         focus_session_tool(sessions, home),
         *(defaulting_to_focus(tool, home) for tool in on_a_session),
         *permission_tools(sessions),
-        catch_up_tool(sessions, home, lambda: datetime.now(UTC)),
+        catch_up_tool(sessions, home, sessions.clock.wall),
         attention_tool(home),
         modality_tool(switch),
         *listening_tools(levels, wake),
@@ -579,7 +579,7 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
     if member is None:
         return f"there is no session {session}"
     try:
-        read = await sighted(store, member.cwd)
+        read = await sighted(sessions.clock, store, member.cwd)
     except (LitFailed, Rejected) as error:
         # [LAW:no-silent-failure] the model is told why it got nothing, and the log keeps it.
         logger.error(f"cannot read the backlog of session {session} in {member.cwd}: {error}")
@@ -1138,7 +1138,7 @@ async def _searched(catalogue: spotify.Catalogue, query: str, kind: spotify.Kind
     return {"found": [spotify.said(found) for found in await catalogue.search(query, kind)]}
 
 
-def start_session_tool(home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
+def start_session_tool(clock: Clock, home: Home, record: Record, environment: Mapping[str, str], members: Callable[[], Iterable[Membership]]) -> Tool:
     """[LAW:nothing-unseen] each start is its own session.start event, inside the call's."""
 
     async def start_session(folder: str, model: str = "") -> Result:
@@ -1151,7 +1151,7 @@ def start_session_tool(home: Home, record: Record, environment: Mapping[str, str
             model: The model it starts on, as the user named it (opus, sonnet, haiku, or a model id). Empty for Claude Code's own default.
         """
         try:
-            started = await startsession.start(home, SYSTEM, record, Path(folder), model or None, environment, members)
+            started = await startsession.start(home, clock, record, Path(folder), model or None, environment, members)
         except startsession.NotStarted as why:
             return {"error": str(why)}
         return {"session": started.session, "tmux_session": started.tmux_session, "pane": started.pane}

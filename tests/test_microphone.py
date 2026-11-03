@@ -20,6 +20,8 @@ from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioO
 
 from conftest import speaker_writers
 
+from hands.virtualclock import VirtualClock
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
@@ -40,7 +42,7 @@ PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, ("alba",)),) * 2  # what it ma
 
 
 def _phone() -> Phone:
-    return Phone(PushToTalk(lambda _: None), heard_rate=16000, played_rate=16000, record=lambda _: None)
+    return Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=16000, record=lambda _: None)
 
 
 class Room:
@@ -70,16 +72,16 @@ class Rig:
     """The transport with its PyAudio calls replaced: the clock is set by hand and pushed audio is kept."""
 
     def __init__(self) -> None:
-        self.now = 0.0
-        self.key = PushToTalk(lambda _: None)
-        self.phone = Phone(self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
+        self.clock = VirtualClock()
+        self.key = PushToTalk(SYSTEM, lambda _: None)
+        self.phone = Phone(SYSTEM, self.key, heard_rate=16000, played_rate=16000, record=lambda _: None)
         self.pushed: list[bytes] = []
         # Each pushed frame's sound as the microphone captured it, before the canceller, and what was played over it.
         self.captured: list[bytes] = []
         self.played: list[Played] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-        self.transport = KeyedAudioTransport(params, self.key, self.phone, lambda _: None, clock=lambda: self.now, echo=lambda: self.room)
+        self.transport = KeyedAudioTransport(self.clock, params, self.key, self.phone, lambda _: None, echo=lambda: self.room)
         self.speaker = self.transport.output()
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -97,12 +99,12 @@ class Rig:
         self.speaker.get_event_loop = asyncio.get_running_loop
 
     async def play(self, audio: bytes, at: float) -> None:
-        self.now = at
+        self.clock.at = at
         await self.speaker.write_audio_frame(OutputAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1))
 
     async def tts(self, audio: bytes, at: float) -> None:
         """A chunk of hands' TTS, as Pipecat's sender writes it."""
-        self.now = at
+        self.clock.at = at
         await self.speaker.write_audio_frame(TTSAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1, context_id="reply"))
 
     async def written(self) -> None:
@@ -110,7 +112,7 @@ class Rig:
         await cast(Attached, self.speaker.opened).writes.run(lambda: None)
 
     async def capture(self, at: float) -> None:
-        self.now = at
+        self.clock.at = at
         self.microphone._captured(self.room, LOUD, 320, {}, 0)  # pyright: ignore[reportPrivateUsage]
         await asyncio.sleep(0.01)
 
@@ -215,7 +217,7 @@ async def test_silence_given_to_the_speaker_is_no_sound_for_the_heartbeat(device
 
 async def test_a_chunk_whose_write_an_interruption_cancels_is_still_played(devices: Rig) -> None:
     devices.stream.blocking = True
-    devices.now = 1.0
+    devices.clock.at = 1.0
     writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
     await asyncio.sleep(0.01)
     writing.cancel()  # the barge-in; PortAudio's thread plays the chunk out regardless
@@ -287,8 +289,8 @@ def lost_transport(log: list[str], events: list[Entry] | None = None) -> KeyedAu
     defaults = iter([DefaultDevices(input=1, output=1), DefaultDevices(input=2, output=2)])
     cancellers = iter(Room(log, f"canceller {n}") for n in itertools.count(1))
     record: Record = (lambda _: None) if events is None else events.append
-    transport = KeyedAudioTransport(
-        params, PushToTalk(lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults), echo=lambda: next(cancellers)
+    transport = KeyedAudioTransport(SYSTEM, 
+        params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults), echo=lambda: next(cancellers)
     )
     speaker, microphone = transport.output(), transport.input()
     speaker.get_event_loop = asyncio.get_running_loop
@@ -398,7 +400,7 @@ async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_star
 
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream(devices: Rig) -> None:
     old = devices.speaker.detach()
-    devices.now = 1.0
+    devices.clock.at = 1.0
     writing = asyncio.create_task(devices.speaker.write_audio_frame(OutputAudioRawFrame(audio=LOUD, sample_rate=16000, num_channels=1)))
     await asyncio.sleep(0.01)
     assert not writing.done()
@@ -457,9 +459,9 @@ async def test_the_streams_are_opened_as_pipecat_opens_them() -> None:
     ours, pipecats = FreshPortAudio([]), FreshPortAudio([])
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
-    speaker = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None).output()
     for portaudio, output, input_ in (
-        (ours, speaker, KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None).input()),
+        (ours, speaker, KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None).input()),
         (pipecats, LocalAudioOutputTransport(cast(pyaudio.PyAudio, pipecats), params), LocalAudioInputTransport(cast(pyaudio.PyAudio, pipecats), params)),
     ):
         setattr(output, "_py_audio", portaudio)
@@ -508,7 +510,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(params, PushToTalk(lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1), echo=Room)
+    transport = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1), echo=Room)
     assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)
@@ -530,7 +532,7 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
 async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
     devices.key.move("start", "held key")
-    devices.now = 1.0
+    devices.clock.at = 1.0
     devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue
     await devices.written()

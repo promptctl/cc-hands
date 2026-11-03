@@ -13,7 +13,6 @@ bounds of its own, so no two can disagree about them.
 """
 
 import asyncio
-import time
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -23,7 +22,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
@@ -106,8 +105,9 @@ class HoldOwner(FrameProcessor):
     awaited between, so they can never land behind that hold's `TurnResolved`, which is queued only after it ended.
     """
 
-    def __init__(self, transcriber: Transcriber, listeners: Sequence[Listener], record: Record) -> None:
+    def __init__(self, clock: Clock, transcriber: Transcriber, listeners: Sequence[Listener], record: Record) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        self._clock = clock
         self._transcriber = transcriber
         self._listeners = tuple(listeners)
         self._record = record
@@ -204,7 +204,7 @@ class HoldOwner(FrameProcessor):
         hold = Hold(self._holds, "typed")
         await self.push_frame(TurnOpened(hold=hold))
         await self.push_frame(VADUserStoppedSpeakingFrame())
-        await self._ended.put(_Written(hold, text, begun(SYSTEM)))
+        await self._ended.put(_Written(hold, text, begun(self._clock)))
 
     async def _captured(self, frame: InputAudioRawFrame) -> None:
         # [LAW:parse-dont-validate] the microphone makes every frame this sees, and tags each one.
@@ -263,7 +263,7 @@ class HoldOwner(FrameProcessor):
             # A hearing is a trace of its own, part of no unit the audio path is in, so its lane can always run it.
             with continuing(None):
                 for hearing in self._told(listener, hold, told):
-                    hearings.put_nowait((hold, hearing, begun(SYSTEM)))
+                    hearings.put_nowait((hold, hearing, begun(self._clock)))
 
     def _told(self, listener: Listener, hold: Hold, told: Callable[[Listener], Hearings]) -> Hearings:
         """The hearings `listener` returned as it was told of `hold`.
@@ -273,7 +273,7 @@ class HoldOwner(FrameProcessor):
         try:
             return told(listener)
         except Exception as error:
-            ended("hearing", self._record, begun(SYSTEM), error, listener=listener.name, hold=hold.number)
+            ended("hearing", self._record, begun(self._clock), error, listener=listener.name, hold=hold.number)
             return ()
 
     async def _end(self, fate: Fate) -> None:
@@ -289,7 +289,7 @@ class HoldOwner(FrameProcessor):
                 await self.push_frame(VADUserStoppedSpeakingFrame())
             case "dropped":
                 await self.push_frame(HoldDiscarded())
-        await self._ended.put(_Spoken(hold, fate, sound, begun(SYSTEM)))
+        await self._ended.put(_Spoken(hold, fate, sound, begun(self._clock)))
 
     def _open(self, hold: Hold) -> bool:
         """Whether `hold` is the hold open now."""
@@ -337,7 +337,7 @@ class HoldOwner(FrameProcessor):
         owner resolving its holds ends one: it fails instead. A model that is running cannot be stopped, so the next
         hold's transcription waits behind it on the model's own thread, inside its own bound."""
         seconds = _transcribing_seconds(sound.seconds)
-        bound = asyncio.timeout(seconds)
+        bound = self._clock.timeout(seconds)
         try:
             async with bound:
                 said = await self._transcriber.transcribed(hold, sound.heard)
@@ -370,7 +370,7 @@ class HoldOwner(FrameProcessor):
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):
             annotate(listener=listener.name, hold=hold.number)
-            async with asyncio.timeout(HEARING_SECONDS - (time.monotonic() - began.began)):
+            async with self._clock.timeout(HEARING_SECONDS - (self._clock.now() - began.began)):
                 heard = await hearing()
             # [LAW:single-enforcer] the one cut: words a listener heard while their hold is still open. Heard once it has
             # closed, they cut nothing, and the hold's own transcription says what it held. The check and the queueing are

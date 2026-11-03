@@ -136,7 +136,7 @@ async def test_a_finished_turn_is_handed_to_the_model_with_its_reply_and_the_ses
     recorded: list[Entry] = []
     sessions = new_sessions(record=recorded.append)
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Utterances(recorded.append), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
+    narrating = asyncio.create_task(narrate(sessions, Utterances(SYSTEM, recorded.append), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN, text=""))
@@ -219,7 +219,7 @@ async def test_a_session_ending_is_not_said_with_endings_off_or_while_quiet_and_
     sessions = new_sessions()
     frames: asyncio.Queue[Frame] = asyncio.Queue()
     recorded: list[Entry] = []
-    said_unasked = Utterances(recorded.append)
+    said_unasked = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(said_unasked.keep())
     narrating = asyncio.create_task(narrate(sessions, said_unasked, Tails(sessions), frames.put, lambda: set_to, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
@@ -248,7 +248,7 @@ async def test_a_session_that_ends_after_its_turn_is_heard_ending_after_that_tur
     shutil.copy(FIXTURE, transcript)
     sessions = new_sessions()
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
+    narrating = asyncio.create_task(narrate(sessions, Utterances(SYSTEM, lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=TURN, text=""))
@@ -314,7 +314,7 @@ async def test_a_setting_that_cannot_be_read_is_logged(tmp_path: Path) -> None:
     failed: asyncio.Queue[Logged] = asyncio.Queue()
     sessions = new_sessions()
     sink = logged_to(lambda entry: failed.put_nowait(entry) if isinstance(entry, Logged) and entry.level == "error" else None, lambda _: True)
-    narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), asyncio.Queue[Frame]().put, lambda: attention(home), Overlays(Home(tmp_path / "home")), Recounts()))
+    narrating = asyncio.create_task(narrate(sessions, Utterances(SYSTEM, lambda _: None), Tails(sessions), asyncio.Queue[Frame]().put, lambda: attention(home), Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
@@ -333,7 +333,7 @@ async def test_a_turn_that_stops_again_after_another_hook_blocked_its_stop_tells
     transcript.write_text(f"{_prompt('p1', 'fix it')}\n{_said('u2', 'Looked.')}\n")
     sessions = new_sessions()
     frames: asyncio.Queue[Frame] = asyncio.Queue()
-    narrating = asyncio.create_task(narrate(sessions, Utterances(lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
+    narrating = asyncio.create_task(narrate(sessions, Utterances(SYSTEM, lambda _: None), Tails(sessions), frames.put, on, Overlays(Home(tmp_path / "home")), Recounts()))
     try:
         await sessions.apply(Joined(Membership(SID, pid=4242, cwd=Path("/code/cc-hands"), transcript=transcript), "startup"))
         await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))

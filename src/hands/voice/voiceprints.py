@@ -24,7 +24,7 @@ from urllib.parse import quote
 import numpy as np
 import numpy.typing as npt
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
@@ -249,7 +249,8 @@ class Voiceprints:
     unit with why, and every speaker it leaves nothing to score against is Unidentified with that why.
     """
 
-    def __init__(self, load: Callable[[], Embed], speech: Callable[[], Synthesize], kept: Path, record: Record) -> None:
+    def __init__(self, clock: Clock, load: Callable[[], Embed], speech: Callable[[], Synthesize], kept: Path, record: Record) -> None:
+        self._clock = clock
         self._speech = speech
         self._kept_in = kept
         self._record = record
@@ -271,7 +272,7 @@ class Voiceprints:
     def _loaded(self, load: Callable[[], Embed]) -> None:
         """[LAW:nothing-unseen] the model's load is a unit of its own, as each speech model's is."""
         try:
-            with loads.loading("voiceprints.loaded", self._record):
+            with loads.loading(self._clock, "voiceprints.loaded", self._record):
                 annotate(model=MODEL, revision=REVISION, file=FILE)
                 self._embed = load()
         except Exception as error:
@@ -280,7 +281,7 @@ class Voiceprints:
     def speaking_in(self, voice: str) -> None:
         """hands speaks in `voice` from now: its voiceprint is read back, or made, off everything hands says, and until
         it is, every speaker is Unidentified. Returns at once, and cannot fail: a print not made fails its own unit."""
-        began = begun(SYSTEM)
+        began = begun(self._clock)
         match self._load:
             case None:
                 pass
@@ -315,7 +316,7 @@ class Voiceprints:
         """`voice`'s print read back from where hands keeps it; one that cannot be read fails its unit, and is made
         again."""
         try:
-            with unit("voiceprints.recalled", self._record, begun(SYSTEM)):
+            with unit("voiceprints.recalled", self._record, begun(self._clock)):
                 annotate(voice=voice, file=path)
                 self._prints[voice] = np.load(path).astype(np.float32)
         except Exception:
@@ -327,7 +328,7 @@ class Voiceprints:
         its voiceprint made on the lane."""
         said: Samples | Exception
         try:
-            with loads.loading("enrolment.loaded", self._record):
+            with loads.loading(self._clock, "enrolment.loaded", self._record):
                 annotate(voice=voice)
                 say = self._speech()
             said = say(voice, ENROLMENT)
@@ -369,13 +370,13 @@ class Voiceprints:
     def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
         `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
-        began = begun(SYSTEM)
+        began = begun(self._clock)
         self._lane.give(lambda: self._identified(hold, voiced, began))
 
     def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
         remembered."""
-        began = begun(SYSTEM)
+        began = begun(self._clock)
 
         def last() -> None:
             self._identified(hold, voiced, began)
@@ -386,7 +387,7 @@ class Voiceprints:
     def spanned(self, span: int, voiced: Voiced) -> None:
         """Who the one voice of echo span `span` is (`hands.voice.recorder`), hands' echo heard with no hold open,
         worked out on the lane and told as a `voiceprints.identified` unit of the span's. Returns at once."""
-        began = begun(SYSTEM)
+        began = begun(self._clock)
 
         def identified() -> None:
             try:

@@ -14,6 +14,7 @@ import pytest
 from conftest import patiently
 from speech import quiet, spoken
 
+from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
@@ -79,12 +80,12 @@ class Keyboard:
     def listening(self) -> bool:
         return self._heard is not None
 
-    def tap(self, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
+    def tap(self, _clock: Clock, heard: Callable[[KeyEvent], None]) -> Callable[[], None]:
         self._heard = heard
         return lambda: None
 
     def tapped(self, into: Callable[[KeyEvent], None]) -> AbstractAsyncContextManager[None]:
-        return tapped(into, self.tap)
+        return tapped(SYSTEM, into, self.tap)
 
     def press(self, *events: KeyEvent) -> None:
         heard = self._heard
@@ -102,7 +103,7 @@ class Keyboard:
 async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_hears_each_level(models: Path) -> None:
     events: list[WideEvent] = []
     entries: list[Entry] = []
-    key, levels, speaker, microphone, keyboard = PushToTalk(entries.append), Levels(), Speaker(), Microphone(), Keyboard()
+    key, levels, speaker, microphone, keyboard = PushToTalk(SYSTEM, entries.append), Levels(), Speaker(), Microphone(), Keyboard()
     taken: list[Move] = []
     beats: list[None] = []
 
@@ -121,7 +122,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     off, wake, engaged, deaf = map(spoken, [ask, "Hey Jarvis. What is the status of the build?", ask, ask])
 
     level, choose = listening_tools(levels, Pretrained())
-    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record))
+    serving = asyncio.create_task(serve_desk(key=key, levels=levels, tapped=keyboard.tapped, microphone=microphone, speaker=lambda: speaker, models=models, word=Pretrained(), taken=took, beat=partial(beats.append, None), record=record, clock=SYSTEM))
 
     async def alongside(waiting: Awaitable[object]) -> None:
         """`waiting`, beside the desk: a desk that ended is the failure itself, raised, never a wait that runs out on it."""

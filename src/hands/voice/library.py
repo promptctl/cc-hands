@@ -7,11 +7,12 @@ hands.
 
 import asyncio
 import subprocess
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
+
+from hands.clock import Clock
 
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
@@ -52,7 +53,7 @@ class Library:
     """The one owner of the library's listing: made once and kept for LISTING_SECONDS, under a lock, so concurrent searches
     list the library once. A failed listing raises OSError and is not kept, so the next search tries again."""
 
-    def __init__(self, list_files: Callable[[], list[str]] = list_library, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, clock: Clock, list_files: Callable[[], list[str]] = list_library) -> None:
         self._list_files = list_files
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -64,7 +65,8 @@ class Library:
         """The names containing `query`, at most MOST_FOUND of them. Only names with a folder are offered: a bare name is not a
         voice a choice can make (see voices.LIBRARY_PATH), so offering it would be a lie."""
         async with self._lock:
-            now = self._clock()
+            # The wall clock's: `listed_at` is said to the model as a time.
+            now = self._clock.wall().timestamp()
             if self._listed_at is not None and now - self._listed_at < LISTING_SECONDS:
                 listed_at, from_cache = self._listed_at, True
             else:
@@ -73,7 +75,8 @@ class Library:
                 if self._pending is None:
                     self._pending = asyncio.ensure_future(asyncio.to_thread(self._list_files))
                 try:
-                    files = await asyncio.wait_for(asyncio.shield(self._pending), LISTING_TIMEOUT_SECONDS)
+                    async with self._clock.timeout(LISTING_TIMEOUT_SECONDS):
+                        files = await asyncio.shield(self._pending)
                 finally:
                     if self._pending.done():
                         self._pending = None

@@ -101,7 +101,7 @@ def ran(recorded: Sequence[Entry]) -> list[tuple[str, str, Mapping[str, Fact]]]:
 
 async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_event() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp([audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
     try:
         status, opened = await rpc(server, {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "clientInfo": {"name": "claude-code"}}})
         assert status == 200 and opened == {
@@ -127,7 +127,7 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
 
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp([audited(tool(echo), recorded.append), audited(tool(broken), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp([audited(SYSTEM, tool(echo), recorded.append), audited(SYSTEM, tool(broken), recorded.append)], recorded.append, CallSpans())
     errors, sink = failures()
     try:
         _, wrong = await rpc(server, {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"words": "hi"}}})
@@ -170,7 +170,7 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
 async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_one_no_turn_is_running_is_a_root() -> None:
     recorded: list[Entry] = []
     spans = CallSpans()
-    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, spans)
+    server = await serve_mcp([audited(SYSTEM, tool(echo), recorded.append)], recorded.append, spans)
     with unit("voice.turn", recorded.append, begun(SYSTEM)):
         call = within(SYSTEM, here())
     spans.opened("toolu_1", call)
@@ -188,7 +188,7 @@ async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_o
 
 async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
     recorded: list[Entry] = []
-    server = await serve_mcp([audited(tool(echo), recorded.append)], recorded.append, CallSpans())
+    server = await serve_mcp([audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
     call ={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "echo", "arguments": {"text": "hi"}}}
     try:
         async with aiohttp.ClientSession() as client:

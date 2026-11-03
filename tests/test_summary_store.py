@@ -237,7 +237,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(project, store, summarise, records.append, batch=2)
+    await summarise_backlog(SYSTEM, project, store, summarise, records.append, batch=2)
     # Three leaves in two batches, then the epic, then the backlog over the epic and the loose ticket.
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a", "e1.b"], ["t1"], ["e1"], [BACKLOG]]
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "t1", "e1", BACKLOG}
@@ -252,13 +252,13 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
 
 async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=edited))
     # Numbered on from the first pass, so the edited ticket's sentence is new, as a real summariser's would be.
     summarise = Summariser(first=100)
     records: list[Entry] = []
-    await summarise_backlog(project, store, summarise, records.append)
+    await summarise_backlog(SYSTEM, project, store, summarise, records.append)
     assert [summarise.asked(page) for page in summarise.pages] == [["e1.a"], ["e1"], [BACKLOG]]
     [record] = records
     assert isinstance(record, WideEvent) and (record.counts["known"], record.counts["said"]) == (2, 3)
@@ -266,11 +266,11 @@ async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project:
 
 async def test_a_rerank_or_a_status_change_asks_the_summariser_nothing(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     moved = [{**issue, "rank": "00"} if issue["id"] == "t1" else {**issue, "status": "open"} if issue["id"] == "e1.b" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=moved))
     summarise = Summariser()
-    await summarise_backlog(project, store, summarise, lambda _entry: None)
+    await summarise_backlog(SYSTEM, project, store, summarise, lambda _entry: None)
     assert summarise.pages == []
 
 
@@ -281,7 +281,7 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
         return "\n".join([*(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1"), "t9: Not asked."])
 
     records: list[Entry] = []
-    await summarise_backlog(project, store, forgets_t1, records.append)
+    await summarise_backlog(SYSTEM, project, store, forgets_t1, records.append)
     # The epic is said; the backlog, keyed by t1's sentence too, cannot be.
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "e1"}
     [record] = records
@@ -296,16 +296,16 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     records: list[Entry] = []
     # The two tickets, the loose ticket, and the epic: four work items; the backlog's own sentence is none of them.
-    await summarise_backlog(project, store, Summariser(), records.append)
-    await summarise_backlog(project, store, Summariser(), records.append)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), records.append)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), records.append)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=edited))
-    await summarise_backlog(project, store, Summariser(first=100), records.append)
+    await summarise_backlog(SYSTEM, project, store, Summariser(first=100), records.append)
 
     async def forgets_t1(page: str) -> str:
         return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
 
-    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, records.append)
 
     # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
     async def steady(page: str) -> str:
@@ -313,16 +313,16 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 
     (project / "export.json").write_bytes(export())
     steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
-    await summarise_backlog(project, steadied, steady, records.append)
+    await summarise_backlog(SYSTEM, project, steadied, steady, records.append)
     (project / "export.json").write_bytes(export(issues=edited))
-    await summarise_backlog(project, steadied, steady, records.append)
+    await summarise_backlog(SYSTEM, project, steadied, steady, records.append)
 
     # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
     async def fails(page: str) -> str:
         raise SummaryFailed("boom")
 
     (project / "export.json").write_bytes(export(issues=[{**issue, "status": "closed", "closed_at": "2026-10-19T10:00:00Z"} if issue["id"] == "t1" else issue for issue in edited]))
-    await summarise_backlog(project, steadied, fails, records.append)
+    await summarise_backlog(SYSTEM, project, steadied, fails, records.append)
     passes = [record for record in records if isinstance(record, WideEvent)]
     assert [
         (record.outcome, record.facts["overview"], *(record.counts[name] for name in ("items", "items_said", "items_known", "items_unsaid"))) for record in passes
@@ -349,7 +349,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:
     (project / "export.json").unlink()
     records: list[Entry] = []
-    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
@@ -357,7 +357,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
 
 async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
     records: list[Entry] = []
-    await summarise_backlog(tmp_path / "removed-worktree", SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, tmp_path / "removed-worktree", SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
 
@@ -384,7 +384,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     fake_lit(NEVER_INITIALIZED)
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
     [record] = records
     assert summarise.pages == []
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
@@ -419,7 +419,7 @@ async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pa
         raise SummaryFailed("the side question had no answer: no Claude Code to ask: claude")
 
     records: list[Entry] = []
-    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
     said = "SummaryFailed: the side question had no answer: no Claude Code to ask: claude"
@@ -431,7 +431,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
     (project / "export.json").write_bytes(export(issues=[ticket("t2", "01", "Old bug", status="closed")], relations=[]))
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
     [record] = records
     assert summarise.pages == []
     # [LAW:nothing-unseen] ran and did nothing: every count written, as zero.
@@ -461,7 +461,7 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
     ]
     # The read is a sighting: the backlog is asked for, to be said off the voice path.
     assert await store.wanted() == Backlog(project)
-    await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     after = dict(await read_backlog(session="s1"))
     assert after["summary"] == f"said {BACKLOG} 3" and after["unsummarised"] == 0
     assert [item["summary"] for item in after["items"]] == ["said e1 2", "said t1 1"]
@@ -469,7 +469,7 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
 
 async def test_read_ticket_gives_the_sentence_and_what_is_open_under_it_and_its_own_words_only_when_asked(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
-    await summarise_backlog(project, store, Summariser(), lambda _entry: None)
+    await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     read_ticket = (await tools(project, store))["read_ticket"]
     epic = dict(await read_ticket(session="s1", ticket="e1"))
     assert epic["summary"] == "said e1 2" and "description" not in epic

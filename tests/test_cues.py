@@ -99,7 +99,7 @@ class Speaker:
 
 async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> None:
     clock = VirtualClock()
-    owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
+    owed, speaker, recorded = QuietCues(clock), Speaker(), list[Entry]()
     cueing = asyncio.create_task(owed.keep_playing(speaker, recorded.append))
     try:
         owed.owe(RECEIVED)
@@ -119,7 +119,7 @@ async def test_a_cue_for_silence_waits_out_speech_and_each_kind_plays_once() -> 
 
 async def test_a_burst_of_acts_in_silence_is_one_tone_per_spacing() -> None:
     clock = VirtualClock()
-    owed, speaker, recorded = QuietCues(clock.now, clock.pause), Speaker(), list[Entry]()
+    owed, speaker, recorded = QuietCues(clock), Speaker(), list[Entry]()
     speaker.quiet.set()
     spaced = QuietCue(WORKING.cue, 0.05)
     cueing = asyncio.create_task(owed.keep_playing(speaker, recorded.append))

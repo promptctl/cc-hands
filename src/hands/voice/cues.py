@@ -8,11 +8,11 @@ is speaking, so none is ever heard over a voice.
 
 import asyncio
 import math
-import time
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cache
 from typing import Protocol
+
+from hands.clock import Clock
 
 import numpy as np
 from loguru import logger
@@ -120,16 +120,15 @@ class Quiet(Protocol):
 class QuietCues:
     """The cues owed to silence, and their one player: anything may owe one, before or after the speaker exists."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic, pause: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+    def __init__(self, clock: Clock) -> None:
         # [LAW:no-shared-mutable-globals] written only by `owe`, read only by `keep_playing`.
         self._owed: asyncio.Queue[tuple[QuietCue, float]] = asyncio.Queue()
         # [LAW:effects-at-boundaries] the time a spacing is counted in and the waiting it out are one clock's, as the
         # brain's stage takes them, so the spacing is waited on the clock it is read from.
         self._clock = clock
-        self._pause = pause
 
     def owe(self, cue: QuietCue) -> None:
-        self._owed.put_nowait((cue, self._clock()))
+        self._owed.put_nowait((cue, self._clock.now()))
 
     async def keep_playing(self, speaker: Quiet, record: Record) -> None:
         """Play each cue owed once nobody is speaking and its spacing is up, until cancelled. What is owed of one cue
@@ -142,10 +141,10 @@ class QuietCues:
 
         while True:
             soonest = min((due(cue) for cue in held), default=math.inf)
-            self._hold(held, await self._owed_within(soonest - self._clock()))
+            self._hold(held, await self._owed_within(soonest - self._clock.now()))
             await speaker.quiet.wait()
             self._hold(held, self._drained())
-            now = self._clock()
+            now = self._clock.now()
             for cue in [cue for cue in held if due(cue) <= now]:
                 ats = held.pop(cue)
                 last[cue] = now
@@ -159,7 +158,7 @@ class QuietCues:
         if not self._owed.empty() or seconds <= 0:
             return self._drained()
         owed = asyncio.ensure_future(self._owed.get())
-        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._pause(seconds))}
+        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.pause(seconds))}
         try:
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:

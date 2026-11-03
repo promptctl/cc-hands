@@ -298,7 +298,7 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     app = web.Application()
-    app.add_routes(backlog_routes(store, KEY, recorded.append, os.environ))
+    app.add_routes(backlog_routes(SYSTEM, store, KEY, recorded.append, os.environ))
     client = TestClient(TestServer(app))
     await client.start_server()
     yield Page(client, store, recorded)
@@ -396,7 +396,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_sentences_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    read = await sighted(page.store, workspace.root)
+    read = await sighted(SYSTEM, page.store, workspace.root)
     assert isinstance(read, Sighted)
     # The leaves are said first; the epic waits on them.
     page.store.keep({due.digest: f"Said of {due.id}." for due in page.store.reckon(read.backlog.thing()).due})
@@ -561,13 +561,13 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
-    read = await sighted(page.store, workspace.root)
+    read = await sighted(SYSTEM, page.store, workspace.root)
     assert isinstance(read, Sighted)
     assert await page.store.wanted()
     # Every ticket said, round by round, as the summarising task says them.
     while due := page.store.reckon(read.backlog.thing()).due:
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
-    again = await sighted(page.store, workspace.root)
+    again = await sighted(SYSTEM, page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(page.store.wanted(), 0.2)

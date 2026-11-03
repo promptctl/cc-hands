@@ -37,6 +37,10 @@ class Timeout(AbstractAsyncContextManager["Timeout"], Protocol):
 
     def reschedule(self, when: float | None) -> None: ...
 
+    def expired(self) -> bool:
+        """Whether the deadline came due, so the block was cancelled by it."""
+        ...
+
 
 class Clock(Protocol):
     def now(self) -> float:

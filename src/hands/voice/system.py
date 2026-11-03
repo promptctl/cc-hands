@@ -4,7 +4,6 @@ A failure of the model is spoken without the model, and a failure of speech is p
 screen instead. A fact that neither took is logged as an error by the notifier, the path that needs neither.
 """
 
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +15,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
+from hands.clock import Clock
 from hands.sessions.audit import Announced, Record
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
@@ -203,7 +203,7 @@ class SystemChannel:
         tts: FrameProcessor,
         notify: Notify,
         record: Record,
-        clock: Callable[[], float] = time.monotonic,  # monotonic seconds
+        clock: Clock,
         burst: float = BURST_SECONDS,
     ) -> None:
         self._tts = tts
@@ -241,7 +241,7 @@ class SystemChannel:
         hundreds of these in flight together and a window taken on the way out is one that none of them sees; and
         a screen with no GUI session to post into refuses every time, which must still cost only one attempt.
         """
-        now = self._clock()
+        now = self._clock.now()
         # A fault older than its window can no longer keep anything quiet, so the map holds only those inside one.
         self._said = {said: at for said, at in self._said.items() if now - at < self._burst}
         if fault in self._said:

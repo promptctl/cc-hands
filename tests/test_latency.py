@@ -15,6 +15,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.observers.base_observer import FramePushed
 
+from hands.clock import SYSTEM
 from hands.voice.latency import LatencyObserver
 from hands.voice.mark import Mark
 from hands.voice.holds import Hold
@@ -26,7 +27,7 @@ async def observed(*frames: Frame) -> tuple[list[str], list[Mark]]:
     lines: list[str] = []
     marks: list[Mark] = []
     sink = logger.add(lambda message: lines.append(message.record["message"]), level="INFO", filter="hands")
-    observer = LatencyObserver(marks.append)
+    observer = LatencyObserver(SYSTEM, marks.append)
     try:
         for frame in frames:
             await observer.on_push_frame(FramePushed(source=None, destination=None, frame=frame, direction=None, timestamp=0))  # pyright: ignore[reportArgumentType]

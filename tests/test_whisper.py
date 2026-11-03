@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from conftest import events, model_facts
+from hands.clock import SYSTEM
 from hands.sessions.audit import Entry, HoldHeard, Unsaid
 from hands.voice import transcription
 from hands.voice.holds import Hold
@@ -61,7 +62,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first hold pays for
     no load only if the one done at construction asked for exactly what a hold's transcription asks for."""
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(None), record=recorded.append)
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     await whisper.transcribed(hold(1), SILENCE)
 
     [(_, loaded), (_, held)] = model.asked
@@ -72,7 +73,7 @@ async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built
 
 
 async def test_each_hold_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:
-    whisper = Whisper(prompt=primed("authMiddleware", None, "sessionStore"), record=lambda _: None)
+    whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware", None, "sessionStore"), record=lambda _: None)
     samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
 
     for number in (1, 2, 3):
@@ -96,7 +97,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
         [(" Okay.", 0.38, -1.11)],
     ]
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(*["authMiddleware"] * 5), record=recorded.append)
+    whisper = Whisper(clock=SYSTEM, prompt=primed(*["authMiddleware"] * 5), record=recorded.append)
 
     said = [await whisper.transcribed(hold(number), SILENCE) for number in range(1, 6)]
 
@@ -114,7 +115,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
 async def test_a_hold_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
     model.answers += [[], RuntimeError("Metal ran out of memory"), [("Okay.", 0.38, -0.5)]]
     recorded: list[Entry] = []
-    whisper = Whisper(prompt=primed(None, None), record=recorded.append)
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
     with pytest.raises(RuntimeError, match="Metal ran out of memory"):
         await whisper.transcribed(hold(7), SILENCE)

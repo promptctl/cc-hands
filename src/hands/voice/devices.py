@@ -9,7 +9,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Protocol
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
 from hands.voice.coreaudio import DefaultDevices, default_device_changes, default_devices
@@ -29,6 +29,7 @@ class Transport(Protocol):
 
 
 async def follow(
+    clock: Clock,
     changes: asyncio.Event,
     current: Callable[[], Awaitable[DefaultDevices]],
     transport: Transport,
@@ -47,7 +48,7 @@ async def follow(
         defaults = await moved(changes, current, transport.opened_on)
         # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, which reads as down, so
         # the next run opens whatever devices there are, rather than one run going on silently deaf and mute.
-        with unit("devices.moved", record, begun(SYSTEM)):
+        with unit("devices.moved", record, begun(clock)):
             annotate(before=transport.devices, defaults=defaults)
             devices = await finished(reopened())
         await say(AudioMoved(devices))
@@ -86,7 +87,7 @@ async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultD
     return now
 
 
-async def follow_default_devices(started: asyncio.Event, audio: Transport, say: Callable[[SystemFact], Awaitable[None]], record: Record) -> None:
+async def follow_default_devices(clock: Clock, started: asyncio.Event, audio: Transport, say: Callable[[SystemFact], Awaitable[None]], record: Record) -> None:
     """Follow the system's default devices once the pipeline has started, until cancelled."""
     # [LAW:no-ambient-temporal-coupling] the streams are Pipecat's to open and start until the pipeline has started.
     # A change before then is still followed: the defaults are compared with those read when PortAudio listed them.
@@ -95,4 +96,4 @@ async def follow_default_devices(started: asyncio.Event, audio: Transport, say: 
     changes = asyncio.Event()
     with default_device_changes(lambda: loop.call_soon_threadsafe(changes.set)):
         # Read off the loop: CoreAudio answers under a lock it may be holding while it tears down a device that is gone.
-        await follow(changes, lambda: off_loop(default_devices, "reading the default devices"), audio, say, record)
+        await follow(clock, changes, lambda: off_loop(default_devices, "reading the default devices"), audio, say, record)

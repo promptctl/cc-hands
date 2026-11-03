@@ -87,7 +87,7 @@ def test_another_sessions_replies_are_not_the_brains() -> None:
 async def test_each_call_is_one_event_holding_what_it_reported() -> None:
     recorded: list[Entry] = []
     usage = Usage(BRAIN)
-    context_usage = audited(usage_tool(usage), recorded.append)
+    context_usage = audited(SYSTEM, usage_tool(usage), recorded.append)
     assert await context_usage.body() == {"error": "No reply of yours has been counted yet."}
     heard(usage, sent("a"), started("a", 2, cached=14800, created=98), delta("a", 40))
     reported = {"model": "claude-opus-5-5", "in_context_tokens": 14940, "spent": {"input_tokens": 14900, "output_tokens": 40, "replies": 1}}

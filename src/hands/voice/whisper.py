@@ -5,6 +5,7 @@ recognizer (`hands.voice.streaming`), whose words only cut."""
 import threading
 from collections.abc import Awaitable, Callable
 
+from hands.clock import Clock
 from hands.sessions.audit import HoldHeard, Record, Unsaid
 from hands.sessions.wide import annotate
 from hands.voice import loads
@@ -30,9 +31,9 @@ _TRAILING_SILENCE = bytes(SECOND // 2)
 class Whisper:
     """Whisper large-v3-turbo on MLX: the hold owner's transcriber."""
 
-    def __init__(self, *, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
+    def __init__(self, *, clock: Clock, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
-        with loads.loading("whisper.loaded", record):
+        with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
             annotate(model=transcription.MODEL)
         # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.

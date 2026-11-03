@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from hands.clock import SYSTEM
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import AuditLog, segment
 from hands.sessions.home import Home
@@ -34,7 +35,7 @@ def members(home: Home) -> list[Membership]:
 
 def start(home: Home, folder: Path, model: str = "") -> dict[str, Any]:
     """The tool called as the model calls it, in the environment hands was started in."""
-    start_session = start_session_tool(home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
+    start_session = start_session_tool(SYSTEM, home, AuditLog(home.audit, clock=datetime.now).record, os.environ, lambda: members(home))
 
     async def called() -> Result:
         return await start_session.body(folder=str(folder), model=model)

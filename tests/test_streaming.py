@@ -139,8 +139,8 @@ class Told:
 
 def rigged(session: Session, identify: Identifier = unidentified) -> Rig:
     recorded: list[Entry] = []
-    listener = StreamingRecognizer(lambda _: session, identify, recorded.append)
-    return Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
+    listener = StreamingRecognizer(SYSTEM, lambda _: session, identify, recorded.append)
+    return Rig(listener, HoldOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
 
 
 def sound(seconds: float, level: float = 0.1) -> Samples:
@@ -397,12 +397,12 @@ async def test_a_hearings_words_go_out_without_waiting_on_who_said_them(tmp_path
         return embed
 
     recorded: list[Entry] = []
-    prints = voiceprints.Voiceprints(model, lambda: lambda _voice, _text: np.zeros(1, np.float32), tmp_path, recorded.append)
+    prints = voiceprints.Voiceprints(SYSTEM, model, lambda: lambda _voice, _text: np.zeros(1, np.float32), tmp_path, recorded.append)
     prints.speaking_in("charles")
     # Long enough to be scored: 14 frames, 1.12 s, of a hold of 1.2 s, the words with the feed that ends it.
     session = Scripted([*[()] * 5, said("stop")], active=[*[()] * 5, tuple(Active(0, frame) for frame in range(14))])
-    listener = StreamingRecognizer(lambda _: session, prints, recorded.append)
-    rig = Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
+    listener = StreamingRecognizer(SYSTEM, lambda _: session, prints, recorded.append)
+    rig = Rig(listener, HoldOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     await rig.opened(HELD, sound(0))
     await rig.heard(HELD, sound(seconds(5 * STEPPED)))
     # The words are heard, while who said them is still being scored.
@@ -436,8 +436,8 @@ async def test_holds_spoken_while_the_models_load_are_heard_once_they_have() -> 
         go.wait()
         return Scripted([(), said("hello")])
 
-    listener = StreamingRecognizer(slow, unidentified, recorded.append)
-    rig = Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
+    listener = StreamingRecognizer(SYSTEM, slow, unidentified, recorded.append)
+    rig = Rig(listener, HoldOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     await rig.opened(HELD, sound(0))
     hearing = asyncio.create_task(rig.heard(HELD, sound(seconds(2 * STEPPED))))
     await asyncio.sleep(0.1)
@@ -461,8 +461,8 @@ async def test_models_that_fail_to_load_fail_each_hold_once_saying_why() -> None
     def unreachable(_gating: int) -> Session:
         raise OSError("the hub is unreachable")
 
-    listener = StreamingRecognizer(unreachable, unidentified, recorded.append)
-    rig = Rig(listener, HoldOwner(Unused(), (listener,), recorded.append), recorded)
+    listener = StreamingRecognizer(SYSTEM, unreachable, unidentified, recorded.append)
+    rig = Rig(listener, HoldOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     for number in (1, 2):
         await rig.opened(Hold(number, "engaged conversation"), sound(0))
         await rig.heard(Hold(number, "engaged conversation"), sound(seconds(2 * STEPPED)))

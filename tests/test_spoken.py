@@ -21,6 +21,7 @@ from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.tests.utils import run_test
 
 from conftest import stood_in, unprimed
+from hands.clock import SYSTEM
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
 from hands.sessions.backfill import read_transcript
@@ -352,14 +353,15 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
     monkeypatch.setattr(built, "SaidInTTS", Recorded)
     monkeypatch.setattr(built, "LLMTextProcessor", Pieces)
     voice = built.build_voice(
+        SYSTEM,
         built.VoiceConfig(
             llm=ClaudeCodeBackend(model="m", config_dir=tmp_path, account=Account("claude.ai", None)),
             voice=voices.Voice("cosette"),
         ),
         llm=FrameProcessor(),
-        key=PushToTalk(lambda _: None),
+        key=PushToTalk(SYSTEM, lambda _: None),
         player=(player := Player(lambda _: None)),
-        floor=Floor(lambda id: id, dict),
+        floor=Floor(lambda id: id, dict, SYSTEM),
         prompt=unprimed,
         prints=stood_in(tmp_path / "voiceprints"),
         holds=tmp_path / "holds",

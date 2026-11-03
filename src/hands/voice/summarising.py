@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from hands.clock import SYSTEM
+from hands.clock import Clock
 from hands.core.sentences import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, read_backlog
@@ -32,14 +32,14 @@ TEXT_LIMIT = 4000
 # The time a slim Claude Code takes to write BATCH lines of about thirty words each.
 SENTENCES_TIMEOUT_SECONDS = 180.0
 
-async def keep_summarising(store: SummaryStore, summarise: Summariser, record: Record) -> None:
+async def keep_summarising(clock: Clock, store: SummaryStore, summarise: Summariser, record: Record) -> None:
     """Say each wanted backlog and each session's wanted turns, one at a time, until cancelled."""
     while True:
         match await store.wanted():
             case Backlog(project=project):
-                await summarise_backlog(project, store, summarise, record)
+                await summarise_backlog(clock, project, store, summarise, record)
             case Turns() as turns:
-                await summarise_turns(turns, store, summarise, record)
+                await summarise_turns(clock, turns, store, summarise, record)
 
 
 @dataclass
@@ -61,10 +61,10 @@ Overview = Literal["said", "known", "unsaid", "none"]
 
 
 @contextmanager
-def _pass(event: str, record: Record, counts: tuple[str, ...], **facts: Fact) -> Generator[_Missed]:
+def _pass(clock: Clock, event: str, record: Record, counts: tuple[str, ...], **facts: Fact) -> Generator[_Missed]:
     """Run the body as one pass, a unit of work whose event carries what its replies left out and its calls raised,
     written as the body ends however it ends, so a pass cut short still says what it had."""
-    with unit(event, record, begun(SYSTEM), (*counts, *CALL_COUNTS)):
+    with unit(event, record, begun(clock), (*counts, *CALL_COUNTS)):
         annotate(**facts)
         missed = _Missed()
         try:
@@ -95,11 +95,11 @@ async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, m
     return said
 
 
-async def summarise_turns(turns: Turns, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
+async def summarise_turns(clock: Clock, turns: Turns, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
     """Make a sentence for each turn asked for, as one unit of work."""
     # [LAW:nothing-unseen] `known` is what was said since the turns were queued, `asked` what this pass asked for; a
     # pass that found everything said is one of zeros.
-    with _pass("summary.turns", record, ("known", "asked"), session=turns.session) as missed:
+    with _pass(clock, "summary.turns", record, ("known", "asked"), session=turns.session) as missed:
         # A turn is let go of as it is taken, so a read while it is being said queues it again: this pass runs after
         # both, and asks only for what is still unsaid.
         unsaid = [due for due in turns.due if store.known(due.digest) is None]
@@ -107,16 +107,16 @@ async def summarise_turns(turns: Turns, store: SummaryStore, summarise: Summaris
         await _say(unsaid, store, summarise, missed, batch)
 
 
-async def summarise_backlog(project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
+async def summarise_backlog(clock: Clock, project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
     """Make every sentence the backlog in `project` is missing under its current content, as one unit of work."""
     # [LAW:nothing-unseen] `unsaid` is what is still without a sentence when the pass ends: what the summariser failed
     # on or left out, and the parents above them. `left_out` names what a reply gave no sentence for, and `stray`
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
     # failed. The `items` counts are the same of the work items alone, the tickets and epics, and `overview` is the
     # backlog's own sentence: what the terminal is told of the pass.
-    with _pass(BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
+    with _pass(clock, BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
-            backlog = await read_backlog(SYSTEM, project)
+            backlog = await read_backlog(clock, project)
         except (LitFailed, Rejected) as error:
             # [LAW:no-silent-failure] a project hands cannot read fails its pass, saying why.
             fail(f"cannot read the backlog, so none of it is summarised: {error}")
