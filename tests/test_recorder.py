@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.echo import Cancelled
@@ -50,24 +50,25 @@ def unidentified(span: int, voiced: Voiced) -> None:
     """No span identified: what a test of the store measures is the store."""
 
 
-async def kept(recorder: Recorder, hold: Hold, sound: Sound, recorded: list[Entry]) -> WideEvent:
+async def kept(clock: VirtualClock, recorder: Recorder, hold: Hold, sound: Sound, recorded: list[Entry]) -> WideEvent:
     """The hold told to the recorder as the owner tells it, whole as it ends, and its writing run as the owner runs a
     hearing."""
-    owner = HoldOwner(SYSTEM, Unused(), (recorder,), recorded.append)
+    owner = HoldOwner(clock, Unused(), (recorder,), recorded.append)
     assert recorder.opened(hold, Sound(b"", b"", ())) == () and recorder.heard(sound) == ()
     [write] = recorder.ended(hold, "sent", sound)
     # As the owner's hearing lane runs it: one that fails is said on its event, and the lane hears on.
     with contextlib.suppress(Exception):
-        await owner._heard(recorder, hold, write, begun(SYSTEM))  # pyright: ignore[reportPrivateUsage]
+        await owner._heard(recorder, hold, write, begun(clock))  # pyright: ignore[reportPrivateUsage]
     return events(recorded, "hearing")[-1]
 
 
 async def test_a_hold_at_the_desk_is_kept_as_heard_with_what_hands_played_over_it_and_in_which_voices(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     directory = tmp_path / "holds" / "run"
     hold = Hold(7, "engaged conversation")
     played = (Reference(tone(-1), RATE, 1, ("alba",)), Reference(tone(-2), RATE, 1, ("alba", "mary")), None)
-    event = await kept(Recorder(SYSTEM, tmp_path / "holds", "run", unidentified, recorded.append), hold, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
+    event = await kept(clock, Recorder(clock, tmp_path / "holds", "run", unidentified, recorded.append), hold, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
     assert event.outcome == "ok"
     # What it heard, and what the speaker played against each 10 ms of it, sample for sample: silence where no TTS.
     assert read(directory / "7.heard.wav") == (1, RATE, tone(1) + tone(2, 2))
@@ -96,26 +97,29 @@ def test_what_the_speaker_played_is_put_in_the_holds_format_a_run_at_a_time_slot
 
 
 async def test_a_hold_at_the_phone_is_kept_with_nothing_said_to_have_played_over_it(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
-    event = await kept(Recorder(SYSTEM, tmp_path, "run", unidentified, recorded.append), Hold(1, "phone button"), Sound(tone(3), tone(3), None), recorded)
+    event = await kept(clock, Recorder(clock, tmp_path, "run", unidentified, recorded.append), Hold(1, "phone button"), Sound(tone(3), tone(3), None), recorded)
     assert event.outcome == "ok" and event.facts["played"] is False
     assert read(tmp_path / "run" / "1.heard.wav") == (1, RATE, tone(3))
     assert not (tmp_path / "run" / "1.played.wav").exists()
 
 
 async def test_two_runs_named_alike_keep_their_holds_apart(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     for level in (1, 2):
-        await kept(Recorder(SYSTEM, tmp_path, "2026-10-30T10-00-00Z", unidentified, recorded.append), Hold(1, "held key"), Sound(tone(level), tone(level), ()), recorded)
+        await kept(clock, Recorder(clock, tmp_path, "2026-10-30T10-00-00Z", unidentified, recorded.append), Hold(1, "held key"), Sound(tone(level), tone(level), ()), recorded)
     assert read(tmp_path / "2026-10-30T10-00-00Z" / "1.heard.wav")[2] == tone(1)
     assert read(tmp_path / "2026-10-30T10-00-00Z-2" / "1.heard.wav")[2] == tone(2)
 
 
 async def test_a_hold_that_cannot_be_written_fails_its_hearing_saying_why(tmp_path: Path) -> None:
+    clock = VirtualClock()
     blocked = tmp_path / "file"
     blocked.write_text("in the way")
     recorded: list[Entry] = []
-    event = await kept(Recorder(SYSTEM, blocked / "holds", "run", unidentified, recorded.append), Hold(1, "held key"), Sound(tone(3), tone(3), ()), recorded)
+    event = await kept(clock, Recorder(clock, blocked / "holds", "run", unidentified, recorded.append), Hold(1, "held key"), Sound(tone(3), tone(3), ()), recorded)
     assert (event.outcome, event.error) == ("failed", f"NotADirectoryError: [Errno 20] Not a directory: '{blocked / 'holds'}'")
 
 
@@ -126,27 +130,29 @@ def older(root: Path, name: str, size: int) -> None:
 
 
 async def test_a_store_taken_over_its_cap_deletes_whole_runs_oldest_first_and_never_the_runs_own(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
     older(tmp_path, "2026-10-02T00-00-00Z", 10_000)
     # This run's hold is about 3.3 KB: with both older runs the store is over 21 KB, under 14 KB without the oldest.
-    recorder = Recorder(SYSTEM, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000)
-    await kept(recorder, Hold(1, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
+    recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000)
+    await kept(clock, recorder, Hold(1, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     [pruned] = events(recorded, "holds.pruned")
     assert sorted(path.name for path in tmp_path.iterdir()) == ["2026-10-02T00-00-00Z", "2026-10-03T00-00-00Z"]
     kept_bytes = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
     assert (pruned.outcome, pruned.facts["runs"], pruned.facts["freed"], pruned.facts["kept"]) == ("ok", ("2026-10-01T00-00-00Z",), 10_000, kept_bytes)
     # A cap this run alone is over deletes every other run, and keeps this one whole.
-    recorder = Recorder(SYSTEM, tmp_path, "2026-10-04T00-00-00Z", unidentified, recorded.append, cap=100)
-    await kept(recorder, Hold(1, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
+    recorder = Recorder(clock, tmp_path, "2026-10-04T00-00-00Z", unidentified, recorded.append, cap=100)
+    await kept(clock, recorder, Hold(1, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     assert [path.name for path in tmp_path.iterdir()] == ["2026-10-04T00-00-00Z"]
     assert (tmp_path / "2026-10-04T00-00-00Z" / "1.heard.wav").exists()
 
 
 async def test_a_store_under_its_cap_deletes_nothing(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
-    await kept(Recorder(SYSTEM, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000), Hold(1, "held key"), Sound(tone(1), tone(1), ()), recorded)
+    await kept(clock, Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000), Hold(1, "held key"), Sound(tone(1), tone(1), ()), recorded)
     assert events(recorded, "holds.pruned") == []
     assert len(list(tmp_path.iterdir())) == 2
 
@@ -181,9 +187,10 @@ def overheard(buffers: list[Heard]) -> Callable[[], AbstractAsyncContextManager[
 
 
 async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_span_by_span(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     identified: list[tuple[int, Voiced]] = []
-    recorder = Recorder(SYSTEM, tmp_path, "run", lambda span, voiced: identified.append((span, voiced)), recorded.append)
+    recorder = Recorder(clock, tmp_path, "run", lambda span, voiced: identified.append((span, voiced)), recorded.append)
     await recorder.overhear(
         overheard([
             buffer(1, ()),  # no TTS played: hands not speaking, no span
@@ -214,15 +221,17 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
 
 
 async def test_echo_spans_count_toward_the_stores_cap(tmp_path: Path) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
-    recorder = Recorder(SYSTEM, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=10_500)
+    recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=10_500)
     await recorder.overhear(overheard([buffer(1, ("alba",)), buffer(1, ())]))
     [pruned] = events(recorded, "holds.pruned")
     assert pruned.facts["runs"] == ("2026-10-01T00-00-00Z",)
 
 
 async def test_a_run_alone_over_the_cap_prunes_nothing_and_never_walks_the_store_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = VirtualClock()
     recorded: list[Entry] = []
     walked: list[Path] = []
     measured = recorders.size
@@ -232,8 +241,8 @@ async def test_a_run_alone_over_the_cap_prunes_nothing_and_never_walks_the_store
         return measured(directory)
 
     monkeypatch.setattr(recorders, "size", size)
-    recorder = Recorder(SYSTEM, tmp_path, "run", unidentified, recorded.append, cap=100)
+    recorder = Recorder(clock, tmp_path, "run", unidentified, recorded.append, cap=100)
     for number in (1, 2, 3):
-        await kept(recorder, Hold(number, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
+        await kept(clock, recorder, Hold(number, "held key"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     assert events(recorded, "holds.pruned") == [] and walked == []
     assert len(list((tmp_path / "run").glob("*.heard.wav"))) == 3

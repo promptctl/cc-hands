@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.events import Ended, Joined, Launched, Prompted, StatusReported, Stopped
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.status import Busy, Idle, Report, Stamp
@@ -292,7 +292,7 @@ async def summarised(store: SummaryStore, recorded: list[Entry]) -> None:
     async def summarise(page: str) -> str:
         return "\n".join(f"{due.id}: What {due.id} did." for due in wanted.due if f'id="{due.id}"' in page)
 
-    await summarise_turns(SYSTEM, wanted, store, summarise, recorded.append)
+    await summarise_turns(VirtualClock(), wanted, store, summarise, recorded.append)
 
 
 async def test_an_hour_long_session_is_a_sentence_per_turn_said_off_the_voice_path(tmp_path: Path) -> None:
@@ -418,10 +418,11 @@ async def test_a_turn_said_after_it_was_queued_is_not_asked_for_again(tmp_path: 
         return "\n".join(f"{due.id}: What {due.id} did." for due in first.due)
 
     recorded: list[Entry] = []
-    await summarise_turns(SYSTEM, first, store, summarise, recorded.append)
+    clock = VirtualClock()
+    await summarise_turns(clock, first, store, summarise, recorded.append)
     second = await store.wanted()
     assert isinstance(second, Turns)
-    await summarise_turns(SYSTEM, second, store, summarise, recorded.append)
+    await summarise_turns(clock, second, store, summarise, recorded.append)
     assert len(asked) == 1
     [_, again] = recorded
     # Everything said since it was queued: a pass of zeros but what it found known.
@@ -447,7 +448,7 @@ async def test_a_turns_pass_says_what_its_replies_left_out_and_its_calls_raised(
         return f"{second}: What it did.\nz9: Not asked."
 
     recorded: list[Entry] = []
-    await summarise_turns(SYSTEM, wanted, store, summarise, recorded.append, batch=1)
+    await summarise_turns(VirtualClock(), wanted, store, summarise, recorded.append, batch=1)
     [pass_] = recorded
     assert isinstance(pass_, WideEvent) and pass_.outcome == "failed" and pass_.error == "the summariser failed on 1 things: SummaryFailed: the side question had no answer: no answer within 180s"
     assert pass_.counts == {"known": 0, "asked": 3, "said": 1, "calls": 3, "failed_calls": 1, "stray": 3}

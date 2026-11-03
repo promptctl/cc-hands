@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import pytest
 from aiohttp import web
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.sessions.child import Ran
 from hands.sessions.wide import WideEvent
 from hands.spotify import Catalogue, Credentials, Missing, Player, Refused, credentials, link
@@ -57,7 +57,7 @@ def printed(text: str) -> Ran:
 
 
 def tools(tell: Osascript, catalogue: Catalogue | None = None) -> dict[str, Body]:
-    return {tool.name: tool.body for tool in spotify_tools(Player(tell), catalogue or Catalogue(Missing("none here"), SYSTEM))}
+    return {tool.name: tool.body for tool in spotify_tools(Player(tell), catalogue or Catalogue(Missing("none here"), VirtualClock()))}
 
 
 async def test_now_playing_reads_the_track_spotify_is_on() -> None:
@@ -76,7 +76,7 @@ async def test_an_osascript_that_cannot_start_is_said() -> None:
     async def unstartable(_script: Sequence[str], _argv: Sequence[str]) -> Ran:
         raise FileNotFoundError(2, "No such file or directory", "osascript")
 
-    result = await {tool.name: tool.body for tool in spotify_tools(Player(unstartable), Catalogue(Missing("none here"), SYSTEM))}["spotify_pause"]()
+    result = await {tool.name: tool.body for tool in spotify_tools(Player(unstartable), Catalogue(Missing("none here"), VirtualClock()))}["spotify_pause"]()
     assert str(result["error"]).startswith("osascript could not start:")
 
 
@@ -149,7 +149,7 @@ def test_the_catalogues_credentials_come_from_the_environment_and_their_absence_
 
 
 async def test_a_search_without_credentials_is_refused_saying_how_to_get_them() -> None:
-    result = await tools(Osascript(), Catalogue(credentials({}), SYSTEM))["spotify_search"](query="radiohead")
+    result = await tools(Osascript(), Catalogue(credentials({}), VirtualClock()))["spotify_search"](query="radiohead")
     assert "SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET" in str(result["error"])
 
 
@@ -188,7 +188,7 @@ async def test_a_search_holds_its_token_until_it_runs_out_and_its_event_says_whi
     recorded: list[object] = []
     async with spotify_api(granted, searched) as url:
         catalogue = Catalogue(Credentials("id", "secret"), clock, token_url=f"{url}/token", search_url=f"{url}/search")
-        [search] = [audited(SYSTEM, tool, recorded.append) for tool in spotify_tools(Player(Osascript()), catalogue) if tool.name == "spotify_search"]
+        [search] = [audited(clock, tool, recorded.append) for tool in spotify_tools(Player(Osascript()), catalogue) if tool.name == "spotify_search"]
         assert await search.body(query="paranoid android") == {"found": [{"name": "Paranoid Android", "by": "Radiohead", "link": f"spotify:track:{TRACK}"}]}
         # A playlist Spotify cannot show comes as a null, and is no find.
         assert await search.body(query="top hits", kind="playlist") == {"found": [{"name": "Today's Top Hits", "by": "Spotify", "link": f"spotify:playlist:{PLAYLIST}"}]}
@@ -215,7 +215,7 @@ async def test_spotify_refusing_the_credentials_is_said_with_its_answer() -> Non
     await web.TCPSite(runner, "127.0.0.1", 0).start()
     url = f"http://127.0.0.1:{runner.addresses[0][1]}"
     try:
-        catalogue = Catalogue(Credentials("id", "wrong"), SYSTEM, token_url=f"{url}/token", search_url=f"{url}/search")
+        catalogue = Catalogue(Credentials("id", "wrong"), VirtualClock(), token_url=f"{url}/token", search_url=f"{url}/search")
         result = await tools(Osascript(), catalogue)["spotify_search"](query="radiohead")
     finally:
         await runner.cleanup()
@@ -228,6 +228,6 @@ async def test_a_search_spotify_cannot_be_reached_for_is_said() -> None:
     await web.TCPSite(runner, "127.0.0.1", 0).start()
     url = f"http://127.0.0.1:{runner.addresses[0][1]}"
     await runner.cleanup()
-    catalogue = Catalogue(Credentials("id", "secret"), SYSTEM, token_url=f"{url}/token", search_url=f"{url}/search")
+    catalogue = Catalogue(Credentials("id", "secret"), VirtualClock(), token_url=f"{url}/token", search_url=f"{url}/search")
     result = await tools(Osascript(), catalogue)["spotify_search"](query="radiohead")
     assert str(result["error"]).startswith("Spotify's search could not be reached:")

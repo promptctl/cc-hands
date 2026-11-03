@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.wire import Exchanged, MainTurn, Unreached
 from hands.spotify import Catalogue, Missing
@@ -40,7 +40,7 @@ FRESH = {"id": "c7d1a9e2-8f40-4b6a-a2d3-1e5f9c0b7a68", "name": "cc-hands", "stat
 
 def names(sessions: Sessions) -> list[str]:
     with tempfile.TemporaryDirectory() as home:
-        return [tool.name for tool in intermediary_tools(sessions.clock, sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(SYSTEM, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Voices(Home(Path(home)), Player(lambda _entry: None).lines, lambda _voice: None, Library(SYSTEM, lambda: []), lambda _voice: None), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": home}, lambda: None)]
+        return [tool.name for tool in intermediary_tools(sessions.clock, sessions, SummaryStore(Sentences(Path(home) / "sentences.db")), Home(Path(home)), Recounts(), Player(lambda _entry: None), Refocus(sessions, Home(Path(home)), lambda _entry: None), PushToTalk(sessions.clock, lambda _entry: None).switch, Levels(), Pretrained(), OwnModel(Home(Path(home)), Settings(None, Config()), lambda _config: None), Voices(Home(Path(home)), Player(lambda _entry: None).lines, lambda _voice: None, Library(sessions.clock, lambda: []), lambda _voice: None), Catalogue(Missing("no credentials in tests"), sessions.clock), {"TMUX_TMPDIR": home}, lambda: None)]
 
 
 def test_the_tail_names_each_session_by_name_state_and_mode_with_the_id_for_the_tools_and_says_it_is_current() -> None:
@@ -94,13 +94,14 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     path = tmp_path / "a home" / "audit"
     log = AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC))
     log.record(Transcribed("send it"))
+    clock = VirtualClock()
     # A line cut short, as a write that failed part way leaves it: the lines after it are still read.
     with segment(path, 0).open("a", encoding="utf-8") as torn:
         torn.write('{"at": "2026-10-03T00:00:00.000+00:00", "level": "err\n')
-    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, root(SYSTEM)))
-    with unit("tool.run", log.record, begun(SYSTEM)):
+    log.record(Exchanged("x", SessionId("s1"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 0.0, 0.0, Unreached("no route", 0.0), True, root(clock)))
+    with unit("tool.run", log.record, begun(clock)):
         annotate(tool="list_sessions")
-    with unit("summary.backlog", log.record, begun(SYSTEM)):
+    with unit("summary.backlog", log.record, begun(clock)):
         fail("lit exited 3")
     # A file that is no segment is no part of the log.
     (path / "audit.jsonl").write_text(json.dumps({"level": "error", "type": "Stray"}) + "\n")
@@ -117,7 +118,7 @@ def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say
     assert found("one kind of line") == ["Transcribed"]
     assert found("the tools called lately") == ["tool.run"]
     # Once the log has rolled, what the closed segment holds is found too, before what came after.
-    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record, begun(SYSTEM)):
+    with unit("tool.run", AuditLog(path, clock=lambda: datetime(2026, 10, 3, tzinfo=UTC), segment_bytes=1).record, begun(VirtualClock())):
         annotate(tool="list_sessions")
     assert found("the tools called lately") == ["tool.run", "tool.run"]
     assert found("the latest errors") == ["Exchanged", "summary.backlog"]

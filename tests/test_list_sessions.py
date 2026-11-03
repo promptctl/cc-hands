@@ -8,7 +8,7 @@ from typing import NoReturn
 import pytest
 
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.events import Ended, Joined, Launched, PermissionRequested, Prompted, StatusReported, Stopped, Taken
 from hands.core.session import Membership, Permission, PromptId, RequestId, SessionId, Question
 from hands.core.status import Busy, Idle, Report, Shell, Stamp, Waiting
@@ -193,6 +193,6 @@ async def test_a_pane_read_that_breaks_leaves_each_session_listed_and_saying_why
 
 
 def test_the_tool_is_named_and_described_from_its_body() -> None:
-    tool = list_sessions_tool(SYSTEM, new_sessions(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
+    tool = list_sessions_tool(VirtualClock(), new_sessions(), Overlays(Home(Path("/nonexistent"))), Home(Path("/nonexistent")), {})
     assert (tool.name, tool.required) == ("list_sessions", ())
     assert "running Claude Code sessions" in tool.description

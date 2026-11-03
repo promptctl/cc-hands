@@ -12,7 +12,7 @@ from typing import get_args
 
 import pytest
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands import clock as clocks
 from hands.daemon import cli
 from hands.sessions import audit, backlog, filing, grouping
@@ -372,7 +372,7 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path,
 
     monkeypatch.setattr(backlog, "_lit", silent)
     with pytest.raises(backlog.LitFailed, match="said no ticket's id"):
-        asyncio.run(backlog.file_ticket(SYSTEM, tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
+        asyncio.run(backlog.file_ticket(VirtualClock(), tmp_path, "e", "warnings", "a title", "a description", "audit-0123456789ab"))
 
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:

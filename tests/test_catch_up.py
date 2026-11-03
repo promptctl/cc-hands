@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.core.sentences import cut
 from hands.core.effects import Effect, SessionGone, Summarise, Tell
 from hands.core.occurrences import AutoDenied, Cleared, SubagentStopped
@@ -82,7 +82,7 @@ async def test_what_did_i_miss_after_ten_minutes_lists_every_session_that_finish
         ],
     )
     called: list[object] = []
-    tool = audited(SYSTEM, catch_up_tool(await sessions_of("docs", "parser", "deploy", "scratch"), home, lambda: BACK), called.append)
+    tool = audited(VirtualClock(), catch_up_tool(await sessions_of("docs", "parser", "deploy", "scratch"), home, lambda: BACK), called.append)
 
     result = await tool.body(minutes=0)
 
