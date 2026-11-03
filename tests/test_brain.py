@@ -27,7 +27,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import _EMPTY_ROW, BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -212,6 +212,22 @@ def typed(tmp: Path) -> list[list[str]]:
     """What the fake claude read from its terminal, in order."""
     path = tmp / "typed.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def unemptied(lines: list[list[str]]) -> tuple[list[list[str]], int]:
+    """What the fake claude read, less the rows of editing keys that emptied its input, and how many rows those were. A
+    redraw of the stand-in's later than the brain's settle reads the old words again and empties an input already empty,
+    which the brain does safely and on no clock a test sets: how many rows that took is test_brain_turns' to count."""
+    kept: list[list[str]] = []
+    rows, at = 0, 0
+    while at < len(lines):
+        if [line[0] for line in lines[at:at + len(_EMPTY_ROW)]] == list(_EMPTY_ROW):
+            rows, at = rows + 1, at + len(_EMPTY_ROW)
+            continue
+        assert lines[at][0] not in _EMPTY_ROW, f"an editing key outside a whole emptied row: {lines}"
+        kept.append(lines[at])
+        at += 1
+    return kept, rows
 
 
 def typings_answered(tmp: Path) -> Callable[[float], Awaitable[None]]:
@@ -575,9 +591,10 @@ async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_a
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p1", None)
     finally:
         await brain.stop()
-    assert [line[1].strip() for line in typed(tmp_path) if line[0] == "prompt"] == ["and now?"]
+    kept, rows = unemptied(typed(tmp_path))
+    assert [line[1].strip() for line in kept if line[0] == "prompt"] == ["and now?"]
     # The untaken words were deleted by the next turn's look, with the input's editing keys: no Escape, no Ctrl-C.
-    assert [line[0] for line in typed(tmp_path) if line[0] not in ("prompt", "unbound", "dropped")] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h"]
+    assert rows >= 1 and [line[0] for line in kept if line[0] not in ("prompt", "unbound", "dropped")] == []
 
 
 async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -906,7 +923,7 @@ async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_runnin
         assert await asyncio.wait_for(brain.ask("and now?", unasked), 10) == BrainAnswered("p2", None)
     finally:
         await brain.stop()
-    assert typed(tmp_path) == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " and now?"]]
+    assert unemptied(typed(tmp_path))[0] == [["prompt", " garbled"], ["escape", ""], ["ctrl_c", " garbled"], ["prompt", " and now?"]]
     untaken, answered = events(recorded, "brain.turn")
     assert (untaken.facts["taken"], untaken.facts["ids"]) == (None, None)
     assert (answered.facts["taken"], answered.facts["ids"], answered.facts["matched"], answered.facts["told"]) == ("p2", ("p2",), "id", "p2")
