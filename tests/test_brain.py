@@ -984,7 +984,6 @@ _SLOW_PAUSE = PATIENCE_SECS * 1.2 / _opening(_SLOW)
 
 @pytest.mark.parametrize(("name", "pause"), [*((name, 0.0) for name in RECORDINGS), (_SLOW, _SLOW_PAUSE)])
 async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, name: str, pause: float) -> None:
-    assert _opening(name) * pause > PATIENCE_SECS or not pause
     monkeypatch.setenv("PLAY_PAUSE", str(pause))
     brain = await start(SYSTEM, launch(tmp_path), lambda _: None)
     asking = asyncio.create_task(brain.ask(f"play {name}", unasked))

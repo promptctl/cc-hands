@@ -597,8 +597,8 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     question it is started with, after `--`, is taken as if typed. A turn "wait" runs until Escape, "stuck" runs whatever is pressed, "fail" is failed by the API, "deaf"
     is never taken, "garbled" is taken as other words and runs until Escape, an Escape writing the record of the interruption and setting it idle, "write" asks permission to write notes.txt beside TYPED, writing it only if allowed, then an MCP server's input, "stray" asks one under an earlier turn's prompt id, and "die", as a turn or a side question, ends the program; a side question "stubborn" writes that it was told to end, and does not. A turn "play <name>" is the turn of
     that name tests/turns.py holds as Claude Code was recorded running it, opened by the words typed, and writes
-    ["played", name] once it has said all of it, and a line to said.log beside TYPED as each line of it starts, PLAY_PAUSE seconds
-    before each said before its first record, if named."""
+    ["played", name] once it has said all of it. It writes a line to said.log beside TYPED as each line of the recording starts, and with
+    PLAY_PAUSE named waits that many seconds before starting each line ahead of the first transcript record."""
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
@@ -710,26 +710,25 @@ def play(name, text):
     global prompts, last, tail
     lines = turns.played(turns.RECORDINGS[name], subscribed=list(hooks), session=session, first=prompts, prompt=taken(text))
     opening, pause = True, float(os.environ.get("PLAY_PAUSE", "0"))
-    said = open(os.path.join(os.path.dirname(os.environ["TYPED"]), "said.log"), "a", buffering=1)
-    for line in lines:
-        # The replay's opening, before its first record, slowed if named, as a loaded machine slows it.
-        opening = opening and not isinstance(line, turns.Written)
-        if opening and pause:
-            time.sleep(pause)
-        # Each line marked as it starts: a hook hands holds open is the replay moving, not stalled.
-        said.write("\\n")
-        line = turns.shifted(line, time.time() - line.at)
-        if isinstance(line, turns.Posted):
-            post(line.body["hook_event_name"], **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
-        elif isinstance(line, turns.Written):
-            os.makedirs(os.path.dirname(transcript), exist_ok=True)
-            with open(transcript, "a") as file:
-                file.write(turns.transcribed(line.record))
-        else:
-            with open(status + ".tmp", "w") as file:
-                file.write(turns.status_file(line, pid=os.getpid(), session=session))
-            os.replace(status + ".tmp", status)
-    said.close()
+    with open(os.path.join(os.path.dirname(os.environ["TYPED"]), "said.log"), "a", buffering=1) as said:
+        for line in lines:
+            # The replay's opening, before its first record, slowed if named, as a loaded machine slows it.
+            opening = opening and not isinstance(line, turns.Written)
+            if opening and pause:
+                time.sleep(pause)
+            # Each line marked as it starts: a hook hands holds open past the patience is a stall, as the user hears it.
+            said.write("\\n")
+            line = turns.shifted(line, time.time() - line.at)
+            if isinstance(line, turns.Posted):
+                post(line.body["hook_event_name"], **{{key: value for key, value in line.body.items() if key != "hook_event_name"}})
+            elif isinstance(line, turns.Written):
+                os.makedirs(os.path.dirname(transcript), exist_ok=True)
+                with open(transcript, "a") as file:
+                    file.write(turns.transcribed(line.record))
+            else:
+                with open(status + ".tmp", "w") as file:
+                    file.write(turns.status_file(line, pid=os.getpid(), session=session))
+                os.replace(status + ".tmp", status)
     prompts += turns.prompts(turns.RECORDINGS[name]) - 1
     last, tail = turns.stops(lines)[-1], time.monotonic() + float(os.environ.get("STOP_TAIL", "0"))
     typed(["played", name])
