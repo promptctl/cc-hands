@@ -54,7 +54,7 @@ class VirtualClock:
     def rest(self, seconds: float) -> None:
         # Off any loop, nothing waits on this clock's pauses to be woken: the time moves, and no real second passes. A
         # pause or call a loop waits on would come due unwoken, so a clock shared that way is refused, not run.
-        if self._pauses or self._calls:
+        if self.waking or any(call.live for call in self._calls):
             raise RuntimeError("rest moves a clock a loop is waiting on; that loop's test moves it with advance")
         self.at += seconds
 
@@ -110,6 +110,10 @@ class _Call:
 
     def cancel(self) -> None:
         self._callback = None
+
+    @property
+    def live(self) -> bool:
+        return self._callback is not None
 
     def fire(self, loop: asyncio.AbstractEventLoop) -> None:
         # Run on the loop's next step, as the loop's own timers are, never inside the `advance` that brought it due; a

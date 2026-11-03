@@ -134,3 +134,27 @@ def test_a_take_on_the_system_clock_waits_for_what_is_queued() -> None:
 
 def test_a_dashed_id_is_the_uuid_its_clock_minted() -> None:
     assert uuid.UUID(dashed(VirtualClock(seed=1))) == uuid.UUID(VirtualClock(seed=1).uuid())
+
+
+def test_a_rest_after_every_wait_on_the_clock_ended_moves_it() -> None:
+    clock = VirtualClock()
+
+    async def waited() -> None:
+        async with clock.timeout(5):
+            pass
+
+    asyncio.run(waited())
+    clock.rest(1)
+    assert clock.now() == 1
+
+
+def test_a_rest_while_a_loop_waits_on_the_clock_is_refused() -> None:
+    clock = VirtualClock()
+
+    async def waiting() -> None:
+        paused = clock.pause(5)
+        with pytest.raises(RuntimeError):
+            clock.rest(1)
+        paused.cancel()
+
+    asyncio.run(waiting())
