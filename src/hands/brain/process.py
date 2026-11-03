@@ -1713,8 +1713,11 @@ class Brain:
         turn = self._turn
         ours = turn is not None and turn.pasted and not turn.answered.done() and not turn.taken.done() and kept(submitted.words) == kept(turn.typed)
         # Words of a turn its asker heard was not taken, which Claude Code took late: the turn they run in is stopped
-        # through the one stop (`_halt`), whatever it is filed under.
-        late, self._untaken = not ours and kept(submitted.words) == self._untaken, None
+        # through the one stop (`_halt`), whatever it is filed under. Only words read from its input are next in it: a
+        # turn Claude Code opens itself, a task's result, posts its hook as it is delivered, whatever waits in the input.
+        late = not ours and kept(submitted.words) == self._untaken
+        if opener(submitted.words) == OTHER:
+            self._untaken = None
         if not submitted.queued:
             running = self._claude_turns.opened(submitted.prompt, TYPED if ours else opener(submitted.words), ours)
         elif ours:
@@ -1722,13 +1725,13 @@ class Brain:
             # they run as the turn behind it, which no hook opens.
             running = self._claude_turns.filed(submitted.prompt) or self._claude_turns.behind(TYPED, awaited=True)
             running.awaited = True
-        elif self._claude_turns.filed(submitted.prompt) is None:
+        elif (running := self._claude_turns.filed(submitted.prompt)) is None:
             # Words of no turn's queued behind one already told, a task's result among them: they run as the turn behind it.
             running = self._claude_turns.behind(opener(submitted.words), awaited=False)
-        else:
-            # Filed into a turn Claude Code still runs: they run in it, or behind it if its telling finds them waiting.
-            running = self._claude_turns.filed(submitted.prompt)
-        if late and running is not None:
+        # Otherwise filed into a turn Claude Code still runs: they run in it, or behind it if its telling finds them waiting.
+        if late:
+            # [LAW:nothing-unseen] a stop hands decides itself, said with the prompt that took the words.
+            logger.warning(f"the words of a turn the brain did not take were taken late, under {submitted.prompt}: the turn they run in is stopped")
             self._keep(self._halt(running), None)
         if turn is not None and ours:
             turn.taken_under, turn.queued = submitted.prompt, submitted.queued
