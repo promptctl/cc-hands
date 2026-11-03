@@ -257,7 +257,7 @@ UNMOVED: dict[str, frozenset[str]] = {
         "test_attention.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
         "test_audit.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'setattr LOG_POLL_SECONDS'}),
         "test_backlogpage.py": frozenset({'asyncio.wait_for()', 'hands.clock.SYSTEM', 'uuid'}),
-        "test_brain.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'hands.clock.SystemClock', 'setattr BRAIN_REPLY_BY_SECONDS', 'setattr DRAIN_SECONDS', 'setattr START_SECONDS', 'setattr STOP_SECONDS', 'setattr TAKE_SECONDS', 'time'}),
+        "test_brain.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM', 'hands.clock.SystemClock', 'setattr BRAIN_REPLY_BY_SECONDS', 'setattr DRAIN_SECONDS', 'setattr START_SECONDS', 'setattr STOP_SECONDS', 'time'}),
         "test_brain_e2e.py": frozenset({'asyncio.sleep()', 'asyncio.timeout()', 'asyncio.wait_for()', 'hands.clock.SYSTEM'}),
         "test_brainpage.py": frozenset({'asyncio.sleep()', 'hands.clock.SYSTEM', 'setattr POLL_SECONDS', 'setattr WAIT_SECONDS'}),
         "test_catch_up.py": frozenset({'hands.clock.SYSTEM'}),
