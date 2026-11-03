@@ -228,7 +228,8 @@ class Exporter:
         self._linger = linger
         self._timeout = timeout
         # [LAW:effects-at-boundaries] the clock every deadline and duration is reckoned on, and the one network call. The
-        # waits on a lane's queue and on its thread are the threading module's, in real seconds of what this clock says.
+        # linger on a lane's queue is this clock's; the wait on a lane's thread at close is real seconds, as the socket
+        # timeout bounding the send it waits out is.
         self._clock = clock
         self._post = post
         # [LAW:no-shared-mutable-globals] close alone writes it, once, finite from then on; each lane's thread reads it

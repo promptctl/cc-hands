@@ -122,8 +122,7 @@ def intermediary_tools(
 ) -> list[Tool]:
     """Every tool the intermediary is given, in the order its schema lists them, each telling `acting` as it is called
     but staying silent, whose call is the choice not to act. `clock` is the run's, which every tool reads time on.
-    `environment` is the run's, which says where tmux keeps its
-    sockets and where tmux is.
+    `environment` is the run's, which says where tmux keeps its sockets and where tmux is.
 
     [LAW:one-source-of-truth] the daemon hands the model these, and the eval judges the prompt against these, so a
     tool added here is one the eval's model is offered too.

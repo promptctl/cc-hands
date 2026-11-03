@@ -25,7 +25,6 @@ import os
 import re
 import subprocess
 import sys
-
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum

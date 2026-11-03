@@ -117,6 +117,12 @@ def test_only_a_composition_root_names_the_machines_clock_and_it_reaches_nothing
     assert {name: found for name, found in offenders().items() if name in ROOTS} == {root: {"hands.clock.SYSTEM"} for root in ROOTS}
 
 
+def test_each_composition_root_binds_the_machines_clock_once() -> None:
+    root = Path(hands.__file__).parent
+    uses = {name: sum(isinstance(node, ast.Name) and node.id == "SYSTEM" for node in ast.walk(ast.parse((root / name).read_text()))) for name in ROOTS}
+    assert uses == dict.fromkeys(ROOTS, 1)
+
+
 def test_the_check_catches_each_way_of_reaching_the_machines_time() -> None:
     source = (
         "import time\nfrom uuid import uuid4\nimport secrets as s\nfrom random import choice\n"

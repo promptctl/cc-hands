@@ -175,7 +175,8 @@ def entry() -> int:
     return main()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+# [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, bound here alone.
+def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     parser = argparse.ArgumentParser(prog="hands")
     parser.add_argument("--version", action="version", version=f"hands {version('hands')}", help="print the version of hands installed, which is its release's tag, and exit")
     parser.add_argument("--home", type=Path, help="where the socket, sessions, and heartbeat live (default: HANDS_HOME, or ~/.hands)")
@@ -220,8 +221,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Rejected as error:
         print(f"hands: {error}", file=sys.stderr)
         return 2
-    # [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, bound here alone.
-    clock = SYSTEM
     # [LAW:single-enforcer] one terminal and one audit sink for the whole process, from before anything it logs.
     with logging_to(clock, home) as audit_log:
         match arguments.command:
