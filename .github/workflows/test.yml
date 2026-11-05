@@ -130,6 +130,11 @@ jobs:
       # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed. continue-on-error for
       # the same reason: a report that cannot be read shows red on its own step and does not gate the suite's verdict. --no-sync:
       # the locked environment is already built, and a sync here would be time the cancelled run does not have.
+      # [LAW:single-enforcer] a quarantined flake that has outlived its week fails here, once, and only here: the suite cannot
+      # tell how old a quarantine is. Reads the history the checkout's full depth brings, and starts no test.
+      - name: Quarantines past their week
+        if: always() && steps.check.outcome != 'skipped'
+        run: uv run --no-sync python tests/quarantine_gate.py
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
