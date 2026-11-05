@@ -336,6 +336,10 @@ it which voices there are and to let you hear some: each says a line in its own 
 Tell it which one to use, and what it says next is in that voice. The choice is kept in
 `~/.hands/voice`, so it lasts across restarts.
 
+Hands can also speak in any voice in Kyutai's public voice library. See
+[docs/voice-library.md](docs/voice-library.md) for how to find, hear, and choose one, and how
+its Hugging Face token is read.
+
 The shim finds hands' home as the CLI does: `HANDS_HOME`, which must be absolute, or
 `~/.hands`. `hands plugin` writes the plugin there, in `plugins/`, one directory for each
 interpreter and each change to the plugin's files.
