@@ -314,7 +314,7 @@ async def test_a_turn_whose_fork_is_refused_400_is_not_asked_again_until_the_bra
         await rig.asides.ask(AsideKind.SUMMARY, "first", Deadline(5))
     # Every fork of the turn is built alike: the next questions fail with the same refusal, and none is sent.
     for question in ("second", "third"):
-        with pytest.raises(AsideFailed, match=r"req_9.*not asked again") as failed:
+        with pytest.raises(AsideFailed, match=r"not sent: .*req_9") as failed:
             await rig.asides.ask(AsideKind.SUMMARY, question, Deadline(5))
         assert failed.value.why is Unanswered.REFUSED
     assert len(rig.asked) == 2
@@ -322,6 +322,26 @@ async def test_a_turn_whose_fork_is_refused_400_is_not_asked_again_until_the_bra
     await rig.main_turn()
     assert await rig.asides.ask(AsideKind.SUMMARY, "fourth", Deadline(5)) == "Hello."
     assert len(rig.asked) == 4
+
+
+async def test_a_refused_fork_of_a_turn_whose_reply_is_pending_is_asked_again_once_the_reply_is_read(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    recorded: list[Entry] = []
+    rig = await brain(recorded)
+    gate = asyncio.Event()
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.1: no"}}'
+    rig.answers.extend([held(gate, "Hi."), web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"})])
+    main = asyncio.create_task(rig.main_turn())
+    while not rig.asked:
+        await asyncio.sleep(0)
+    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\)"):
+        await rig.asides.ask(AsideKind.SUMMARY, "early", Deadline(5))
+    with pytest.raises(AsideFailed, match=r"not sent: .*req_9"):
+        await rig.asides.ask(AsideKind.SUMMARY, "again", Deadline(5))
+    assert events(recorded)[-1].facts["refused_as"] == "req_9"
+    # The reply read makes another fork of the same exchange: it is asked.
+    gate.set()
+    await main
+    assert await rig.asides.ask(AsideKind.SUMMARY, "later", Deadline(5)) == "Hello."
 
 
 async def test_a_side_question_the_api_refuses_is_logged_by_the_proxy_as_hands_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:

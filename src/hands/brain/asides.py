@@ -16,7 +16,7 @@ from enum import StrEnum
 
 import aiohttp
 
-from hands.brain.fork import Newest, fork
+from hands.brain.fork import Newest, Turn, fork
 from hands.clock import Clock
 from hands.core.trace import Span
 from hands.core.wire import Fork, Garbled, Observed, Send, Sent, Written
@@ -87,9 +87,9 @@ class Asides:
         self._one = asyncio.Lock()
         # The question being sent now, by its unit of work's span and the body it is sent as: one at a time, under `_one`.
         self._sending: tuple[Span, object] | None = None
-        # The main turn a question forked from was refused 400, and what was seen: every fork of one turn is built alike,
-        # so each would be refused again. Questions of it fail unsent until the brain sends another.
-        self._refused: tuple[str, str] | None = None
+        # The turn a fork of which was refused 400, its request id and what was seen: every fork of one turn (its request
+        # and reply as read so far) is built alike, so each would be refused again. Questions of it fail unsent.
+        self._refused: tuple[Turn, str | None, str] | None = None
         # As the proxy's own client: the reply read as sent, and no header added that the brain's Claude Code left out.
         self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None), auto_decompress=False, skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"))
 
@@ -146,22 +146,22 @@ class Asides:
                             pass
                     turn = await self._newest.turn()
                     match self._refused:
-                        case (exchange, seen) if exchange == turn.exchange:
-                            raise AsideFailed(Unanswered.REFUSED, f"{seen}; not asked again of the turn it was forked from")
+                        case (refused, request_id, seen) if refused is turn:
+                            annotate(forked=turn.exchange, refused_as=request_id)
+                            raise AsideFailed(Unanswered.REFUSED, f"not sent: an earlier fork of its turn was refused, {seen}")
                         case _:
-                            pass
-                    return await self._answered(*fork(turn, question), turn.path, turn.exchange)
+                            return await self._answered(*fork(turn, question), turn)
             except TimeoutError as error:
                 if not limit.expired():
                     raise AsideFailed(Unanswered.BROKEN, f"it timed out on its own, not its asker's time: {error!r}") from error
                 why, seen = waiting
                 raise AsideFailed(why, f"{seen} within {within}") from error
 
-    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], path: str, forked: str) -> str:
-        annotate(forked=forked)
+    async def _answered(self, headers: tuple[tuple[str, str], ...], body: dict[str, object], turn: Turn) -> str:
+        annotate(forked=turn.exchange)
         self._sending = (here(), body)
         try:
-            async with self._client.post(self._proxy_url + path, headers=list(headers), data=json.dumps(body).encode()) as response:
+            async with self._client.post(self._proxy_url + turn.path, headers=list(headers), data=json.dumps(body).encode()) as response:
                 # [LAW:one-source-of-truth] read by the reader the proxy reads every reply with.
                 reader = reply_reader(Fork(), response.headers, lambda _event: None)
                 async for chunk in response.content.iter_any():
@@ -187,6 +187,6 @@ class Asides:
                 # A 400 is logged as hands' bug by the proxy, the one place every request hands built or changed passes.
                 seen = f"its request was answered {response.status} (request-id {request_id}): {other}"
                 if response.status == 400:
-                    self._refused = (forked, seen)
+                    self._refused = (turn, request_id, seen)
                 raise AsideFailed(Unanswered.REFUSED, seen)
 
