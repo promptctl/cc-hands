@@ -191,7 +191,11 @@ async def test_a_git_that_fails_ends_the_gits_still_running_before_the_vocabular
 
     reading = asyncio.create_task(vocabulary(clock, [Listing(focus, None)], focus, {**os.environ, "PATH": str(failing)}, clock.now()))
     # git log and git branch run on to the budget's end; the vocabulary is not read before they are ended.
+    # All three begin waiting out the budget at once, so two waiting is no sign git status has failed: it has once only
+    # git log and git branch are left waiting.
     await clock.paused(READING, count=2)
+    while clock.waking.count(READING) > 2:
+        await asyncio.sleep(0)
     assert not reading.done()
     clock.advance(READING)
     primed = await reading
