@@ -305,6 +305,25 @@ async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brai
     assert len(rig.asked) == 2
 
 
+async def test_a_turn_whose_fork_is_refused_400_is_not_asked_again_until_the_brain_sends_another(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
+    rig = await brain([])
+    await rig.main_turn()
+    said = '{"type":"error","error":{"type":"invalid_request_error","message":"messages.1: no"}}'
+    rig.answers.append(web.Response(status=400, text=said, headers={"request-id": "req_9", "Content-Type": "application/json"}))
+    with pytest.raises(AsideFailed, match=r"answered 400 \(request-id req_9\)"):
+        await rig.asides.ask(AsideKind.SUMMARY, "first", Deadline(5))
+    # Every fork of the turn is built alike: the next questions fail with the same refusal, and none is sent.
+    for question in ("second", "third"):
+        with pytest.raises(AsideFailed, match=r"req_9.*not asked again") as failed:
+            await rig.asides.ask(AsideKind.SUMMARY, question, Deadline(5))
+        assert failed.value.why is Unanswered.REFUSED
+    assert len(rig.asked) == 2
+    # A new main turn is a new request to fork: it is asked.
+    await rig.main_turn()
+    assert await rig.asides.ask(AsideKind.SUMMARY, "fourth", Deadline(5)) == "Hello."
+    assert len(rig.asked) == 4
+
+
 async def test_a_side_question_the_api_refuses_is_logged_by_the_proxy_as_hands_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)

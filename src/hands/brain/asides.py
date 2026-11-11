@@ -87,6 +87,9 @@ class Asides:
         self._one = asyncio.Lock()
         # The question being sent now, by its unit of work's span and the body it is sent as: one at a time, under `_one`.
         self._sending: tuple[Span, object] | None = None
+        # The main turn a question forked from was refused 400, and what was seen: every fork of one turn is built alike,
+        # so each would be refused again. Questions of it fail unsent until the brain sends another.
+        self._refused: tuple[str, str] | None = None
         # As the proxy's own client: the reply read as sent, and no header added that the brain's Claude Code left out.
         self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None), auto_decompress=False, skip_auto_headers=("Accept-Encoding", "Content-Type", "User-Agent"))
 
@@ -142,6 +145,11 @@ class Asides:
                         case Deadline():
                             pass
                     turn = await self._newest.turn()
+                    match self._refused:
+                        case (exchange, seen) if exchange == turn.exchange:
+                            raise AsideFailed(Unanswered.REFUSED, f"{seen}; not asked again of the turn it was forked from")
+                        case _:
+                            pass
                     return await self._answered(*fork(turn, question), turn.path, turn.exchange)
             except TimeoutError as error:
                 if not limit.expired():
@@ -177,5 +185,8 @@ class Asides:
                 raise AsideFailed(Unanswered.BROKEN, f"its reply broke off (request-id {request_id}): {reason}")
             case other:
                 # A 400 is logged as hands' bug by the proxy, the one place every request hands built or changed passes.
-                raise AsideFailed(Unanswered.REFUSED, f"its request was answered {response.status} (request-id {request_id}): {other}")
+                seen = f"its request was answered {response.status} (request-id {request_id}): {other}"
+                if response.status == 400:
+                    self._refused = (forked, seen)
+                raise AsideFailed(Unanswered.REFUSED, seen)
 
