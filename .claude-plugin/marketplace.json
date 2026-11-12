@@ -7,11 +7,8 @@
   "plugins": [
     {
       "name": "hands",
-      "source": {
-        "source": "command",
-        "command": "hands plugin"
-      },
-      "description": "The hooks that join every Claude Code session to the hands daemon, from the hands installed."
+      "source": "./plugin",
+      "description": "The hooks that join every Claude Code session to the hands daemon, run by the hands installed."
     }
   ]
 }

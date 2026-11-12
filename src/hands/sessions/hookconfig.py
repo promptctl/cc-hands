@@ -1,6 +1,6 @@
 """The hooks hands' Claude Code plugin installs, and the one number every permission time comes from.
 
-    <hands python> -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json     # regenerates the plugin's hook file
+    <hands python> -m hands.sessions.hookconfig > plugin/hooks/hooks.json     # regenerates the plugin's hook file
 
 It is imported by the shim, so it holds only the standard library and hands' data modules.
 """
@@ -38,10 +38,9 @@ TAKE_SECONDS = 30.0
 # judges a hook late by its own clock, which starts after Claude Code's, so Claude Code's must run longer.
 BRAIN_POST_TIMEOUT_SECONDS = TAKE_SECONDS + POST_TIMEOUT_SECONDS
 
-# [LAW:one-source-of-truth] the module every hook runs, and the launcher, inside the plugin, that runs it on the
-# installed hands' own interpreter, which `hands plugin` writes (hands.sessions.marketplace).
-SHIM_MODULE = "hands.sessions.shim"
-LAUNCHER = "hooks/python"
+# [LAW:one-source-of-truth] the command every hook runs: hands' console script for the shim, so a hook runs the installed
+# hands' own interpreter, found on PATH as `hands` itself is.
+SHIM_COMMAND = "hands-shim"
 # Where the plugin's hook file lives, relative to the plugin root; Claude Code loads it from there unasked.
 HOOKS_FILE = "hooks/hooks.json"
 # The plugin as Claude Code names it: its name in its .claude-plugin/plugin.json, at the marketplace's name in
@@ -83,11 +82,11 @@ def post_timeout(event: str) -> float:
 
 
 def plugin_hooks() -> dict[str, object]:
-    """The plugin's hooks.json: every subscribed event runs the shim through the plugin's launcher, and MessageDisplay
-    is posted to the daemon."""
-    # Exec form (`args` set): Claude Code spawns the launcher itself, with no shell between, and the launcher execs
-    # Python, so the shim is the process Claude Code spawned and its parent is the claude process whose pid it records.
-    command = {"type": "command", "command": f"${{CLAUDE_PLUGIN_ROOT}}/{LAUNCHER}", "args": ["-m", SHIM_MODULE]}
+    """The plugin's hooks.json: every subscribed event runs the shim, and MessageDisplay is posted to the daemon."""
+    # Exec form (`args` set): Claude Code spawns the shim itself, with no shell between, so the shim is the process Claude
+    # Code spawned and its parent is the claude process whose pid it records. Its script directory, not the session's, is
+    # first on its path, so a project's own json.py or hands/ cannot stand in for hands' modules.
+    command: dict[str, object] = {"type": "command", "command": SHIM_COMMAND, "args": []}
     display = {"type": "http", "url": DISPLAY_URL, "timeout": DISPLAY_TIMEOUT_SECONDS}
     return {"hooks": {**{event: [{**_matched(event), "hooks": [{**command, **declared(event)}]}] for event in SUBSCRIBED}, "MessageDisplay": [{"hooks": [display]}]}}
 

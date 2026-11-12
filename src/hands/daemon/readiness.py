@@ -4,7 +4,7 @@
     hands check -v  # each step said in full beneath its line
 
 The steps, in the README's order: Claude Code from its installer; PortAudio, which the microphone opens through; the
-installed `hands` on PATH, which Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
+installed `hands` on PATH, whose `hands-shim` Claude Code runs for the plugin; the claude shim that runs sessions under fritter;
 the plugin that joins sessions to hands; the brain's own Claude Code, the release hands pins; the brain with its login; the Input
 Monitoring grant that lets hands hear the talk key; hands running; and the running sessions themselves. `hands run` logs each step in full as it
 starts, and a daemon that is up says nothing about any of them, so this is where a missing one is heard.
@@ -125,13 +125,13 @@ def tmux(path: str) -> Finding:
 
 
 def installed(path: str) -> Finding:
-    """Whether `hands` on this PATH, which Claude Code runs for the plugin's hooks and skills, is this hands."""
+    """Whether `hands` on this PATH, whose `hands-shim` and `hands-attention` Claude Code runs for the plugin's hooks and skills, is this hands."""
     this = f"hands {version('hands')}"
     found = shutil.which("hands", path=path)
     if found is None:
         return Missing(
             "`hands` not on PATH",
-            "this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks",
+            "this PATH has no `hands`, so Claude Code cannot run `hands-shim` and no session gets hands' hooks",
             "`uv tool update-shell` puts the directory `uv tool install` writes it to on PATH",
         )
     try:
@@ -148,7 +148,15 @@ def installed(path: str) -> Finding:
             f"`hands` on this PATH, {found}, is {said.stdout.strip()}, not this {this}, so sessions run its hooks",
             "put this one first on PATH, or install it again",
         )
-    return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs it for the plugin in every session")
+    # [LAW:one-source-of-truth] the plugin's hooks name `hands-shim` alone: hands installs it beside `hands`, and a hands
+    # from before the plugin ran it has no such script.
+    if shutil.which("hands-shim", path=path) is None:
+        return Missing(
+            "`hands-shim` not on PATH",
+            f"`hands` on this PATH, {found}, has no `hands-shim` beside it, so Claude Code cannot run the plugin's hooks and no session gets them",
+            "install this hands again: `hands update`",
+        )
+    return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")
 
 
 def brain_claude(home: Home) -> Finding:

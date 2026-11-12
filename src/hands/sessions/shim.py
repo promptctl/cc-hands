@@ -1,6 +1,6 @@
 """The hook command: record membership, post the payload to the daemon, return.
 
-    HANDS_HOME=<hands home> <python 3.12+> -m hands.sessions.shim     # HANDS_HOME defaults to ~/.hands
+    HANDS_HOME=<hands home> hands-shim     # HANDS_HOME defaults to ~/.hands
 
 It runs in Claude Code's critical path for every subscribed hook, so it imports
 only the standard library and hands' data modules, and it never waits on
@@ -186,7 +186,7 @@ def main(argv: Sequence[str], clock: Clock) -> int:
         case [_]:
             pass  # everything the shim is told comes on stdin and in HANDS_HOME
         case _:
-            print("usage: python -m hands.sessions.shim  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
+            print("usage: hands-shim  (the home is HANDS_HOME, or ~/.hands)", file=sys.stderr)
             return USAGE
     body = sys.stdin.buffer.read()
     try:
@@ -209,5 +209,10 @@ def main(argv: Sequence[str], clock: Clock) -> int:
     return 0
 
 
+def entry() -> int:
+    """The `hands-shim` console script: main on this process's arguments and clock."""
+    return main(sys.argv, SYSTEM)
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv, SYSTEM))
+    sys.exit(entry())

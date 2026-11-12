@@ -1,8 +1,6 @@
 """`hands restart`: start the running daemon again, so it runs the code, prompt, and brain setup on disk now.
 
-The plugin's /hands:restart skill runs it through the plugin's launcher, on the installed hands' own interpreter:
-
-    hooks/python -m hands.daemon restart
+The plugin's /hands:restart skill runs it as the installed hands' own command.
 
 A change to hands is never taken up live: the brain's prompt is hands' source, given to the brain when it launches; the
 brain's setup in its config directory is read by the brain's Claude Code when it launches; and a skill in the plugin is

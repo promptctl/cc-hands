@@ -27,6 +27,10 @@ dependencies = [
 
 [project.scripts]
 hands = "hands.daemon.cli:entry"
+# What the plugin's hooks and its attention skill run (plugin/): a console script's shebang is the interpreter hands was installed
+# with, so the plugin needs no launcher rendered for it.
+hands-shim = "hands.sessions.shim:entry"
+hands-attention = "hands.sessions.attention:entry"
 
 [dependency-groups]
 # [LAW:locality-or-seam] exception: tests/timeouts.py reads the suite's settings through pytest-timeout's

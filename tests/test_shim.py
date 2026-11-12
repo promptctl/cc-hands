@@ -19,7 +19,6 @@ from hands.virtualclock import VirtualClock
 from hands.core.effects import Summarise
 from hands.core.session import Membership, Opened, PromptId, Session, SessionId, Unreported
 from hands.sessions import heartbeat
-from hands.sessions.hookconfig import LAUNCHER, SHIM_MODULE
 from hands.sessions.shim import OVERVIEW
 from hands.sessions.home import Home
 from hands.sessions.liveness import sweep
@@ -33,7 +32,7 @@ from hands.sessions.reader import Reader
 from hands.sessions.server import serve_hooks
 from hands.sessions.tail import Tails
 from hands.sessions.wide import Fact, WideEvent
-from conftest import SYSTEM_PATH, new_sessions
+from conftest import PLUGIN_PATH, hook_argv, new_sessions
 
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
@@ -70,7 +69,7 @@ async def shim(home: Home, payload: Mapping[str, object], fritter: str | None = 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        SHIM_MODULE,
+        "hands.sessions.shim",
         env={**environment, "HANDS_HOME": str(home.root)},
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -147,7 +146,7 @@ async def test_a_hands_still_starting_has_not_served_its_socket_yet_and_costs_th
 
 async def test_a_relative_home_is_refused_rather_than_made_in_every_project(home: Home, tmp_path: Path) -> None:
     process = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", SHIM_MODULE, cwd=tmp_path, env={**os.environ, "HANDS_HOME": "relhome"},
+        sys.executable, "-m", "hands.sessions.shim", cwd=tmp_path, env={**os.environ, "HANDS_HOME": "relhome"},
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await process.communicate(json.dumps(START).encode())
@@ -163,26 +162,26 @@ async def test_a_hands_that_says_it_is_up_but_does_not_answer_is_reported(home: 
     assert "cannot reach the hands daemon" in stderr and "hands is up" in stderr
 
 
-def launch(plugin: Path, home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
-    """The plugin's hook as Claude Code spawns it: its launcher, run directly in the session's directory."""
-    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": SYSTEM_PATH, **environment}
-    return subprocess.run([plugin / LAUNCHER, "-m", SHIM_MODULE], input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
+def launch(home: Home, cwd: Path, **environment: str) -> subprocess.CompletedProcess[bytes]:
+    """The plugin's hook as Claude Code spawns it: the command hooks.json names, run directly in the session's directory."""
+    environment = os.environ | {"HANDS_HOME": str(home.root), "PATH": PLUGIN_PATH, **environment}
+    return subprocess.run(hook_argv("SessionStart"), input=json.dumps(START).encode(), env=environment, cwd=cwd, capture_output=True)
 
 
-def test_the_plugin_launcher_runs_the_shim_on_hands_own_python_as_the_process_claude_code_spawned(plugin: Path, home: Home, tmp_path: Path) -> None:
-    ran = launch(plugin, home, tmp_path)
+def test_the_plugin_s_hook_runs_the_shim_on_hands_own_python_as_the_process_claude_code_spawned(home: Home, tmp_path: Path) -> None:
+    ran = launch(home, tmp_path)
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
     # Spawned directly, as Claude Code spawns an exec-form hook, so the pid recorded must be this process's.
     assert read_membership(home, SID).pid == os.getpid()
 
 
-def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(plugin: Path, home: Home, tmp_path: Path) -> None:
+def test_a_project_s_own_modules_cannot_stand_in_for_the_shim_s(home: Home, tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "hands").mkdir(parents=True)
     (project / "json.py").write_text("raise SystemExit('shadowed json')\n")
     (project / "hands" / "__init__.py").write_text("raise SystemExit('shadowed hands')\n")
-    # Neither from the session's directory nor from a PYTHONPATH the user's shell set.
-    ran = launch(plugin, home, project, PYTHONPATH=str(project))
+    # Claude Code runs the hook in the session's directory.
+    ran = launch(home, project)
     assert (ran.returncode, ran.stdout, ran.stderr) == (0, STARTED.encode(), b"")
 
 

@@ -77,7 +77,6 @@ UNMOVED = frozenset({
     "test_input_tools.py",
     "test_library.py",
     "test_liveness.py",
-    "test_marketplace.py",
     "test_microphone.py",
     "test_naming.py",
     "test_narrator.py",
