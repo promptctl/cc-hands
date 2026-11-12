@@ -127,11 +127,12 @@ def test_a_marker_that_is_not_a_ticket_and_a_date_stops_the_run(pytester: pytest
     ran.stderr.fnmatch_lines(["*is quarantined without its ticket and its date*"])
 
 
-def test_an_until_that_is_not_a_date_stops_the_run(pytester: pytest.Pytester) -> None:
-    pytester.makepyfile('import pytest\n\n@pytest.mark.quarantined("t-3", until="next week")\ndef test_flaky():\n    pass\n')
+@pytest.mark.parametrize("until", ["next week", "20260112", "2026-W03-1", "2026-1-12", "2026-02-30"])
+def test_an_until_that_is_not_the_one_spelling_of_a_date_stops_the_run(pytester: pytest.Pytester, until: str) -> None:
+    pytester.makepyfile(f'import pytest\n\n@pytest.mark.quarantined("t-3", until="{until}")\ndef test_flaky():\n    pass\n')
     ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     assert ran.ret != 0
-    ran.stderr.fnmatch_lines(['*is quarantined until "next week", which is not a date*'])
+    ran.stderr.fnmatch_lines([f'*is quarantined until "{until}", which is not a date*'])
 
 
 def test_a_marker_on_a_module_or_a_class_quarantines_each_test_under_it(pytester: pytest.Pytester) -> None:

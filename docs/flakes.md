@@ -20,7 +20,9 @@ def test_the_flaky_one() -> None: ...
   `QUARANTINE_DAYS` (tests/conftest.py) from the day it is written. Both are required, and the run stops before any test
   if either is missing, malformed, or too far off.
 - A quarantined test still runs and still reports. It is marked as pytest's own expected failure, so a failure in setup,
-  call, or teardown keeps its traceback, with the ticket and the date as its reason, and the run stays green.
+  call, or teardown leaves the run green. The summary lists it as XFAIL with the ticket and the date, and as XPASS when it
+  passed, which is the sign its flake may be fixed and the marker can go. The traceback is in the report log
+  (`.pytest_cache/report-log.jsonl`).
 - The day after `until`, the run stops before any test and names the quarantine: fix the test or delete it. Moving the
   date is an edit a reviewer sees in the diff, beside the ticket that says why. The date is the machine's, in UTC.
 - The marker works on a function, a class, or a module's `pytestmark`; each test under it is quarantined.

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -17,7 +18,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
@@ -81,7 +82,7 @@ QUARANTINE_DAYS = 7
 
 def utc_today() -> date:
     """The machine's date, the one place the quarantine rule reads it; test_quarantine sets it."""
-    return datetime.now(UTC).date()
+    return SYSTEM.wall().date()
 
 
 def quarantine(item: pytest.Item) -> tuple[str, date] | None:
@@ -95,7 +96,10 @@ def quarantine(item: pytest.Item) -> tuple[str, date] | None:
     # [LAW:no-silent-failure] a spelling the rule would silently ignore, as a keyword it does not read, is refused.
     if not (isinstance(ticket, str) and ticket and isinstance(until, str) and set(marker.kwargs) == {"until"}):
         raise pytest.UsageError(f'{item.nodeid} is quarantined without its ticket and its date: quarantined("<ticket id>", until="YYYY-MM-DD")')
+    # Only the one spelling the doc gives: `fromisoformat` also reads 20261119 and 2026-W47-4.
     try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", until):
+            raise ValueError(until)
         return ticket, date.fromisoformat(until)
     except ValueError:
         raise pytest.UsageError(f'{item.nodeid} is quarantined until "{until}", which is not a date: until="YYYY-MM-DD"') from None

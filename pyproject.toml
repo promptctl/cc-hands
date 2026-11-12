@@ -69,9 +69,10 @@ testpaths = ["tests"]
 # runs to it is seen before it is crossed.
 # --report-log: what every test cost, tests/costs.py's to read, line by line as each phase ends, so a run CI cancels keeps
 # what it finished; a report written at the session's end would be lost, as the runner's cancel never reaches pytest.
-addopts = ["-p", "pytester", "--durations=20", "--report-log=.pytest_cache/report-log.jsonl", "--report-log-exclude-logs-on-passed-tests"]
+addopts = ["-p", "pytester", "-rxX", "--durations=20", "--report-log=.pytest_cache/report-log.jsonl", "--report-log-exclude-logs-on-passed-tests"]
 # quarantined(ticket, until): a flaky test that still runs and reports and whose failure cannot fail the run; the run stops
-# once its `until` date is past (tests/conftest.py).
+# once its `until` date is past (tests/conftest.py). -rxX: the summary lists each quarantined test that failed (XFAIL) and each
+# that passed (XPASS, a quarantine its flake may have left), with its ticket and date, beside the log's pass count.
 markers = ["quarantined(ticket, until): a flaky test that runs and reports, and cannot fail the run until its date is past"]
 # [LAW:single-enforcer] the one owner of "no test hangs": one that never finishes fails here, named, with the stack it
 # was stuck in. A wait inside a test (conftest's `patiently`) is for failing fast on a stall, and leans on this to end
