@@ -58,7 +58,7 @@ UNSTARTABLE = 127
 # The marketplace hands' plugin comes from, named by the plugin's own id.
 MARKETPLACE = PLUGIN_ID.partition("@")[2]
 # What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
-# step goes once no install from before hands-install-dye.r03 is left to update.
+# step goes with the ticket that removes it, hands-install-dye.uk8.
 RENDERED = "plugins"
 
 
@@ -74,6 +74,21 @@ class Step(StrEnum):
     MARKETPLACE = "marketplace"
     PLUGIN = "plugin"
     RENDERED_PLUGINS = "rendered-plugins"
+
+
+class Plugin(StrEnum):
+    """Whether there is a plugin of hands' for the update to bring current, as `claude plugin list --json` answered."""
+
+    INSTALLED = "installed"
+    NOT_INSTALLED = "not installed"
+    NO_CLAUDE = "no claude"
+
+    @classmethod
+    def of(cls, code: int, raw: str) -> "Plugin":
+        """The listing `claude` exited `code` printing `raw`; raises Rejected for a listing hands cannot read."""
+        if code == UNSTARTABLE:
+            return cls.NO_CLAUDE
+        return cls.INSTALLED if readiness.installed_everywhere(raw) else cls.NOT_INSTALLED
 
 
 @dataclass(frozen=True)
@@ -192,12 +207,15 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         under = readiness.plugin_environment(home, caller)
         listed = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
         try:
-            joined = ran[-1].code == 0 and bool(readiness.installed_everywhere(listed))
+            plugin = Plugin.of(ran[-1].code, listed)
         except Rejected as error:
             raise refused(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
-        if joined:
-            step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
-            step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
+        match plugin:
+            case Plugin.INSTALLED:
+                step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
+                step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
+            case Plugin.NOT_INSTALLED | Plugin.NO_CLAUDE:
+                pass
         step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work)
     except _Stopped as stopped:
         return stopped.stopped
