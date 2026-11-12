@@ -607,29 +607,31 @@ at the keyboard. They are declared `async`, so the shim they spawn on every tool
 never holds the agent up.
 
 **Installing the hooks.** The repository is a Claude Code marketplace
-(`.claude-plugin/marketplace.json`) whose one entry, `hands@cc-hands`, has a `command`
-source: Claude Code runs `hands plugin` and copies the directory it prints into its
-plugin cache, at install and again once per session, so the hooks are always the
-installed hands' own. The plugin's files are package data, in
-`src/hands/sessions/plugin`: `.claude-plugin/plugin.json`, `hooks/hooks.json`, and the
-skills. What a package cannot carry is which interpreter runs it, so `hands plugin`
-(`hands.sessions.marketplace`) copies them and writes beside them the launcher
-`hooks/python`, which execs the interpreter that ran `hands plugin` with `-I`: the
-session's directory, where Claude Code runs the hook, and the user's `PYTHON*`
-variables stay off the path, so a project's own `json.py` or `hands/` cannot stand in
-for hands' modules. It writes them under the home, in `plugins/<digest>`, a directory
-named by its content: staged whole and renamed into place, so sessions starting together
-never hand Claude Code a half-written one. Installing the plugin installs the hooks;
-disabling or uninstalling it removes them, and no settings file is edited by hands.
-`hooks.json` is generated from `hookconfig` (`python -m hands.sessions.hookconfig >
-src/hands/sessions/plugin/hooks/hooks.json`), and a test fails when the checked-in file
-differs from what `hookconfig` declares. `MessageDisplay` is an HTTP
+(`.claude-plugin/marketplace.json`) whose one entry, `hands@cc-hands`, is the directory
+`plugin/` of this repository: Claude Code copies it into its plugin cache at install and
+at `claude plugin update`, by the commit it was copied at, and runs nothing of hands' to
+do either, so no one is asked to accept a command. Its files are `.claude-plugin/plugin.json`,
+`hooks/hooks.json`, and the skills. What runs is the installed hands': the hooks run
+`hands-shim`, and the attention skill `hands-attention`, console scripts hands installs
+beside `hands`, whose shebang is the interpreter hands was installed with, so no launcher
+is rendered for them. A script's own directory, not the session's, is first on its path,
+so a project's own `json.py` or `hands/`, which `python -m` would have found in the
+session's directory, cannot stand in for hands' modules. Installing the plugin installs
+the hooks; disabling or uninstalling it removes them, and no settings file is edited by
+hands. `hooks.json` is generated from `hookconfig` (`python -m hands.sessions.hookconfig >
+plugin/hooks/hooks.json`), and a test fails when the checked-in file differs from what
+`hookconfig` declares. The plugin and the installed hands meet at three names,
+`hands-shim`, `hands-attention`, and `hands restart`, and at the events `hooks.json`
+subscribes: a hands older than the plugin lacks a script, which `hands check` says, and a
+plugin older than the hands misses the hooks added since, until it is updated.
+`MessageDisplay` is an HTTP
 hook to `hookconfig.DISPLAY_URL`, a fixed loopback port, since Claude Code puts no variable in a hook's URL;
 the daemon serves that route alone there, and does not start when the port is taken. Every other hook is exec
-form: `${CLAUDE_PLUGIN_ROOT}/hooks/python -m hands.sessions.shim`, spawned by Claude
-Code with no shell between, and the launcher execs, so the shim runs as the process
-Claude Code spawned and its parent is the claude process. A launcher that ran Python as
-its child, as `uv run` does, would record its own pid instead. The shim's home is
+form: `hands-shim`, spawned by Claude Code with no shell between, found on the `PATH`
+Claude Code runs with, so the shim runs as the process Claude Code spawned and its parent
+is the claude process. A wrapper that ran Python as its child, as `uv run` does, would
+record its own pid instead; a checkout's `hands-shim` is therefore its venv's own script
+linked onto `PATH`. The shim's home is
 `HANDS_HOME`, or `~/.hands`, found the way the `hands` CLI finds it; a relative
 `HANDS_HOME` is refused, since a hook runs in its session's directory.
 
@@ -2485,10 +2487,9 @@ that tmux repeats every `status-interval` and that would bury the log in copies 
 the home it ran on, its arguments as parsed, its exit code, and how long it took; it ends failed where the command
 exits nonzero, its error the code and the reason the command gave (`exited 1: hands has not run: ...`): each command
 returns a `hands.daemon.exits.Exit`, whose nonzero arm carries that reason, so no command can exit nonzero without one.
-The unit of work the command ran, such as `plugin.render`, is in its trace.
-Those events are in the log alone: Claude Code waits on `hands plugin` before a session starts,
-and `hands status` must answer whatever the config says, so no command waits on a collector or
-reads a config.toml to find one. hands names only the collector; which stores sit behind it is
+The unit of work the command ran, such as `memory.recall`, is in its trace.
+Those events are in the log alone: `hands status` must answer whatever the config says, so no
+command waits on a collector or reads a config.toml to find one. hands names only the collector; which stores sit behind it is
 the homelab's.
 
 ## Endurance

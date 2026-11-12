@@ -165,8 +165,9 @@ closes.
   transport error is spoken through the surviving device or shown on screen, and
   the transport is rebuilt on the default device. Done by unplugging mid-turn.
 - **Hooks as a plugin.** The repository is a Claude Code marketplace whose plugin
-  the installed hands writes (`hands plugin`), its hooks run by that hands' own
-  Python, and whose `hooks/hooks.json` is generated from `hookconfig`; installing, disabling, or
+  is its `plugin/` directory, installed and updated by Claude Code with no command of
+  hands' run, its hooks running the installed hands' `hands-shim`, and whose
+  `hooks/hooks.json` is generated from `hookconfig`; installing, disabling, or
   uninstalling the plugin is how the hooks go on and off. A shim that cannot reach
   the daemon exits 0 silently when the heartbeat says hands was stopped or never
   ran, and exits 1 with the reason when it died, hung, or cannot be read. Done when

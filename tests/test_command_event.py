@@ -16,7 +16,7 @@ from loguru import logger
 from hands.clock import SYSTEM, Clock
 from hands.daemon import cli
 from hands.daemon.cli import main
-from hands.sessions import heartbeat, marketplace
+from hands.sessions import heartbeat
 from hands.sessions.audit import segment
 from hands.sessions.home import Home
 from hands.voice import phoneaddress
@@ -31,21 +31,21 @@ def test_a_command_that_exits_zero_and_one_that_exits_nonzero_each_leave_one_eve
     # No heartbeat: hands has never run here, which `hands status` says by exiting 1.
     assert main(["--home", str(home.root), "status"]) == 1
     said = capsys.readouterr().out.rstrip()
-    assert main(["--home", str(home.root), "plugin"]) == 0
+    assert main(["--home", str(home.root), "recall"]) == 0
     capsys.readouterr()
 
-    status, render, plugin = events(home)
+    status, recall, command = events(home)
     # The failure says why, in the words the command said it.
     assert (status["event"], status["outcome"], status["error"]) == ("hands.command", "failed", f"exited 1: {said}")
     # [LAW:nothing-unseen] what the exit code was decided by, beside it.
     assert status["facts"] == {"command": "status", "home": str(home.root), "arguments.home": str(home.root), "verdict": {"type": "NeverRan", "path": str(home.status)}, "exit_code": 1}
-    assert (plugin["event"], plugin["outcome"], plugin["error"]) == ("hands.command", "ok", None)
-    assert plugin["facts"] == {"command": "plugin", "home": str(home.root), "arguments.home": str(home.root), "exit_code": 0}
-    assert plugin["duration_ms"] >= render["duration_ms"] > 0
-    # The render is a part of the command's run, in its trace; each command is a trace of its own.
-    assert render["event"] == "plugin.render"
-    assert (render["trace_id"], render["parent_id"]) == (plugin["trace_id"], plugin["span_id"])
-    assert plugin["parent_id"] is None and status["trace_id"] != plugin["trace_id"]
+    assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "ok", None)
+    assert command["facts"]["command"] == "recall" and command["facts"]["exit_code"] == 0
+    assert command["duration_ms"] >= recall["duration_ms"]
+    # The recall is a part of the command's run, in its trace; each command is a trace of its own.
+    assert recall["event"] == "memory.recall"
+    assert (recall["trace_id"], recall["parent_id"]) == (command["trace_id"], command["span_id"])
+    assert command["parent_id"] is None and status["trace_id"] != command["trace_id"]
 
 
 def test_a_status_of_a_daemon_that_is_up_carries_its_heartbeat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -94,15 +94,15 @@ def test_a_phone_with_no_address_a_phone_reaches_fails_saying_so(tmp_path: Path,
 def test_a_command_that_raises_is_a_failed_event_with_no_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / "home")
 
-    def full_disk(home: Home, interpreter: str) -> marketplace.Rendered:
+    def full_disk(clock: Clock, home: Home) -> Literal[0]:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(marketplace, "render", full_disk)
+    monkeypatch.setattr(cli, "report", full_disk)
     with pytest.raises(OSError, match="No space left"):
-        main(["--home", str(home.root), "plugin"])
-    [_, command] = events(home)
+        main(["--home", str(home.root), "status"])
+    [command] = events(home)
     assert (command["event"], command["outcome"], command["error"]) == ("hands.command", "failed", "OSError: [Errno 28] No space left on device")
-    assert command["facts"] == {"command": "plugin", "home": str(home.root), "arguments.home": str(home.root)}
+    assert command["facts"] == {"command": "status", "home": str(home.root), "arguments.home": str(home.root)}
 
 
 def test_a_check_says_each_finding_it_exited_on(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:

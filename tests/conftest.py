@@ -45,8 +45,6 @@ from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
 from hands.sessions.delta import MARKING, PATIENCE, Deltas
-from hands.sessions.home import Home
-from hands.sessions.marketplace import render
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
@@ -346,16 +344,31 @@ def dead_pid() -> Callable[[], int]:
     return _dead_pid
 
 
-@pytest.fixture
-def plugin(tmp_path: Path) -> Path:
-    """hands' plugin as `hands plugin` writes it for the hands under test: its launcher runs this interpreter."""
-    return render(Home(tmp_path / "rendering"), sys.executable).plugin
-
+# hands' plugin as the marketplace's entry installs it: the directory itself, with nothing rendered.
+PLUGIN = Path(__file__).resolve().parent.parent / "plugin"
 
 # The system's own directories: the PATH of a child that must find nothing of the developer's. It holds no Python new
-# enough for hands, since /usr/bin's python3 on macOS is 3.9, so the plugin's launcher can only be running the
-# interpreter it names; and no Claude Code, so a child that looks for claude runs none, not the developer's logged-in one.
+# enough for hands, since /usr/bin's python3 on macOS is 3.9, so a plugin command can only be running the interpreter
+# of the hands under test; and no Claude Code, so a child that looks for claude runs none, not the developer's logged-in one.
 SYSTEM_PATH = "/usr/bin:/bin"
+
+# The PATH Claude Code runs the plugin's commands on, as it is where hands is installed: the console scripts of the hands
+# under test (`hands-shim`, `hands-attention`, `hands`) beside the system's own directories.
+PLUGIN_PATH = f"{Path(sys.executable).parent}:{SYSTEM_PATH}"
+
+
+def hook_argv(event: str) -> list[str]:
+    """The command a hook of the plugin runs for this event, as Claude Code spawns it: exec form, with no shell."""
+    [group] = json.loads((PLUGIN / "hooks" / "hooks.json").read_text())["hooks"][event]
+    [hook] = group["hooks"]
+    return [hook["command"], *hook["args"]]
+
+
+def skill_command(skill: str, *arguments: str) -> str:
+    """The command a skill of the plugin runs, as Claude Code runs its `!` line: through a shell, with $ARGUMENTS the
+    arguments given."""
+    [line] = [each for each in (PLUGIN / "skills" / skill / "SKILL.md").read_text().splitlines() if each.startswith("!`")]
+    return line.removeprefix("!`").removesuffix("`").replace("$ARGUMENTS", " ".join(arguments))
 
 
 def pytest_configure(config: pytest.Config) -> None:

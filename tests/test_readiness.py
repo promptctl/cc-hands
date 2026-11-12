@@ -786,8 +786,9 @@ def test_a_path_with_tmux_is_ready_and_one_without_is_missing_and_says_how_to_in
 
 
 def hands_printing(root: Path, said: str, code: int = 0) -> str:
-    """A PATH whose `hands --version` prints said and exits code."""
+    """A PATH whose `hands --version` prints said and exits code, with the `hands-shim` the plugin's hooks run beside it."""
     executable(root / "tools" / "hands", f"#!/bin/sh\necho '{said}'\nexit {code}\n")
+    executable(root / "tools" / "hands-shim", "#!/bin/sh\n")
     return f"{root / 'tools'}:{SYSTEM_PATH}"
 
 
@@ -798,7 +799,24 @@ def test_this_hands_on_path_is_ready(root: Path) -> None:
 
 def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -> None:
     found = readiness.installed(f"{root / 'empty'}:{SYSTEM_PATH}")
-    assert isinstance(found, Missing) and "`hands plugin`" in found.said and "`uv tool update-shell`" in found.said
+    assert isinstance(found, Missing) and "`hands-shim`" in found.said and "`uv tool update-shell`" in found.said
+
+
+def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cannot_start(root: Path) -> None:
+    # As with a hands from before the plugin ran `hands-shim`: its `hands` answers, and every hook of the plugin fails.
+    path = hands_printing(root, f"hands {version('hands')}")
+    (root / "tools" / "hands-shim").unlink()
+    found = readiness.installed(path)
+    assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and "`hands update`" in found.fix
+
+
+def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> None:
+    # As with a stale `hands-shim` left on PATH by an older install: it would run in place of this hands' own.
+    path = hands_printing(root, f"hands {version('hands')}")
+    (root / "tools" / "hands-shim").unlink()
+    executable(root / "other" / "hands-shim", "#!/bin/sh\n")
+    found = readiness.installed(f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
+    assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and str(root / "other" / "hands-shim") in found.said
 
 
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
@@ -1021,6 +1039,6 @@ def test_a_missing_step_names_its_fix_on_its_line_and_v_says_each_step_in_full_b
     # Each step's line is the one the terse check printed, and beneath it, what is said of it in full, less its fix.
     assert [each for each in full if not each.startswith(" ")] == terse
     beneath = full[full.index(line) + 1]
-    assert beneath == "    this PATH has no `hands`, so Claude Code cannot run `hands plugin` and no session gets hands' hooks"
+    assert beneath == "    this PATH has no `hands`, so Claude Code cannot run `hands-shim` and no session gets hands' hooks"
     events = [each for each in map(json.loads, audit.tail(home.audit, 100)[0]) if each.get("event") == "hands.command"]
     assert [event["facts"]["arguments.verbose"] for event in events] == [False, True]

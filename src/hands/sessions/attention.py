@@ -1,9 +1,9 @@
 """What hands says unprompted, as the user set it: one file in the home, so it outlives the daemon and needs no restart.
 
-The plugin's `/hands:attention` skill runs this module through the plugin's launcher, on the installed hands' own
-interpreter, and it imports only the standard library and hands' data modules:
+The plugin's `/hands:attention` skill runs this as the installed hands' `hands-attention`, and it imports only the
+standard library and hands' data modules:
 
-    hooks/python -m hands.sessions.attention [KIND LEVEL]...
+    hands-attention [KIND LEVEL]...
 
 KIND is a field of hands.core.attention.Attention. With no argument it says what is set. The daemon reads the file at
 every finished turn, every burst of progress, every session ending, and every hook it passes on, and holds no copy
@@ -155,5 +155,10 @@ def main(argv: Sequence[str]) -> int:
     return 0
 
 
+def entry() -> int:
+    """The `hands-attention` console script: main on this process's arguments."""
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(entry())

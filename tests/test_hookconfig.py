@@ -2,11 +2,14 @@
 that is hookconfig's table and nothing else."""
 
 import json
+import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import cast
 
+from conftest import PLUGIN, skill_command
 from hands.core.effects import AllowWith, Allow, Deny, DenyAndInterrupt, Withdraw
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
@@ -16,6 +19,7 @@ from hands.sessions.hookconfig import (
     PLUGIN_ID,
     POST_TIMEOUT_SECONDS,
     REPLY_MARGIN_SECONDS,
+    SHIM_COMMAND,
     STOP_HOLD_SECONDS,
     SUBSCRIBED,
     plugin_hooks,
@@ -23,7 +27,6 @@ from hands.sessions.hookconfig import (
     rendered,
 )
 from hands.sessions.hooks import hook_output
-from hands.sessions.marketplace import PACKAGED
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 
@@ -32,7 +35,7 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
     hooks = cast(dict[str, object], plugin_hooks()["hooks"])
     # MessageDisplay is posted to the daemon with no shim: tests/test_display.py.
     assert list(hooks) == [*SUBSCRIBED, "MessageDisplay"]
-    command = {"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/python", "args": ["-m", "hands.sessions.shim"]}
+    command: dict[str, object] = {"type": "command", "command": SHIM_COMMAND, "args": []}
     background = {"async": True}
     for event in SUBSCRIBED:
         entries = hooks[event]
@@ -48,10 +51,20 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
         assert entries == [{**matched, "hooks": [{**command, **declared}]}]
 
 
+def test_every_command_the_plugin_runs_is_a_script_the_wheel_installs() -> None:
+    # The plugin is a plain directory, so nothing renders its commands: a hook or skill naming a script pyproject does not
+    # define (renamed in one place, not the other) fails in every session, and only here is that seen before a release.
+    scripts = set(tomllib.loads((REPOSITORY / "pyproject.toml").read_text())["project"]["scripts"])
+    hooks = cast(dict[str, list[dict[str, list[dict[str, str]]]]], json.loads((PLUGIN / HOOKS_FILE).read_text())["hooks"])
+    run = {hook["command"] for groups in hooks.values() for group in groups for hook in group["hooks"] if hook["type"] == "command"}
+    run |= {shlex.split(skill_command(skill.parent.name))[0] for skill in PLUGIN.glob("skills/*/SKILL.md")}
+    assert run and run <= scripts, f"{sorted(run - scripts)} are run by the plugin and not defined in pyproject's [project.scripts]"
+
+
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:
     # [LAW:one-source-of-truth] hooks.json is generated from hookconfig; a hand edit, or a change to hookconfig not
-    # regenerated with `python -m hands.sessions.hookconfig > src/hands/sessions/plugin/hooks/hooks.json`, fails here.
-    assert (PACKAGED / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
+    # regenerated with `python -m hands.sessions.hookconfig > plugin/hooks/hooks.json`, fails here.
+    assert (PLUGIN / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
 
 
 def test_the_module_prints_the_hooks_json() -> None:
@@ -81,8 +94,9 @@ def test_a_reply_is_printed_in_the_shape_claude_code_reads() -> None:
     assert hook_output(AllowWith(answered)) == {"hookSpecificOutput": {**decided, "decision": {"behavior": "allow", "updatedInput": answered}}}
 
 
-def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_whose_entry_runs_hands_plugin() -> None:
+def test_the_plugin_id_is_the_plugin_s_name_at_the_marketplace_s_whose_entry_is_a_directory_of_this_repository() -> None:
     marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
-    plugin = json.loads((PACKAGED / ".claude-plugin" / "plugin.json").read_text())
+    plugin = json.loads((PLUGIN / ".claude-plugin" / "plugin.json").read_text())
     assert f"{plugin['name']}@{marketplace['name']}" == PLUGIN_ID
-    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == [{"source": "command", "command": "hands plugin"}]
+    assert [entry["source"] for entry in marketplace["plugins"] if entry["name"] == plugin["name"]] == ["./plugin"]
+    # A directory source is installed and updated by copying it, so Claude Code runs nothing of hands' and asks no one to accept it.

@@ -27,7 +27,7 @@ from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edi
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
-from hands.sessions import audit, backlog, filing, grouping, heartbeat, marketplace, recall, tmux, wide, wrapper
+from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
@@ -194,7 +194,6 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     logging_in.add_argument("--console", action="store_const", const="console", default="claudeai", dest="method", help="log the brain in with an Anthropic Console key, billed to the API, rather than a Claude plan; on a home's first run, pick it on Claude Code's own login screen")
     commands.add_parser("install-fritter", help="copy the fritter hands' package carries and write, beside it in <home>/bin, the claude that runs every interactive session under it; exits 0 only when that claude is the one on PATH, 3 when it is installed but PATH finds another claude first, 1 when it installed nothing that works")
     commands.add_parser("install-brain", help="fetch the Claude Code release the brain is pinned to into the brain's directory, checked against the checksum hands carries for it, unless it is there already; exits 0 only when it is there")
-    commands.add_parser("plugin", help="write hands' Claude Code plugin, its hooks and skills run by this hands' Python, and print its directory: the command hands' marketplace entry has Claude Code run, at install and once per session")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
@@ -360,8 +359,6 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
             return install_fritter(clock, home, record)
         case "install-brain":
             return install_brain(clock, home, record)
-        case "plugin":
-            return render_plugin(clock, home, record)
         case "restart":
             return asked_to_restart(clock, home)
         case "update":
@@ -957,20 +954,6 @@ def install_brain(clock: Clock, home: Home, record: audit.Record) -> exits.Exit:
         wide.annotate(claude=installed.path, fetched=installed.fetched, unpinned=installed.unpinned)
         print(f"{'fetched' if installed.fetched else 'already there'}: Claude Code {pinned.VERSION}, the brain's, at {installed.path}")
         return 0
-
-
-def render_plugin(clock: Clock, home: Home, record: audit.Record) -> Literal[0]:
-    # [LAW:nothing-unseen] Claude Code runs this once per session: the interpreter the hooks run on, the plugin it
-    # printed, and whether that plugin was written now or a session before had. Claude Code waits for this command to
-    # exit before the session starts, so, like the shim, it reads no config.toml, whose rejection is the daemon's to
-    # report and never costs a session its hooks.
-    with wide.unit("plugin.render", record, wide.begun(clock)):
-        wide.annotate(interpreter=sys.executable, packaged=marketplace.PACKAGED)
-        rendered = marketplace.render(home, sys.executable)
-        wide.annotate(plugin=rendered.plugin, written=rendered.written)
-    # [LAW:no-silent-failure] stdout is the path alone, which Claude Code takes as the plugin's directory.
-    print(rendered.plugin)
-    return 0
 
 
 # How often `hands log` looks for new lines.
