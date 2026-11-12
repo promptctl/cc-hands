@@ -25,7 +25,8 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
    command `hands plugin`, which `claude plugin update` would run and fail; then the plugin. A user who never
    installed the plugin has no user-scope entry in the list, and the two are not run for them. claude not found at
    all is said and gone past (Advised): there is no plugin to bring current.
-8. rendered-plugins: the digest directories under the home's `plugins` that `hands plugin` rendered. Nothing reads them.
+8. rendered-plugins: the digest directories under the home's `plugins` that `hands plugin` rendered. Nothing reads
+   them, so a failure to remove them is said and gone past (Advised), never a reason to leave hands unrestarted.
 """
 
 import os
@@ -55,6 +56,8 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 LOOK_SECONDS = 0.01
 # The exit `run` gives a command that could not start.
 UNSTARTABLE = 127
+# Every exit but success, for a step that is said and gone past whichever way it fails.
+ANY_FAILURE = frozenset(range(1, 256))
 # The marketplace hands' plugin comes from, named by the plugin's own id.
 MARKETPLACE = PLUGIN_ID.partition("@")[2]
 # What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
@@ -74,21 +77,6 @@ class Step(StrEnum):
     MARKETPLACE = "marketplace"
     PLUGIN = "plugin"
     RENDERED_PLUGINS = "rendered-plugins"
-
-
-class Plugin(StrEnum):
-    """Whether there is a plugin of hands' for the update to bring current, as `claude plugin list --json` answered."""
-
-    INSTALLED = "installed"
-    NOT_INSTALLED = "not installed"
-    NO_CLAUDE = "no claude"
-
-    @classmethod
-    def of(cls, code: int, raw: str) -> "Plugin":
-        """The listing `claude` exited `code` printing `raw`; raises Rejected for a listing hands cannot read."""
-        if code == UNSTARTABLE:
-            return cls.NO_CLAUDE
-        return cls.INSTALLED if readiness.installed_everywhere(raw) else cls.NOT_INSTALLED
 
 
 @dataclass(frozen=True)
@@ -168,8 +156,8 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
     # The commit installed, once the install step has put it in hands' environment: a failure from then on is Unfinished.
     installed: str | None = None
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> str:
-        """The step's output; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
+    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
+        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
         done = run(argv, cwd, env)
         ran.append(Ran(name, tuple(argv), done.code))
         if done.code in past:
@@ -177,21 +165,21 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         elif done.code != 0:
             said = f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}"
             raise _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
-        return done.output
+        return done
 
     def refused(name: Step, said: str) -> _Stopped:
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        environment = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).strip()) / TOOL
+        environment = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
         if environment.resolve() != prefix.resolve():
             raise refused(Step.WHERE, f"this hands runs from {prefix}, not from {environment}, the uv tool environment the update installs into, so a restart would not run what it installed: run `hands update` with the hands `uv tool install` put on PATH")
         if restarts_from is not None and restarts_from.resolve() != environment.resolve():
             raise refused(Step.WHERE, f"the running hands runs from {restarts_from}, not from {environment}, the uv tool environment the update installs into, so its restart would start it again on what it runs now: run hands with the hands `uv tool install` put on PATH")
         step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), clone).strip()
+        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), clone).output.strip()
         if not COMMIT.fullmatch(sha):
             raise refused(Step.COMMIT, f"git named the commit {BRANCH} is at as {sha!r}, not a commit's 40 hex digits")
         step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
@@ -205,18 +193,15 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
-        listed = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
+        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
         try:
-            plugin = Plugin.of(ran[-1].code, listed)
+            held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
         except Rejected as error:
             raise refused(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
-        match plugin:
-            case Plugin.INSTALLED:
-                step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
-                step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
-            case Plugin.NOT_INSTALLED | Plugin.NO_CLAUDE:
-                pass
-        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work)
+        if held:
+            step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
+            step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
+        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(sha, tuple(ran), tuple(advised))

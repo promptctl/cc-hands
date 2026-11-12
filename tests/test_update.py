@@ -107,7 +107,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     assert installed == Installed(SHA, tuple(Ran(step, argv, 0) for step, (argv, _cwd) in zip(Step, expected(home, work), strict=True)), ())
 
 
-@pytest.mark.parametrize("failing", list(Step))
+@pytest.mark.parametrize("failing", [step for step in Step if step is not Step.RENDERED_PLUGINS])
 def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: Step, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path), failing)
@@ -514,13 +514,34 @@ def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouch
     assert commands.ran == expected(home, work)[: list(Step).index(Step.PLUGIN_LIST) + 1]
 
 
-def test_the_plugin_commands_run_under_the_callers_claude_config_not_the_brain_s(tmp_path: Path) -> None:
+def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
     home, work = Home(tmp_path / "home"), tmp_path / "work"
-    users = tmp_path / "users-claude"
+    refused = Done(1, "", "rm: permission denied\n")
+    commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, refused)
 
-    # The brain runs `hands update` from a shell whose config is the brain's; a user's own config is theirs to keep.
-    for caller, kept in (({"CLAUDE_CONFIG_DIR": str(home.brain)}, None), ({"CLAUDE_CONFIG_DIR": str(users)}, str(users))):
-        commands = Commands(tools_of_this_hands(tmp_path / str(kept)))
-        update.install(home, Path(sys.prefix), None, caller, work, commands)
-        claudes = [env for (argv, _cwd), env in zip(commands.ran, commands.environments, strict=True) if argv[0] == "claude"]
-        assert len(claudes) == 3 and all(env.get("CLAUDE_CONFIG_DIR") == kept for env in claudes)
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    # Nothing reads those trees, so hands is still restarted onto master.
+    assert isinstance(installed, Installed)
+    assert installed.advised == (update.Advised(Step.RENDERED_PLUGINS, "rm: permission denied"),)
+
+
+@pytest.mark.parametrize("name", ["brain", "users"])
+def test_the_plugin_commands_run_under_the_callers_claude_config_not_the_brain_s(name: str, tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    # The brain runs `hands update` from a shell whose config is the brain's, which holds none of the user's plugins;
+    # a user's own config is theirs to keep.
+    config = {"brain": home.brain, "users": tmp_path / "users-claude"}[name]
+    commands = Commands(tools_of_this_hands(tmp_path))
+
+    update.install(home, Path(sys.prefix), None, {"CLAUDE_CONFIG_DIR": str(config), "KEPT": "yes"}, work, commands)
+
+    steps = list(zip(commands.ran, commands.environments, strict=True))
+    claudes = [env for (argv, _cwd), env in steps if argv[0] == "claude"]
+    assert len(claudes) == 3
+    # The brain's directory is removed, not rewritten; a user's is passed through untouched.
+    assert all(("CLAUDE_CONFIG_DIR" in env) == (name == "users") for env in claudes)
+    assert all(env["CLAUDE_CONFIG_DIR"] == str(config) for env in claudes if name == "users")
+    # Only the claude commands run under the plugin environment; every other step gets the caller's own.
+    others = [env for (argv, _cwd), env in steps if argv[0] != "claude"]
+    assert all(env["CLAUDE_CONFIG_DIR"] == str(config) and env["KEPT"] == "yes" for env in others)
