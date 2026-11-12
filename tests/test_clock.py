@@ -183,6 +183,21 @@ async def test_a_deadline_is_waited_on_as_many_times_as_it_is_scheduled_and_neve
     assert clock.begun == (3.0,)
 
 
+async def test_a_clock_is_settled_once_exactly_that_many_pauses_remain_waiting_however_the_others_ended() -> None:
+    clock = VirtualClock()
+    first, second, third = clock.pause(3.0), clock.pause(3.0), clock.pause(3.0)
+    settled = asyncio.create_task(clock.settled(3.0, count=1))
+    await asyncio.sleep(0)
+    assert not settled.done()
+    first.cancel()
+    await asyncio.sleep(0)
+    assert not settled.done()
+    second.cancel()
+    await settled
+    assert clock.waking == (3.0,)
+    third.cancel()
+
+
 def test_a_virtual_clock_rests_only_forward_and_never_onto_nan() -> None:
     clock = VirtualClock()
     with pytest.raises(ValueError, match="only forward"):
