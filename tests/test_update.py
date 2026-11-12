@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
@@ -27,6 +27,7 @@ from hands.daemon.starting import invocation
 from hands.daemon.update import Done, Failed, Installed, Ran, Step
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
+from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.wrapper import Installing
 from hands.voice.intermediary_instruction import brain_instruction
 
@@ -37,7 +38,7 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 def tools_of_this_hands(tmp_path: Path) -> Path:
     """A uv tool directory whose hands is the environment these tests run in, as `uv tool dir` would name it."""
     tools = tmp_path / "tools"
-    tools.mkdir()
+    tools.mkdir(parents=True)
     (tools / update.TOOL).symlink_to(sys.prefix)
     return tools
 
@@ -48,9 +49,13 @@ class Commands:
 
     def __init__(self, tools: Path, failing: Step | None = None, failed: Done | None = None) -> None:
         self.tools, self.failing, self.failed, self.ran = tools, failing, failed, list[tuple[tuple[str, ...], Path]]()
+        self.environments = list[Mapping[str, str]]()
+        # What `claude plugin list --json` prints: hands' plugin installed for the user, as the README installs it.
+        self.listed = json.dumps([{"id": PLUGIN_ID, "scope": "user", "enabled": True}])
 
-    def __call__(self, argv: Sequence[str], cwd: Path) -> Done:
+    def __call__(self, argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
         self.ran.append((tuple(argv), cwd))
+        self.environments.append(env)
         if self.failing is not None and len(self.ran) - 1 == list(Step).index(self.failing):
             return self.failed or Done(1, "", f"{self.failing} broke\n")
         # A warning on a command's errors is no part of what the update reads from its output.
@@ -59,6 +64,8 @@ class Commands:
                 return Done(0, f"{self.tools}\n", "warning: `VIRTUAL_ENV=/elsewhere` does not match the tool's environment\n")
             case ("git", "rev-parse", "--verify"):
                 return Done(0, f"{SHA}\n", "warning: refname 'HEAD' is ambiguous.\n")
+            case ("claude", "plugin", "list"):
+                return Done(0, self.listed, "")
             case _:
                 return Done(0, "", "")
 
@@ -75,6 +82,12 @@ def expected(home: Home, work: Path) -> list[tuple[tuple[str, ...], Path]]:
         (("uv", "tool", "install", "--reinstall-package", "hands", "--python", update.made_from(), "--constraints", str(work / "constraints.txt"), f"hands @ git+https://github.com/promptctl/cc-hands.git@{SHA}"), work),
         (tuple(invocation(home, "install-fritter")), work),
         (tuple(invocation(home, "install-brain")), work),
+        (("claude", "plugin", "list", "--json"), work),
+        # The marketplace first: an install from before the plugin was a plain directory holds an entry whose source is
+        # the removed command `hands plugin`, which updating the plugin would run.
+        (("claude", "plugin", "marketplace", "update", "cc-hands"), work),
+        (("claude", "plugin", "update", "hands@cc-hands", "--scope", "user"), work),
+        (("rm", "-rf", str(home.root / "plugins")), work),
     ]
 
 
@@ -86,7 +99,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     home, work = Home(tmp_path / "home"), tmp_path / "work"
     commands = Commands(tools_of_this_hands(tmp_path))
 
-    installed = update.install(home, Path(sys.prefix), None, work, commands)
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Cloned fresh from master, installed on uv.lock's versions into this hands' own environment, and its fritter and
     # the brain's Claude Code installed by the hands just installed.
@@ -94,7 +107,7 @@ def test_the_steps_run_in_order_installing_the_commit_master_is_at(tmp_path: Pat
     assert installed == Installed(SHA, tuple(Ran(step, argv, 0) for step, (argv, _cwd) in zip(Step, expected(home, work), strict=True)), ())
 
 
-@pytest.mark.parametrize("failing", list(Step))
+@pytest.mark.parametrize("failing", [step for step in Step if step is not Step.RENDERED_PLUGINS])
 def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: Step, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path), failing)
@@ -121,7 +134,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
     assert out == ""
     why = f"`{' '.join(commands.ran[-1][0])}` exited 1:\n{failing} broke\n"
     # A step after the install leaves master installed: what hands runs now is as it was, and its next start is not.
-    unfinished = failing in (Step.INSTALL_FRITTER, Step.INSTALL_BRAIN)
+    unfinished = list(Step).index(failing) > list(Step).index(Step.INSTALL)
     if unfinished:
         assert err.startswith(f"hands update: {failing} failed, so hands was not restarted, but master at {SHA} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {failing} installs, beside a running hands that is not; `hands update` again finishes it: {why}")
     else:
@@ -141,7 +154,7 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
     (elsewhere / update.TOOL).mkdir(parents=True)
     commands = Commands(elsewhere)
 
-    installed = update.install(Home(tmp_path / "home"), Path(sys.prefix), None, tmp_path / "work", commands)
+    installed = update.install(Home(tmp_path / "home"), Path(sys.prefix), None, {}, tmp_path / "work", commands)
 
     # Its restart would start it again on what it runs now, so nothing is fetched or installed.
     assert [argv for argv, _cwd in commands.ran] == [("uv", "tool", "dir")]
@@ -174,13 +187,15 @@ from hands.daemon import cli, update
 
 home, tools, sha, log = sys.argv[1:]
 
-def run(argv, cwd):
+def run(argv, cwd, env):
     with open(log, "a") as file:
         file.write(json.dumps(list(argv)) + "\\n")
     if list(argv[:3]) == ["uv", "tool", "dir"]:
         return update.Done(0, tools + "\\n", "")
     if list(argv[:2]) == ["git", "rev-parse"]:
         return update.Done(0, sha + "\\n", "")
+    if list(argv[:3]) == ["claude", "plugin", "list"]:
+        return update.Done(0, json.dumps([{"id": "hands@cc-hands", "scope": "user", "enabled": True}]), "")
     return update.Done(0, "", "")
 
 update.run = run
@@ -407,11 +422,11 @@ def test_an_install_fritter_whose_install_does_not_work_stops_the_update(tmp_pat
 
     work = tmp_path / "work"
 
-    installed = update.install(home, Path(sys.prefix), None, work, commands)
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
 
     # Anything but the one exit it goes past is the step failing, the brain's Claude Code left uninstalled.
     assert isinstance(installed, update.Unfinished) and (installed.sha, installed.step) == (SHA, Step.INSTALL_FRITTER)
-    assert commands.ran == expected(home, work)[:-1]
+    assert commands.ran == expected(home, work)[: list(Step).index(Step.INSTALL_FRITTER) + 1]
 
 
 class HungUp(io.TextIOWrapper):
@@ -451,4 +466,82 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
 
 def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
-    assert update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path) == Done(0, "/tools\n", "warning: stale\n")
+    assert update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ) == Done(0, "/tools\n", "warning: stale\n")
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        json.dumps([]),
+        json.dumps([{"id": "other@elsewhere", "scope": "user", "enabled": True}]),
+        json.dumps([{"id": PLUGIN_ID, "scope": "project", "enabled": True}]),
+    ],
+    ids=["none", "another-plugin", "project-scope-only"],
+)
+def test_a_user_who_never_installed_the_plugin_is_not_blocked_by_it(listed: str, tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    commands = Commands(tools_of_this_hands(tmp_path))
+    commands.listed = listed
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    # The list is asked and the plugin is not touched: a project's install is that project's to update.
+    assert isinstance(installed, Installed)
+    assert commands.ran == [step for step in expected(home, work) if step[0][:3] not in (("claude", "plugin", "marketplace"), ("claude", "plugin", "update"))]
+
+
+def test_no_claude_at_all_is_said_and_gone_past(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    gone = Done(update.UNSTARTABLE, "", "[Errno 2] No such file or directory: 'claude'")
+    commands = Commands(tools_of_this_hands(tmp_path), Step.PLUGIN_LIST, gone)
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    assert isinstance(installed, Installed)
+    assert installed.advised == (update.Advised(Step.PLUGIN_LIST, gone.errors),)
+    # The rendered trees are removed all the same.
+    assert commands.ran[-1] == (("rm", "-rf", str(home.root / "plugins")), work)
+
+
+def test_a_list_hands_cannot_read_leaves_master_installed_and_the_plugin_untouched(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    commands = Commands(tools_of_this_hands(tmp_path))
+    commands.listed = "not json"
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    assert isinstance(installed, update.Unfinished) and (installed.sha, installed.step) == (SHA, Step.PLUGIN_LIST)
+    assert commands.ran == expected(home, work)[: list(Step).index(Step.PLUGIN_LIST) + 1]
+
+
+def test_a_failure_to_remove_the_rendered_trees_is_said_and_the_update_goes_on(tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    refused = Done(1, "", "rm: permission denied\n")
+    commands = Commands(tools_of_this_hands(tmp_path), Step.RENDERED_PLUGINS, refused)
+
+    installed = update.install(home, Path(sys.prefix), None, {}, work, commands)
+
+    # Nothing reads those trees, so hands is still restarted onto master.
+    assert isinstance(installed, Installed)
+    assert installed.advised == (update.Advised(Step.RENDERED_PLUGINS, "rm: permission denied"),)
+
+
+@pytest.mark.parametrize("name", ["brain", "users"])
+def test_the_plugin_commands_run_under_the_callers_claude_config_not_the_brain_s(name: str, tmp_path: Path) -> None:
+    home, work = Home(tmp_path / "home"), tmp_path / "work"
+    # The brain runs `hands update` from a shell whose config is the brain's, which holds none of the user's plugins;
+    # a user's own config is theirs to keep.
+    config = {"brain": home.brain, "users": tmp_path / "users-claude"}[name]
+    commands = Commands(tools_of_this_hands(tmp_path))
+
+    update.install(home, Path(sys.prefix), None, {"CLAUDE_CONFIG_DIR": str(config), "KEPT": "yes"}, work, commands)
+
+    steps = list(zip(commands.ran, commands.environments, strict=True))
+    claudes = [env for (argv, _cwd), env in steps if argv[0] == "claude"]
+    assert len(claudes) == 3
+    # The brain's directory is removed, not rewritten; a user's is passed through untouched.
+    assert all(("CLAUDE_CONFIG_DIR" in env) == (name == "users") for env in claudes)
+    assert all(env["CLAUDE_CONFIG_DIR"] == str(config) for env in claudes if name == "users")
+    # Only the claude commands run under the plugin environment; every other step gets the caller's own.
+    others = [env for (argv, _cwd), env in steps if argv[0] != "claude"]
+    assert all(env["CLAUDE_CONFIG_DIR"] == str(config) and env["KEPT"] == "yes" for env in others)

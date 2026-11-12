@@ -302,7 +302,7 @@ claude plugin marketplace remove cc-hands         # and the marketplace with the
 
 The same commands work as `/plugin ...` inside a session. After upgrading hands, take the
 plugin's newest hooks and skills with `claude plugin marketplace update cc-hands` and
-`claude plugin update hands@cc-hands`, then `/reload-plugins` in a session already running.
+`claude plugin update hands@cc-hands`, then `/reload-plugins` in a session already running; `hands update` runs those two for you.
 `hands-shim` must be on the `PATH` Claude Code runs with, as `hands` is. For a checkout,
 link the checkout's own script there, not a wrapper that runs `uv run`: the shim has to be
 the process Claude Code spawned.
@@ -409,7 +409,9 @@ uv run hands check                      # whether hands is set up to work here; 
 uv run hands check -v                   # the same, each step said in full, every running session among them
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from, then
-                                        # install-fritter and install-brain, then restart onto it as `hands restart` does and say the commit it runs;
+                                        # install-fritter and install-brain, then bring the plugin to what the marketplace you added holds (the marketplace
+                                        # first, then the plugin; skipped when the plugin is not installed for you), then restart onto it as `hands restart`
+                                        # does and say the commit it runs;
                                         # exits 0 only once hands runs master; a step that fails stops it, naming the step, and hands is not restarted;
                                         # install-fritter finding another claude first on the caller's PATH is said, and gone past;
                                         # it builds hands, so Go is needed

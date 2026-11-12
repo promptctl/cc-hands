@@ -19,21 +19,32 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
    is not restarted, while what starts from the environment from then on, its hooks and its own next start, is
    master's (Unfinished). install-fritter finding the claude it installed not first on the caller's PATH is no failure:
    it is the caller's shell, the brain's never has hands' bin first, so the update says it and goes on (Advised).
+7. plugin-list, marketplace, plugin: the plugin Claude Code loads is a plain directory of this repository
+   (.claude-plugin/marketplace.json), so it is current only once Claude Code takes master's copy: the marketplace
+   first, since an install from before the plugin was a plain directory holds an entry whose source is the removed
+   command `hands plugin`, which `claude plugin update` would run and fail; then the plugin. A user who never
+   installed the plugin has no user-scope entry in the list, and the two are not run for them. claude not found at
+   all is said and gone past (Advised): there is no plugin to bring current.
+8. rendered-plugins: the digest directories under the home's `plugins` that `hands plugin` rendered. Nothing reads
+   them, so a failure to remove them is said and gone past (Advised), never a reason to leave hands unrestarted.
 """
 
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
 from hands.clock import Clock
+from hands.daemon import readiness
 from hands.daemon.starting import invocation
 from hands.sessions.home import Home
+from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.payload import Rejected
 from hands.sessions.wrapper import Installing
 
 REPOSITORY = "https://github.com/promptctl/cc-hands.git"
@@ -43,6 +54,15 @@ TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
 # How often the update, gone on in a process of its own, looks whether the one it left has exited.
 LOOK_SECONDS = 0.01
+# The exit `run` gives a command that could not start.
+UNSTARTABLE = 127
+# Every exit but success, for a step that is said and gone past whichever way it fails.
+ANY_FAILURE = frozenset(range(1, 256))
+# The marketplace hands' plugin comes from, named by the plugin's own id.
+MARKETPLACE = PLUGIN_ID.partition("@")[2]
+# What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
+# step goes with the ticket that removes it, hands-install-dye.uk8.
+RENDERED = "plugins"
 
 
 class Step(StrEnum):
@@ -53,6 +73,10 @@ class Step(StrEnum):
     INSTALL = "install"
     INSTALL_FRITTER = "install-fritter"
     INSTALL_BRAIN = "install-brain"
+    PLUGIN_LIST = "plugin-list"
+    MARKETPLACE = "marketplace"
+    PLUGIN = "plugin"
+    RENDERED_PLUGINS = "rendered-plugins"
 
 
 @dataclass(frozen=True)
@@ -64,7 +88,7 @@ class Done:
     errors: str
 
 
-type Run = Callable[[Sequence[str], Path], Done]
+type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Done]
 
 
 @dataclass(frozen=True)
@@ -122,39 +146,40 @@ class _Stopped(Exception):
         self.stopped = stopped
 
 
-def install(home: Home, prefix: Path, restarts_from: Path | None, work: Path, run: Run) -> Installed | Failed | Unfinished:
+def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
     """Install master into the uv tool environment at `prefix`, this hands', cloning it into `work`; or the step that
     failed. `restarts_from` is the environment the running hands starts again on, by its own word: None with none
-    running, or one from before its heartbeat said."""
+    running, or one from before its heartbeat said. `caller` is the caller's environment, whose Claude Code
+    config the plugin steps run under."""
     ran: list[Ran] = []
     advised: list[Advised] = []
     # The commit installed, once the install step has put it in hands' environment: a failure from then on is Unfinished.
     installed: str | None = None
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset()) -> str:
-        """The step's output; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
-        done = run(argv, cwd)
+    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
+        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
+        done = run(argv, cwd, env)
         ran.append(Ran(name, tuple(argv), done.code))
         if done.code in past:
             advised.append(Advised(name, done.errors.strip()))
         elif done.code != 0:
             said = f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}"
             raise _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
-        return done.output
+        return done
 
     def refused(name: Step, said: str) -> _Stopped:
-        return _Stopped(Failed(name, said, tuple(ran)))
+        return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        environment = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).strip()) / TOOL
+        environment = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
         if environment.resolve() != prefix.resolve():
             raise refused(Step.WHERE, f"this hands runs from {prefix}, not from {environment}, the uv tool environment the update installs into, so a restart would not run what it installed: run `hands update` with the hands `uv tool install` put on PATH")
         if restarts_from is not None and restarts_from.resolve() != environment.resolve():
             raise refused(Step.WHERE, f"the running hands runs from {restarts_from}, not from {environment}, the uv tool environment the update installs into, so its restart would start it again on what it runs now: run hands with the hands `uv tool install` put on PATH")
         step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), clone).strip()
+        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), clone).output.strip()
         if not COMMIT.fullmatch(sha):
             raise refused(Step.COMMIT, f"git named the commit {BRANCH} is at as {sha!r}, not a commit's 40 hex digits")
         step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
@@ -165,6 +190,18 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, work: Path, ru
         # Run by the interpreter the install just filled, so each is master's own command.
         step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
+        # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
+        # installed for the user or it is not; no claude at all is no plugin.
+        under = readiness.plugin_environment(home, caller)
+        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
+        try:
+            held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
+        except Rejected as error:
+            raise refused(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
+        if held:
+            step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
+            step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
+        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(sha, tuple(ran), tuple(advised))
@@ -175,14 +212,14 @@ def made_from() -> str:
     return cast(str, getattr(sys, "_base_executable"))
 
 
-def run(argv: Sequence[str], cwd: Path) -> Done:
+def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
     """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, and what it did."""
     try:
         completed = subprocess.run(
             argv,
             cwd=cwd,
             # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env={**env, "GIT_TERMINAL_PROMPT": "0"},
             stdin=subprocess.DEVNULL,
             # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning
             # on its errors is no part of that.
@@ -192,7 +229,7 @@ def run(argv: Sequence[str], cwd: Path) -> Done:
         )
     except OSError as error:
         # [LAW:no-silent-failure] a command that could not start, uv or git missing, is the step failing with why.
-        return Done(127, "", str(error))
+        return Done(UNSTARTABLE, "", str(error))
     return Done(completed.returncode, completed.stdout, completed.stderr)
 
 

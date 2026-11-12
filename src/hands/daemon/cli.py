@@ -819,7 +819,7 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             restarts_from = None
     wide.annotate(restarts_from=None if restarts_from is None else str(restarts_from))
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, prefix, restarts_from, Path(work), update.run)
+        installed = update.install(home, prefix, restarts_from, os.environ, Path(work), update.run)
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):

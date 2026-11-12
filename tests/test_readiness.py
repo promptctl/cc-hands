@@ -73,7 +73,7 @@ def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
 
 
 def test_an_enabled_plugin_is_ready(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
+    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
 
 
@@ -87,7 +87,7 @@ def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
 
 
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
-    found = readiness.plugin(claude_listing(root, [listed("other@elsewhere", True)]))
+    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]))
     assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
 
 
@@ -110,24 +110,24 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> Non
 
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}")
+    found = readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
 def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
 
 
 def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     listing = json.dumps([listed(PLUGIN_ID, True)])
     executable(root / "real" / "claude", f"#!/bin/sh\n[ \"$DISABLE_AUTOUPDATER\" = 1 ] || {{ echo \"updater=$DISABLE_AUTOUPDATER\" >&2; exit 3; }}\ncat <<'EOF'\n{listing}\nEOF\n")
-    assert isinstance(readiness.plugin(f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
 
 
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
 
 
 def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
@@ -135,7 +135,7 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
     executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
     path = claude_listing(root, [listed(PLUGIN_ID, True)])
-    assert isinstance(readiness.plugin(f"{root / 'bin'}:{path}"), Ready)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'bin'}:{path}"), Ready)
 
 
 # The shim
@@ -812,7 +812,7 @@ def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cann
 
 def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> None:
     # As with a stale `hands-shim` left on PATH by an older install: it would run in place of this hands' own.
-    path = hands_printing(root, f"hands {version('hands')}")
+    hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
     executable(root / "other" / "hands-shim", "#!/bin/sh\n")
     found = readiness.installed(f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
