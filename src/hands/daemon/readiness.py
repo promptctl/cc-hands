@@ -91,7 +91,7 @@ def check(home: Home, path: str, granted: bool, reached: Finding, running: Findi
     `reached`, whether the brain has its login; `running`, whether hands is up; `keyboards`, what
     reads the tmux pane in front of each running session."""
     # [LAW:dataflow-not-control-flow] every step is looked at every time: one that is missing hides none after it.
-    return [claude(path), portaudio(), tmux(path), installed(path), shim(home, path), plugin(path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
+    return [claude(path), portaudio(), tmux(path), installed(path), shim(home, path), plugin(home, path), brain_claude(home), reached, grant(granted), running, sessions(home, path, keyboards)]
 
 
 def claude(path: str) -> Finding:
@@ -218,14 +218,26 @@ def daemon(home: Home, now: datetime) -> Finding:
             return Missing("hands refused to start", said, start)
 
 
-def plugin(path: str) -> Finding:
+PLUGIN_LIST = ("claude", "plugin", "list", "--json")
+
+
+def plugin_environment(home: Home, caller: Mapping[str, str]) -> dict[str, str]:
+    """The environment of every `claude plugin` command hands runs: the caller's, under the caller's Claude Code config.
+
+    The brain runs `hands update` and `hands check` from a shell whose CLAUDE_CONFIG_DIR is the brain's own, which holds
+    none of the user's plugins. Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
+    """
+    brain = "CLAUDE_CONFIG_DIR" in caller and config_dir(caller, Path.cwd()) == Path(os.path.realpath(home.brain))
+    return {**{name: value for name, value in caller.items() if not (brain and name == "CLAUDE_CONFIG_DIR")}, **wrapper.EVERY_RUN}
+
+
+def plugin(home: Home, path: str) -> Finding:
     """Whether Claude Code, as `claude` on this PATH runs it, has hands' plugin installed and enabled."""
     # [LAW:one-source-of-truth] Claude Code is asked, never its files read: where it keeps its plugins is its own.
-    # Not a session to the shim, since nothing here is a terminal, so the shim runs the real claude.
     try:
         listed = subprocess.run(
-            ["claude", "plugin", "list", "--json"],
-            env={**os.environ, **wrapper.EVERY_RUN, "PATH": path},
+            PLUGIN_LIST,
+            env={**plugin_environment(home, os.environ), "PATH": path},
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -239,13 +251,18 @@ def plugin(path: str) -> Finding:
     return plugin_listed(listed.stdout)
 
 
+def installed_everywhere(raw: str) -> set[bool]:
+    """Whether each user-scope install of hands' plugin in `claude plugin list --json`'s `raw` is enabled; empty when there is none."""
+    # Only a user-scope install joins every session; a project or local one joins the sessions of one directory,
+    # and is listed as enabled or not by the directory the listing was asked from.
+    hands = [entry for entry in Payload.parse_list(raw.encode(), "each plugin") if entry.fields.get("id") == PLUGIN_ID]
+    return {entry.flag("enabled") for entry in hands if entry.text("scope") == "user"}
+
+
 def plugin_listed(raw: str) -> Finding:
     """What `claude plugin list --json` says of hands' plugin."""
     try:
-        # Only a user-scope install joins every session; a project or local one joins the sessions of one directory,
-        # and is listed as enabled or not by the directory the listing was asked from.
-        hands = [entry for entry in Payload.parse_list(raw.encode(), "each plugin") if entry.fields.get("id") == PLUGIN_ID]
-        everywhere = {entry.flag("enabled") for entry in hands if entry.text("scope") == "user"}
+        everywhere = installed_everywhere(raw)
     except Rejected as error:
         return Unknown("plugin", f"`claude plugin list --json` printed what hands cannot read: {error}")
     if True in everywhere:
