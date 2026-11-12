@@ -262,7 +262,8 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:chat` is how it talks with you, a small cut of `laws:chat` made for replies you hear.
 `hands:start` is how it starts a new session when you ask for one, with hands' `start_session` tool.
 `hands:close` is how it closes the sessions you are finished with, by name or the ones that are done, with `close_session`.
-`hands:update` is how it updates itself when you ask it to update, reinstall, or restart itself from master: it says it is updating, then runs `hands update` as hands' own interpreter and home run it, the command its instructions name.
+`hands:update` is how it updates itself when you ask it to update or reinstall itself: it says it is updating, then runs `hands update` as hands' own interpreter and home run it, the command its instructions name.
+`hands:restart` is how it restarts itself when you ask, or when hands is overloaded or stuck: it runs `hands restart` the same way, installing nothing, from wherever hands runs.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and types nothing else into it; its hooks say when a turn was taken and when it ended.
 What hands asks in the background, its summaries and the sentence an old tool result goes as,
@@ -408,11 +409,12 @@ uv run hands status                     # up, stopped, refused to start (and why
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands check -v                   # the same, each step said in full, every running session among them
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
-hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from, then
+hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from (from a checkout's own .venv:
+                                        # git pull --ff-only the checkout and uv sync it instead), then
                                         # install-fritter and install-brain, then bring the plugin to what the marketplace you added holds (the marketplace
                                         # first, then the plugin; skipped when the plugin is not installed for you), then restart onto it as `hands restart`
                                         # does and say the commit it runs;
-                                        # exits 0 only once hands runs master; a step that fails stops it, naming the step, and hands is not restarted;
+                                        # exits 0 only once hands runs what it updated; a step that fails stops it, naming the step, and hands is not restarted;
                                         # install-fritter finding another claude first on the caller's PATH is said, and gone past;
                                         # it builds hands, so Go is needed
 uv run hands log                        # the audit log: what hands heard, said, called, warned of, and failed at

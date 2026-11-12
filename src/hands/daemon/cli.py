@@ -24,7 +24,7 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
-from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
+from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
@@ -196,7 +196,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     commands.add_parser("install-brain", help="fetch the Claude Code release the brain is pinned to into the brain's directory, checked against the checksum hands carries for it, unless it is there already; exits 0 only when it is there")
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
-    commands.add_parser("update", help="install hands from the current master of github.com/promptctl/cc-hands into the uv tool environment this hands runs from, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs; exits 0 only when hands runs master again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
+    commands.add_parser("update", help="bring the code this hands runs from up to date, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs: from the uv tool environment, install the current master of github.com/promptctl/cc-hands; from a checkout's own .venv, pull the checkout (fast-forward only) and sync it; exits 0 only when hands runs what it updated again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     filing_tickets = commands.add_parser("file-tickets", help="file a ticket, at the top of EPIC in the lit backlog of the directory it runs in, for each warning and error in the audit log no open ticket there has, grouped by cause, and comment on the ticket that has one seen again; files nothing twice, however often it runs; exits 0 only when every ticket and comment was filed")
     filing_tickets.add_argument("epic", help="the epic the tickets are filed under")
@@ -784,11 +784,12 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 
 def asked_to_restart(clock: Clock, home: Home) -> exits.Exit:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
+    # The brain runs it, and the restart ends the brain: detached, the command outlives that to say how it went.
+    answer = detach(clock)
     outcome = restarted(clock, home)
     line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
-    print(line, file=out)
-    return ended
+    return told(line, out, ended, answer)
 
 
 def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
@@ -809,7 +810,7 @@ def restarted(clock: Clock, home: Home) -> Outcome:
 
 
 def updated(clock: Clock, home: Home) -> exits.Exit:
-    """`hands update`: install master, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
+    """`hands update`: bring the code hands runs from up to date, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
     prefix = Path(sys.prefix)
     # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on.
     match heartbeat.look(home.status, clock.wall()):
@@ -825,33 +826,38 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
         case update.Failed(step=step, said=why, ran=ran):
             wide.annotate(steps=ran, failed=step)
             return refused("hands update", 1, f"{step} failed, so hands was not restarted and runs as it did: {why}")
-        case update.Unfinished(sha=sha, step=step, said=why, ran=ran):
+        case update.Unfinished(target=target, sha=sha, step=step, said=why, ran=ran):
             wide.annotate(steps=ran, sha=sha, failed=step)
-            return refused("hands update", 1, f"{step} failed, so hands was not restarted, but master at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is master's, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}")
-        case update.Installed(sha=sha, ran=ran, advised=advised):
+            return refused("hands update", 1, f"{step} failed, so hands was not restarted, but {named(target)} at {sha} is installed: what starts from hands' environment now, its hooks and its next start, is {named(target)}'s, short of what {step} installs, beside a running hands that is not; `hands update` again finishes it: {why}")
+        case update.Installed(target=target, sha=sha, ran=ran, advised=advised):
             wide.annotate(steps=ran, sha=sha, went_past=advised)
             for each in advised:
                 print(f"hands update: {each.step}: {each.said}", file=sys.stderr)
-    print(f"installed hands, its fritter, and the brain's Claude Code from master at {sha}; restarting hands onto it", flush=True)
-    answer = update.detach(clock)
+    print(f"installed hands, its fritter, and the brain's Claude Code from {named(target)} at {sha}; restarting hands onto it", flush=True)
+    answer = detach(clock)
     outcome = restarted(clock, home)
     line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
     match outcome:
         # [LAW:one-source-of-truth] the run's own word on where it runs from, so the commit is said only of a run on it.
         case Restarted(status=heartbeat.Status(runs_from=Path() as runs_from)) if runs_from.resolve() == prefix.resolve():
-            line = f"{line} It runs master at {sha}."
+            line = f"{line} It runs {named(target)} at {sha}."
         case Restarted(status=heartbeat.Status(runs_from=runs_from)):
-            # A hands started from elsewhere, a checkout's `uv run hands run`, restarts on what it ran, not on master.
-            line = f"{line} It runs from {runs_from or 'an environment it does not name'}, not from {prefix}, where master at {sha} is installed."
+            # A hands started from elsewhere, a checkout's `uv run hands run`, restarts on what it ran, not on what was updated.
+            line = f"{line} It runs from {runs_from or 'an environment it does not name'}, not from {prefix}, where {named(target)} at {sha} is installed."
             out, ended = sys.stderr, exits.Failed(1, line)
         case NotRunning() | NotBack():
             pass
-    wide.annotate(runs_master=ended == 0)
+    wide.annotate(runs_updated=ended == 0)
+    return told(line, out, ended, answer)
+
+
+def told(line: str, out: TextIO, ended: exits.Exit, answer: Callable[[int], bool]) -> exits.Exit:
+    """Say `line` on `out`, and give the caller still waiting on the detached command `ended`'s exit; `ended`."""
     try:
         print(line, file=out, flush=True)
     except OSError as error:
-        # The brain read the update's output, and the restart has ended it: a pipe closed, or a terminal hung up. The
+        # The brain read the command's output, and the restart has ended it: a pipe closed, or a terminal hung up. The
         # line is the event's alone, and Python's own flush at exit would raise again into the same end.
         wide.annotate(told=False, untold=str(error))
         os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())
@@ -860,6 +866,15 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
     # Whether the caller was still waiting to exit with it: one the restart ended was not.
     wide.annotate(exit_taken=answer(exits.code_of(ended)))
     return ended
+
+
+def named(target: update.Target) -> str:
+    """What an update brought current, as it is said."""
+    match target:
+        case update.Tool():
+            return "master"
+        case update.Checkout(root=root):
+            return f"the checkout {root}"
 
 
 def refused(speaker: str, code: Literal[1, 2, 3], why: str) -> exits.Failed:

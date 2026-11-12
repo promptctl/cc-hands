@@ -11,10 +11,12 @@ heartbeat says the new run's pipeline is running.
 
 import os
 import signal
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from hands.clock import Clock
 from hands.sessions import heartbeat
 from hands.sessions.home import Home
 
@@ -25,6 +27,8 @@ RESTART_SIGNAL = signal.SIGUSR1
 BACK_WITHIN = timedelta(seconds=90)
 # How often the heartbeat is looked at while waiting.
 LOOK_SECONDS = 0.2
+# How often a command gone on in a process of its own looks whether the one it left has exited.
+PARENT_LOOK_SECONDS = 0.01
 
 
 @dataclass(frozen=True)
@@ -90,3 +94,53 @@ def said(outcome: Outcome, now: datetime) -> str:
             return f"hands was not restarted: {heartbeat.describe(verdict, now)}."
         case NotBack(verdict=verdict, waited=waited):
             return f"hands was asked to restart {waited.total_seconds():.0f}s ago and is not running again: {heartbeat.describe(verdict, now)}."
+
+
+def detach(clock: Clock) -> Callable[[int], bool]:
+    """Go on in a process of its own, outside the caller's process tree, session, and process group; and what answers
+    the caller, still waiting in the process it started, with the exit to end with.
+
+    The brain runs `hands restart` and `hands update` from its shell, and the restart stops the brain: Claude Code ends
+    the commands it ran, the brain's terminal hangs up on its session, and hands kills the brain's process group. The
+    command outlives all three only once it is in a session of its own and launchd has taken it in, so it asks for the
+    restart, waits for it, and writes its event only after that. What it prints after this still goes where its
+    output went, and the process the caller started waits for its answer and exits with it: a caller the restart does
+    not end, a terminal, has the outcome before its prompt, and its exit.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    read, write = os.pipe()
+    middle = os.fork()
+    if middle != 0:
+        os.close(write)
+        # The middle process exits at once, leaving the command to launchd.
+        os.waitpid(middle, 0)
+        with os.fdopen(read, "rb") as answers:
+            answer = answers.read()
+        if len(answer) != 1:
+            # [LAW:no-silent-failure] the command ended, a crash or a kill, before it said how its restart went.
+            print("hands: the command ended before it said how hands' restart went; `hands status` says whether hands is running", file=sys.stderr, flush=True)
+        # The process the caller started ends here, with nothing of Python's exit: the unit of work open in it is the
+        # detached command's to end, and its event its to write.
+        os._exit(answer[0] if len(answer) == 1 else 1)
+    os.close(read)
+    os.setsid()
+    os.dup2(os.open(os.devnull, os.O_RDONLY), sys.stdin.fileno())
+    middle = os.getpid()
+    if os.fork() != 0:
+        os._exit(0)
+    # [LAW:no-ambient-temporal-coupling] out of the caller's tree once its parent has exited, not after a guess at how long that takes.
+    while os.getppid() == middle:
+        clock.rest(PARENT_LOOK_SECONDS)
+    return lambda code: reply(write, code)
+
+
+def reply(write: int, code: int) -> bool:
+    """Give the caller waiting at `write` the exit `code`; False when it is gone, ended by the restart."""
+    try:
+        os.write(write, bytes([code]))
+    except BrokenPipeError:
+        return False
+    finally:
+        os.close(write)
+    return True
