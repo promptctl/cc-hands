@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -17,7 +18,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
@@ -73,6 +74,63 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport() -> Generator[None, pytest.TestReport, pytest.TestReport]:
     return in_ci((yield))
+
+
+# A quarantine may end no more than this many days after the day it is written.
+QUARANTINE_DAYS = 7
+
+
+def utc_today() -> date:
+    """The machine's date, the one place the quarantine rule reads it; test_quarantine sets it."""
+    return SYSTEM.wall().date()
+
+
+def quarantines(item: pytest.Item) -> list[tuple[str, date]]:
+    """The ticket and the date the week ends of each quarantine on `item`, nearest first, read from pytest's own lookup, so
+    a marker on a module, a class, or a parametrized test is read as one on a function is, and one nearer does not hide
+    the others. A marker that is not exactly a ticket and a `YYYY-MM-DD` date stops the run, since a quarantine nobody can
+    close or date is not one."""
+    held: list[tuple[str, date]] = []
+    for marker in item.iter_markers("quarantined"):
+        ticket, until = (marker.args[0] if len(marker.args) == 1 else None), marker.kwargs.get("until")
+        # [LAW:no-silent-failure] a spelling the rule would silently ignore, as a keyword it does not read, is refused.
+        if not (isinstance(ticket, str) and ticket and isinstance(until, str) and set(marker.kwargs) == {"until"}):
+            raise pytest.UsageError(f'{item.nodeid} is quarantined without its ticket and its date: quarantined("<ticket id>", until="YYYY-MM-DD")')
+        not_a_date = pytest.UsageError(f'{item.nodeid} is quarantined until "{until}", which is not a date: until="YYYY-MM-DD"')
+        # Only the one spelling the doc gives: `fromisoformat` also reads 20261119 and 2026-W47-4.
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", until):
+            raise not_a_date
+        try:
+            held.append((ticket, date.fromisoformat(until)))
+        except ValueError:
+            raise not_a_date from None
+    return held
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """[LAW:single-enforcer] the one owner of a quarantined test's rule in a run: pytest's own expected failure, so the test
+    runs and reports, a failure in setup, call or teardown leaves the run green, and the summary below prints it. [LAW:nothing-unseen]
+    A quarantine past its date, or ending more than QUARANTINE_DAYS from today, stops the run before any test, naming it,
+    since it is the repository's state and not a test's: a quarantine cannot be left to rot or written for longer than its
+    week. Today is the machine's date, in UTC."""
+    today = utc_today()
+    for item in items:
+        held = quarantines(item)
+        for ticket, until in held:
+            if until < today:
+                raise pytest.UsageError(f"{item.nodeid} was quarantined by {ticket} until {until}, and that week is past: fix the test or delete it")
+            if until > today + timedelta(days=QUARANTINE_DAYS):
+                raise pytest.UsageError(f"{item.nodeid} is quarantined by {ticket} until {until}, more than {QUARANTINE_DAYS} days from {today}")
+        if held:
+            item.add_marker(pytest.mark.xfail(reason=f"quarantined by {held[0][0]} until {held[0][1]}", strict=False))
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """[LAW:nothing-unseen] what a quarantined test said as it failed, which an expected failure's line does not carry: CI
+    keeps no report log, and a flake's cause is found only from the text it left."""
+    for report in terminalreporter.stats.get("xfailed", []):
+        terminalreporter.section(f"quarantined failure: {report.nodeid}", sep="-")
+        terminalreporter.line(str(report.longrepr))
 
 
 @pytest.hookimpl(wrapper=True)

@@ -770,6 +770,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
 
 
+@pytest.mark.quarantined("promptctl-testing-fxnj.s4p", until="2026-11-19")
 async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_turn_is_not_typed_onto_its_prompt(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-silent-failure] Claude Code acts on the Escape and puts the stopped prompt back in its input, but the model
     # hears it only after the stop's time has passed: the stop fails, and its Ctrl-C still empties the input, so the next

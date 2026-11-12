@@ -2,6 +2,7 @@
 
 - NO WORK PROCEEDS WITHOUT A LIT TICKET.  ALL TICKETS MUST BE IN AN EPIC
 - NO WORK PROCEEDS WHEN THERE ARE FAILING TESTS.   Create a ticket and fix the tests first.
+- A test that fails and then passes on a re-run is a flake: it is never re-run until green. Quarantine it as docs/flakes.md says.
 - No work proceeds except on a fresh work tree.  the work tree is cleaned up when the ticket is finished.
 - master merges through a merge queue: merge a PR with `scripts/merge-pr.sh <pr>`, and its ticket closes only on that command's exit 0.
 - No test anywhere may require a human to log into Anthropic as part of an automated test suite.  Tests use appropriate mocks and APIs.
