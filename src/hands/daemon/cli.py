@@ -24,7 +24,7 @@ from hands.clock import SYSTEM, Clock
 from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
-from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, restart, said
+from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
 from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
@@ -784,11 +784,12 @@ def display(finding: readiness.Finding) -> tuple[str, str]:
 
 def asked_to_restart(clock: Clock, home: Home) -> exits.Exit:
     """`hands restart`: ask the running daemon to start again, and say how that went."""
+    # The brain runs it, and the restart ends the brain: detached, the command outlives that to say how it went.
+    answer = detach(clock)
     outcome = restarted(clock, home)
     line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
-    print(line, file=out)
-    return ended
+    return told(line, out, ended, answer)
 
 
 def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
@@ -833,7 +834,7 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             for each in advised:
                 print(f"hands update: {each.step}: {each.said}", file=sys.stderr)
     print(f"installed hands, its fritter, and the brain's Claude Code from {named(target)} at {sha}; restarting hands onto it", flush=True)
-    answer = update.detach(clock)
+    answer = detach(clock)
     outcome = restarted(clock, home)
     line = said(outcome, clock.wall())
     out, ended = answered(outcome, line)
@@ -847,11 +848,16 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             out, ended = sys.stderr, exits.Failed(1, line)
         case NotRunning() | NotBack():
             pass
-    wide.annotate(runs_master=ended == 0)
+    wide.annotate(runs_updated=ended == 0)
+    return told(line, out, ended, answer)
+
+
+def told(line: str, out: TextIO, ended: exits.Exit, answer: Callable[[int], bool]) -> exits.Exit:
+    """Say `line` on `out`, and give the caller still waiting on the detached command `ended`'s exit; `ended`."""
     try:
         print(line, file=out, flush=True)
     except OSError as error:
-        # The brain read the update's output, and the restart has ended it: a pipe closed, or a terminal hung up. The
+        # The brain read the command's output, and the restart has ended it: a pipe closed, or a terminal hung up. The
         # line is the event's alone, and Python's own flush at exit would raise again into the same end.
         wide.annotate(told=False, untold=str(error))
         os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())

@@ -22,9 +22,9 @@ import pytest
 from hands.brain.process import PLUGIN
 from hands.clock import Clock
 from hands.daemon import cli, update
-from hands.daemon.restart import Outcome, Restarted
+from hands.daemon.restart import Outcome, Restarted, reply
 from hands.daemon.starting import invocation
-from hands.daemon.update import Done, Failed, Installed, Ran, Step
+from hands.daemon.update import Done, Failed, Installed, Ran, Step, Unfinished
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
@@ -126,7 +126,7 @@ def test_a_step_that_fails_stops_the_update_and_hands_is_not_restarted(failing: 
         raise AssertionError("a failed update went on to its restart")
 
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", detach)
+    monkeypatch.setattr(cli, "detach", detach)
     monkeypatch.setattr(cli, "restart", restart)
 
     assert cli.main(["--home", str(home.root), "update"]) == 1
@@ -241,9 +241,15 @@ def test_a_checkout_that_cannot_be_pulled_or_synced_is_not_restarted_onto(failin
 
     installed = update.install(Home(tmp_path / "home"), root / ".venv", None, {}, tmp_path / "work", commands)
 
-    # Nothing after the failed step ran, and none of it is installed: hands is as it was.
-    assert isinstance(installed, Failed) and installed.step is failing
+    # Nothing after the failed step ran. A pull that failed changed nothing; once it has succeeded the checkout's source
+    # is what a start runs, so a sync that fails after it leaves that commit in place: Unfinished, not "as it was".
+    assert not isinstance(installed, Installed) and installed.step is failing
     assert len(commands.ran) == CHECKOUT_STEPS.index(failing) + 1
+    match failing:
+        case Step.SYNC:
+            assert isinstance(installed, Unfinished) and (installed.target, installed.sha) == (update.Checkout(root), SHA)
+        case _:
+            assert isinstance(installed, Failed)
 
 
 def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_what_a_start_runs_now(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -255,7 +261,7 @@ def test_an_update_of_a_checkout_that_fails_after_its_sync_says_the_checkout_is_
     def detach(_clock: Clock) -> Callable[[int], bool]:
         raise AssertionError("a failed update went on to its restart")
 
-    monkeypatch.setattr(update, "detach", detach)
+    monkeypatch.setattr(cli, "detach", detach)
 
     assert cli.main(["--home", str(home.root), "update"]) == 1
 
@@ -316,7 +322,7 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
         facts = event["facts"]
         assert (event["outcome"], facts["command"], facts["exit_code"], facts["sha"], facts["outcome"]["type"]) == ("ok", "update", 0, SHA, "Restarted")
         # The run after the restart says it runs from the environment master went into, and the caller's output had the line.
-        assert (facts["runs_master"], facts["told"]) == (True, True)
+        assert (facts["runs_updated"], facts["told"]) == (True, True)
         if not killed:
             assert facts["exit_taken"] is True
         # The running hands named the environment its restart starts it on, the one the update installed into.
@@ -340,9 +346,9 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
 UNANSWERED = """
 import os
 from hands.clock import SYSTEM
-from hands.daemon import update
+from hands.daemon import restart
 
-update.detach(SYSTEM)
+restart.detach(SYSTEM)
 os._exit(3)
 """
 
@@ -351,13 +357,13 @@ def test_a_caller_the_update_ends_without_answering_exits_1_saying_so() -> None:
     caller = subprocess.run([sys.executable, "-c", UNANSWERED], capture_output=True, text=True, timeout=30)
 
     assert caller.returncode == 1
-    assert caller.stderr == "hands update: the update ended before it said how hands' restart went; `hands status` says whether hands is running\n"
+    assert caller.stderr == "hands: the command ended before it said how hands' restart went; `hands status` says whether hands is running\n"
 
 
 def test_a_caller_the_restart_ended_is_not_answered() -> None:
     read, write = os.pipe()
     os.close(read)
-    assert update.answered(write, 0) is False
+    assert reply(write, 0) is False
     # The answer's end is closed either way.
     with pytest.raises(OSError):
         os.fstat(write)
@@ -412,7 +418,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
 
     answers: list[int] = []
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", detaching(lambda: answering(answers)))
+    monkeypatch.setattr(cli, "detach", detaching(lambda: answering(answers)))
 
     # Nothing ends the caller, so the caller hears it, and exits saying hands was not restarted.
     assert cli.main(["--home", str(home.root), "update"]) == 1
@@ -428,7 +434,7 @@ def test_an_update_with_no_hands_running_installs_and_tells_its_caller_hands_was
 
 
 def detaching(answer: Callable[[], Callable[[int], bool]]) -> Callable[[Clock], Callable[[int], bool]]:
-    """`update.detach`, standing in: what `answer` makes, on whatever clock it is given."""
+    """`detach`, standing in: what `answer` makes, on whatever clock it is given."""
     return lambda _clock: answer()
 
 
@@ -461,7 +467,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     home = Home(tmp_path / "home")
     detached: list[bool] = []
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", detaching(lambda: detached.append(True) or answering([])))
+    monkeypatch.setattr(cli, "detach", detaching(lambda: detached.append(True) or answering([])))
     # A daemon started by a checkout's `uv run hands run` starts again on the checkout, whatever the update installed.
     restarting_from(monkeypatch, runs_from)
 
@@ -471,7 +477,7 @@ def test_a_hands_that_restarts_from_another_environment_is_not_said_to_run_maste
     _out, err = capsys.readouterr()
     assert err.endswith(f" It runs from {runs_from or 'an environment it does not name'}, not from {sys.prefix}, where master at {SHA} is installed.\n")
     [event] = events(home)
-    assert (event["facts"]["exit_code"], event["facts"]["runs_master"], event["facts"]["told"]) == (1, False, True)
+    assert (event["facts"]["exit_code"], event["facts"]["runs_updated"], event["facts"]["told"]) == (1, False, True)
     assert event["error"] == f"exited 1: {err.removesuffix('\n')}"
 
 
@@ -482,7 +488,7 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     unfound = Done(Installing.UNFOUND, f"copied fritter to {home.fritter}\nwrote {home.shim}\n", f"{said}\n")
     commands = Commands(tools_of_this_hands(tmp_path), Step.INSTALL_FRITTER, unfound)
     monkeypatch.setattr(update, "run", commands)
-    monkeypatch.setattr(update, "detach", detaching(lambda: answering([])))
+    monkeypatch.setattr(cli, "detach", detaching(lambda: answering([])))
     restarting_from(monkeypatch, Path(sys.prefix))
 
     assert cli.main(["--home", str(home.root), "update"]) == 0
@@ -495,7 +501,7 @@ def test_an_install_fritter_that_installed_and_finds_another_claude_first_on_the
     # [LAW:nothing-unseen] the event says the step it went past, and what that step found.
     [event] = events(home)
     facts = event["facts"]
-    assert (event["outcome"], facts["exit_code"], facts["runs_master"]) == ("ok", 0, True)
+    assert (event["outcome"], facts["exit_code"], facts["runs_updated"]) == ("ok", 0, True)
     assert [(step["step"], step["code"]) for step in facts["steps"]] == [(str(step), Installing.UNFOUND if step is Step.INSTALL_FRITTER else 0) for step in TOOL_STEPS]
     assert facts["went_past"] == [{"type": "Advised", "step": "install-fritter", "said": said}]
 
@@ -538,14 +544,14 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
     home = Home(tmp_path / "home")
     gone, why = caller()
     monkeypatch.setattr(update, "run", Commands(tools_of_this_hands(tmp_path)))
-    monkeypatch.setattr(update, "detach", detaching(lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False)))
+    monkeypatch.setattr(cli, "detach", detaching(lambda: monkeypatch.setattr(sys, "stdout", gone) or answering([], taken=False)))
     restarting_from(monkeypatch, Path(sys.prefix))
 
     assert cli.main(["--home", str(home.root), "update"]) == 0
 
     [event] = events(home)
     facts = event["facts"]
-    assert (event["outcome"], facts["runs_master"], facts["told"], facts["exit_taken"]) == ("ok", True, False, False)
+    assert (event["outcome"], facts["runs_updated"], facts["told"], facts["exit_taken"]) == ("ok", True, False, False)
     assert why in facts["untold"]
 
 

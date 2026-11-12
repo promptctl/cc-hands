@@ -4,6 +4,7 @@ how long it took, with the unit of work it ran in its trace."""
 import json
 import os
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -130,12 +131,25 @@ def test_the_home_a_command_ran_on_is_on_its_event_wherever_it_came_from(tmp_pat
     assert (command["facts"]["home"], command["facts"]["arguments.home"]) == (str(home.root), None)
 
 
-def test_a_restart_with_nothing_running_says_what_the_heartbeat_said(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_restart_with_nothing_running_says_what_the_heartbeat_said(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
+    # The restart goes on in a process of its own, as the brain's must outlive the restart: stood in for, so the test is not forked.
+    answers: list[int] = []
+
+    def answer(code: int) -> bool:
+        answers.append(code)
+        return True
+
+    def detach(_clock: Clock) -> Callable[[int], bool]:
+        return answer
+
+    monkeypatch.setattr(cli, "detach", detach)
     assert main(["--home", str(home.root), "restart"]) == 1
     capsys.readouterr()
     [command] = events(home)
     assert (command["outcome"], command["facts"]["outcome"]) == ("failed", {"type": "NotRunning", "verdict": {"type": "NeverRan", "path": str(home.status)}})
+    # The caller waiting on the detached command is given the exit the event records.
+    assert (answers, command["facts"]["exit_taken"]) == ([1], True)
 
 
 def test_a_command_on_a_home_whose_log_cannot_be_made_still_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
