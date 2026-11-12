@@ -89,10 +89,11 @@ class VirtualClock:
         and a unit that never comes to it is ended by the suite's timeout."""
         await self._watch(lambda: self.waking.count(until) >= count)
 
-    async def settled(self, until: float, count: int) -> None:
-        """Once exactly `count` pauses that wake at `until` are waiting on this clock: as `paused`, but also for the ones
-        that end first, as a git that fails ends its own wait. Await `paused` for the most that will come first, so a count
-        not yet reached is not read as settled."""
+    async def down_to(self, until: float, count: int, of: int) -> None:
+        """Once `of` pauses that wake at `until` have been waiting on this clock together and only `count` of them still
+        are: the others ended first, as a git that fails ends its own wait. The `of` is awaited before the `count`, so a
+        count the pauses have not yet come to is not read as the others having ended [LAW:no-ambient-temporal-coupling]."""
+        await self.paused(until, of)
         await self._watch(lambda: self.waking.count(until) == count)
 
     async def scheduled(self, until: float, count: int = 1) -> None:
