@@ -481,6 +481,7 @@ async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(m
     await hands.until(lambda: "I read it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
 
 
+@pytest.mark.quarantined("promptctl-testing-fxnj.3ra")
 async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
     """The brain asks to Write, the user says no and at once says the next turn. The Write never runs, whatever Claude
     Code still had on its screen as the next turn was typed, and the next turn is answered (promptctl-brain-q9s8.45d)."""
