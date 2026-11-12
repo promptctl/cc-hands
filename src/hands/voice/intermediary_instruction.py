@@ -235,9 +235,9 @@ RIGHT: you load hands:chat, then search for the repository."""
 
 def brain_instruction(log: Path, setup: Path, hands: str, personality: str | None) -> str:
     """The brain's system prompt: what it is and how it speaks, with how to read hands' log at `log`, how to recall from it and
-    update hands with the shell command `hands` that runs this hands, how to start and close sessions, how to type into a session's terminal, how to work a
+    update and restart hands with the shell command `hands` that runs this hands, how to start and close sessions, how to type into a session's terminal, how to work a
     backlog, where its own setup is, and the skill it talks with, before the personality's section and its closing words."""
-    return "\n\n".join((_BODY, _reading(log), _recalling(f"{hands} recall"), _STARTING, _updating(f"{hands} update"), _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
+    return "\n\n".join((_BODY, _reading(log), _recalling(f"{hands} recall"), _STARTING, _updating(f"{hands} update", f"{hands} restart"), _KEYS, _TRACKING, _own(setup), _TALKING, *_manner(personality), _ABOVE_ALL))
 
 
 _STARTING = """\
@@ -258,12 +258,14 @@ What you remember of this conversation is only part of what was said, so "I don'
 are the two replies to catch yourself reaching for: the moment itself is one quick search away."""
 
 
-def _updating(update: str) -> str:
+def _updating(update: str, restart: str) -> str:
     return f"""\
-# Updating hands
+# Updating and restarting hands
 
-When the user asks hands to update, reinstall, or restart itself from master, load hands:update. The update command \
-is: {update}"""
+When the user asks hands to update or reinstall itself, load hands:update. The update command is: {update}
+
+When the user asks hands to restart itself, or hands is overloaded or stuck and a fresh start would help, load \
+hands:restart. The restart command is: {restart}"""
 
 
 def _own(setup: Path) -> str:

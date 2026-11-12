@@ -1,19 +1,25 @@
-"""`hands update`: install hands from the current master of promptctl/cc-hands, then restart onto it in place.
+"""`hands update`: bring the code hands runs from up to date, then restart onto it in place.
 
-The brain's hands:update skill runs it when the user asks hands to update, reinstall, or restart itself from master.
+The brain's hands:update skill runs it when the user asks hands to update or reinstall itself.
 Each step is a command, run in order, and the first that fails stops the update: nothing after it runs, and hands is
 not restarted, so the running hands goes on as it was and never restarts onto a half-installed build.
 
-1. where: `uv tool dir`. This hands, and the running hands its heartbeat names, must run from the uv tool environment
-   the install replaces, since a restart starts the daemon again on its own interpreter
-   (hands.daemon.starting.invocation): an update of a hands run from anywhere else would install master and restart
-   it onto what it ran before.
-2. fetch: master is cloned fresh, never taken from a checkout on this machine, which may be stale or on a branch.
-3. commit: the commit that clone holds, which is the one installed and the one the update reports.
-4. constraints: uv.lock's versions, the ones master's tests ran on, as release.yml exports them for a release.
-5. install: `uv tool install` of that commit from GitHub, on the very interpreter this hands' environment was made
-   from: uv makes the environment anew on any other, even one of the same version, under the running daemon. uv's record of the tool names the commit, not the clone, which is gone once
-   the update ends, so `uv tool upgrade` still finds what it installed. It builds hands, fritter with it, so it needs Go.
+1. where: `uv tool dir`. A restart starts the daemon again on its own interpreter (hands.daemon.starting.invocation),
+   so what the update brings current is the code of the environment this hands, and the running hands its heartbeat
+   names, run from (`Target`): the uv tool environment, which gets master of promptctl/cc-hands; or a checkout's own
+   `.venv`, which gets the checkout. Any other environment is refused: an update would change something else and
+   restart hands onto what it ran before.
+2. fetch (the tool environment): master is cloned fresh, never taken from a checkout on this machine, which may be
+   stale or on a branch. pull (a checkout): `git pull --ff-only` of the branch it is on, which never loses a commit
+   of the checkout's and stops the update where it cannot fast-forward.
+3. commit: the commit that clone, or that checkout, holds: the one installed and the one the update reports.
+4. constraints (the tool environment): uv.lock's versions, the ones master's tests ran on, as release.yml exports them
+   for a release.
+5. install (the tool environment): `uv tool install` of that commit from GitHub, on the very interpreter this hands'
+   environment was made from: uv makes the environment anew on any other, even one of the same version, under the
+   running daemon. uv's record of the tool names the commit, not the clone, which is gone once the update ends, so
+   `uv tool upgrade` still finds what it installed. sync (a checkout): `uv sync --locked`, hands built anew as the
+   install does. Either builds hands, fritter with it, so it needs Go.
 6. install-fritter and install-brain, each run by the hands just installed, so the fritter and the brain's Claude Code
    are the ones master carries and pins. One of them failing leaves master installed without it: the running hands
    is not restarted, while what starts from the environment from then on, its hooks and its own next start, is
@@ -33,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -65,12 +72,50 @@ MARKETPLACE = PLUGIN_ID.partition("@")[2]
 RENDERED = "plugins"
 
 
+@dataclass(frozen=True)
+class Tool:
+    """hands runs from the uv tool environment, which the update replaces with master's."""
+
+
+@dataclass(frozen=True)
+class Checkout:
+    """hands runs from the `.venv` of the checkout at `root`, which the update brings up to date."""
+
+    root: Path
+
+
+@dataclass(frozen=True)
+class Unsupported:
+    """hands runs from an environment that is neither the uv tool environment nor a checkout's own `.venv`."""
+
+
+type Target = Tool | Checkout
+
+
+def parse_target(prefix: Path, tool: Path) -> Target | Unsupported:
+    """What the update brings current, from the environment hands runs from.
+
+    [LAW:parse-dont-validate] the one place the environment is judged: everything after it matches on the Target and
+    never asks where hands runs from again. A checkout is a project named hands whose `.venv` is `prefix`.
+    """
+    if prefix.resolve() == tool.resolve():
+        return Tool()
+    root = prefix.parent
+    try:
+        project = tomllib.loads((root / "pyproject.toml").read_text()).get("project", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return Unsupported()
+    return Checkout(root) if prefix.name == ".venv" and project.get("name") == TOOL else Unsupported()
+
+
 class Step(StrEnum):
     WHERE = "where"
     FETCH = "fetch"
+    PULL = "pull"
     COMMIT = "commit"
     CONSTRAINTS = "constraints"
     INSTALL = "install"
+    SYNC = "sync"
     INSTALL_FRITTER = "install-fritter"
     INSTALL_BRAIN = "install-brain"
     PLUGIN_LIST = "plugin-list"
@@ -111,9 +156,10 @@ class Advised:
 
 @dataclass(frozen=True)
 class Installed:
-    """Every step ran and did what it is for: hands, its fritter, and the brain's Claude Code are master's at `sha`;
+    """Every step ran and did what it is for: hands, its fritter, and the brain's Claude Code are the `target`'s at `sha`;
     `advised` is what any of them found of its caller's and went on past."""
 
+    target: Target
     sha: str
     ran: tuple[Ran, ...]
     advised: tuple[Advised, ...]
@@ -131,9 +177,10 @@ class Failed:
 
 @dataclass(frozen=True)
 class Unfinished:
-    """hands is installed from master at `sha`, and `step`, after it, failed for the reason `said` gives: what starts
-    from hands' environment from then on is master's, short of what `step` installs. `ran` is every step run, it last, and none after it ran."""
+    """hands is installed from the `target` at `sha`, and `step`, after it, failed for the reason `said` gives: what starts
+    from hands' environment from then on is the target's, short of what `step` installs. `ran` is every step run, it last, and none after it ran."""
 
+    target: Target
     sha: str
     step: Step
     said: str
@@ -147,14 +194,18 @@ class _Stopped(Exception):
 
 
 def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
-    """Install master into the uv tool environment at `prefix`, this hands', cloning it into `work`; or the step that
-    failed. `restarts_from` is the environment the running hands starts again on, by its own word: None with none
-    running, or one from before its heartbeat said. `caller` is the caller's environment, whose Claude Code
-    config the plugin steps run under."""
+    """Bring the code hands runs from, at `prefix`, up to date, as `parse_target` judges it, cloning master into `work`
+    for the uv tool environment; or the step that failed. `restarts_from` is the environment the running hands starts
+    again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
+    environment, whose Claude Code config the plugin steps run under."""
     ran: list[Ran] = []
     advised: list[Advised] = []
-    # The commit installed, once the install step has put it in hands' environment: a failure from then on is Unfinished.
-    installed: str | None = None
+    # The target and commit installed, once the install or sync step has put it in hands' environment: a failure from
+    # then on is Unfinished.
+    installed: tuple[Target, str] | None = None
+
+    def ending(name: Step, said: str) -> _Stopped:
+        return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
     def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
         """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
@@ -163,31 +214,38 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         if done.code in past:
             advised.append(Advised(name, done.errors.strip()))
         elif done.code != 0:
-            said = f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}"
-            raise _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
+            raise ending(name, f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}")
         return done
 
-    def refused(name: Step, said: str) -> _Stopped:
-        return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(installed, name, said, tuple(ran)))
+    def commit(cwd: Path, of: str) -> str:
+        # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
+        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).output.strip()
+        if not COMMIT.fullmatch(sha):
+            raise ending(Step.COMMIT, f"git named the commit {of} is at as {sha!r}, not a commit's 40 hex digits")
+        return sha
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        environment = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
-        if environment.resolve() != prefix.resolve():
-            raise refused(Step.WHERE, f"this hands runs from {prefix}, not from {environment}, the uv tool environment the update installs into, so a restart would not run what it installed: run `hands update` with the hands `uv tool install` put on PATH")
-        if restarts_from is not None and restarts_from.resolve() != environment.resolve():
-            raise refused(Step.WHERE, f"the running hands runs from {restarts_from}, not from {environment}, the uv tool environment the update installs into, so its restart would start it again on what it runs now: run hands with the hands `uv tool install` put on PATH")
-        step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
-        # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), clone).output.strip()
-        if not COMMIT.fullmatch(sha):
-            raise refused(Step.COMMIT, f"git named the commit {BRANCH} is at as {sha!r}, not a commit's 40 hex digits")
-        step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
-        # The interpreter itself, not its version: uv keeps an environment in place only on the one it was made from
-        # (measured, uv 0.12.15: `--python 3.12` found another 3.12 and made the environment anew).
-        step(Step.INSTALL, ("uv", "tool", "install", "--reinstall-package", TOOL, "--python", made_from(), "--constraints", str(constraints), f"{TOOL} @ git+{REPOSITORY}@{sha}"), work)
-        installed = sha
-        # Run by the interpreter the install just filled, so each is master's own command.
+        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
+        target = parse_target(prefix, tool)
+        if isinstance(target, Unsupported):
+            raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
+        if restarts_from is not None and restarts_from.resolve() != prefix.resolve():
+            raise ending(Step.WHERE, f"the running hands runs from {restarts_from}, not from {prefix}, the environment the update brings current, so its restart would start it again on what it runs now: run hands from {prefix}")
+        match target:
+            case Tool():
+                step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
+                sha = commit(clone, BRANCH)
+                step(Step.CONSTRAINTS, ("uv", "export", "--quiet", "--frozen", "--no-dev", "--no-emit-project", "--no-hashes", "--format", "requirements.txt", "-o", str(constraints)), clone)
+                # The interpreter itself, not its version: uv keeps an environment in place only on the one it was made from
+                # (measured, uv 0.12.15: `--python 3.12` found another 3.12 and made the environment anew).
+                step(Step.INSTALL, ("uv", "tool", "install", "--reinstall-package", TOOL, "--python", made_from(), "--constraints", str(constraints), f"{TOOL} @ git+{REPOSITORY}@{sha}"), work)
+            case Checkout(root=root):
+                step(Step.PULL, ("git", "pull", "--quiet", "--ff-only"), root)
+                sha = commit(root, "the checkout")
+                step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
+        installed = (target, sha)
+        # Run by the interpreter the install just filled, so each is the target's own command.
         step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
@@ -197,14 +255,14 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         try:
             held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
         except Rejected as error:
-            raise refused(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
+            raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
         if held:
             step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
             step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
         step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
     except _Stopped as stopped:
         return stopped.stopped
-    return Installed(sha, tuple(ran), tuple(advised))
+    return Installed(target, sha, tuple(ran), tuple(advised))
 
 
 def made_from() -> str:
