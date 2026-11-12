@@ -17,7 +17,7 @@ import weakref
 from collections.abc import AsyncGenerator, Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from importlib.metadata import metadata
 from pathlib import Path
@@ -73,6 +73,50 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport() -> Generator[None, pytest.TestReport, pytest.TestReport]:
     return in_ci((yield))
+
+
+# A quarantine may end no more than this many days after the day it is written.
+QUARANTINE_DAYS = 7
+
+
+def utc_today() -> date:
+    """The machine's date, the one place the quarantine rule reads it; test_quarantine sets it."""
+    return datetime.now(UTC).date()
+
+
+def quarantine(item: pytest.Item) -> tuple[str, date] | None:
+    """The ticket and the date the week ends of `item`'s quarantine, read from pytest's own lookup, so a marker on a module,
+    a class, or a parametrized test is read as one on a function is. A marker that is not exactly a ticket and an ISO `until`
+    date stops the run, since a quarantine nobody can close or date is not one."""
+    marker = item.get_closest_marker("quarantined")
+    if marker is None:
+        return None
+    ticket, until = (marker.args[0] if len(marker.args) == 1 else None), marker.kwargs.get("until")
+    # [LAW:no-silent-failure] a spelling the rule would silently ignore, as a keyword it does not read, is refused.
+    if not (isinstance(ticket, str) and ticket and isinstance(until, str) and set(marker.kwargs) == {"until"}):
+        raise pytest.UsageError(f'{item.nodeid} is quarantined without its ticket and its date: quarantined("<ticket id>", until="YYYY-MM-DD")')
+    try:
+        return ticket, date.fromisoformat(until)
+    except ValueError:
+        raise pytest.UsageError(f'{item.nodeid} is quarantined until "{until}", which is not a date: until="YYYY-MM-DD"') from None
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """[LAW:single-enforcer] the one owner of a quarantined test's rule in a run: pytest's own expected failure, so the test
+    runs and reports, a failure in setup, call or teardown keeps its traceback with the ticket as the reason, and the run
+    stays green. [LAW:nothing-unseen] A quarantine past its date, or ending more than QUARANTINE_DAYS from today, stops the
+    run before any test, naming it, since it is the repository's state and not a test's: a quarantine cannot be left to rot
+    or written for longer than its week. Today is the machine's date, in UTC."""
+    today = utc_today()
+    for item in items:
+        if (held := quarantine(item)) is None:
+            continue
+        ticket, until = held
+        if until < today:
+            raise pytest.UsageError(f"{item.nodeid} was quarantined by {ticket} until {until}, and that week is past: fix the test or delete it")
+        if until > today + timedelta(days=QUARANTINE_DAYS):
+            raise pytest.UsageError(f"{item.nodeid} is quarantined by {ticket} until {until}, more than {QUARANTINE_DAYS} days from {today}")
+        item.add_marker(pytest.mark.xfail(reason=f"quarantined by {ticket} until {until}", strict=False))
 
 
 @pytest.hookimpl(wrapper=True)
