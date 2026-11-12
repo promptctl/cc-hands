@@ -149,11 +149,13 @@ def installed(path: str) -> Finding:
             "put this one first on PATH, or install it again",
         )
     # [LAW:one-source-of-truth] the plugin's hooks name `hands-shim` alone: hands installs it beside `hands`, and a hands
-    # from before the plugin ran it has no such script.
-    if shutil.which("hands-shim", path=path) is None:
+    # from before the plugin ran it has no such script. One found in another directory is another install's, which
+    # Claude Code would run in its place.
+    shim = shutil.which("hands-shim", path=path)
+    if shim is None or Path(shim).parent != Path(found).parent:
         return Missing(
-            "`hands-shim` not on PATH",
-            f"`hands` on this PATH, {found}, has no `hands-shim` beside it, so Claude Code cannot run the plugin's hooks and no session gets them",
+            "`hands-shim` not beside `hands` on PATH",
+            f"`hands` on this PATH, {found}, has no `hands-shim` beside it, so Claude Code cannot run the plugin's hooks and no session gets them" + ("" if shim is None else f" (the one on PATH is {shim}, another install's)"),
             "install this hands again: `hands update`",
         )
     return Ready(f"{this} on PATH", f"`hands` on this PATH is {found}, {this}: Claude Code runs its `hands-shim` for the plugin in every session")

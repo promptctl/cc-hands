@@ -2,12 +2,14 @@
 that is hookconfig's table and nothing else."""
 
 import json
+import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import cast
 
-from conftest import PLUGIN
+from conftest import PLUGIN, skill_command
 from hands.core.effects import AllowWith, Allow, Deny, DenyAndInterrupt, Withdraw
 from hands.core.reducer import UNTOLD
 from hands.sessions.hookconfig import (
@@ -47,6 +49,16 @@ def test_every_subscribed_hook_runs_the_shim_the_permission_hook_waits_and_tool_
         # Claude Code's internal agents fire the subagent hooks under the empty name, which ".+" never matches.
         matched = {"matcher": ".+"} if event in ("SubagentStart", "SubagentStop") else {}
         assert entries == [{**matched, "hooks": [{**command, **declared}]}]
+
+
+def test_every_command_the_plugin_runs_is_a_script_the_wheel_installs() -> None:
+    # The plugin is a plain directory, so nothing renders its commands: a hook or skill naming a script pyproject does not
+    # define (renamed in one place, not the other) fails in every session, and only here is that seen before a release.
+    scripts = set(tomllib.loads((REPOSITORY / "pyproject.toml").read_text())["project"]["scripts"])
+    hooks = cast(dict[str, list[dict[str, list[dict[str, str]]]]], json.loads((PLUGIN / HOOKS_FILE).read_text())["hooks"])
+    run = {hook["command"] for groups in hooks.values() for group in groups for hook in group["hooks"] if hook["type"] == "command"}
+    run |= {shlex.split(skill_command(skill.parent.name))[0] for skill in PLUGIN.glob("skills/*/SKILL.md")}
+    assert run and run <= scripts, f"{sorted(run - scripts)} are run by the plugin and not defined in pyproject's [project.scripts]"
 
 
 def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:

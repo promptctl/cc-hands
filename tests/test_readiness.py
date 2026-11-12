@@ -807,7 +807,16 @@ def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cann
     path = hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
     found = readiness.installed(path)
-    assert isinstance(found, Missing) and found.step == "`hands-shim` not on PATH" and "`hands update`" in found.fix
+    assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and "`hands update`" in found.fix
+
+
+def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> None:
+    # As with a stale `hands-shim` left on PATH by an older install: it would run in place of this hands' own.
+    path = hands_printing(root, f"hands {version('hands')}")
+    (root / "tools" / "hands-shim").unlink()
+    executable(root / "other" / "hands-shim", "#!/bin/sh\n")
+    found = readiness.installed(f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
+    assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and str(root / "other" / "hands-shim") in found.said
 
 
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
