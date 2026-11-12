@@ -46,7 +46,9 @@ def test_passes():
 """
 
 # The rule and the collection check, as plugins of the run, not the whole conftest beside them.
-HOOKS = SimpleNamespace(pytest_collection_modifyitems=conftest.pytest_collection_modifyitems)
+HOOKS = SimpleNamespace(
+    pytest_collection_modifyitems=conftest.pytest_collection_modifyitems, pytest_terminal_summary=conftest.pytest_terminal_summary
+)
 
 
 class Reports:
@@ -162,3 +164,28 @@ def test_a_quarantine_holds_from_today_through_a_week_ahead_and_nothing_beyond_e
     pytester.makepyfile(f'import pytest\n\n@pytest.mark.quarantined("t-5", until="{until}")\ndef test_flaky():\n    assert False\n')
     ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     assert (ran.ret != 0) is stops
+
+
+def test_a_quarantined_run_is_green_reports_each_failure_in_the_summary_and_a_pass_as_one(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(FAILURES)
+    ran = pytester.runpytest_inprocess("-p", "no:asyncio", "-rxX", plugins=[HOOKS])
+    # The teardown case passes its call, which is an XPASS, and fails its teardown, which is an XFAIL.
+    ran.assert_outcomes(xfailed=3, xpassed=2)
+    ran.stdout.fnmatch_lines(["*quarantined failure: test_*.py::test_call_fails*", "*AssertionError: call: the stream said 3, not 4*", "XPASS test_*.py::test_passes - quarantined by t-1 until 2026-01-12"])
+
+
+def test_a_marker_nearer_the_test_does_not_hide_an_expired_one_above_it(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(
+        """
+        import pytest
+
+        pytestmark = pytest.mark.quarantined("t-6", until="2026-01-09")
+
+        @pytest.mark.quarantined("t-6", until="2026-01-12")
+        def test_flaky():
+            pass
+        """
+    )
+    ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
+    assert ran.ret != 0
+    ran.stderr.fnmatch_lines(["*was quarantined by t-6 until 2026-01-09, and that week is past*"])
