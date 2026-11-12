@@ -183,6 +183,32 @@ async def test_a_deadline_is_waited_on_as_many_times_as_it_is_scheduled_and_neve
     assert clock.begun == (3.0,)
 
 
+async def test_a_clock_is_down_to_a_count_once_the_pauses_that_began_together_have_ended_to_it_however_they_ended() -> None:
+    clock = VirtualClock()
+    down = asyncio.create_task(clock.down_to(3.0, count=1, of=3))
+    # Two waiting is below the three it waits to see begin: it is not yet the others having ended.
+    first, second = clock.pause(3.0), clock.pause(3.0)
+    await _turns(3)
+    assert not down.done()
+    third = clock.pause(3.0)
+    await _turns(3)
+    assert not down.done()
+    first.cancel()
+    await _turns(3)
+    assert not down.done()
+    second.set_exception(RuntimeError("ended another way"))
+    await down
+    assert clock.waking == (3.0,)
+    second.exception()
+    third.cancel()
+
+
+async def _turns(count: int) -> None:
+    # Enough loop turns for a done callback to run, and the task it releases to run after it.
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
 def test_a_virtual_clock_rests_only_forward_and_never_onto_nan() -> None:
     clock = VirtualClock()
     with pytest.raises(ValueError, match="only forward"):

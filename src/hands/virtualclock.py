@@ -4,7 +4,7 @@ import asyncio
 import queue
 import random
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from hands.clock import Scheduled, Timeout
@@ -19,7 +19,7 @@ class VirtualClock:
         self._epoch = epoch
         self._random = random.Random(seed)
         self._pauses: list[tuple[float, asyncio.Future[None]]] = []
-        self._watched: list[tuple[Callable[[], Sequence[float]], float, int, asyncio.Future[None]]] = []
+        self._watched: list[tuple[Callable[[], bool], asyncio.Future[None]]] = []
         self._calls: list[_Call] = []
         self._begun: list[float] = []
 
@@ -33,6 +33,8 @@ class VirtualClock:
         woken = asyncio.get_running_loop().create_future()
         self._pauses.append((self.at + seconds, woken))
         self._begun.append(seconds)
+        # A pause ends by waking or by its waiter's cancel, and a watch for fewer pauses waiting reads the ending.
+        woken.add_done_callback(lambda _: self._seen())
         self._seen()
         # A pause already due wakes at once, as `asyncio.sleep(0)` does.
         self._wake()
@@ -85,16 +87,23 @@ class VirtualClock:
         """Once `count` pauses that wake at `until` are waiting on this clock, however long the unit takes to come to them:
         a test moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling],
         and a unit that never comes to it is ended by the suite's timeout."""
-        await self._watch(lambda: self.waking, until, count)
+        await self._watch(lambda: self.waking.count(until) >= count)
+
+    async def down_to(self, until: float, count: int, of: int) -> None:
+        """Once `of` pauses that wake at `until` have been waiting on this clock together and only `count` of them still
+        are: the others ended first, as a git that fails ends its own wait. The `of` is awaited before the `count`, so a
+        count the pauses have not yet come to is not read as the others having ended [LAW:no-ambient-temporal-coupling]."""
+        await self.paused(until, of)
+        await self._watch(lambda: self.waking.count(until) == count)
 
     async def scheduled(self, until: float, count: int = 1) -> None:
         """Once `count` calls that come due at `until`, as a timeout's deadline does, are scheduled on this clock: as
         `paused`, for what `call_at` waits out."""
-        await self._watch(lambda: [call.when for call in self._calls if call.live], until, count)
+        await self._watch(lambda: [call.when for call in self._calls if call.live].count(until) >= count)
 
-    async def _watch(self, waiting: Callable[[], Sequence[float]], until: float, count: int) -> None:
+    async def _watch(self, ready: Callable[[], bool]) -> None:
         seen = asyncio.get_running_loop().create_future()
-        self._watched.append((waiting, until, count, seen))
+        self._watched.append((ready, seen))
         self._seen()
         await seen
 
@@ -124,10 +133,10 @@ class VirtualClock:
             call.fire(loop)
 
     def _seen(self) -> None:
-        for waiting, until, count, seen in self._watched:
-            if list(waiting()).count(until) >= count and not seen.done():
+        for ready, seen in self._watched:
+            if not seen.done() and ready():
                 seen.set_result(None)
-        self._watched = [watch for watch in self._watched if not watch[3].done()]
+        self._watched = [watch for watch in self._watched if not watch[1].done()]
 
 
 class _Call:
