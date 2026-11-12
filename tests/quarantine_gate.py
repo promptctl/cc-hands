@@ -3,9 +3,10 @@ fails CI once a quarantine is older. A quarantine starts when git first records 
 that changes how many times `quarantined("<ticket id>")` occurs. A rename does not reset it, a reindent does not, and a
 rebase keeps the author date. A quarantine the history cannot date stops the gate, loudly.
 
-    uv run --no-sync python tests/quarantine_gate.py
+    uv run --no-sync python tests/quarantine_gate.py "$(date -u +%F)"
 
-Standard library only, so CI runs it with no test environment, after the suite, from a checkout with its full history.
+Standard library only, so CI runs it with no test environment, after the suite, from a checkout with its full history. Today
+is handed in, as the machine's date: nothing here reads the machine's time.
 """
 
 import ast
@@ -103,4 +104,7 @@ def main(root: Path, today: date) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(ROOT, datetime.now(UTC).date()))
+    # [LAW:no-silent-failure] a day not handed in, or not a date, stops the gate rather than being guessed.
+    if len(sys.argv) != 2:
+        sys.exit("usage: quarantine_gate.py YYYY-MM-DD (today)")
+    sys.exit(main(ROOT, date.fromisoformat(sys.argv[1])))

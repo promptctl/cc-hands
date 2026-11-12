@@ -134,7 +134,7 @@ jobs:
       # tell how old a quarantine is. Reads the history the checkout's full depth brings, and starts no test.
       - name: Quarantines past their week
         if: always() && steps.check.outcome != 'skipped'
-        run: uv run --no-sync python tests/quarantine_gate.py
+        run: uv run --no-sync python tests/quarantine_gate.py "$(date -u +%F)"
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true

@@ -558,7 +558,6 @@ async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chor
     assert "❯  hello" in str(untaken.value)
 
 
-@pytest.mark.quarantined("promptctl-brain-q9s8.qsk")
 async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_alone(tmp_path: Path, fake_claude: Path) -> None:
     read, takes = _chord_read(tmp_path), 0
 
@@ -894,7 +893,6 @@ async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_
         await brain.stop()
 
 
-@pytest.mark.quarantined("promptctl-testing-fxnj.cjq")
 async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_running_is_stopped_before_the_next_is_typed(
     tmp_path: Path, fake_claude: Path
 ) -> None:
