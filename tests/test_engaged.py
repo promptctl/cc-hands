@@ -23,6 +23,15 @@ TAP: tuple[KeyEvent, ...] = tuple(e for i in range(3) for e in (Pressed(1.0 + i 
 # What the gate is handed for the taps themselves: each press arms the microphone and its release disarms it.
 TAPPED: list[Move] = ["arm", "disarm", "arm", "disarm", "arm"]
 
+class _Ticking(VirtualClock):
+    """A clock that passes a tenth of a second at every read, so what is timed between two reads is never zero, and no real
+    second is waited."""
+
+    def now(self) -> float:
+        self.at += 0.1
+        return self.at
+
+
 class ScriptedEars:
     """The models, as a script: each buffer of audio names the detector's state, and the verdicts are given in turn."""
 
@@ -123,7 +132,7 @@ class Rig:
         for _ in range(20):
             await asyncio.sleep(0)
 
-    async def heard_all(self) -> None:
+    async def drained(self) -> None:
         await self.until(lambda: not self.audio.qsize())
 
 
@@ -256,7 +265,7 @@ async def test_each_level_hears_from_where_it_started() -> None:
     for level in ("wake word", "off", "wake word"):
         await rig.choose(level)
         await rig.hear(b"q", b"q")
-        await rig.heard_all()
+        await rig.drained()
         for _ in range(20):
             await asyncio.sleep(0)
     await stopped(driving)
@@ -269,7 +278,7 @@ async def test_speech_begun_under_a_tap_of_shift_opens_a_turn_once_the_key_is_up
     await rig.choose("engaged")
     rig.keys[0](Pressed(1.0))
     await rig.hear(b"s", b"S")
-    await rig.heard_all()
+    await rig.drained()
     rig.keys[0](Released())
     await rig.hear(b"S", b"q")
     await rig.settle(6)
@@ -297,15 +306,17 @@ async def test_a_verdict_ends_the_turn_it_judged_however_long_smart_turn_thinks(
 
 async def test_loading_the_models_is_its_own_unit_of_work() -> None:
     events: list[WideEvent] = []
-    async with loaded(VirtualClock(), 16000, events.append) as ears:
+    async with loaded(_Ticking(), 16000, events.append) as ears:
         assert await ears.detect(bytes(1024)) == VADState.QUIET
     [loaded_event] = events
     facts = model_facts(loaded_event)
-    # How long Smart Turn's warm-up took is on the load, read off the clock it was given, which nothing moved.
+    # Smart Turn's warm-up took some time on the clock it was given, and how much is on the load.
+    warmup = facts.pop("smart_turn_warmup_secs")
+    assert isinstance(warmup, float) and warmup > 0
     assert (loaded_event.event, loaded_event.outcome, facts) == (
         "desk.loaded",
         "ok",
-        {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS, "smart_turn_warmup_secs": 0.0},
+        {"smart_turn": SMART_TURN, "smart_turn_revision": SMART_TURN_REVISION, "vad_stop_secs": STOP_SECS},
     )
 
 
@@ -329,7 +340,7 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
         await rig.choose("engaged")
         await rig.hear(*(audio[at : at + 640] for at in range(0, len(audio), 640)))
         # Disengaging is heard after every buffer, so the engagement ends once all of it is heard.
-        await rig.heard_all()
+        await rig.drained()
         await rig.choose("off")
         await rig.until(lambda: "deafen" in rig.made)
         await stopped(driving)
