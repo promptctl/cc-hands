@@ -22,7 +22,7 @@ from hands.core.wire import (
     CountTokens,
     Exchanged,
     Fork,
-    Hold,
+    Synthesize,
     Kind,
     MainTurn,
     Message,
@@ -275,10 +275,10 @@ async def test_another_sessions_requests_and_count_tokens_go_unchanged(rig: Rig)
 async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> None:
     class Holding(Stage):
         def route(self, sent: Sent) -> Route:
-            return Hold("(stayed silent)", SPAN)
+            return Synthesize("(stayed silent)", SPAN)
 
     keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Hold("(stayed silent)", SPAN)
+    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Synthesize("(stayed silent)", SPAN)
 
 
 async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() -> None:

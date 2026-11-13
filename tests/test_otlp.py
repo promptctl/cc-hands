@@ -20,7 +20,7 @@ from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Answered, Ending, Exchanged, Garbled, Held, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
+from hands.core.wire import Answered, Ending, Exchanged, Garbled, Synthetic, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat
@@ -229,8 +229,8 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     assert cut is not None and (cut.outcome, cut.error, cut.facts["cut"]) == ("ok", None, "the reply ended early: context canceled")
     assert whole is not None and whole.facts["cut"] is None and "cut" not in answered.facts
     # One hands answered itself is answered whole, as the API never saw it.
-    held = traced(_exchanged(Held("(stayed silent)", 1000.75)))
-    assert held is not None and (held.outcome, held.error, held.duration_ms) == ("ok", None, 250.0)
+    synthetic = traced(_exchanged(Synthetic("(stayed silent)", 1000.75)))
+    assert synthetic is not None and (synthetic.outcome, synthetic.error, synthetic.duration_ms) == ("ok", None, 250.0)
 
 
 def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported_by_span_id(tmp_path: Path) -> None:

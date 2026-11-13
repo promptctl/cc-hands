@@ -61,7 +61,7 @@ from hands.core.wire import (
     BlockStopped,
     Exchanged,
     Heard,
-    Hold,
+    Synthesize,
     JsonDelta,
     MainTurn,
     Observed,
@@ -137,7 +137,7 @@ class Unawaited:
 # Whose turn the brain answered.
 Asker = UserAsked | HandsAsked | Unawaited
 
-# What the brain is recorded as saying for a request hands held. Never spoken: a held request joins no turn.
+# What the brain is recorded as saying for a request hands answered with a synthetic response. Never spoken: such a request joins no turn.
 SILENT = "(stayed silent)"
 # What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
 # the spoken-over note says what was heard, so this says only the failure.
@@ -977,7 +977,7 @@ class BrainStage(FrameProcessor):
             return Send(refusal="final", span=root(self._clock))
         now = self._clock.now()
         carried = tool_answers(sent.body)
-        # A call's result leaving is the end of its run, whether the request carrying it goes on or is held.
+        # A call's result leaving is the end of its run, whether the request carrying it goes on or is answered synthetically.
         for answer in carried:
             if (ran := turn.tools.get(answer.call)) is not None and ran.answered is None:
                 ran.answered, ran.is_error = now, answer.is_error
@@ -1004,7 +1004,7 @@ class BrainStage(FrameProcessor):
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(self._clock, turn.span))
-        return Hold(SILENT, within(self._clock, turn.span))
+        return Synthesize(SILENT, within(self._clock, turn.span))
 
     def _of(self, running: ClaudeTurn | None) -> _Turn | None:
         """The turn of the stage's whose request this is: the one already running `running`, the turn of Claude Code's

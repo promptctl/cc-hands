@@ -25,8 +25,8 @@ from hands.core.wire import (
     Compaction,
     Exchanged,
     Fork,
-    Held,
-    Hold,
+    Synthetic,
+    Synthesize,
     MainTurn,
     Observed,
     Reached,
@@ -121,7 +121,7 @@ class Keeper:
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
-            case Exchanged(session=session, kind=MainTurn(), reply=Held()) if session == self._session:
+            case Exchanged(session=session, kind=MainTurn(), reply=Synthetic()) if session == self._session:
                 self._turn_ended()
             case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Written(message=message))) if (
                 session == self._session and message.stop_reason != "tool_use"
@@ -197,8 +197,8 @@ class Kept:
             # [LAW:one-source-of-truth] the Send as it was routed, every field carried, with the keeper's changes first.
             case Send() as send:
                 return replace(send, changes=(*kept, *send.changes))
-            case Hold() as held:
-                return held
+            case Synthesize() as synthetic:
+                return synthetic
 
     def hear(self, observed: Observed) -> None:
         self._stage.hear(observed)

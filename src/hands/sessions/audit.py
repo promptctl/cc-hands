@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 from hands.core.effects import Input, Type
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unreached
+from hands.core.wire import Ending, Exchanged, Garbled, Synthetic, Reached, Uncopied, Unfinished, Unreached
 from hands.sessions.wide import WideEvent, chain
 
 
@@ -311,7 +311,7 @@ def _reply_level(reply: Ending) -> Level:
             return "error"
         case Reached(status=status):
             return "error" if status >= 400 else "info"
-        case Held():
+        case Synthetic():
             return "info"
 
 

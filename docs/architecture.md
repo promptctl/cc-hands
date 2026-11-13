@@ -63,7 +63,7 @@ never waits on the daemon and has no route through it. The one
 listener joined to it (the brain's stage, with the keeper of the brain's context) routes
 each request: sent with the changes hands makes to it (none, hands' tail appended to its
 newest message, old tool results as one line each, a compaction's prompt replaced), or
-held and answered by hands without reaching the API. It
+answered by hands with a synthetic response, without reaching the API. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.

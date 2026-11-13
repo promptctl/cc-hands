@@ -29,8 +29,8 @@ from hands.core.wire import (
     Exchanged,
     Garbled,
     Heard,
-    Held,
-    Hold,
+    Synthetic,
+    Synthesize,
     MainTurn,
     Message,
     Observed,
@@ -656,7 +656,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
 
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(stayed silent)", root(SYSTEM))
+    wire.route = lambda _sent: Synthesize("(stayed silent)", root(SYSTEM))
     status, headers, body = await post(wire.proxy.url)
     assert upstream.asked == []
     assert status == 200 and headers["Content-Type"].startswith("text/event-stream")
@@ -667,7 +667,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     assert isinstance(reply, Written)
     assert (reply.message.model, reply.message.content, reply.message.stop_reason) == ("claude-opus-5-5", (Text("(stayed silent)"),), "end_turn")
     exchange = only_exchange(wire)
-    assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Held) and exchange.reply.said == "(stayed silent)"
+    assert exchange.kind == MainTurn(None) and isinstance(exchange.reply, Synthetic) and exchange.reply.said == "(stayed silent)"
     assert [type(seen) for seen in wire.seen] == [Sent, Exchanged]
 
 
@@ -688,7 +688,7 @@ async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newes
 UNIT = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba902b7")
 
 
-@pytest.mark.parametrize("route", [Send(span=UNIT), Hold("(stayed silent)", UNIT)], ids=["sent", "held"])
+@pytest.mark.parametrize("route", [Send(span=UNIT), Synthesize("(stayed silent)", UNIT)], ids=["sent", "synthetic"])
 async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_held(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
     _, wire = await serve(streamed)
     wire.route = lambda _sent: route
@@ -723,7 +723,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
 
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
-    wire.route = lambda _sent: Hold("(interrupted)", root(SYSTEM))
+    wire.route = lambda _sent: Synthesize("(interrupted)", root(SYSTEM))
     status, headers, body = await post(wire.proxy.url, REQUEST.replace(b'"stream": true', b'"stream": false'))
     assert upstream.asked == [] and status == 200 and headers["Content-Type"].startswith("application/json")
     answer = json.loads(body)

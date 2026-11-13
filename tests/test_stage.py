@@ -61,7 +61,7 @@ from hands.core.wire import (
     Fork,
     Garbled,
     Heard,
-    Hold,
+    Synthesize,
     JsonDelta,
     Kind,
     MainTurn,
@@ -934,7 +934,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     # Held, it is still the turn's round trip, in the turn's trace beside the one before it.
     sent, held = rig.spans
     assert (held.trace_id, held.parent_id) == (sent.trace_id, sent.parent_id) and held.span_id != sent.span_id
@@ -1009,7 +1009,7 @@ async def test_a_stay_silent_after_an_act_beside_a_readback_hands_says_is_held(r
     assert isinstance(route, Send)
     rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["Amended it."])
     await rig.turned()
@@ -1027,7 +1027,7 @@ async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_sa
     rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
     # Once refused is enough: the model's obedience is not what ends the turn.
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: len(rig.errors) == 1)
     assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
@@ -1040,7 +1040,7 @@ async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_sa
 async def test_a_stay_silent_closing_a_turn_that_acted_is_held_where_something_is_heard_after_the_act(rig: Rig) -> None:
     """Words in the closing reply are heard after every act before it."""
     _, route = await acted_then_silent(rig, ("Bash", "filed"), "Filed it.")
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.turned()
     [turn] = turns(rig.recorded)
@@ -1055,7 +1055,7 @@ async def test_a_turn_that_acted_and_closes_on_a_reply_hands_says_is_held(rig: R
     exchange, _ = rig.request(answering("Bash", "parser.py"))
     rig.calls(exchange, ("t2", "mcp__hands__amend_draft"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: fix the parser"}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: "amended for api: fix the parser" in rig.out.said())
     [turn] = turns(rig.recorded)
@@ -1071,7 +1071,7 @@ async def test_a_turn_hands_asked_may_close_on_stay_silent_after_it_read(rig: Ri
     exchange, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
     rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.turned()
     await rig.quiet()
@@ -1092,7 +1092,7 @@ async def test_a_turn_the_user_spoke_over_may_close_on_stay_silent_after_it_acte
     exchange, _ = rig.request(answering("Bash", "filed"))
     rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     [turn, *_] = turns(rig.recorded)
@@ -1199,7 +1199,7 @@ async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["amended for api: add tests too"])
     # hands-readback-ddk: said after the turn's reply has ended, where it is a turn of its own, over once it is said.
@@ -1215,7 +1215,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
     await rig.interrupt()
     await rig.worker.queue_frame(UserWords("wait, no"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     # The draft changed, and the brain, told the user never heard how, judges whether to say it.
     await rig.until(lambda: len(rig.brain.asked) == 2)
