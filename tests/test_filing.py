@@ -91,7 +91,7 @@ def test_a_line_that_is_no_json_object_is_counted_unreadable_and_one_of_a_kind_h
 
 
 # The kinds of line the log never judges a warning or an error.
-ALWAYS_INFO = {"Typing", "CopiesLost", "Transcribed", "HoldHeard", "Replied", "CutOff", "UserTurn", "Announced", "Cued", "Rolled"}
+ALWAYS_INFO = {"Typing", "CopiesLost", "Transcribed", "HoldHeard", "Replied", "BargeIn", "UserTurn", "Announced", "Cued", "Rolled"}
 
 
 def test_every_kind_of_line_the_log_can_judge_a_warning_or_an_error_says_its_cause() -> None:

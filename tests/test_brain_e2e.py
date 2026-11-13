@@ -182,7 +182,7 @@ class Hands:
 
     async def say(self, words: str) -> None:
         """The user's words, spoken once they have heard all hands handed the speaker, its marks played: behind the cut
-        their turn opens with and the turn's stop, as every turn that carries words is cut (test_stage's `cut_in`). A
+        their turn opens with and the turn's stop, as every turn that carries words is cut (test_stage's `barge_ins`). A
         question is answered by what is said after it is heard, so words handed on without the cut are a turn of their own."""
         reached = asyncio.Event()
         await self.queue(Received(reached.set))
@@ -251,7 +251,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     out = Spoken()
     store = SummaryStore(Sentences(tmp_path / "sentences.db"))
     try:
-        async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.cut_off, Attention) as minded:
+        async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
                 try:
@@ -529,7 +529,7 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
         case asides:
             raise AssertionError(f"the first turn's asides are not one answer: {asides!r}")
     # C1: not a barge-in. Neither turn is interrupted, the first is cut in on once, and nothing of it is spoken over.
-    assert (first.facts["interrupted"], first.counts["cut_in"], first.facts["spoken_over"], second.facts["interrupted"]) == (False, 1, "", False)
+    assert (first.facts["interrupted"], first.counts["barge_ins"], first.facts["barge_in_note"], second.facts["interrupted"]) == (False, 1, "", False)
     # C2: nothing is lost: the turn runs on to its end, heard, its sentence before the call, then the answer, then the rest.
     assert answer in ANSWERS
     assert said.index("Let me look.") < said.index(answer) < said.index("Renamed it.") < said.index("The logs are clean."), said

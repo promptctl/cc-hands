@@ -228,7 +228,7 @@ async def test_words_heard_once_their_hold_closed_cut_nothing_and_never_land_beh
         go.set()
         await rig.until(lambda: len(rig.events("hearing")) == 1)
         [hearing] = rig.events("hearing")
-        assert (hearing.outcome, hearing.facts["listener"], hearing.facts["hold"], hearing.facts["heard"], hearing.facts["cut"]) == ("ok", "late", 1, "words", False)
+        assert (hearing.outcome, hearing.facts["listener"], hearing.facts["hold"], hearing.facts["heard"], hearing.facts["barge_in"]) == ("ok", "late", 1, "words", False)
         assert ("interim", "too late") not in rig.seen.seen
 
 
@@ -241,7 +241,7 @@ async def test_words_heard_while_their_hold_is_open_cut_hands_off_ahead_of_its_r
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
         assert rig.seen.seen.index(("interim", "wait")) < rig.seen.seen.index(("resolved", 1))
         [hearing] = rig.events("hearing")
-        assert (hearing.facts["heard"], hearing.facts["cut"]) == ("words", True)
+        assert (hearing.facts["heard"], hearing.facts["barge_in"]) == ("words", True)
 
 
 async def test_a_listeners_work_after_its_hold_ends_is_a_hearing_of_its_own() -> None:
@@ -253,7 +253,7 @@ async def test_a_listeners_work_after_its_hold_ends_is_a_hearing_of_its_own() ->
         await rig.held([frame_of(3)])
         await rig.until(lambda: len(rig.events("hearing")) == 1)
         [hearing] = rig.events("hearing")
-        assert (hearing.outcome, hearing.facts["hold"], hearing.facts["heard"], hearing.facts["cut"]) == ("ok", 1, "nothing", False)
+        assert (hearing.outcome, hearing.facts["hold"], hearing.facts["heard"], hearing.facts["barge_in"]) == ("ok", 1, "nothing", False)
 
 
 async def test_a_hearing_that_never_returns_fails_on_its_event_and_the_listener_hears_on(monkeypatch: pytest.MonkeyPatch) -> None:

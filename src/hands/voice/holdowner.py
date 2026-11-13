@@ -368,7 +368,7 @@ class HoldOwner(FrameProcessor):
                 pass
 
     async def _heard(self, listener: Listener, hold: Hold, hearing: Hearing, began: Begun) -> None:
-        """One hearing, bounded, and what came of it: words for the hold still open cut hands off as `InterimWords`."""
+        """One hearing, bounded, and what came of it: words for the hold still open barge in on hands as `InterimWords`."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):
@@ -381,8 +381,8 @@ class HoldOwner(FrameProcessor):
             match heard.words, self._open(hold):
                 case str() as words, True:
                     self._out.put_nowait(InterimWords(words, "", self._stamp(), _LANGUAGE))
-                    annotate(heard="words", cut=True)
+                    annotate(heard="words", barge_in=True)
                 case str(), False:
-                    annotate(heard="words", cut=False)
+                    annotate(heard="words", barge_in=False)
                 case None, _:
-                    annotate(heard="nothing", cut=False)
+                    annotate(heard="nothing", barge_in=False)

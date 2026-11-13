@@ -23,8 +23,8 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import Bookmark, LastOne, NothingCut, NothingSaid, Played, Playback, Replay
-from hands.sessions.audit import CutOff, Record
+from hands.core.playback import Bookmark, LastOne, NothingBargedIn, NothingSaid, Played, Playback, Replay
+from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
 
@@ -45,7 +45,7 @@ class Player:
         # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the mark behind it: settled by the output
         # passing the mark on, or by the next barge-in, whichever the output pushes first.
         self._hearing: dict[asyncio.Future[bool], Mark] = {}
-        # [LAW:no-shared-mutable-globals] each `cut_off` waiting on the next barge-in to reach the output, which settles it.
+        # [LAW:no-shared-mutable-globals] each `next_barge_in` waiting on the next barge-in to reach the output, which settles it.
         self._cutting: list[asyncio.Future[Bookmark]] = []
 
     @property
@@ -86,13 +86,13 @@ class Player:
                 for cut in cutting:
                     if not cut.done():
                         cut.set_result(Bookmark((*was.reading, *was.coming), was.played))
-                self._playback = playback.cut(was)
+                self._playback = playback.barge_in(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
-                self._record(CutOff(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
+                self._record(BargeIn(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
             case _:
                 pass
 
-    def cut_off(self) -> asyncio.Future[Bookmark]:
+    def next_barge_in(self) -> asyncio.Future[Bookmark]:
         """The reading on the speaker when the next barge-in reaches it, and how many of its sentences had played to their
         end: all of them when it was cut off in none. Asked for before that barge-in is passed down, so it is the one."""
         cut = asyncio.get_running_loop().create_future()
@@ -139,7 +139,7 @@ def said(played: Played) -> tuple[str, ...]:
     match played:
         case Replay(sentences=sentences):
             return sentences
-        case NothingCut():
+        case NothingBargedIn():
             return ("Nothing was cut off to go back to.",)
         case NothingSaid():
             return ("I haven't said anything yet.",)

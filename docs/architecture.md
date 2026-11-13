@@ -205,7 +205,7 @@ class Narration:
     top: Sequence[SegmentId]        # headline, then questions, then sections
     segments: Mapping[SegmentId, Segment]
 
-# Where playback is, and where it was when you cut in. Resume pops the stack.
+# Where playback is, and where it was when you barged in. Resume pops the stack.
 @dataclass(frozen=True)
 class Bookmark: narration: NarrationId; segment: SegmentId
 @dataclass(frozen=True)
@@ -278,7 +278,7 @@ Each timing fact has one owner.
 |---|---|
 | When a user turn starts and ends | the gate, through the key position |
 | Which utterance plays next, and that two never overlap | Pipecat's output transport |
-| Where a narration resumes after you cut in | the player's bookmark stack, from the segment the output transport was playing |
+| Where a narration resumes after you barge in | the player's bookmark stack, from the segment the output transport was playing |
 | That a session's end is heard after its last turn | the story queue: `Summarise` and `SessionGone` wait in one queue, and the narrator tells each in turn |
 | When a burst of a session's progress has settled | the reducer, driven by one `Tick` source |
 | Whether text typed mid-turn is queued or lost | Claude Code's own input queue, measured to queue it |
@@ -1087,15 +1087,15 @@ and an exchange made for no unit of work, a wrapped session's through the tap or
 `proxy.exchange` span at the root of a trace of its own, saying its session, kind and path. A turn hands stopped mid-way
 still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), how
-many times they cut in on it and stopped nothing of it (`cut_in`, counted with `round_trips`, `tools` and `refused`), and
-the note that tells the brain, after the user's next words, what of the turn they did not hear (`spoken_over`, empty
+many times they barged in on it and stopped nothing of it (`barge_ins`, counted with `round_trips`, `tools` and `refused`), and
+the note that tells the brain, after the user's next words, what of the turn they did not hear (`barge_in_note`, empty
 when nobody spoke over it). A barge-in presses no key and holds no request: the turn runs to its own end, said to nobody.
 The note quotes the last sentence the speaker played to its end, then the rest of the reading it was cut off in
-(`Player.cut_off`), the turn's words past the last of them the speaker played, a sentence still on its way to the speaker
+(`Player.next_barge_in`), the turn's words past the last of them the speaker played, a sentence still on its way to the speaker
 included, and its calls' readbacks. A turn spoken over that then fails adds only that it failed; a reply broken after the
 cut was heard by nobody.
 
-A cut is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
+Speech over hands is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
 or a text block's end or a permission question whose Mark the speaker has not yet played. Each text block ends the
 reply as it closes, so its last sentence is said then, before the call after it runs, and a Mark behind it is exact.
 Only the text block's own stop, or the start of a block that is neither text nor thinking, ends it: a retry that opens
@@ -1105,13 +1105,13 @@ behind it are said. Words said while the brain works in silence stop nothing: th
 them at once in the turn's voice with a line from `ANSWERS` ("Got it. I'll come to that when this is done.", ...), said
 after the text block streaming when they arrive, if one is. A turn hands narrates is not answered in, as it is not
 acknowledged: what it says is the session's, and an answer said inside it would be read by the utterance tracking as
-the telling's own audio. The cut takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts,
+the telling's own audio. The barge-in takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts,
 just ahead of its interruption, and the stage gives it back as the user's turn stops, which Pipecat's
 `UserStoppedSpeakingFrame` says of every turn, words or none. Pipecat pairs the two, so no interruption of any other
 kind holds the floor. Nothing of the brain's turn is handed on while the user speaks: its text, its permission
 questions and the readbacks after it wait for them to stop, then play, as what hands tells of the sessions waits at the
-floor, never said over them. What the user's words answer is read once, at the cut they open with, so a permission
-question asked after the cut is not what they answer.
+floor, never said over them. What the user's words answer is read once, at the barge-in they open with, so a permission
+question asked after the barge-in is not what they answer.
 
 A user's turn whose tool work is still running `ACKNOWLEDGE_SECONDS` (2 s) after its first call is acknowledged, however
 many calls the work takes, unless the user has already heard something of the turn: a word, a permission question,
@@ -1121,7 +1121,7 @@ question does, and is kept out of the replies the audit log records, since the b
 that says what it will do before it calls, and a turn hands narrates are never acknowledged. The turn's event says
 each line hands said in it, the acknowledgement and its answers alike (`asides`), with how long after the user's wait
 for it began it was handed to the speaker, as the turn's own words are told: a line the user spoke over before it came
-to be said is not told. A cut over one of these lines is not a barge-in, since none is the brain's.
+to be said is not told. Speech over one of these lines is not a barge-in, since none is the brain's.
 
 The brain's own process is six kinds of event. Its launch (`brain.launch`) runs from the spawn until its input is
 up, on which account, model, and config directory, under which fritter (the one hands' package carries), on which
@@ -1774,17 +1774,17 @@ of the same length unless the key is pressed. Frames flow at full rate either wa
 only their content changes. The microphone opens on the press, and a hold's audio
 begins there, so words said before the hold means talk are kept; they are thrown
 away if the press turns out to be Shift. The hold opens the turn, so the floor is the
-user's from then on, and the release ends it and is final. The turn's cut is the
+user's from then on, and the release ends it and is final. The turn's barge-in is the
 interruption that flushes queued audio, cancels the reply still streaming from the
 model and its calls in flight, and settles a line said through the player's `heard()`
-as cut off. That is barge-in.
+as cut off.
 
-When a turn cuts is the edge's that opened its hold (`turn_start` in
+When a turn barges in is the edge's that opened its hold (`turn_start` in
 `hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
 from the gate, as it carries the key. A hold the user's hand opens, the held key or the
-phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
+phone's button, barges in as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose and
-heard through the echo canceller while hands speaks. A hold engaged conversation opens cuts
+heard through the echo canceller while hands speaks. A hold engaged conversation opens barges in
 only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
 Nemotron Speech Streaming paired with Nemotron 3 Diarization on MLX, one session for the run,
 fed only the holds), Pipecat's
@@ -1794,16 +1794,16 @@ reply's own sound left over from it, or a cough or a door, opens a hold. Between
 on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
 reading held no words for Whisper. The streaming model decodes silence, hiss and clicks to
 no words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech,
-and it hears that as words. Such a turn cuts nothing, so nothing has to be
-undone: until it cuts, nothing behind the user aggregator hears that the user started
+and it hears that as words. Such a turn barges in on nothing, so nothing has to be
+undone: until it barges in, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
 had opened, while Floor holds what hands tells of the sessions from the hold's opening.
-A cut can land while the turn's words are still on
+A barge-in can land while the turn's words are still on
 their way to the model, so they are uninterruptible: an interruption stops hands, never
 the user. And the user aggregator takes none of them in until the assistant aggregator,
-at the end of the pipeline, says the reply the cut stopped is written as
-cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
-off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
+at the end of the pipeline, says the reply the barge-in stopped is written as
+cut off (`BargeInWritten`), so the audit log reads that reply ahead of the words that cut it
+off, and the brain's stage takes the barge-in ahead of them, however close behind the barge-in they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
 long after it opened it did, or that it never did. A turn ends once the hold owner is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends

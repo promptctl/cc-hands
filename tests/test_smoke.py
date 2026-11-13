@@ -86,7 +86,7 @@ def test_the_session_s_turn_is_settled_once_its_utterance_is_held_or_played_to_i
 
 def test_a_telling_cut_off_is_never_settled_and_says_so() -> None:
     with pytest.raises(NotReached) as raised:
-        proof("told", [utterance(SESSION, "cut")], SESSION)
+        proof("told", [utterance(SESSION, "barged_in")], SESSION)
     assert (raised.value.stage, raised.value.why) == ("told", f"hands' telling of session {SESSION}'s turn was cut off before the question was asked")
 
 

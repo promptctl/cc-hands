@@ -128,7 +128,7 @@ class Replied:
 
 
 @dataclass(frozen=True)
-class CutOff:
+class BargeIn:
     """The user barged in: the sentence that was playing, None when the speaker was quiet, and how many cut-off readings
     are now waiting to be gone back to."""
 
@@ -147,7 +147,7 @@ class UserTurn:
     after it opened it did; None where it never did, a turn the voice opened that no words were heard in."""
 
     start: TurnStart
-    cut: float | None
+    barge_in_after: float | None
 
 
 @dataclass(frozen=True)
@@ -260,7 +260,7 @@ Entry = (
     | HoldHeard
     | Primed
     | Replied
-    | CutOff
+    | BargeIn
     | UserTurn
     | Announced
     | Cued
@@ -298,7 +298,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
+            | Transcribed() | HoldHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

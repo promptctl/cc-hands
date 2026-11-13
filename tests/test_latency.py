@@ -92,7 +92,7 @@ async def test_a_wordless_turn_that_took_nothing_over_leaves_the_reply_on_its_wa
 
 
 async def test_the_last_turns_cut_still_crossing_boundaries_takes_nothing_over_for_the_next() -> None:
-    """Every frame is pushed once per boundary it crosses, so the last turn's cut is still being pushed after its stop
+    """Every frame is pushed once per boundary it crosses, so the last turn's barge-in is still being pushed after its stop
     began the next turn: it is the last turn's, numbered ahead of that stop."""
     cut = UserStartedSpeakingFrame()
     asked: list[Frame] = [opened(1), cut, VADUserStoppedSpeakingFrame(), Words(text="hello", user_id="u", timestamp="t"), resolved(1), UserStoppedSpeakingFrame(), cut]

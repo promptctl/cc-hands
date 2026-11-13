@@ -33,8 +33,8 @@ from hands.sessions.wide import Begun, Fact, annotate, begun, fail, unit
 # How an utterance ended. `noted`: what the user set, or a turn or a burst with nothing new in it, kept it from being
 # said. `dropped`: no longer so by the time it was to be told: out of date as the floor let it go, or progress of a turn
 # that ended before its summary was ready. `silent`: handed on, and nothing of it was heard, as a note to the model's
-# context is not. `played`: heard to its end. `cut`: a barge-in stopped it, before or after its first audio.
-Fate = Literal["noted", "dropped", "silent", "played", "cut"]
+# context is not. `played`: heard to its end. `barged_in`: a barge-in stopped it, before or after its first audio.
+Fate = Literal["noted", "dropped", "silent", "played", "barged_in"]
 
 
 @dataclass(eq=False)
@@ -141,7 +141,7 @@ class Audible(BaseObserver):
                 self._on.update(dict.fromkeys(utterances, False))
             case OutputAudioRawFrame():
                 # What plays after a barge-in cut one off is not its own: a turn that goes on leads it on again.
-                for utterance in (each for each, cut in self._on.items() if not cut):
+                for utterance in (each for each, barged_in in self._on.items() if not barged_in):
                     if utterance.first_audio is None:
                         utterance.first_audio = self._now()
             case InterruptionFrame():
@@ -154,11 +154,11 @@ class Audible(BaseObserver):
 
 
 
-def _fate(cut: bool | None, heard: bool) -> Fate:
-    """`cut` is None for an utterance whose `Uttering` a barge-in dropped before it reached the speaker."""
-    match cut, heard:
+def _fate(barged_in: bool | None, heard: bool) -> Fate:
+    """`barged_in` is None for an utterance whose `Uttering` a barge-in dropped before it reached the speaker."""
+    match barged_in, heard:
         case (None, _) | (True, _):
-            return "cut"
+            return "barged_in"
         case False, True:
             return "played"
         case False, False:

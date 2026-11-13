@@ -36,11 +36,11 @@ class Spoken:
 
 
 @dataclass(frozen=True)
-class Cut:
-    """The user cut in: what was playing stopped where it was."""
+class BargeIn:
+    """The user barged in: what was playing stopped where it was."""
 
 
-Line = Heard | Saying | Spoken | Cut
+Line = Heard | Saying | Spoken | BargeIn
 
 
 class TranscriptObserver(BaseObserver):
@@ -89,6 +89,6 @@ class TranscriptObserver(BaseObserver):
             case InterruptionFrame() if data.source is self._output:
                 # A sentence let go in the moment of the barge-in never plays: forgotten with the one cut off.
                 self._next = self._playing = None
-                self._told(Cut())
+                self._told(BargeIn())
             case _:
                 pass

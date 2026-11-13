@@ -70,8 +70,8 @@ class Turn:
     took_over: bool = False
     released: Window | None = None
     found: Window | None = None
-    # The id of the stop that ended the turn before: Pipecat numbers every frame from one count, so a cut of this turn's
-    # is a frame numbered past it, and the last turn's cut, still crossing boundaries, is not.
+    # The id of the stop that ended the turn before: Pipecat numbers every frame from one count, so a barge-in of this turn's
+    # is a frame numbered past it, and the last turn's barge-in, still crossing boundaries, is not.
     since: int = -1
 
 

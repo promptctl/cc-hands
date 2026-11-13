@@ -46,10 +46,10 @@
   #transcript p { margin: 0 0 10px; }
   #transcript:empty::before { content: "Nothing said yet."; color: var(--muted); }
   #transcript .user { color: var(--muted); text-align: right; }
-  /* hands' words not yet reached are faint; the one being said is marked; those cut off are struck through. */
+  /* hands' words not yet reached are faint; the one being said is marked; those barged in on are struck through. */
   #transcript .ahead { opacity: .45; }
   #transcript .now { background: var(--ring); border-radius: 3px; }
-  #transcript .cut { opacity: .45; text-decoration: line-through; }
+  #transcript .unheard { opacity: .45; text-decoration: line-through; }
   #brain { width: min(100%, 36rem); border-top: 1px solid var(--ring); padding-top: 10px; }
   #brain-head { display: flex; align-items: center; justify-content: space-between; column-gap: 12px; }
   #doing { margin: 0; font-weight: 600; }
@@ -217,7 +217,7 @@ function sweep() {
   saying.frame = requestAnimationFrame(sweep);
 }
 
-// Ends the sentence playing, each word as `left` would have it: said, or cut off.
+// Ends the sentence playing, each word as `left` would have it: said, or barged in on.
 function stop(left) {
   if (saying === null) return;
   cancelAnimationFrame(saying.frame);
@@ -226,7 +226,7 @@ function stop(left) {
 }
 
 // What of a sentence stopped short was not heard: the words not yet reached.
-const cutOff = (word) => word.className === "ahead" ? "cut" : "";
+const bargedIn = (word) => word.className === "ahead" ? "unheard" : "";
 
 // What each line of the transcript does to the page (hands.voice.transcript).
 const LINES = {
@@ -254,7 +254,7 @@ const LINES = {
     sweep();
   },
   "spoken": () => stop(() => ""),
-  "cut": () => stop(cutOff),
+  "bargein": () => stop(bargedIn),
 };
 
 // Everything hands tells the page, by its kind: a mark of the hold shown, or a line of the transcript.
@@ -378,7 +378,7 @@ function hangUp() {
   held = false;
   letGo();
   // The rest of what was playing never reaches this page.
-  stop(cutOff);
+  stop(bargedIn);
   talk.classList.remove("held");
 }
 

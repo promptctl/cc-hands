@@ -30,7 +30,7 @@ from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
 from hands.voice.mark import Mark
 from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
-from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
+from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
@@ -207,7 +207,7 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 
 
 # Every line of the transcript there is, as the page is told it.
-LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), Cut()]
+LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
 
 
 async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
@@ -221,7 +221,7 @@ async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_trans
         {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
         {"kind": "spoken"},
         {"kind": "saying", "text": "Its tests pass.", "chars_per_sec": 12.5},
-        {"kind": "cut"},
+        {"kind": "bargein"},
     ]
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)

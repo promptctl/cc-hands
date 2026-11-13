@@ -39,7 +39,7 @@ from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import CutOff, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import BargeIn, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -302,7 +302,7 @@ async def rigged(
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
     told: list[Mark] = []
-    # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
+    # The assistant aggregator ends the pipeline, as build_voice puts it: a barge-in goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(SYSTEM, told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
@@ -493,8 +493,8 @@ OPENED_BY_THE_VOICE: list[Captured] = ["listening", "arming", "down", "down", "l
 
 
 def user_turns(rig: Rig) -> list[tuple[TurnStart, bool]]:
-    """Each user turn's line, as it ended: when its edge had it cut, and whether it did."""
-    return [(entry.start, entry.cut is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
+    """Each user turn's line, as it ended: when its edge had it barge in, and whether it did."""
+    return [(entry.start, entry.barge_in_after is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
 
 
 async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_is_a_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -518,7 +518,7 @@ async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_i
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
         await rig.texts.put("wait, not yet")
         assert await line is False
-        assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
+        assert cut == [BargeIn("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
         assert await rig.everything_sent(holds=1) == ["wait, not yet"]
         assert user_turns(rig)[0] == ("on words", True)
 
@@ -547,15 +547,15 @@ async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while
         await rig.until(line.done)
         # Cut while the hold is still open: the user has not stopped speaking.
         assert (line.result(), rig.out.released) == (False, 0)
-        assert cut == [CutOff("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
+        assert cut == [BargeIn("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
         await rig.hold([*SPEAKING, "listening"], by="engaged conversation")
         await rig.texts.put("wait, not yet, read me the diff first")
         # What was heard while the hold was open only cut; the hold heard whole by the transcriber is what is sent.
         assert await rig.everything_sent(holds=1) == ["wait, not yet, read me the diff first"]
         assert user_turns(rig)[0] == ("on words", True)
-        # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
+        # What barged in on hands is on the hearing's event, to be looked into where the hold heard whole says nothing.
         [first, *_] = hearings(rig)
-        assert (first.facts["hold"], first.facts["heard"], first.facts["cut"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
+        assert (first.facts["hold"], first.facts["heard"], first.facts["barge_in"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
 
 
 async def test_a_hold_the_voice_opened_cuts_nothing_off_where_no_words_are_heard_in_it_while_it_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -578,7 +578,7 @@ async def test_a_hold_the_voice_opened_dropped_before_its_words_are_heard_cuts_n
         rig.streamed.flowing.set()
         await rig.until(lambda: len(hearings(rig)) == 4)
         # What it heard in a hold thrown away is no one's, and cuts nothing.
-        assert (overheard(rig)[0], {event.facts["cut"] for event in hearings(rig)}) == ("words", {False})
+        assert (overheard(rig)[0], {event.facts["barge_in"] for event in hearings(rig)}) == ("words", {False})
         await rig.until(lambda: user_turns(rig) == [("on words", False)])
         assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
         assert await rig.everything_sent(holds=1) == []
@@ -610,7 +610,7 @@ async def test_a_hold_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         await rig.texts.put("wait, not yet")
         await rig.until(line.done)
         assert line.result() is False
-        assert cut == [CutOff("The parser is fixed.", 1)]
+        assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.until(lambda: user_turns(rig) == [("on words", True)])
         *_, whole = hearings(rig)
         assert (whole.outcome, whole.error, whole.facts["hold"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
@@ -622,7 +622,7 @@ async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_end
     await rig.until(lambda: rig.out.released == 2)
     await rig.texts.put("turn it off")
     await rig.texts.put("and the lights")
-    # The cut lands behind the first hold's words, ahead of the second's: neither is dropped by it.
+    # The barge-in lands behind the first hold's words, ahead of the second's: neither is dropped by it.
     assert await rig.everything_sent(holds=2) == ["turn it off and the lights"]
     assert rig.out.interrupted == 2  # the closing hold's is the second
     assert user_turns(rig)[0] == ("on words", True)
@@ -664,7 +664,7 @@ async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_
         await rig.hold(["down", "down", "up"], by=by)
         # Cut before Whisper has heard anything: its transcription waits on the test.
         assert await line is False
-        assert cut == [CutOff("The parser is fixed.", 1)]
+        assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.texts.put("")
         assert await rig.everything_sent(holds=1) == []
         assert user_turns(rig)[0] == ("on the hold", True)
@@ -680,7 +680,7 @@ async def test_words_typed_cut_hands_off_at_once(monkeypatch: pytest.MonkeyPatch
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.worker.queue_frame(Typed(text="stop there"))
         assert await line is False
-        assert cut == [CutOff("The parser is fixed.", 1)]
+        assert cut == [BargeIn("The parser is fixed.", 1)]
         assert await rig.everything_sent(holds=1) == ["stop there"]
         assert user_turns(rig)[0] == ("on the hold", True)
 

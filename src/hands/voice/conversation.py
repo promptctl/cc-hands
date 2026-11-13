@@ -30,7 +30,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from hands.sessions.audit import Record, Replied, Transcribed
-from hands.voice.turnstart import CutWritten
+from hands.voice.turnstart import BargeInWritten
 
 
 @dataclass
@@ -121,8 +121,8 @@ class AssistantTurns(LLMAssistantAggregator):
         await super().process_frame(frame, direction)
         match frame:
             case InterruptionFrame():
-                # Written as cut off: the user's turn that made the cut is taken in behind it (`hands.voice.turnstart`).
-                await self.push_frame(CutWritten(), FrameDirection.UPSTREAM)
+                # Written as cut off: the user's turn that made the barge-in is taken in behind it (`hands.voice.turnstart`).
+                await self.push_frame(BargeInWritten(), FrameDirection.UPSTREAM)
             case _:
                 pass
         # Whatever the frame, so whichever one closes the brain's reply writes what was said inside it: a line itself,

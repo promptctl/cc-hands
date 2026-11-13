@@ -139,7 +139,7 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
                 raise NotReached("finished", f"session {session} asked permission to use a tool, which nothing in the test answers; allow it in the user's Claude Code settings")
             case "told", {"type": "WideEvent", "event": "utterance", "outcome": "failed", "error": str(error), "facts": {"session": str(told), "heard": {"type": "Summarise"}}} if told == session:
                 raise NotReached("told", f"hands could not tell session {session}'s turn: {error}")
-            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": "cut"}} if told == session:
+            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": "barged_in"}} if told == session:
                 raise NotReached("told", f"hands' telling of session {session}'s turn was cut off before the question was asked")
             case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": str(fate)}} if told == session:
                 return f"hands' telling of session {session}'s turn: {fate}"

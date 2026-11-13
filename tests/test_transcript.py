@@ -4,7 +4,7 @@ from pipecat.frames.frames import AggregatedTextFrame, InterruptionFrame, Output
 from pipecat.processors.filters.identity_filter import IdentityFilter
 
 from conftest import running
-from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken, TranscriptObserver
+from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken, TranscriptObserver
 from test_playback import Heard as Reached
 from test_playback import ended, spoken
 
@@ -41,4 +41,4 @@ async def test_each_line_is_told_once_as_whisper_hears_it_and_as_the_speaker_pla
         # After the barge-in, sound of the next reply, ahead of any sentence of it.
         await run.worker.queue_frame(audio())
         await reached.until(4, OutputAudioRawFrame)
-    assert told == [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 82.5), Cut()]
+    assert told == [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 82.5), BargeIn()]

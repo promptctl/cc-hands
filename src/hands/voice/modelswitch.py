@@ -28,7 +28,7 @@ class OwnModel(Protocol):
     def weigh(self, model: str) -> Callable[[], None]: ...
 
 
-class SpokenOver(Rejected):
+class BargedIn(Rejected):
     """A switch the user talked over while its line was said: hands did not switch."""
 
 
@@ -41,7 +41,7 @@ class Heard(Protocol):
 async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
     """Run hands on `model`: weighed, the switch said aloud, and kept once the user has heard it, since keeping restarts hands.
 
-    Raises Rejected where the switch is refused, SpokenOver where the user talked over its line, and OSError where the
+    Raises Rejected where the switch is refused, BargedIn where the user talked over its line, and OSError where the
     file the model is kept in cannot be read or written.
 
     [LAW:one-source-of-truth] the one policy for a switch of model, by voice or on the phone's page alike: the order of
@@ -52,6 +52,6 @@ async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
         line = f"Switching to {model.strip()}. I'll be back in a few seconds."
         # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
         if not await player.heard(line):
-            raise SpokenOver(f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch.")
+            raise BargedIn(f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch.")
         await off_loop(keep, "keeping a model chosen by voice")
     return {"said": line, "running_on": own.running(), "switching_to": model.strip()}

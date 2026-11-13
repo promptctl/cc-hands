@@ -18,7 +18,7 @@ from typing import Literal, TypedDict
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
+from hands.voice.modelswitch import OwnModel, BargedIn, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -999,7 +999,7 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
         """
         try:
             return await switch_model(own, player, model)
-        except SpokenOver as error:
+        except BargedIn as error:
             # The brain is told to ask again; the page shows the same refusal without this instruction.
             return {"error": f"{error} Ask whether they still want it."}
         except (Rejected, OSError) as error:
