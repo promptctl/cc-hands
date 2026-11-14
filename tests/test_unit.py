@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-from conftest import RUN, layered
+from conftest import REFUSED, RUN, layered, refused
 
 
 def held(config: pytest.Config) -> bool:
@@ -81,3 +81,13 @@ def test_a_layer_run_takes_the_tests_no_mark_sends_outside_or_the_ones_that_it_d
     assert [item.name for item in audit] == ["test_out"]
     (strict,) = audit[0].iter_markers("xfail")
     assert strict.kwargs["strict"] is True
+
+
+def failed_with(text: str) -> pytest.TestReport:
+    return pytest.TestReport("test_x.py::test_it", ("test_x.py", 0, "test_it"), {}, "failed", text, "call")
+
+
+def test_a_failure_the_unit_layer_refused_says_what_the_layer_is_and_no_other_failure_does() -> None:
+    assert refused(failed_with("PermissionError: [Errno 1] Operation not permitted: 'tmux'"), "unit").sections == [("the unit layer", REFUSED)]
+    assert refused(failed_with("AssertionError: 1 == 2"), "unit").sections == []
+    assert refused(failed_with("PermissionError: [Errno 1] Operation not permitted: 'tmux'"), None).sections == []

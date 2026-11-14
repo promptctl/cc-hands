@@ -110,3 +110,15 @@ def test_a_run_started_inside_the_held_run_is_held_and_says_how() -> None:
     held = subprocess.run([sys.executable, "-c", "import offline; print(offline.hold())"], cwd=Path(offline.__file__).parent, capture_output=True, text=True, timeout=30)
     assert held.returncode == 0, held.stderr
     assert held.stdout.startswith(str(offline.OFFLINE)), held.stdout
+
+
+def test_a_path_is_quoted_as_a_profile_string_holds_it() -> None:
+    assert offline._quoted(Path('/a "b"/c\\d')) == '/a \\"b\\"/c\\\\d'  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.outside
+def test_a_unit_hold_taken_inside_the_offline_held_run_stops_it_saying_what_is_open() -> None:
+    code = "import offline, pathlib; offline.hold(offline.Unit((pathlib.Path('.'),)))"
+    held = subprocess.run([sys.executable, "-c", code], cwd=Path(offline.__file__).parent, capture_output=True, text=True, timeout=30)
+    assert held.returncode != 0
+    assert "loopback open: True" in held.stderr and "a process start refused: False" in held.stderr, held.stderr

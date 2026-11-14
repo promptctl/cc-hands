@@ -95,7 +95,7 @@ def refused[R: pytest.TestReport](report: R, layer: str | None) -> R:
 # skipped as it is collected.
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    return refused(in_ci((yield)), item.config.getoption("layer"))
+    return refused(in_ci((yield)), item.config.getoption("layer", None))
 
 
 # A quarantine may end no more than this many days after the day it is written.
@@ -145,7 +145,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 raise pytest.UsageError(f"{item.nodeid} is quarantined by {ticket} until {until}, more than {QUARANTINE_DAYS} days from {today}")
         if held:
             item.add_marker(pytest.mark.xfail(reason=f"quarantined by {held[0][0]} until {held[0][1]}", strict=False))
-    if (layer := config.getoption("layer")) is not None:
+    if (layer := config.getoption("layer", None)) is not None:
         layered(config, items, layer)
 
 
@@ -485,7 +485,7 @@ def pytest_configure(config: pytest.Config) -> None:
     the run to fetch into, and a fixture shared by many tests counts against none of their timeouts (tests/timeouts.py)."""
     if not config.pluginmanager.has_plugin("timeout"):
         raise pytest.UsageError("pytest-timeout bounds every test the suite runs, and it is off: --timeout=0 lifts the bound")
-    if config.getoption("layer") == "audit":
+    if config.getoption("layer", None) == "audit":
         config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
     clockwatch.register(config, clockwatch.UNMOVED)
@@ -611,7 +611,7 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, sentences, home))
     wake_word = config.cache.mkdir("wake-word")
     claude_code = config.cache.mkdir("claude-code")
-    layer = config.getoption("layer")
+    layer = config.getoption("layer", None)
     fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine, unit=layer is not None)
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
