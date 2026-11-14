@@ -54,8 +54,8 @@ async def kept(clock: VirtualClock, recorder: Recorder, clip: Clip, sound: Sound
     """The clip told to the recorder as the owner tells it, whole as it ends, and its writing run as the owner runs a
     hearing."""
     owner = ClipOwner(clock, Unused(), (recorder,), recorded.append)
-    assert recorder.opened(clip, Sound(b"", b"", ())) == () and recorder.heard(sound) == ()
-    [write] = recorder.ended(clip, "sent", sound)
+    assert recorder.opened(clip, Sound(b"", b"", ()), lambda _first: None) == () and recorder.heard(sound) == ()
+    [write] = recorder.ended(clip, "sent", sound, lambda _first: None)
     # As the owner's hearing lane runs it: one that fails is said on its event, and the lane hears on.
     with contextlib.suppress(Exception):
         await owner._heard(recorder, clip, write, begun(clock))  # pyright: ignore[reportPrivateUsage]

@@ -25,9 +25,10 @@ from hands.clock import Clock
 from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
-from hands.voice.clips import LANGUAGE, RATE, Clip, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber
+from hands.voice.clips import LANGUAGE, RATE, Clip, Cleared, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
-from hands.voice.turnstop import ClipDiscarded, InterimWords, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.trigger import turn_start
+from hands.voice.turnstop import SpeakerCleared, ClipDiscarded, TurnOpened, TurnResolved, Typed, Words
 
 # What every clip is said in, as Pipecat names it.
 _LANGUAGE = Language(LANGUAGE)
@@ -41,6 +42,12 @@ TRANSCRIBING_SECONDS = 60.0
 # hearing that is not coming back.
 HEARING_SECONDS = 60.0
 
+# The longest a clip hands played over waits to close on its last identification, whose speakers decide whether it cuts
+# hands off: a new timeout, the user's words held behind it. Scoring a speaker takes about 18 ms for each second scored,
+# so the bound is for what the voiceprints' lane may have ahead of it, the model's load or a voice's enrolment; a clip that
+# misses it cuts nothing, and its `clip` event says so.
+IDENTIFIED_SECONDS = 2.0
+
 
 def _transcribing_seconds(length: float) -> float:
     """The longest a clip `length` seconds long may take to transcribe before it fails: a minute, or the clip's own length.
@@ -53,12 +60,14 @@ def _transcribing_seconds(length: float) -> float:
 
 @dataclass(frozen=True)
 class _Spoken:
-    """A clip of the key's as it ended: what the gate did with it, its audio, and when it ended."""
+    """A clip of the key's as it ended: what the gate did with it, its audio, when it ended, and what its last
+    identification comes to, settled from the voiceprints' lane."""
 
     clip: Clip
     fate: Fate
     sound: Sound
     began: Begun
+    identified: "asyncio.Future[float | None]"
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,16 @@ class _Lanes:
 @dataclass(frozen=True)
 class _Unstarted:
     """No lane runs: the pipeline has not started, or has stopped."""
+
+
+def _settled(identified: "asyncio.Future[float | None]", first: float | None) -> None:
+    """A clip's last identification, on the event loop: one the owner gave up waiting on goes unheard, as the clip's
+    event already says."""
+    match identified.cancelled():
+        case True:
+            pass
+        case False:
+            identified.set_result(first)
 
 
 def _facts(ending: "_Spoken | _Written") -> dict[str, Fact]:
@@ -240,8 +259,8 @@ class ClipOwner(FrameProcessor):
                 self._latest = Clip(self._clips, frame.opened)
                 await self.push_frame(TurnOpened(clip=self._latest))
                 # What the press heard while arming, or the second the desk heard while listening, is the clip's start.
-                before = self._recording.sound
-                self._tell(self._latest, lambda listener: listener.opened(self._latest, before))
+                before, cleared = self._recording.sound, self._clearing(self._latest)
+                self._tell(self._latest, lambda listener: listener.opened(self._latest, before, cleared))
             case "down", "up" | "listening" | "arming":
                 # [LAW:no-silent-failure] the gate counts every end of a turn, so a key leaving down uncounted is a gate
                 # that lies.
@@ -286,17 +305,43 @@ class ClipOwner(FrameProcessor):
         # end is pushed find it closed, and cut nothing.
         self._key = "up"
         self._recording.clear()
-        self._tell(clip, lambda listener: listener.ended(clip, fate, sound))
+        loop = asyncio.get_running_loop()
+        identified: asyncio.Future[float | None] = loop.create_future()
+
+        def settle(first: float | None) -> None:
+            loop.call_soon_threadsafe(_settled, identified, first)
+
+        self._tell(clip, lambda listener: listener.ended(clip, fate, sound, settle))
         match fate:
             case "sent":
                 await self.push_frame(VADUserStoppedSpeakingFrame())
             case "dropped":
                 await self.push_frame(ClipDiscarded())
-        await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock)))
+        await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock), identified))
 
     def _open(self, clip: Clip) -> bool:
         """Whether `clip` is the clip open now."""
         return self._key == "down" and self._latest == clip
+
+    def _clearing(self, clip: Clip) -> Cleared:
+        """What a listener tells of each speaker it clears in `clip` to cut hands off, from whichever thread: the person is
+        taken on the event loop, which owns whether the clip is open."""
+        loop = asyncio.get_running_loop()
+
+        def cleared(first: float) -> None:
+            loop.call_soon_threadsafe(self._person, clip, first)
+
+        return cleared
+
+    def _person(self, clip: Clip, first: float) -> None:
+        """[LAW:single-enforcer] a speaker cleared in `clip` cuts hands off while it is still open, checked and queued in
+        one step, as a hearing's are: one cleared once it closed cuts nothing, so a late identification never cuts the
+        turn after it, and the clip's last identification says what its close came to."""
+        match self._open(clip):
+            case True:
+                self._out.put_nowait(SpeakerCleared(clip=clip, first=first))
+            case False:
+                pass
 
     async def _push(self) -> None:
         """Push what the owner said off the audio path, in the order it said it, until told the pipeline ends."""
@@ -320,12 +365,20 @@ class ClipOwner(FrameProcessor):
                 case _Written(text=text):
                     self._out.put_nowait(Words(text, "", self._stamp(), _LANGUAGE))
                     facts["transcript"] = "words"
-                case _Spoken(clip=clip, fate=fate, sound=sound):
+                case _Spoken(clip=clip, fate=fate, sound=sound, identified=identified):
                     match fate:
                         case "dropped":
                             pass
                         case "sent":
-                            facts["transcript"] = await self._transcribed(clip, sound)
+                            words = await self._transcribed(clip, sound, facts)
+                            # The cut lands ahead of the words it came with, as one while the clip was open would have.
+                            match await self._closing(clip, sound, identified, words, facts):
+                                case None:
+                                    pass
+                                case first:
+                                    self._out.put_nowait(SpeakerCleared(clip=clip, first=first))
+                            for each in words:
+                                self._out.put_nowait(each)
             # [LAW:dataflow-not-control-flow] heard, heard nothing, failed, or thrown away, the owner is done with the clip.
             self._out.put_nowait(TurnResolved(clip=ending.clip))
         except asyncio.CancelledError as cancelled:
@@ -333,8 +386,42 @@ class ClipOwner(FrameProcessor):
             raise
         ended("clip", self._record, ending.began, None, **facts)
 
-    async def _transcribed(self, clip: Clip, sound: Sound) -> str:
-        """What a sent clip's transcription came to, its words or why it had none queued to be pushed.
+    async def _closing(self, clip: Clip, sound: Sound, identified: "asyncio.Future[float | None]", words: tuple[Words, ...], facts: dict[str, Fact]) -> float | None:
+        """When the speaker who cuts hands off as `clip` closes was first heard, None for no cut: a turn the voice opened
+        is cut here where nothing cut it while the clip was open.
+
+        A clip hands played nothing over has no echo of hands in it, so its words cut, their speaker heard from its
+        opening, and nothing waits on a voiceprint. One it played over cuts on its last identification, which judges a
+        speaker heard under a second too (`hands.voice.voiceprints.CLOSING`): a wake phrase said alone over hands, then
+        silence. A clip the user's hand opened cut as it opened."""
+        match turn_start(clip.opener), voices(sound), words:
+            case "on the clip", _, _:
+                return None
+            case "on a person", (), (Words(), *_):
+                return 0.0
+            case "on a person", (), ():
+                return None
+            case "on a person", _, _:
+                return await self._identified(identified, facts)
+
+    async def _identified(self, identified: "asyncio.Future[float | None]", facts: dict[str, Fact]) -> float | None:
+        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most.
+
+        [LAW:no-silent-failure] one that misses the bound cuts nothing, which the clip's event says, as it says what one
+        in time came to."""
+        bound = self._clock.timeout(IDENTIFIED_SECONDS)
+        try:
+            async with bound:
+                first = await identified
+        except TimeoutError:
+            facts["identified"] = f"nothing after {IDENTIFIED_SECONDS:g} s"
+            return None
+        facts["identified"] = "nobody" if first is None else "a person"
+        return first
+
+    async def _transcribed(self, clip: Clip, sound: Sound, facts: dict[str, Fact]) -> tuple[Words, ...]:
+        """What a sent clip's transcription came to: its words, to be pushed, and on its event, why it had none, an error
+        queued where it failed.
 
         [LAW:no-silent-failure] a transcription that never returns would hold its turn open for ever, since nothing but the
         owner resolving its clips ends one: it fails instead. A model that is running cannot be stopped, so the next
@@ -348,14 +435,16 @@ class ClipOwner(FrameProcessor):
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from here aloud.
             why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"
             self._out.put_nowait(ErrorFrame(error=f"Clip {clip.number} could not be transcribed: {why}", exception=error))
-            return "failed"
+            facts["transcript"] = "failed"
+            return ()
         match said:
             case None:
                 # Not said: Brandon does not need to hear it (2026-09-27).
-                return "none"
+                facts["transcript"] = "none"
+                return ()
             case words:
-                self._out.put_nowait(Words(words, "", self._stamp(), _LANGUAGE))
-                return "words"
+                facts["transcript"] = "words"
+                return (Words(words, "", self._stamp(), _LANGUAGE),)
 
     async def _hear(self, listener: Listener, hearings: "asyncio.Queue[tuple[Clip, Hearing, Begun]]") -> None:
         """Run one listener's hearings in the order it returned them, each as one `hearing` event."""
@@ -368,21 +457,20 @@ class ClipOwner(FrameProcessor):
                 pass
 
     async def _heard(self, listener: Listener, clip: Clip, hearing: Hearing, began: Begun) -> None:
-        """One hearing, bounded, and what came of it: words for the clip still open cut hands off as `InterimWords`."""
+        """One hearing, bounded, and what came of it: a speaker its words clear, in the clip still open, cuts hands off."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):
             annotate(listener=listener.name, clip=clip.number)
             async with self._clock.timeout(HEARING_SECONDS - (self._clock.now() - began.began)):
                 heard = await hearing()
-            # [LAW:single-enforcer] the one cut: words a listener heard while their clip is still open. Heard once it has
-            # closed, they cut nothing, and the clip's own transcription says what it held. The check and the queueing are
-            # one step, with nothing awaited between.
-            match heard.words, self._open(clip):
-                case str() as words, True:
-                    self._out.put_nowait(InterimWords(words, "", self._stamp(), _LANGUAGE))
-                    annotate(heard="words", barge_in=True)
-                case str(), False:
-                    annotate(heard="words", barge_in=False)
-                case None, _:
-                    annotate(heard="nothing", barge_in=False)
+            annotate(heard="nothing" if heard.words is None else "words")
+            # [LAW:single-enforcer] a speaker a listener's words cleared cuts while their clip is still open, as one its
+            # identification cleared does (`_person`). Heard once it has closed, they cut nothing, and the clip's close
+            # says what it held. The check and the queueing are one step, with nothing awaited between.
+            match heard.barge_in_at, self._open(clip):
+                case float() as first, True:
+                    self._out.put_nowait(SpeakerCleared(clip=clip, first=first))
+                    annotate(barge_in=True)
+                case _:
+                    annotate(barge_in=False)

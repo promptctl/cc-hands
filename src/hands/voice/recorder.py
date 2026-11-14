@@ -33,7 +33,7 @@ import soxr
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Reference, Sound, decoded, voices
+from hands.voice.clips import RATE, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, voices
 from hands.voice.echo import Cancelled
 from hands.voice.voiceprints import WINDOW, Voiced
 
@@ -167,20 +167,20 @@ class Recorder:
         self._current = 0
         self._runs: dict[Path, int] = {}
 
-    def opened(self, clip: Clip, before: Sound) -> Hearings:
+    def opened(self, clip: Clip, before: Sound, cleared: Cleared) -> Hearings:
         return ()
 
     def heard(self, sound: Sound) -> Hearings:
         return ()
 
-    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
+    def ended(self, clip: Clip, fate: Fate, sound: Sound, settle: Settle) -> Hearings:
         async def keep() -> Heard:
             # [LAW:nothing-unseen] how long the clip was, whether what hands played over it went with it, and in which voices.
             annotate(seconds=round(sound.seconds, 3), played=sound.played is not None, voices=voices(sound))
             facts: dict[str, object] = dict(clip=clip.number, opener=clip.opener, fate=fate)
             directory = await asyncio.to_thread(self._written, str(clip.number), sound, facts)
             annotate(kept=directory / f"{clip.number}.heard.wav")
-            return Heard(None)
+            return Heard(None, None)
 
         return (keep,)
 
@@ -231,4 +231,5 @@ class Recorder:
             directory = await asyncio.to_thread(self._written, f"echo-{span}", sound, facts)
             annotate(kept=directory / f"echo-{span}.heard.wav")
         voice = decoded(sound.heard)
-        self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound)))
+        # A span is no clip: its one voice is heard from its start.
+        self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound), 0.0))
