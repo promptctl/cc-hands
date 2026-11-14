@@ -29,7 +29,7 @@ from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.clips import Played, Reference
 from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Missing, Named, Off, OnDefault, OnNamed, Placement
-from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull, default_input
+from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull
 from hands.voice.system import AudioMoved, system_text
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
@@ -543,11 +543,6 @@ async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_
 
 
 
-def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
-    assert default_input(cast(PortAudio, DeafPortAudio([]))) is None
-    refusing = SimpleNamespace(get_default_input_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")))
-    with pytest.raises(OSError, match="host error"):
-        default_input(cast(PortAudio, refusing))
 
 
 async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard(devices: Rig) -> None:

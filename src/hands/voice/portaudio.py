@@ -1,6 +1,6 @@
 """The audio devices PortAudio lists, which is what hands opens a stream on: the device config.toml names is found here, and `hands devices` prints from here."""
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
@@ -44,8 +44,8 @@ def device_index(py_audio: Lists, name: str, channels: Channels) -> int | None:
 
 
 def listing(py_audio: Lists, channels: Channels, default: str | None) -> tuple[Listed, ...]:
-    """Each device `named` finds, marked the default where its name is `default`'s."""
-    return tuple(Listed(listed, listed == default) for _index, listed in named(py_audio, channels))
+    """Each name `named` finds, once, marked the default where it is `default`: a name opens the first device that bears it, so a second of the same name is not one config.toml can name."""
+    return tuple(Listed(listed, listed == default) for listed in dict.fromkeys(listed for _index, listed in named(py_audio, channels)))
 
 
 # PyAudio's words when PortAudio lists no default, raised with no errno to tell it by.
@@ -55,29 +55,28 @@ _NO_DEFAULT_OUTPUT = "No Default Output Device Available"
 
 def default_input(py_audio: Lists) -> str | None:
     """The default input device's name, or None when the system has none: a Mac with no built-in microphone, its headset unplugged."""
-    # [LAW:parse-dont-validate] PortAudio says there is no default input by raising; here that becomes a typed absence.
-    try:
-        info = py_audio.get_default_input_device_info()
-    except OSError as error:
-        # Asked only of a PortAudio that is running: an ended one says the same words whatever is plugged in.
-        if error.args != (_NO_DEFAULT_INPUT,):
-            raise
-        return None
-    return name_of(info)
+    return _default(py_audio.get_default_input_device_info, _NO_DEFAULT_INPUT)
 
 
 def default_output(py_audio: Lists) -> str | None:
     """The default output device's name, or None when the system has none."""
+    return _default(py_audio.get_default_output_device_info, _NO_DEFAULT_OUTPUT)
+
+
+def _default(get_info: Callable[[], object], no_default: str) -> str | None:
+    # [LAW:parse-dont-validate] PortAudio says there is no default device by raising; here that becomes a typed absence.
     try:
-        info = py_audio.get_default_output_device_info()
+        info = get_info()
     except OSError as error:
-        if error.args != (_NO_DEFAULT_OUTPUT,):
+        # Asked only of a PortAudio that is running: an ended one says the same words whatever is plugged in.
+        if error.args != (no_default,):
             raise
         return None
     return name_of(info)
 
 
 def name_of(info: object) -> str:
+    """The name in a device's info, which PortAudio always gives."""
     # PyAudio's device info is an untyped mapping; the name is the one field read from it.
     match info:
         case {"name": str(name)}:

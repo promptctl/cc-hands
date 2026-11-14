@@ -215,7 +215,7 @@ that device whatever the default is, so music can play through AirPlay or headph
 the Mac's own. While a named device is missing hands uses the default, says so, and goes back to the named one when it
 returns. `off` opens no device for that side at the Mac: with the microphone off, a press of the talk key makes hands say
 so (aloud, where the speaker is on), and nothing is heard at the Mac; with the speaker off, nothing is played there. The phone is unaffected by any of it.
-`hands devices` prints the names a side can be given, those hands can hear on and those it can play on, with the system's default marked: copy one exactly, since a name that differs by a character, as a straight apostrophe for the curly one macOS puts in `Brandon’s AirPods`, is a device that is missing.
+`hands devices` prints the names a side can be given, those hands can hear on and those it can play on, with the system's default marked: copy the name alone, without its indent or ` (default)`, and exactly, since a name that differs by a character, as a straight apostrophe for the curly one macOS puts in `Brandon’s AirPods`, is a device that is missing.
 
 hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
 playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control

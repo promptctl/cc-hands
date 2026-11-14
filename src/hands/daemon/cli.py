@@ -151,7 +151,8 @@ def list_devices(portaudio: Callable[[], Lists]) -> exits.Exit:
     """Print the devices config.toml's input_device and output_device can name: those PortAudio lists that can be heard on, then those that can be played on."""
     try:
         py_audio = portaudio()
-    except ImportError as error:
+    except (ImportError, OSError) as error:
+        # ImportError: PyAudio's library is not there; OSError: PortAudio is there and would not start.
         return refused("hands", 1, f"PyAudio cannot load PortAudio ({error}), so hands cannot list the audio devices: `brew install portaudio`, with Homebrew from https://brew.sh")
     try:
         heard = listing(py_audio, "maxInputChannels", default_input(py_audio))

@@ -1,6 +1,8 @@
 """`hands devices`: it prints the names hands matches a configured device by, and the system's default among them."""
 
 from collections.abc import Iterator
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -101,3 +103,41 @@ def test_devices_fails_naming_the_install_when_portaudio_cannot_be_loaded(capsys
     ended = cli.list_devices(unloadable)
     assert isinstance(ended, exits.Failed) and ended.code == 1
     assert "brew install portaudio" in capsys.readouterr().err
+
+
+def test_only_portaudios_own_no_default_reads_as_none_whichever_side() -> None:
+    bare = Listing([], heard=None, played=None)
+    assert default_input(bare) is None and default_output(bare) is None
+    refusing = cast(Lists, SimpleNamespace(
+        get_default_input_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")),
+        get_default_output_device_info=lambda: (_ for _ in ()).throw(OSError(-9999, "Unanticipated host error")),
+    ))
+    for asked in (default_input, default_output):
+        with pytest.raises(OSError, match="host error"):
+            asked(refusing)
+
+
+def test_two_devices_of_one_name_list_once_since_a_name_opens_the_first() -> None:
+    twins = Listing([device("USB Headset", 1, 2), device("USB Headset", 1, 2)], heard="USB Headset", played=None)
+    assert listing(twins, "maxInputChannels", default_input(twins)) == (Listed("USB Headset", True),)
+
+
+def test_devices_fails_without_a_traceback_when_portaudio_loads_but_will_not_start(capsys: pytest.CaptureFixture[str]) -> None:
+    def would_not_start() -> Lists:
+        raise OSError(-9999, "Unanticipated host error")
+
+    ended = cli.list_devices(would_not_start)
+    assert isinstance(ended, exits.Failed) and ended.code == 1
+    assert "host error" in capsys.readouterr().err
+
+
+def test_portaudio_is_ended_even_when_it_cannot_say_its_defaults() -> None:
+    mac = Listing(MAC, heard=None, played=None)
+
+    def refuse() -> object:
+        raise OSError(-9999, "Unanticipated host error")
+
+    setattr(mac, "get_default_input_device_info", refuse)
+    with pytest.raises(OSError, match="host error"):
+        cli.list_devices(lambda: mac)
+    assert mac.ended
