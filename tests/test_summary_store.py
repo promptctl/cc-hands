@@ -415,6 +415,8 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
     await clock.sleeping(0.5)
     # Created before written: the shell opens pid, then writes to it.
     while not (project / "pid").is_file() or not (project / "pid").read_text().strip():
+        if reading.done():
+            await reading  # lit never ran: raise the read's own error rather than wait on a pid that will not come
         await asyncio.sleep(0.01)
     clock.advance(0.5)
     with pytest.raises(LitFailed, match="did not answer"):
