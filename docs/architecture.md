@@ -23,7 +23,7 @@ once it is built - types into sessions, through the fritter that wrapped them.
  │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
  │   gate triggers           notes, │  │ tool   │ system speech                  │
- │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
+ │   terminal · shortcut     narrate│  │ calls  │ (straight to TTS)              │
  │   button · phone · wake word     │  ▼        │                                │
  │  ───────────────────────────────────────────────────────────────────────────  │
  │  sessions                  ┌──────────────────┐                               │
