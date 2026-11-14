@@ -28,7 +28,7 @@ import asyncio
 import queue
 import threading
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from dataclasses import dataclass
@@ -57,6 +57,7 @@ from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
 from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
 from hands.voice.phone import Phone
+from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
 from hands.voice.ptt import Key, PushToTalk
 from hands.voice.turnstop import TurnOpened
 from hands.voice.voices import SpeakingIn
@@ -300,16 +301,11 @@ class Input:
     echo: Echo
 
 
-class PortAudio(Protocol):
-    """What is used of PyAudio itself, which is untyped."""
+class PortAudio(Lists, Protocol):
+    """What is used of PyAudio itself, which is untyped: listing devices, and opening a stream on one."""
 
     def open(self, **settings: object) -> Stream: ...
     def get_format_from_width(self, width: int) -> int: ...
-    def get_default_input_device_info(self) -> object: ...
-    def get_default_output_device_info(self) -> object: ...
-    def get_device_count(self) -> int: ...
-    def get_device_info_by_index(self, device_index: int) -> object: ...
-    def terminate(self) -> None: ...
 
 
 class Speaker(LocalAudioOutputTransport):
@@ -360,7 +356,7 @@ class Speaker(LocalAudioOutputTransport):
         def default() -> str:
             # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream is opened on, as it
             # opens; asked later, an instance that has since been ended answers "no device" whatever is plugged in.
-            return _name(py_audio.get_default_output_device_info())
+            return name_of(py_audio.get_default_output_device_info())
 
         match _opening(self._choice, py_audio, "maxOutputChannels"):
             case Off():
@@ -875,19 +871,6 @@ async def _let_go_at_cleanup[S](clock: Clock, held: S | None, let_go: Callable[[
                 await let_go(stream)
 
 
-def default_input(py_audio: PortAudio) -> str | None:
-    """The default input device's name, or None when the system has none: a Mac with no built-in microphone, its headset unplugged."""
-    # [LAW:parse-dont-validate] PortAudio says there is no default input by raising; here that becomes a typed absence.
-    try:
-        info = py_audio.get_default_input_device_info()
-    except OSError as error:
-        # Asked only of a PortAudio that is running: an ended one says the same words whatever is plugged in.
-        if error.args != (_NO_DEFAULT_INPUT,):
-            raise
-        return None
-    return _name(info)
-
-
 @dataclass(frozen=True)
 class Found:
     """The device config.toml names, at this index in PortAudio's list."""
@@ -903,7 +886,7 @@ class Absent:
     name: str
 
 
-def _opening(choice: Choice, py_audio: PortAudio, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> Found | Absent | Auto | Off:
+def _opening(choice: Choice, py_audio: PortAudio, channels: Channels) -> Found | Absent | Auto | Off:
     """What opening a side on `choice` comes to on the devices `py_audio` lists."""
     match choice:
         case Named(name=name):
@@ -914,30 +897,3 @@ def _opening(choice: Choice, py_audio: PortAudio, channels: Literal["maxInputCha
                     return Found(index, name)
         case Auto() | Off():
             return choice
-
-
-def device_index(py_audio: PortAudio, name: str, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> int | None:
-    """The index `py_audio` lists the device called `name` at, among those with `channels`; None where it lists none."""
-    for index in range(py_audio.get_device_count()):
-        # PyAudio's device info is an untyped mapping.
-        info = cast(Mapping[str, object], py_audio.get_device_info_by_index(index))
-        match info.get("name"), info.get(channels):
-            case str(listed), int(count) if listed == name and count > 0:
-                return index
-            case _:
-                pass
-    return None
-
-
-# PyAudio's words when PortAudio lists no default input, raised with no errno to tell it by.
-_NO_DEFAULT_INPUT = "No Default Input Device Available"
-
-
-def _name(info: object) -> str:
-    # PyAudio's device info is an untyped mapping; the name is the one field read from it.
-    match info:
-        case {"name": str(name)}:
-            return name
-        case _:
-            raise AssertionError(f"PortAudio described a device without a name: {info!r}")
-

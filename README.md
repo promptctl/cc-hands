@@ -215,6 +215,7 @@ that device whatever the default is, so music can play through AirPlay or headph
 the Mac's own. While a named device is missing hands uses the default, says so, and goes back to the named one when it
 returns. `off` opens no device for that side at the Mac: with the microphone off, a press of the talk key makes hands say
 so (aloud, where the speaker is on), and nothing is heard at the Mac; with the speaker off, nothing is played there. The phone is unaffected by any of it.
+`hands devices` prints the names a side can be given, those hands can hear on and those it can play on, with the system's default marked: copy one exactly, since a name that differs by a character, as a straight apostrophe for the curly one macOS puts in `Brandon’s AirPods`, is a device that is missing.
 
 hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
 playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control
@@ -419,6 +420,7 @@ uv run hands run --model claude-opus-5-5  # on that model in place of the one co
 uv run hands status                     # up, stopped, refused to start (and why), not responding, down, or never ran; exits 0 only when up
 uv run hands check                      # whether hands is set up to work here; exits 0 only when every piece is
 uv run hands check -v                   # the same, each step said in full, every running session among them
+uv run hands devices                    # the audio devices config.toml's input_device and output_device can name, the system's default marked; exits 0 when it listed them
 uv run hands restart                    # start the running hands again on what is on disk now, as /hands:restart does; exits 0 once it is back
 hands update                            # install hands from the current master of promptctl/cc-hands into the uv tool environment it runs from (from a checkout's own .venv:
                                         # git pull --ff-only the checkout and uv sync it instead), then
