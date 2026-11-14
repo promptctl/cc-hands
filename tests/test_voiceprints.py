@@ -1,4 +1,4 @@
-"""Voiceprints: each speaker decided by the one table of score floors by length, and told with the window scored;
+"""Voiceprints: each speaker decided by the one table of score thresholds by length, and told with the window scored;
 hands' own prints made from its TTS on threads of their own, once ever for each voice and kept in the home, of the voice
 it speaks in now and the one before; every speaker Unidentified, saying why, where there is no model or no print of a
 voice to score against; a person in a hold one for that hold alone; and a model that does not load failing loudly,

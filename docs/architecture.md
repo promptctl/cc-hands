@@ -1902,7 +1902,7 @@ table, and once more as the hold ends, after the hearing's words have gone out, 
 on it. The lane scores their latest 3 s with 3D-Speaker's ERes2Net, run by sherpa-onnx on the
 CPU, against hands' own voiceprints, and says who each was on a `voiceprints.identified` unit:
 the score, the seconds heard, and the window scored with how much of it was shared, the input a
-refit fits on. One table of score floors by length decides: under 1 s, `Unheard`; from 1 s under
+refit fits on. One table of score thresholds by length decides: under 1 s, `Unheard`; from 1 s under
 0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
 otherwise `Unsure`. A person stays one for the rest of their hold, kept by hold number, since a
 hold's end can be identified after the next hold opens.

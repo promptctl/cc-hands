@@ -1,5 +1,5 @@
 """Measure how hands' voiceprint tells its own echo from a person, by how much of a speaker is scored: the numbers
-hands.voice.voiceprints.FLOORS is fitted on.
+hands.voice.voiceprints.THRESHOLDS is fitted on.
 
     uv run scripts/measure-voiceprints.py CAPTURE [PERSON.wav|.flac ...]
 
@@ -14,7 +14,7 @@ CAPTURE is a directory recorded as promptctl-voice-i15t.99s.zoj's desk captures 
 Each PERSON is more of people alone, scored from each speech onset (the fixtures one_reader_quiet, two_speakers_ami and
 turns_ending_in_silence were the plan's). Every window starts at an onset and runs WINDOWS seconds, so a row says what a
 speaker's score is once that much of them is heard; a sentence, line or file that ends sooner is left out of that row,
-never scored short in it. Each row of FLOORS is checked against its own length.
+never scored short in it. Each row of THRESHOLDS is checked against its own length.
 """
 
 import json
@@ -54,7 +54,7 @@ def onsets(samples: Samples, most: int = 40) -> list[float]:
 
 
 def summary(name: str, scores: list[float], worst: str) -> str:
-    """One kind of speaker's scores in a row: how many, the worst of them for the floor, and the median."""
+    """One kind of speaker's scores in a row: how many, the worst of them for the threshold, and the median."""
     match scores:
         case []:
             return f"{name} n=0"
@@ -74,16 +74,16 @@ def main(capture: Path, people: list[Path]) -> None:
     spans = json.loads((capture / "spans.json").read_text())
     others = json.loads((capture / "other_spans.json").read_text())["other_spans"]
     alone = {path.stem: mono(path) for path in [capture / "other.wav", *people]}
-    floors = {floor.seconds: floor.score for floor in voiceprints.FLOORS}
+    thresholds = {threshold.seconds: threshold.score for threshold in voiceprints.THRESHOLDS}
     for window in WINDOWS:
         # Only what holds the whole window: each row is scored at exactly its own length.
         echo = [scored(captured, span["start"] + PLAY_STARTS, window) for span in spans if span["end"] - span["start"] >= window]
         over = [scored(mic2, span["start"] + OTHER_LAG, window) for span in others if span["end"] - span["start"] >= window]
         lone = [scored(samples, at, window) for samples in alone.values() for at in onsets(samples) if at + window <= len(samples) / RATE]
         line = f"{window:.1f} s: {summary('echo', echo, 'min')} | {summary('over hands', over, 'max')} | {summary('alone', lone, 'max')}"
-        floor = floors.get(window)
+        threshold = thresholds.get(window)
         # A row holds where every echo scores at or over it: no echo is ever a person.
-        line += "" if floor is None else f" | floor {floor:.2f}: echo {'over' if all(score >= floor for score in echo) else 'UNDER'}, people under {sum(score < floor for score in over + lone)}/{len(over + lone)}"
+        line += "" if threshold is None else f" | threshold {threshold:.2f}: echo {'over' if all(score >= threshold for score in echo) else 'UNDER'}, people under {sum(score < threshold for score in over + lone)}/{len(over + lone)}"
         print(line)
 
 if __name__ == "__main__":

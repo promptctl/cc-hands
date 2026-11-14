@@ -9,7 +9,7 @@ voices and overlapped speech gets both, so each speaker in each hold is scored h
 
 Measured on zoj's recordings (promptctl-voice-i15t.99s.zoj, re-measured by scripts/measure-voiceprints.py): hands' echo
 through the room scores 0.79 to 0.93 over long windows, another voice -0.04 to 0.16, and the two overlap below about a
-second of speech, so how much of a speaker was heard decides what their score can say (`FLOORS`).
+second of speech, so how much of a speaker was heard decides what their score can say (`THRESHOLDS`).
 
 Who each speaker is is measured beside the cut and decides nothing yet. It is worked out on a lane of its own, after the
 words it is about have gone out, so no hearing's words ever wait on a voiceprint.
@@ -110,7 +110,7 @@ type Who = Person | Hands | Unsure | Unheard | Unidentified
 
 
 @dataclass(frozen=True)
-class Floor:
+class Threshold:
     """From `seconds` of a speaker's voice on, a score under `score` is not hands: under what hands' own echo scored at
     that length."""
 
@@ -126,8 +126,8 @@ class Floor:
 # second nothing is decided: at 0.8 s the echo scored as low as 0.19, a person alone as high as 0.21. One room, one
 # voice: hands records each hold it hears (`hands.voice.recorder`), and each identification says the window it scored,
 # so the table is refitted on real use (promptctl-voice-i15t.8vg.xvr).
-FLOORS = (Floor(1.0, 0.25), Floor(1.5, 0.55), Floor(3.0, 0.70))
-ALONE, PERSON, HANDS = FLOORS
+THRESHOLDS = (Threshold(1.0, 0.25), Threshold(1.5, 0.55), Threshold(3.0, 0.70))
+ALONE, PERSON, HANDS = THRESHOLDS
 
 # The most of a speaker's voice, their latest, a score is taken on: the table's longest row, past which nothing was
 # measured, and the bound on what scoring costs, about 18 ms for each second scored.
@@ -136,14 +136,14 @@ WINDOW = HANDS.seconds
 
 def reached(seconds: float) -> int:
     """How many rows of the table `seconds` of a speaker has reached: a speaker is scored as they reach each."""
-    return sum(row.seconds <= seconds for row in FLOORS)
+    return sum(row.seconds <= seconds for row in THRESHOLDS)
 
 
 def decided(scored: float, seconds: float, window: Window) -> Who:
     """Who a speaker is whose latest voice, `window` of it, scored `scored` against hands', `seconds` of them heard in
     all. [LAW:dataflow-not-control-flow] one row of the table decides, the longest the speaker has reached."""
-    floor = next(row for row in reversed(FLOORS) if row.seconds <= seconds)
-    match scored < floor.score, seconds >= HANDS.seconds:
+    threshold = next(row for row in reversed(THRESHOLDS) if row.seconds <= seconds)
+    match scored < threshold.score, seconds >= HANDS.seconds:
         case True, _:
             return Person(scored, seconds, window)
         case False, True:

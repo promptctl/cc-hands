@@ -346,8 +346,8 @@ So that in conversation hands can tell the owner from another person, and from i
   each hold is scored against hands' own voiceprints with 3D-Speaker's ERes2Net on the CPU, on
   the frames the diarizer heard them in. The prints are made once ever per voice from its Pocket
   TTS output, never from a person, and kept in the home. A speaker is `Person`, `Hands`,
-  `Unsure` or `Unheard` by one table of score floors by how much of them was heard
-  (`hands.voice.voiceprints.FLOORS`), or `Unidentified` with why when there is nothing to score
+  `Unsure` or `Unheard` by one table of score thresholds by how much of them was heard
+  (`hands.voice.voiceprints.THRESHOLDS`), or `Unidentified` with why when there is nothing to score
   against for a voice hands speaks in or played over them. It is measured, not yet acted on: a
   `voiceprints.identified` event says who each speaker was as they reach each row and as their
   hold ends, and the cut is on words as before. Fitted on one room and one voice
