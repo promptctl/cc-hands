@@ -488,7 +488,8 @@ def reply_accounted(hands: Hands) -> bool:
         return True
     turns = events(hands.recorded, "voice.turn")
     notes = [str(turn.facts["barge_in_note"]) for turn in turns if "I left it unwritten." in str(turn.facts["barge_in_note"])]
-    return any(note in str(turn.facts["asked"]) for note in notes for turn in turns)
+    # A turn Claude Code opened itself was asked nothing by hands, so it records no asked.
+    return any(note in str(turn.facts["asked"]) for note in notes for turn in turns if "asked" in turn.facts)
 
 
 async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
