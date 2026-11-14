@@ -1036,7 +1036,7 @@ class BrainStage(FrameProcessor):
         """Acknowledges the turn once its tool work has run its time, however many calls it took, if the user has heard
         nothing of it: they hear it was taken, rather than silence until its answer."""
         await turn.working.wait()
-        await self._clock.pause(ACKNOWLEDGE_SECONDS)
+        await self._clock.sleep(ACKNOWLEDGE_SECONDS)
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 

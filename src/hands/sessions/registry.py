@@ -368,7 +368,7 @@ class Sessions:
     async def keep_time(self, period: float) -> None:
         """Tell the reducer the time once a period, until cancelled. The period is how late a settled burst of progress can be heard."""
         while True:
-            await self._clock.pause(period)
+            await self._clock.sleep(period)
             await self.apply(Tick(self._clock.now()))
 
     async def story(self) -> Story:

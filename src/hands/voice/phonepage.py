@@ -133,7 +133,7 @@ async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callabl
 
 async def _keep_renewed(clock: Clock, tailed: ssl.SSLContext, home: Home) -> Never:
     while True:
-        await clock.pause(RENEW_SECONDS)
+        await clock.sleep(RENEW_SECONDS)
         match await tailnet(clock, home):
             case Tailnet(cert=cert, key=key):
                 # A context's chain, loaded again, is the one every handshake after it shows.
@@ -145,7 +145,7 @@ async def _keep_renewed(clock: Clock, tailed: ssl.SSLContext, home: Home) -> Nev
 async def _keep_served(clock: Clock) -> Never:
     while True:
         # Served until cancelled: there is no certificate of Tailscale's to renew.
-        await clock.pause(RENEW_SECONDS)
+        await clock.sleep(RENEW_SECONDS)
 
 
 def _context(cert: Path, key: Path) -> ssl.SSLContext:

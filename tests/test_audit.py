@@ -58,9 +58,9 @@ AT = datetime(2026, 9, 14, 12, 0, 0, 123000, tzinfo=UTC)
 
 
 class Interrupting(VirtualClock):
-    """A clock whose first rest is a Ctrl-C, as `hands log` is stopped while it follows."""
+    """A clock whose first blocking sleep is a Ctrl-C, as `hands log` is stopped while it follows."""
 
-    def rest(self, seconds: float) -> None:
+    def sleep_blocking(self, seconds: float) -> None:
         raise KeyboardInterrupt
 
 

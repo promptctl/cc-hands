@@ -434,7 +434,7 @@ class Rig:
     async def elapse(self) -> None:
         """The pause before an acknowledgement, begun now, runs its time once it is waited out, and what it woke has run."""
         wakes = self.clock.now() + ACKNOWLEDGE_SECONDS
-        await self.clock.paused(wakes)
+        await self.clock.sleeping(wakes)
         self.at(wakes)
         await self.heard_out()
 

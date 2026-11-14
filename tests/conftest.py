@@ -167,9 +167,9 @@ LOOK_SECS = 0.01
 
 
 class BrokenClock(VirtualClock):
-    """A clock whose pause fails."""
+    """A clock whose sleep fails."""
 
-    def pause(self, seconds: float) -> asyncio.Future[None]:
+    def sleep(self, seconds: float) -> asyncio.Future[None]:
         broken: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         broken.set_exception(RuntimeError("no timer"))
         return broken

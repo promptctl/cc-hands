@@ -108,4 +108,4 @@ async def _ended(clock: Clock, live: Callable[[SessionId], Session | None], sess
     while live(session) is not None:
         if clock.now() > deadline:
             raise NotClosed(f"session {session} was told to end and is still running {END_SECONDS:g} seconds later")
-        await clock.pause(LOOK_SECONDS)
+        await clock.sleep(LOOK_SECONDS)

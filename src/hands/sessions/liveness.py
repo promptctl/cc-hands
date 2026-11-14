@@ -41,7 +41,7 @@ async def keep_sweeping(home: Home, sessions: Sessions, period: float) -> None:
     unfiled: Unfiled = frozenset()
     while True:
         unfiled = await sweep(home, sessions, unfiled)
-        await sessions.clock.pause(period)
+        await sessions.clock.sleep(period)
 
 
 def observed(home: Home, membership: Membership) -> Observed:

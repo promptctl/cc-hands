@@ -389,7 +389,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     await deltas.compare(SID, again=False)
     # The forge's budget is the narrator's patience less SPARE, spent here while gh is still being waited on.
     asked = PATIENCE - SPARE
-    await clock.paused(asked)
+    await clock.sleeping(asked)
     clock.advance(asked)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
@@ -1249,7 +1249,7 @@ async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_l
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     taking = asyncio.create_task(deltas.taken(SID))
-    await clock.paused(PATIENCE)
+    await clock.sleeping(PATIENCE)
     clock.advance(PATIENCE)
     assert not await taking
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -1359,7 +1359,7 @@ async def overtaking(deltas: Stalled, clock: RealWall, root: Path, *finishing: G
         gate.released.set()
         await gate.over.wait()
     # The start's own wait on the capture still held is the one pause left at its deadline once its baseline is in.
-    await clock.paused(deadline)
+    await clock.sleeping(deadline)
     clock.advance(deadline - clock.now())
     await snapshot
 

@@ -139,7 +139,7 @@ async def _held(clock: Clock, terminal: int, child: Child[int]) -> None:
     [LAW:no-ambient-temporal-coupling] what is spawned is ended by hands' end only once it holds its terminal: a hands
     that died before then would hang up nothing, and leave the child opening a terminal with no other end, for good."""
     while not child.ended.done() and os.tcgetpgrp(terminal) != child.process.pid:
-        await clock.pause(0.002)
+        await clock.sleep(0.002)
 
 
 def _holding_terminal(terminal: str, argv: Sequence[str]) -> list[str]:

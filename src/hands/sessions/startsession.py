@@ -191,7 +191,7 @@ async def _joined(clock: Clock, members: Callable[[], Iterable[Membership]], fol
                 pass
         if clock.now() > deadline:
             raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(clock, terminal, window)}")
-        await clock.pause(LOOK_SECONDS)
+        await clock.sleep(LOOK_SECONDS)
     return member
 
 

@@ -131,7 +131,7 @@ def detach(clock: Clock) -> Callable[[int], bool]:
         os._exit(0)
     # [LAW:no-ambient-temporal-coupling] out of the caller's tree once its parent has exited, not after a guess at how long that takes.
     while os.getppid() == middle:
-        clock.rest(PARENT_LOOK_SECONDS)
+        clock.sleep_blocking(PARENT_LOOK_SECONDS)
     return lambda code: reply(write, code)
 
 

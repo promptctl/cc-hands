@@ -803,7 +803,7 @@ def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
 
 def restarted(clock: Clock, home: Home) -> Outcome:
     """Ask the running daemon to start again, and wait for it to be back, or for it to be plain it will not be."""
-    outcome = restart(home, clock.wall, lambda: clock.rest(LOOK_SECONDS))
+    outcome = restart(home, clock.wall, lambda: clock.sleep_blocking(LOOK_SECONDS))
     # What the heartbeat said, and how long the restart took or was waited on.
     wide.annotate(outcome=outcome)
     return outcome
@@ -984,7 +984,7 @@ def tail_log(clock: Clock, home: Home, lines: int) -> Literal[0]:
         # line JSON, and one line to any reader.
         for line in newest:
             print(line.translate(VISIBLE), flush=True)
-        for line in audit.follow(home.audit, offset, lambda: clock.rest(LOG_POLL_SECONDS)):
+        for line in audit.follow(home.audit, offset, lambda: clock.sleep_blocking(LOG_POLL_SECONDS)):
             print(line.translate(VISIBLE), flush=True)
     except KeyboardInterrupt:
         return 0

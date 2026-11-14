@@ -272,4 +272,4 @@ async def keep_beating(beat: Callable[[], None], period: float, clock: Clock) ->
     """Write the heartbeat now and once a period after, until cancelled."""
     while True:
         beat()
-        await clock.pause(period)
+        await clock.sleep(period)

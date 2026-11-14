@@ -151,7 +151,7 @@ FACILITIES: dict[str, tuple[object, tuple[str, ...]]] = {
 GIVEN = {"time.localtime": 0, "time.gmtime": 0, "time.ctime": 0, "time.asctime": 0, "time.strftime": 1}
 
 # Waits handed their seconds at a place or by a keyword, which wait on none when handed none: a sleep of none is a yield.
-POLLED = {"time.sleep": (0, "secs"), "threading.Timer": (1, "interval"), "SystemClock.pause": (1, "seconds"), "SystemClock.rest": (1, "seconds"), "SystemClock.take": (2, "seconds")}
+POLLED = {"time.sleep": (0, "secs"), "threading.Timer": (1, "interval"), "SystemClock.sleep": (1, "seconds"), "SystemClock.sleep_blocking": (1, "seconds"), "SystemClock.take": (2, "seconds")}
 
 # Waits that block on a C lock's timeout and read no Python clock, each with the place its timeout is passed. Every `acquire(timeout=)` is the scan's: Lock and RLock are C types no attribute reaches.
 TIMED: dict[str, tuple[type, str, int, str]] = {
@@ -267,7 +267,7 @@ class Watch:
                 original = getattr(module, function)
                 originals[id(original)] = self.wrap(f"{name}.{function}", original, carried=False)
                 patch.setattr(module, function, originals[id(original)])
-        for method in ("now", "wall", "pause", "call_at", "timeout", "token", "uuid", "rest", "take"):
+        for method in ("now", "wall", "sleep", "call_at", "timeout", "token", "uuid", "sleep_blocking", "take"):
             patch.setattr(SystemClock, method, self.wrap(f"SystemClock.{method}", getattr(SystemClock, method), carried=True))
         for facility, (owner, method, at, keyword) in TIMED.items():
             patch.setattr(owner, method, self.timed(facility, getattr(owner, method), at, keyword))

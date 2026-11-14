@@ -216,7 +216,7 @@ class Caller:
                 case bytes():
                     # Paced by the count sent against the clock at the first, as hands paces what it sends the page.
                     sent += 1
-                    await self.clock.pause(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
+                    await self.clock.sleep(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
                 case str():
                     # A press or a release goes out with the frame after it, as the page's button does.
                     pass
@@ -283,7 +283,7 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     while (seen := await found()) is None:
         if clock.now() > deadline:
             raise NotReached(stage, why())
-        await clock.pause(POLL_SECONDS)
+        await clock.sleep(POLL_SECONDS)
     return seen
 
 

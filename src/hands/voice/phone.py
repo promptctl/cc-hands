@@ -175,7 +175,7 @@ class Outbound(MediaStreamTrack):
         # late frame is followed at once by the next, so the call never drifts behind real time.
         now = self._clock.now()
         start = self._start = now if self._start is None else self._start
-        await self._clock.pause(max(0.0, start + self._sent * FRAME_SECS - now))
+        await self._clock.sleep(max(0.0, start + self._sent * FRAME_SECS - now))
         frame, done = self._pending.popleft() if self._pending else (bytes(self._samples * 2), None)
         if done is not None and not done.done():
             done.set_result(None)

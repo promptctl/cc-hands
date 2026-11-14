@@ -158,7 +158,7 @@ class QuietCues:
         if not self._owed.empty() or seconds <= 0:
             return self._drained()
         owed = asyncio.ensure_future(self._owed.get())
-        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.pause(seconds))}
+        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.sleep(seconds))}
         try:
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:

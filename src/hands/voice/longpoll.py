@@ -27,7 +27,7 @@ async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V,
     # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is never
     # missed: it is answered at once with whatever has changed since.
     while version == seen and clock.now() - began < WAIT_SECONDS:
-        await clock.pause(POLL_SECONDS)
+        await clock.sleep(POLL_SECONDS)
         version, found = await look()
         looks += 1
     annotate(seen=seen, waited_ms=round((clock.now() - began) * 1000, 1), looks=looks, changed=version != seen)
