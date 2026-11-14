@@ -46,7 +46,7 @@
   #transcript p { margin: 0 0 10px; }
   #transcript:empty::before { content: "Nothing said yet."; color: var(--muted); }
   #transcript .user { color: var(--muted); text-align: right; }
-  /* hands' words not yet reached are faint; the one being said is marked; those barged in on are struck through. */
+  /* hands' words not yet reached are faint; the one being said is marked; those cut off are struck through. */
   #transcript .ahead { opacity: .45; }
   #transcript .now { background: var(--ring); border-radius: 3px; }
   #transcript .unheard { opacity: .45; text-decoration: line-through; }
@@ -217,7 +217,7 @@ function sweep() {
   saying.frame = requestAnimationFrame(sweep);
 }
 
-// Ends the sentence playing, each word as `left` would have it: said, or barged in on.
+// Ends the sentence playing, each word as `left` would have it: said, or cut off.
 function stop(left) {
   if (saying === null) return;
   cancelAnimationFrame(saying.frame);

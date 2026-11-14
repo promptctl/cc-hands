@@ -1,16 +1,16 @@
-"""The start of a user turn, and the barge-in: the moment it cuts off what hands is saying, which the edge that opened it decides.
+"""The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the edge that opened it decides.
 
 Every turn starts as the hold that opens it opens, so its words gather from the first hold and the floor is the user's
-from the moment they speak (`hands.voice.floor`). Starting is not cutting. The barge-in is the user taking over: Pipecat's
+from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
 heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the hold owner pushes words for
 it, Pipecat's transcription start: the first a listener hears in a hold still open (`InterimWords`), or the hold's own words as it
 closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
-be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The barge-in can
+be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
 (`hands.voice.turnstop.Words`, `hands.voice.conversation.UserWords`): an interruption stops hands, never the user. And it lands just
-ahead of them, so the user aggregator takes none of them in until the reply the barge-in stopped is written as cut off
+ahead of them, so the user aggregator takes none of them in until the reply the cut stopped is written as cut off
 (`BargeInWritten`): the audit log reads the reply, then the words that cut it off.
 """
 
@@ -29,13 +29,13 @@ from hands.voice.turnstop import InterimWords, TurnOpened, Words
 
 
 class BargeInWritten(SystemFrame):
-    """A barge-in reached the end of the pipeline, and the reply it stopped is written as cut off: sent back up
+    """A cut reached the end of the pipeline, and the reply it stopped is written as cut off: sent back up
     by the assistant aggregator (`hands.voice.conversation.AssistantTurns`), the last thing every interruption reaches."""
 
 
 @dataclass
 class _Open:
-    """The turn open: when the edge that opened it has it barge in, when it opened, and how long after that it did, None until
+    """The turn open: when the edge that opened it has it cut, when it opened, and how long after that it cut, None until
     it has."""
 
     start: TurnStart
@@ -44,10 +44,10 @@ class _Open:
 
 
 class EdgeTurnStart(BaseUserTurnStartStrategy):
-    """Starts the user turn as its first hold opens, and barges in on hands when the edge that opened each hold says
+    """Starts the user turn as its first hold opens, and cuts hands off when the edge that opened each hold says
     (`hands.voice.trigger.turn_start`).
 
-    [LAW:single-enforcer] the one place a turn's start and its barge-in are decided: the pipeline runs no other start strategy,
+    [LAW:single-enforcer] the one place a turn's start and its cut are decided: the pipeline runs no other start strategy,
     and Pipecat says nothing of its own as the turn starts, neither that the user started speaking nor an interruption.
     """
 
@@ -57,7 +57,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
         self._now = clock.now
         # Between turns, None: Pipecat ends a turn, and this is told so (`handle_user_turn_stopped`).
         self._turn: _Open | None = None
-        # Each barge-in, for the user aggregator to broadcast, and each written, for it to go on behind (`interrupting`).
+        # Each cut, for the user aggregator to broadcast, and each written, for it to go on behind (`interrupting`).
         self._register_event_handler("on_barge_in", sync=True)
         self._register_event_handler("on_barge_in_written", sync=True)
 
@@ -86,7 +86,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     async def handle_user_turn_stopped(self) -> None:
         match self._turn:
             case _Open(start=start, barge_in_after=barge_in_after):
-                # [LAW:nothing-unseen] every turn is a line: how its edge had it barge in, and when, or that it did not.
+                # [LAW:nothing-unseen] every turn is a line: how its edge had it cut, and when, or that it cut nothing.
                 self._record(UserTurn(start, barge_in_after))
                 self._turn = None
             case None:
@@ -101,7 +101,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
                 pass
 
     async def _barge_in(self, turn: _Open) -> None:
-        """Barge in on hands, once a turn."""
+        """Cut hands off, once a turn."""
         match turn.barge_in_after:
             case None:
                 turn.barge_in_after = self._now() - turn.opened
@@ -111,8 +111,8 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
 
 
 def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
-    """Have `turns`, the user aggregator `start` is the start strategy of, broadcast each barge-in `start` makes, and go on
-    with the turn only once the barge-in is written.
+    """Have `turns`, the user aggregator `start` is the start strategy of, broadcast each cut `start` makes, and go on
+    with the turn only once the cut is written.
 
     The aggregator broadcasts it as it broadcasts the start of a turn Pipecat starts, in the same order: that the user
     started speaking, which the assistant side reads as the user having taken over, so it runs the model on no tool's
@@ -120,9 +120,9 @@ def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
     are pushed ahead of anything behind that frame. Queued as frames of their own, the turn's words could leave for the
     model ahead of them, and the interruption would then cancel the reply to the very words that made it.
     """
-    # [LAW:no-ambient-temporal-coupling] the reply a barge-in stops is written as cut off where the interruption reaches
+    # [LAW:no-ambient-temporal-coupling] the reply a cut stops is written as cut off where the interruption reaches
     # the end of the pipeline, and the words that cut it where they reach this aggregator, a few hops apart. What orders
-    # the two is state: no frame behind the barge-in is taken in until the end of the pipeline says the reply is written.
+    # the two is state: no frame behind the cut is taken in until the end of the pipeline says the reply is written.
     written = asyncio.Event()
 
     @start.event_handler("on_barge_in")

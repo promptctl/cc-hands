@@ -29,17 +29,18 @@ The user, 2026-10-17:
 
 ## In standard terms
 
-Hands' words for the flow are below, each beside its standard voice-interface term. Barge-in here is the
-barge-in of [VoiceXML 2.0](https://www.w3.org/TR/voicexml20/), the W3C standard for voice
+Hands' words for the flow are below, each beside its standard voice-interface term. The cut rule is
+the barge-in rule of [VoiceXML 2.0](https://www.w3.org/TR/voicexml20/), the W3C standard for voice
 dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 
 | Here | In standard terms |
 |---|---|
 | the hold | the listening window: the time the microphone is the user's, opened by push-to-talk, a wake word, or an engaged conversation (open mic) |
 | the edge that opened the hold | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
-| a hold the hand opened barges in as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
-| a hold the wake word opened barges in as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound, heard through the echo canceller while hands speaks as engaged conversation's speech is |
-| a hold engaged conversation opened barges in once the streaming recognizer hears words in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
+| the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
+| a hold the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
+| a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound, heard through the echo canceller while hands speaks as engaged conversation's speech is |
+| a hold engaged conversation opened cuts once the streaming recognizer hears words in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for transcribed words rather than voice energy, so a cough does not cut |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
 | the note | context carry-over: what the next turn is told about the one cut off |
@@ -53,15 +54,15 @@ tables under the tree carry the reason for each branch and the code and test tha
 ```mermaid
 flowchart TD
     speak(["The user speaks"]) --> opened{"What opened the listening window?"}
-    opened -- "push-to-talk, the phone's button" --> now["Barge in as the window opens"]
+    opened -- "push-to-talk, the phone's button" --> now["Cut as the window opens"]
     opened -- "wake word" --> now
     opened -- "engaged conversation" --> whisper{"Does Whisper push words for it?"}
-    whisper -- "yes" --> words["Barge in once the words arrive"]
-    whisper -- "no, a cough or the reply's own echo" --> nobargein(["No barge-in: the reply plays on as if nothing had opened"])
+    whisper -- "yes" --> words["Cut once the words arrive"]
+    whisper -- "no, a cough or the reply's own echo" --> nocut(["No cut: the reply plays on as if nothing had opened"])
     now --> inflight{"Is a brain turn in flight?"}
     words --> inflight
     inflight -- "no" --> nextturn(["Not a barge-in: the words are the next turn"])
-    inflight -- "yes" --> again{"Was it already barged in on?"}
+    inflight -- "yes" --> again{"Was it already cut?"}
     again -- "yes" --> once(["Nothing more: once is enough"])
     again -- "no" --> left{"Is anything the brain said or asked still to be heard?"}
     left -- "no" --> queue(["Not a barge-in: the turn goes on, the words queue as the next turn, and hands answers them at once (S2, S6)"])
@@ -74,39 +75,39 @@ flowchart TD
 
 ## Two decisions
 
-**1. The barge-in.** The edge that opened the hold decides when the turn barges in (`voice/turnstart.py:1–15`;
-the mechanism, `docs/architecture.md:1683–1707`). The barge-in is Pipecat's `InterruptionFrame`.
+**1. The cut.** The edge that opened the hold decides when the turn cuts (`voice/turnstart.py:1–15`;
+the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `InterruptionFrame`.
 
-| The hold was opened by | It barges in |
+| The hold was opened by | It cuts |
 |---|---|
 | the user's hand: the held key, the phone's button | as it opens |
-| the wake word | as it opens, over a reading or a turn working in silence alike; so a wake on hands' own echo, or a false one, barges in too, with nothing to undo it; each hearing records whether hands was speaking as its audio arrived (`voice/wake.py`) |
+| the wake word | as it opens, over a reading or a turn working in silence alike; so a wake on hands' own echo, or a false one, cuts too, with nothing to undo it; each hearing records whether hands was speaking as its audio arrived (`voice/wake.py`) |
 | engaged conversation | once the streaming recognizer hears words in it, while it is open |
 | a hold engaged conversation opened that holds no words | nothing, so nothing has to be undone |
 
-Who said the words is measured beside the barge-in and does not yet decide it. A
+Who said the words is measured beside the cut and does not yet decide it. A
 `voiceprints.identified` event says who each speaker the diarizer heard was, by voiceprint
 against hands' own voice: `Person`, `Hands`, `Unsure`, `Unheard` or `Unidentified`, with the
 score or reason that said so (`voice/voiceprints.py`). It is told as a speaker reaches each row
 of the table and as their hold ends, after the words have gone out. Each hold, and each echo
 span of hands speaking with no hold open, is kept with what hands was playing over it and in
-which voices (`voice/recorder.py`), so the barge-in on a
+which voices (`voice/recorder.py`), so the cut on a
 person's voice rather than any words can be fitted on real use first.
 
-**2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a barge-in is
+**2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
 a barge-in. The guards on lines 733–737 say no in four cases:
 
-| Speech over hands is not a barge-in when | Because |
+| A cut is not a barge-in when | Because |
 |---|---|
 | no brain turn is in flight | there is nothing to cut off |
-| the turn was already barged in on | once is enough |
-| nothing the brain said or asked is still to be heard (`to_hear`, `brain/stage.py:271–274`) | there is nothing to stop: no text block is streaming, and the speaker has played every text block's end and every question to its Mark. The words queue as the next turn, and hands answers them at once in the turn's voice (S2), unless the turn is a session telling: what a telling says is the session's, and an answer said inside it would be read as the telling's own audio (`brain/stage.py:422`). A turn none of whose requests has left has said nothing yet (S6). The barge-in takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts, just ahead of its interruption (`brain/stage.py:432–435`), and the stage gives it back as the user's turn stops: Pipecat's `UserStoppedSpeakingFrame`, pushed for every turn, words or none (`brain/stage.py:436–437`). Pipecat pairs the two, so no interruption of any other kind holds the floor. Nothing of the turn is handed on while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play (`brain/stage.py:684–688`), as what hands tells of the sessions waits at the floor (`voice/floor.py`), never said over them |
-| the user is answering a permission question they heard to its end (`asking()`, `brain/stage.py:324–326`) | words over an open heard question are its answer, not a turn (`brain/stage.py:404–408`). Read once, at the barge-in, and the words take what it read (`brain/stage.py:450`): a question asked after the barge-in is not what they answer |
+| the turn was already cut | once is enough |
+| nothing the brain said or asked is still to be heard (`to_hear`, `brain/stage.py:271–274`) | there is nothing to stop: no text block is streaming, and the speaker has played every text block's end and every question to its Mark. The words queue as the next turn, and hands answers them at once in the turn's voice (S2), unless the turn is a session telling: what a telling says is the session's, and an answer said inside it would be read as the telling's own audio (`brain/stage.py:422`). A turn none of whose requests has left has said nothing yet (S6). The cut takes the floor from hands with the `UserStartedSpeakingFrame` only it broadcasts, just ahead of its interruption (`brain/stage.py:432–435`), and the stage gives it back as the user's turn stops: Pipecat's `UserStoppedSpeakingFrame`, pushed for every turn, words or none (`brain/stage.py:436–437`). Pipecat pairs the two, so no interruption of any other kind holds the floor. Nothing of the turn is handed on while the user speaks: its text, its permission questions and the readbacks after it wait for them to stop, then play (`brain/stage.py:684–688`), as what hands tells of the sessions waits at the floor (`voice/floor.py`), never said over them |
+| the user is answering a permission question they heard to its end (`asking()`, `brain/stage.py:324–326`) | words over an open heard question are its answer, not a turn (`brain/stage.py:404–408`). Read once, at the cut, and the words take what it read (`brain/stage.py:450`): a question asked after the cut is not what they answer |
 
-Speech over a line of hands' own, the acknowledgement or an answer, is not a barge-in: it is no word
-of the brain's, so it carries no Mark and stops nothing of the turn. A turn opened by voice barges in only
+A cut over a line of hands' own, the acknowledgement or an answer, is not a barge-in: it is no word
+of the brain's, so it carries no Mark and stops nothing of the turn. A turn opened by voice cuts only
 once the streaming recognizer hears words in it, so a question that finishes playing between the user starting to
-speak and that moment is still answered by their words, as on master. And a barge-in in the moment
+speak and that moment is still answered by their words, as on master. And a cut in the moment
 between the output passing on a point's Mark and `Marks` taking it still reads as a barge-in, though
 everything had played. And hands' answer to words that arrive while a question the user heard is
 still waiting on them is said once that question is decided, not within a second
@@ -123,14 +124,14 @@ by (`brain/stage.py:85–92`), has `session` and `ask` and no interrupt, and the
 
 | Cut off | What happens | What the brain holds afterwards | Where to check |
 |---|---|---|---|
-| the brain's words after the barge-in | not played; quoted in the note | its own words, in its history; the note | `brain/stage.py:573`, `888–904`; `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`, `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end` |
+| the brain's words after the cut | not played; quoted in the note | its own words, in its history; the note | `brain/stage.py:573`, `888–904`; `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`, `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end` |
 | a call's readback | not said; quoted in the note | the call's result; the note | `brain/stage.py:573`; `test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_said` |
-| a brain permission question: playing, queued behind another, or raised after the barge-in | settled `Deny(BARGED_IN)`; never said again | the denial text as the tool result; it may re-ask next turn (unverified by test) | `brain/stage.py:650–652`, `743–744`; `brain/process.py:95`; `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`, `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`, `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said` |
+| a brain permission question: playing, queued behind another, or raised after the cut | settled `Deny(BARGED_IN)`; never said again | the denial text as the tool result; it may re-ask next turn (unverified by test) | `brain/stage.py:650–652`, `743–744`; `brain/process.py:95`; `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`, `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`, `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said` |
 | the refusal lines hands owed the user (`unacknowledged`) | cleared | the refusals it received | `brain/stage.py:746`; unverified by test |
 | the acknowledgement, and hands' answers to words said behind the turn | not said | nothing | `brain/stage.py:319–322`, `788–794`; `test_words_said_while_the_brains_words_still_play_are_a_barge_in_and_unanswered` |
 | a session telling | not played; quoted in the note; its utterance's fate is `barged_in` | the note; hands does not re-tell it (unverified by test) | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
 | a session's permission, question or plan | untouched; it waits on the user | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:11–15`; unverified by test |
-| a reply that breaks after the barge-in; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_barged_in_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
+| a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_barged_in_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
 
 The user, 2026-10-17, on the third and seventh rows: "Brain permissions, I understand we are blocked
 if stuck at a prompt so this is acceptable. The brain can re-ask. Session permissions should not be
@@ -138,7 +139,7 @@ automatically refused."
 
 ## What the brain receives
 
-Nothing at the barge-in. At the turn's end the note is built and recorded (`brain/stage.py:566–574`;
+Nothing at the cut. At the turn's end the note is built and recorded (`brain/stage.py:566–574`;
 `_barge_in_note`, `888–904`), and it goes after the user's next words (`_notes`, `brain/stage.py:539`;
 asserted by `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`
 and `test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_said`). Its shape:
@@ -167,7 +168,7 @@ The brain reads the note under this instruction, `voice/intermediary_instruction
 
 A live check reads the `voice.turn` event, one per brain turn (`brain/stage.py:609–625`; the event
 and the note, `docs/architecture.md:1063–1097`): `asked`, `text`, `interrupted`, `barge_ins` (how many
-times you barged in on the turn and stopped nothing of it), `barge_in_note`,
+times you cut in on the turn and stopped nothing of it), `barge_in_note`,
 `asides` (each line hands said in the turn, the acknowledgement and its answers to words said behind
 it, with how long after your wait began it went to the speaker), `refused`, `refusals`, `queued_ms` (how long your words waited behind the turn
 before them) and `waited_ms` (from the end of your words to the turn's first word; null when none
@@ -189,7 +190,7 @@ sequenceDiagram
     H->>U: says "It is in settings.py."
     H->>U: says "The loader…"
     U->>H: presses: "no, the other one"
-    Note over H: barge-in: speech stops at once
+    Note over H: cut: speech stops at once
     B-->>H: the rest of the reply, said to nobody
     Note over B: turn 1 runs to its own end, told nothing
     H->>B: turn 2: "no, the other one", then the note
@@ -207,7 +208,7 @@ sequenceDiagram
 - Mechanics tests: `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end`,
   `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`,
   `test_a_word_the_brain_streams_after_the_user_spoke_over_its_turn_is_no_wait_of_theirs`.
-- Live check: the barge-in turn's `interrupted` and `barge_in_note`; the next turn's `asked`, `text`,
+- Live check: the cut turn's `interrupted` and `barge_in_note`; the next turn's `asked`, `text`,
   `queued_ms`, `waited_ms`.
 
 ### S2 — Added information while the brain works silently (not a barge-in)
@@ -269,8 +270,8 @@ sequenceDiagram
     H->>B: turn 1: the words
     B-->>H: asks permission: Write notes.txt
     H->>U: says "May I use Write on notes.txt…"
-    U->>H: barges in: "no, do it in /tmp instead"
-    Note over H: barge-in: the question stops, and no refusal is said
+    U->>H: cuts in: "no, do it in /tmp instead"
+    Note over H: cut: the question stops, and no refusal is said
     H-->>B: tool result: BARGED_IN, "The user spoke over this turn before they could be asked, so it did not run."
     B-->>H: the rest of the turn, said to nobody
     Note over B: turn 1 runs to its own end
@@ -279,7 +280,7 @@ sequenceDiagram
     H->>U: says it
 ```
 
-- You: "May I use Write on notes.txt…" is playing; you barge in with "no, do it in /tmp instead".
+- You: "May I use Write on notes.txt…" is playing; you cut in "no, do it in /tmp instead".
 - You hear: the question stops; silence; then the brain's answer.
 - The brain's history holds: the permission's result is the `BARGED_IN` text; its own words after
   it, unplayed.
@@ -287,7 +288,7 @@ sequenceDiagram
 - Mechanics tests: `test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_and_never_asked`,
   `test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_brain_is_told_it_went_unheard`,
   `test_a_refusal_of_a_question_never_heard_to_its_end_is_not_said`.
-- Live check: the brain's transcript holds the `BARGED_IN` text; the barge-in turn's `refused` is 0,
+- Live check: the brain's transcript holds the `BARGED_IN` text; the cut turn's `refused` is 0,
   nothing heard having been refused.
 
 ### S4 — An answer after the question finished playing (not a barge-in)
@@ -307,7 +308,7 @@ sequenceDiagram
         U->>H: "do it in /tmp instead"
         H-->>B: tool result: refused, with the user's words
     end
-    Note over H: not a barge-in: no turn is barged in on, and no note is written
+    Note over H: not a barge-in: no turn is cut, and no note is written
     B-->>H: the turn goes on
     H->>U: says the rest
 ```
@@ -334,8 +335,8 @@ sequenceDiagram
     H->>B: a turn: tell the user
     B-->>H: the telling: "api is asking to run…"
     H->>U: says "api is asking to run…"
-    U->>H: barges in
-    Note over H: barge-in: the telling stops, and its utterance's fate is barged_in
+    U->>H: cuts in
+    Note over H: cut: the telling stops, and its utterance's fate is barged_in
     Note over S: untouched: it waits on the user
     Note over B: the turn runs to its own end
     H->>B: the next turn: the user's words, then the note
@@ -344,14 +345,14 @@ sequenceDiagram
     H->>S: the answer
 ```
 
-- You: hands is saying "api is asking to run …" or "api finished a turn, …"; you barge in.
+- You: hands is saying "api is asking to run …" or "api finished a turn, …"; you cut in.
 - You hear: the telling stops.
 - The brain's history holds: its turn for the telling, run to its end. The session's request is
   untouched and waits on you, and the brain answers it with `answer_permission` when
   you say so; nothing re-tells the telling on its own, the note being the path back (unverified by
   test).
 - The next turn's `asked` carries: your words, then the note.
-- Mechanics tests: `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` (the barge-in);
+- Mechanics tests: `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` (the cut);
   `test_a_barge_in_the_telling_goes_on_through_leads_the_rest_of_it_on_again` (no request had left,
   so not a barge-in: the telling plays whole).
 - Live check: the `utterance` event's `fate` is `cut`; the next turn's `asked`.
@@ -392,8 +393,8 @@ sequenceDiagram
 
 | | Criterion | In standard terms | Passes when | Read from |
 |---|---|---|---|---|
-| C1 | Hands stopped at once | barge-in latency | nothing of the turn played after your first word | your ear; the barge-in turn's `interrupted` true, and its `barge_in_note` quoting as last heard the sentence you actually heard last |
-| C2 | Nothing is lost | context retention | everything the brain said or did after the barge-in is in `barge_in_note`, every word past the last-heard sentence and every readback, and the brain's transcript holds no rejected or interrupted result and your prompt intact | `text` against `barge_in_note`; the brain's transcript file |
+| C1 | Hands stopped at once | barge-in latency | nothing of the turn played after your first word | your ear; the cut turn's `interrupted` true, and its `barge_in_note` quoting as last heard the sentence you actually heard last |
+| C2 | Nothing is lost | context retention | everything the brain said or did after the cut is in `barge_in_note`, every word past the last-heard sentence and every readback, and the brain's transcript holds no rejected or interrupted result and your prompt intact | `text` against `barge_in_note`; the brain's transcript file |
 | C3 | The correction landed | task success | the next turn's `asked` is your words followed by the note, and its `text` acts on your words | the next turn's `asked`, `text` |
 | C4 | The brain stayed coherent | conversational repair | it does not re-say what you heard, does not say you stopped or rejected anything, and does not carry on with what you said no to; what it tells you you missed comes from the note | the next turn's `text` read against `barge_in_note` and the instruction at `voice/intermediary_instruction.py:124` |
 | C5 | The correction was not slow | response latency | measured and recorded | the next turn's `queued_ms` and `waited_ms` |

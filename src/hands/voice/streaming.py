@@ -11,7 +11,7 @@ hold to the last: a new session, or the session's own end, numbers everyone from
 Each hearing hands each speaker's voice in the hold, the frames the diarizer heard them in, to be identified against
 hands' own (`hands.voice.voiceprints`), after its words have gone out: who they were decides nothing yet.
 
-It is one listener on the hold owner (`hands.voice.holdowner`), which barges in on hands on the first words it hears in a hold
+It is one listener on the hold owner (`hands.voice.holdowner`), which cuts hands off on the first words it hears in a hold
 still open, so a turn engaged conversation opened cuts while the user is still speaking over hands, not once they stop.
 Its words are never sent: the model is weak on conversational speech (about 20% WER on AMI, against 6 to 8% for the
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each hold held.

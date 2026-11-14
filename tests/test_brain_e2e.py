@@ -182,7 +182,7 @@ class Hands:
 
     async def say(self, words: str) -> None:
         """The user's words, spoken once they have heard all hands handed the speaker, its marks played: behind the cut
-        their turn opens with and the turn's stop, as every turn that carries words is cut (test_stage's `barge_ins`). A
+        their turn opens with and the turn's stop, as every turn that carries words is cut (test_stage's `barge_in`). A
         question is answered by what is said after it is heard, so words handed on without the cut are a turn of their own."""
         reached = asyncio.Event()
         await self.queue(Received(reached.set))

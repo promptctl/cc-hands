@@ -350,7 +350,7 @@ So that in conversation hands can tell the owner from another person, and from i
   (`hands.voice.voiceprints.FLOORS`), or `Unidentified` with why when there is nothing to score
   against for a voice hands speaks in or played over them. It is measured, not yet acted on: a
   `voiceprints.identified` event says who each speaker was as they reach each row and as their
-  hold ends, and the barge-in is on words as before. Fitted on one room and one voice
+  hold ends, and the cut is on words as before. Fitted on one room and one voice
   (`scripts/measure-voiceprints.py`, zoj's recordings): hands' echo, uncancelled, scored at least
   0.37 at 1 s, 0.64 at 1.5 s and 0.74 at 3 s, a person alone at most 0.21, a person over hands at
   most 0.66 at 1.5 s (only one line ran 3 s, at 0.36).

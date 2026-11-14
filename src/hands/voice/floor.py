@@ -1,7 +1,7 @@
 """The floor: while the user's turn is open, what hands tells of the sessions waits, and follows the turn soonest first.
 
 The floor is taken as a hold opens, when the hold owner says the user started speaking (`TurnOpened`), whether or not the turn
-has barged in on hands yet (`hands.voice.turnstart`). It is given back once the user aggregator says the turn stopped, every
+has cut hands off yet (`hands.voice.turnstart`). It is given back once the user aggregator says the turn stopped, every
 hold it took in transcribed and sent, unless a hold has opened since: that stop comes back up as a system frame, and a
 press just after it can pass the floor on its way down first, opening the next turn. What waited is
 given back into the aggregator's queue behind the frame that closed the turn, so the user's words reach the model first
@@ -64,7 +64,7 @@ class Floor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame, self._taken:
-            # [LAW:one-source-of-truth] a turn starts as its first hold opens, and barges in on hands only later where the
+            # [LAW:one-source-of-truth] a turn starts as its first hold opens, and cuts hands off only later where the
             # voice opened it, so the floor is taken as the hold opens: the user is speaking from then.
             case TurnOpened(hold=hold), None:
                 self._taken = _Taken({hold})

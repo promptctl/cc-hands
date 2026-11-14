@@ -6,8 +6,8 @@ It forwards each request upstream as it came, or with the changes its route give
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
 request of its own; it tells each request as it forwards it, and what hands' side questions fork from the brain's comes
 back through it as the brain's own Claude Code would send it (`hands.brain.fork`). The one request it
-does not forward is one its route answers with a synthetic response: that is answered here, with the words the route
-gives it, so the model is not asked at all.
+does not forward is one its route synthesizes: that is answered here, with the words the route gives it, so the model is
+not asked at all.
 """
 
 import asyncio

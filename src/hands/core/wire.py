@@ -872,8 +872,7 @@ class Send:
 
 @dataclass(frozen=True)
 class Synthesize:
-    """The request is answered by hands with a synthetic response and never reaches the API, with `said` as the model's whole
-    reply.
+    """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
 
     Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
     answers "[Your previous response had no visible output. Please continue ...]" and asks again, and its
@@ -1039,8 +1038,7 @@ class Unreached:
 
 @dataclass(frozen=True)
 class Synthetic:
-    """hands answered the request with a synthetic response and the API never saw it: the model was not asked, and is
-    recorded as saying `said`."""
+    """hands answered the request itself and the API never saw it: the model was not asked, and is recorded as saying `said`."""
 
     said: str
     answered_at: Seconds

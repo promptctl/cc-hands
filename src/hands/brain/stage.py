@@ -137,7 +137,7 @@ class Unawaited:
 # Whose turn the brain answered.
 Asker = UserAsked | HandsAsked | Unawaited
 
-# What the brain is recorded as saying for a request hands answered with a synthetic response. Never spoken: such a request joins no turn.
+# What the brain is recorded as saying for a request hands answered itself. Never spoken: such a request joins no turn.
 SILENT = "(stayed silent)"
 # What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
 # the spoken-over note says what was heard, so this says only the failure.
@@ -172,7 +172,7 @@ class _Close:
     """The end of one of the turn's text blocks: every word of it is handed on."""
 
 
-# What the brain said or asked: each is counted until the speaker has played it, and only these make speech over hands a barge-in.
+# What the brain said or asked: each is counted until the speaker has played it, and only these make a cut a barge-in.
 _Point = _Close | Asked
 
 
@@ -461,11 +461,11 @@ class BrainStage(FrameProcessor):
         # the turn's words follow the last release of the holds it took in. Kept with the edge that opened that
         # hold, read from the gate as it is let go of, before any later hold can open.
         self._released: tuple[Seconds, Edge] | None = None
-        # [LAW:one-source-of-truth] the question the user's next words answer, read once at the barge-in they open with: one
+        # [LAW:one-source-of-truth] the question the user's next words answer, read once at the cut they open with: one
         # asked while they are still being transcribed is not what they were answering. Every turn that carries words is
         # cut first (`hands.voice.turnstart`).
         self._answering: Asked | None = None
-        # [LAW:no-ambient-temporal-coupling] set while hands has the floor: taken by every barge-in, as it says the user started
+        # [LAW:no-ambient-temporal-coupling] set while hands has the floor: taken by every cut, as it says the user started
         # speaking, and given back as the user's turn stops, which Pipecat says of every turn, words or none: the pair
         # Pipecat's turn brackets, so no interruption of any other kind holds it. Nothing of a turn is handed on while the user
         # speaks: what it says meanwhile waits for them, as what hands tells of the sessions does (`hands.voice.floor`).
@@ -517,7 +517,7 @@ class BrainStage(FrameProcessor):
             case HoldDiscarded():
                 await self.push_frame(frame, direction)
             case UserStartedSpeakingFrame():
-                # Broadcast by the barge-in alone, just ahead of its interruption (`hands.voice.turnstart.interrupting`).
+                # Broadcast by the cut alone, just ahead of its interruption (`hands.voice.turnstart.interrupting`).
                 self._floor.clear()
                 await self.push_frame(frame, direction)
             case UserStoppedSpeakingFrame():
@@ -806,7 +806,7 @@ class BrainStage(FrameProcessor):
             await self._say(TTSSpeakFrame(line, append_to_context=False))
 
     async def _say(self, line: TTSSpeakFrame) -> None:
-        """Says a line of hands' own after a turn, once hands has the floor: never over the user. A barge-in after it is
+        """Says a line of hands' own after a turn, once hands has the floor: never over the user. A cut after it is
         handed on flushes it with everything else on its way to the speaker."""
         await self._floor.wait()
         await self.push_frame(line)
@@ -977,7 +977,7 @@ class BrainStage(FrameProcessor):
             return Send(refusal="final", span=root(self._clock))
         now = self._clock.now()
         carried = tool_answers(sent.body)
-        # A call's result leaving is the end of its run, whether the request carrying it goes on or is answered synthetically.
+        # A call's result leaving is the end of its run, whether the request carrying it goes on or is answered by hands.
         for answer in carried:
             if (ran := turn.tools.get(answer.call)) is not None and ran.answered is None:
                 ran.answered, ran.is_error = now, answer.is_error

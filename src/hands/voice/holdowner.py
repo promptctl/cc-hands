@@ -368,7 +368,7 @@ class HoldOwner(FrameProcessor):
                 pass
 
     async def _heard(self, listener: Listener, hold: Hold, hearing: Hearing, began: Begun) -> None:
-        """One hearing, bounded, and what came of it: words for the hold still open barge in on hands as `InterimWords`."""
+        """One hearing, bounded, and what came of it: words for the hold still open cut hands off as `InterimWords`."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):

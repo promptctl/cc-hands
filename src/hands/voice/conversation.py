@@ -121,7 +121,7 @@ class AssistantTurns(LLMAssistantAggregator):
         await super().process_frame(frame, direction)
         match frame:
             case InterruptionFrame():
-                # Written as cut off: the user's turn that made the barge-in is taken in behind it (`hands.voice.turnstart`).
+                # Written as cut off: the user's turn that made the cut is taken in behind it (`hands.voice.turnstart`).
                 await self.push_frame(BargeInWritten(), FrameDirection.UPSTREAM)
             case _:
                 pass

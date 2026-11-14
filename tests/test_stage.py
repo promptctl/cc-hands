@@ -408,7 +408,7 @@ class Rig:
         await self.until(lambda: self.out.releases > released)
 
     async def interrupt(self) -> None:
-        """The barge-in, as the user aggregator broadcasts it: that the user started speaking, then the interruption."""
+        """The cut, as the user aggregator broadcasts it: that the user started speaking, then the interruption."""
         cuts = self.out.shape().count("InterruptionFrame")
         await self.worker.queue_frame(UserStartedSpeakingFrame())
         await self.worker.queue_frame(InterruptionFrame())
@@ -421,7 +421,7 @@ class Rig:
         await self.until(lambda: self.out.stops > stops)
 
     async def barge_in(self, words: str) -> None:
-        """The user's words, behind the barge-in their turn opens with, as every turn that carries words is cut, and the turn's
+        """The user's words, behind the cut their turn opens with, as every turn that carries words is cut, and the turn's
         stop."""
         await self.interrupt()
         await self.stop()

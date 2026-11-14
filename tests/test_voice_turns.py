@@ -302,7 +302,7 @@ async def rigged(
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
     told: list[Mark] = []
-    # The assistant aggregator ends the pipeline, as build_voice puts it: a barge-in goes on once it has written what it cut off.
+    # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(SYSTEM, told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
@@ -493,7 +493,7 @@ OPENED_BY_THE_VOICE: list[Captured] = ["listening", "arming", "down", "down", "l
 
 
 def user_turns(rig: Rig) -> list[tuple[TurnStart, bool]]:
-    """Each user turn's line, as it ended: when its edge had it barge in, and whether it did."""
+    """Each user turn's line, as it ended: when its edge had it cut, and whether it did."""
     return [(entry.start, entry.barge_in_after is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
 
 
@@ -553,7 +553,7 @@ async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while
         # What was heard while the hold was open only cut; the hold heard whole by the transcriber is what is sent.
         assert await rig.everything_sent(holds=1) == ["wait, not yet, read me the diff first"]
         assert user_turns(rig)[0] == ("on words", True)
-        # What barged in on hands is on the hearing's event, to be looked into where the hold heard whole says nothing.
+        # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
         [first, *_] = hearings(rig)
         assert (first.facts["hold"], first.facts["heard"], first.facts["barge_in"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
 
@@ -622,7 +622,7 @@ async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_end
     await rig.until(lambda: rig.out.released == 2)
     await rig.texts.put("turn it off")
     await rig.texts.put("and the lights")
-    # The barge-in lands behind the first hold's words, ahead of the second's: neither is dropped by it.
+    # The cut lands behind the first hold's words, ahead of the second's: neither is dropped by it.
     assert await rig.everything_sent(holds=2) == ["turn it off and the lights"]
     assert rig.out.interrupted == 2  # the closing hold's is the second
     assert user_turns(rig)[0] == ("on words", True)
