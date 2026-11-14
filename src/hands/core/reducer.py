@@ -528,6 +528,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # Written before that idle: of this turn going on under the words' id or of the turn after it, which only
             # their ends tell apart (see Continued). Nothing moves.
             return turn, []
+        case (Taken(prompt=prompt), Opened()) if prompt in was.earlier:
+            # [LAW:single-enforcer] a turn told is over, which `earlier` says of every one: its record, read after a turn
+            # opened that the transcript lags behind, is no flush into that one, whose ids would then name a turn already
+            # told, and its own Stop would end nothing (see `Brain`'s telling).
+            return turn, []
         case (Taken(prompt=prompt), Opened() as opened):
             # A flush's id: an Escape sends a message queued behind the turn on in the same turn, under the message's own
             # id, which the interrupt record carries first; or send now takes it into the turn (see Unqueued).

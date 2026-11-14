@@ -25,7 +25,7 @@ from hands.voice.summarising import summarise_backlog, told
 from hands.voice.summary import SummaryFailed
 from hands.voice.summaries import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
-from conftest import new_sessions
+from conftest import VirtualClock, new_sessions
 
 SID = SessionId("s1")
 
@@ -408,8 +408,17 @@ async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: P
 async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_lit("echo $$ > pid\nexec sleep 30\n")
     monkeypatch.setattr("hands.sessions.backlog.LIT_TIMEOUT_SECONDS", 0.5)
+    # The deadline is on a clock the test moves, and moved only once lit has written its pid: on the machine's clock a
+    # loaded machine can run out the half second before the shell has started.
+    clock = VirtualClock()
+    reading = asyncio.create_task(read_backlog(clock, project))
+    await clock.sleeping(0.5)
+    # Created before written: the shell opens pid, then writes to it.
+    while not (project / "pid").is_file() or not (project / "pid").read_text().strip():
+        await asyncio.sleep(0.01)
+    clock.advance(0.5)
     with pytest.raises(LitFailed, match="did not answer"):
-        await read_backlog(SYSTEM, project)
+        await reading
     with pytest.raises(ProcessLookupError):
         os.kill(int((project / "pid").read_text()), 0)
 
