@@ -97,3 +97,33 @@ def _place(choice: Choice, default: int, present: Mapping[str, int]) -> Place:
             return OnDefault(default)
         case Off():
             return Closed()
+
+
+@dataclass(frozen=True)
+class Instead:
+    """The default device, opened in place of the one config.toml names, which is missing."""
+
+    missing: str
+    device: str
+
+
+@dataclass(frozen=True)
+class Missing:
+    """The microphone config.toml names is missing, and the system has no input device to open in its place."""
+
+    missing: str
+
+
+# What a side is on, by the names the system gives its devices: a device, the default in place of one missing, or none
+# at all, which config.toml may choose (Off) and a microphone may be left with, None, where the system has no input device.
+PlayedOn = str | Instead | Off
+HeardOn = str | Instead | Missing | Off | None
+
+
+def hears_nothing(heard: HeardOn) -> bool:
+    """Whether a microphone on `heard` has no device to open, so a press to talk hears nothing."""
+    match heard:
+        case None | Missing() | Off():
+            return True
+        case str() | Instead():
+            return False

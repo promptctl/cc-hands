@@ -50,7 +50,7 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
-from hands.voice.devicechoice import Auto, Choice, Choices, Hardware, Named, Off, Placement, placed
+from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, placed
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -227,14 +227,23 @@ class NoInput:
 
 
 class NoOutput:
-    """The speaker's stream when config.toml gives the speaker no device, a null object: what is written to it is dropped.
+    """The speaker's stream when config.toml gives the speaker no device, a null object: what is written to it is dropped,
+    after the time the device would have taken to play it.
 
     [LAW:dataflow-not-control-flow] the speaker writes, starts, stops, and closes its stream the same way with or
-    without a device; only this value differs.
+    without a device; only this value differs. A write takes as long as the sound it carries, as a device's does, so
+    the pipeline's hearing of its own speech, which the write paces, is the same with the speaker off.
     """
 
+    def __init__(self, sample_rate: int, channels: int) -> None:
+        self._bytes_per_second = sample_rate * channels * SAMPLE_BYTES
+        self._stopped = threading.Event()
+
     def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
-        pass
+        """Take `audio` as long as it takes to play; a stopped stream refuses it, as PortAudio's does, and releases a
+        write waiting out its time."""
+        if self._stopped.wait(len(audio) / self._bytes_per_second):
+            raise OSError("the speaker stream is stopped")
 
     def counts(self) -> dict[str, int]:
         return dict.fromkeys(PLAYOUT_COUNTS, 0)
@@ -243,40 +252,10 @@ class NoOutput:
         pass
 
     def stop_stream(self) -> None:
-        pass
+        self._stopped.set()
 
     def close(self) -> None:
         pass
-
-
-@dataclass(frozen=True)
-class Instead:
-    """The default device, opened in place of the one config.toml names, which is missing."""
-
-    missing: str
-    device: str
-
-
-@dataclass(frozen=True)
-class Missing:
-    """The microphone config.toml names is missing, and the system has no input device to open in its place."""
-
-    missing: str
-
-
-# What a side is on, by the names the system gives its devices: a device, the default in place of one missing, or none
-# at all, which config.toml may choose (Off) and a microphone may be left with, None, where the system has no input device.
-PlayedOn = str | Instead | Off
-HeardOn = str | Instead | Missing | Off | None
-
-
-def hears_nothing(heard: HeardOn) -> bool:
-    """Whether a microphone on `heard` has no device to open, so a press to talk hears nothing."""
-    match heard:
-        case None | Missing() | Off():
-            return True
-        case str() | Instead():
-            return False
 
 
 @dataclass(frozen=True)
@@ -373,7 +352,7 @@ class Speaker(LocalAudioOutputTransport):
 
         match _opening(self._choice, py_audio, "maxOutputChannels"):
             case Off():
-                return Output(NoOutput(), Off(), echo)
+                return Output(NoOutput(self.sample_rate, self._params.audio_out_channels), Off(), echo)
             case Found(index=index, name=name):
                 return Output(self._playout(py_audio, echo, index), name, echo)
             case Absent(name=name):

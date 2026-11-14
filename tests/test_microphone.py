@@ -28,8 +28,8 @@ from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.clips import Played, Reference
-from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Named, Off, OnDefault, OnNamed, Placement
-from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, Instead, KeyedAudioTransport, Missing, NoInput, NoOutput, Output, Playout, PortAudio, Pull, default_input
+from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Missing, Named, Off, OnDefault, OnNamed, Placement
+from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.system import AudioMoved, system_text
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
@@ -759,6 +759,29 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     assert device.log == ["stop"]
 
 
+def test_a_write_to_no_output_takes_as_long_as_the_sound_and_is_released_and_refused_by_stopping_it() -> None:
+    """The pipeline's hearing of its own speech is paced by the write, as a device's playout paces it."""
+    nothing = NoOutput(1000, 1)
+    began = time.monotonic()
+    nothing.write(bytes(2 * 100), ())  # 100 ms of 16-bit mono at 1 kHz
+    assert time.monotonic() - began >= 0.1
+    refused: list[OSError] = []
+
+    def write() -> None:
+        try:
+            nothing.write(bytes(2 * 60_000), ())  # a minute of it
+        except OSError as error:
+            refused.append(error)
+
+    writing = threading.Thread(target=write)
+    writing.start()
+    writing.join(0.05)
+    nothing.stop_stream()
+    writing.join(1)
+    assert not writing.is_alive()
+    assert [str(error) for error in refused] == ["the speaker stream is stopped"]
+
+
 class Deafened(Room):
     def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
         raise RuntimeError("the audio processing module refused the frame")
@@ -850,11 +873,10 @@ async def test_a_side_left_off_opens_no_device_and_the_other_opens_as_chosen(los
     assert transport.deaf
     assert transport.opened_on == Placement(Closed(), Closed())
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
-    # What hands says goes nowhere, and the speaker takes it as it takes any other write.
-    speaker = transport.output()
-    attached = speaker.opened
+    # What hands says goes nowhere, and the speaker writes it as it writes to a device.
+    attached = transport.output().opened
     assert attached is not None and isinstance(attached.stream, NoOutput)
-    attached.stream.write(b"\0\0" * 480, ())
+    attached.stream.write(LOUD, ())
     assert attached.stream.counts() == {"pulled": 0, "unwritten": 0, "underflowed": 0}
 
     # Only the speaker off: the microphone is on the default, and hears.

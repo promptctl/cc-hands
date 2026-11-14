@@ -49,8 +49,8 @@ from hands.voice.system import (
 )
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip
-from hands.voice.devicechoice import Off
-from hands.voice.microphone import Devices, Instead, Missing
+from hands.voice.devicechoice import Instead, Missing, Off
+from hands.voice.microphone import Devices
 from hands.voice.ptt import Gate
 from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words

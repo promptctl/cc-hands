@@ -10,9 +10,9 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from conftest import events, patiently
-from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Named, Off, OnDefault, OnNamed, Placement, placed
+from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Named, Off, OnDefault, OnNamed, Placement, placed
 from hands.voice.devices import follow
-from hands.voice.microphone import Devices, Instead
+from hands.voice.microphone import Devices
 from hands.voice.system import AudioMoved, SystemFact, system_text
 
 HEADSET = Devices(input="headset", output="headset")

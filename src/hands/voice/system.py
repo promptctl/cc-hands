@@ -17,8 +17,8 @@ from pipecat.utils.errors import ErrorCategory
 
 from hands.clock import Clock
 from hands.sessions.audit import Announced, Record
-from hands.voice.devicechoice import Off
-from hands.voice.microphone import Devices, HeardOn, Instead, Missing, PlayedOn
+from hands.voice.devicechoice import HeardOn, Instead, Missing, Off, PlayedOn
+from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.core.stopfailure import StopFailed
