@@ -59,7 +59,7 @@ def wakes(said: Sequence[float]) -> int:
 
 
 def evaluation(positives: Sequence[float], negatives: Sequence[float], false_wakes: int, hours: float) -> dict[str, Fact]:
-    """The share of the word's clips the model wakes on, and of the near-miss phrases' clips it wrongly wakes on; and
+    """The share of the word's clips the model wakes on, and of the adversarial negative phrases' clips it wrongly wakes on; and
     how often it wakes on hours of speech, music and noise that never say it."""
     return {
         "threshold": THRESHOLD,

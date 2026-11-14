@@ -15,7 +15,7 @@ from pathlib import Path
 from hands.clock import SYSTEM
 from hands.daemon.cli import launch
 from hands.daemon.config import edited, load
-from hands.daemon.starting import Ended, Start, Stop, again, keep_beating
+from hands.daemon.starting import Ended, Start, Stop, execv, keep_beating
 from hands.sessions import heartbeat
 from hands.sessions.audit import AuditLog
 from hands.sessions.home import Home
@@ -46,7 +46,7 @@ def main() -> None:
         case "quit":
             return
         case "restart":
-            again([sys.executable, __file__, sys.argv[1], "--restarted"])
+            execv([sys.executable, __file__, sys.argv[1], "--restarted"])
 
 
 if __name__ == "__main__":

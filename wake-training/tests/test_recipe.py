@@ -21,7 +21,7 @@ def test_the_trainer_is_told_the_word_and_where_the_corpus_is(tmp_path: Path) ->
     assert config["model_name"] == "okay_hands"
     assert config["target_phrase"] == ["okay hands"]
     near = config["custom_negative_phrases"]
-    assert isinstance(near, list) and set(near) == set(word("Okay Hands").near_misses) and len(near) <= recipe.NEAR_MISSES  # pyright: ignore[reportUnknownArgumentType]
+    assert isinstance(near, list) and set(near) == set(word("Okay Hands").adversarial_negatives) and len(near) <= recipe.ADVERSARIAL_NEGATIVES  # pyright: ignore[reportUnknownArgumentType]
     assert config["output_dir"] == str(run)
     assert config["piper_sample_generator_path"] == str(run / "piper")
     assert config["rir_paths"] == [str(corpus.at(IMPULSES))]
@@ -91,12 +91,12 @@ def test_the_adapter_binds_the_corpus_generator_and_brings_clips_to_16_khz(tmp_p
         assert np.median(samples) == 0x1000
 
 
-def test_the_held_out_negatives_say_every_near_miss_alike(tmp_path: Path) -> None:
+def test_the_held_out_negatives_say_every_adversarial_negative_alike(tmp_path: Path) -> None:
     # The trainer says the phrases from the first, and holds out the first tenth it says.
     hey = word("Hey Hands")
     said = cast(list[str], recipe.clips(hey, Corpus(tmp_path))["custom_negative_phrases"])
     held_out = Counter(said[: recipe.VALIDATION_SAMPLES])
-    assert set(held_out) == set(hey.near_misses) and max(held_out.values()) - min(held_out.values()) <= 1
+    assert set(held_out) == set(hey.adversarial_negatives) and max(held_out.values()) - min(held_out.values()) <= 1
 
 
 def test_a_run_made_with_another_generator_is_a_run_of_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,5 +106,5 @@ def test_a_run_made_with_another_generator_is_a_run_of_its_own(tmp_path: Path, m
     assert recipe.made(word("Hey Hands"), corpus) != hey
 
 
-def test_a_word_without_near_misses_leaves_the_negatives_to_the_trainer(tmp_path: Path) -> None:
+def test_a_word_without_adversarial_negatives_leaves_the_negatives_to_the_trainer(tmp_path: Path) -> None:
     assert recipe.clips(word("Computer"), Corpus(tmp_path))["custom_negative_phrases"] == []

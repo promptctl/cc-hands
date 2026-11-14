@@ -274,7 +274,7 @@ def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path:
     lock = Home(tmp_path).lock
     counted = f"import os\ntarget = os.stat({str(lock)!r})\nopen_on = 0\nfor name in os.listdir('/dev/fd'):\n    try:\n        found = os.fstat(int(name))\n    except OSError:\n        continue\n    open_on += (found.st_dev, found.st_ino) == (target.st_dev, target.st_ino)\nprint(open_on, flush=True)\n"
     restarted = holds(tmp_path, "again") + counted + "import sys; sys.stdin.read()"
-    holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import again\nagain([sys.executable, '-c', {restarted!r}])")
+    holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import execv\nexecv([sys.executable, '-c', {restarted!r}])")
     try:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
         assert holder.stdout.readline() == "1\n"

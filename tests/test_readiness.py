@@ -33,7 +33,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
 from hands.sessions.payload import Rejected
-from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
+from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.sessions.wrapper import shim_script
 from hands.voice.backends import Account, ClaudeCodeBackend
 
@@ -426,7 +426,7 @@ def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told
 def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
     with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
         found = {process.pid: process for process in terminal_processes().found}
-        said = {pid: (found[pid].arguments, attended(found[pid])) for pid in (reading, piped)}
+        said = {pid: (found[pid].arguments, interactive(found[pid])) for pid in (reading, piped)}
     assert said == {reading: (("30",), True), piped: (("31",), False)}
 
 
@@ -441,7 +441,7 @@ def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path
     process = subprocess.Popen(["/bin/sleep", "30"], cwd=root, stdin=subprocess.DEVNULL, stdout=terminal, stderr=terminal, start_new_session=True, preexec_fn=reopened)
     try:
         found = next(found for found in terminal_processes().found if found.pid == process.pid)
-        assert attended(found)
+        assert interactive(found)
     finally:
         process.kill()
         process.wait()
@@ -557,18 +557,18 @@ def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
 CONFIG = Path("/home/.claude")
 CHECKED = readiness.config_dir({"CLAUDE_CONFIG_DIR": str(CONFIG)}, Path("/"))
 # The terminal a process made by `terminal` reads and writes, unless it is made with another, as a piped one is.
-ATTENDED, PIPED = 1, 2
+INTERACTIVE, PIPED = 1, 2
 
 
 def terminal(
-    pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG, arguments: tuple[str, ...] = (), tty: int = ATTENDED
+    pid: int, executable: str, cwd: str = "/code", parent: int = 0, config: Path = CONFIG, arguments: tuple[str, ...] = (), tty: int = INTERACTIVE
 ) -> Terminal:
     return Terminal(pid, parent, Path(executable), Path(cwd), {"CLAUDE_CONFIG_DIR": str(config)}, arguments, tty)
 
 
 
 def reads_its_terminal(process: Terminal) -> bool:
-    return process.tty == ATTENDED
+    return process.tty == INTERACTIVE
 
 
 def unjoined(claude: str, terminals: list[Terminal], members: set[int] | None = None, home: Home = Home(Path("/h"))) -> list[Terminal]:

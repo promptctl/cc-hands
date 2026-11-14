@@ -9,8 +9,8 @@ engaged.STOP_SECS past it, as a turn ends. Each is a hold in the two shapes a ho
 tests cut and feed theirs (tests/listening.py): the held key, let go just after the last word, and engaged conversation,
 closed once STOP_SECS of the silence after it are heard. One session per meeting, as a run has one, loaded at each GATING.
 
-A hold's end is scored against its known words, aligned: whether its last word is right; words invented past the last
-known word; known words cut from the end; words given to anyone but the person whose turn it is; and the word error rate.
+A hold's end is scored against its known words, aligned: whether its last word is right; insertions past the last known
+word; deletions from the end; words given to anyone but the person whose turn it is; and the word error rate.
 """
 
 import difflib
@@ -67,8 +67,8 @@ def scored(known: tuple[str, ...], ended: streaming.Ended) -> Counter[str]:
         holds=1,
         words=len(truth),
         last=tag == "equal",
-        invented=j2 - j1 if tag == "insert" else max(0, (j2 - j1) - (i2 - i1)) if tag == "replace" else 0,
-        cut=i2 - i1 if tag == "delete" else max(0, (i2 - i1) - (j2 - j1)) if tag == "replace" else 0,
+        insertions=j2 - j1 if tag == "insert" else max(0, (j2 - j1) - (i2 - i1)) if tag == "replace" else 0,
+        deletions=i2 - i1 if tag == "delete" else max(0, (i2 - i1) - (j2 - j1)) if tag == "replace" else 0,
         others=sum(count for speaker, count in by.items() if speaker != own),
         errors=sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in edits if tag != "equal"),
     )
@@ -86,8 +86,8 @@ def measured(gating: int, meetings: list[list[tuple[tuple[str, ...], dict[str, n
             for words, hold in holds:
                 total += scored(words, run.spoken(hold[shape])[1])
         print(
-            f"{shape} GATING {gating}: {total['holds']} holds; last word right {total['last']}; words invented past the last {total['invented']}, "
-            f"cut from the end {total['cut']}, given to anyone else {total['others']}; WER {total['errors'] / total['words']:.3f}",
+            f"{shape} GATING {gating}: {total['holds']} holds; last word right {total['last']}; insertions past the last word {total['insertions']}, "
+            f"deletions from the end {total['deletions']}, given to anyone else {total['others']}; WER {total['errors'] / total['words']:.3f}",
             flush=True,
         )
 

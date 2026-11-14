@@ -61,7 +61,7 @@ def terminal_processes() -> Terminals:
     return Terminals([each for each in read if isinstance(each, Terminal)], [each for each in read if isinstance(each, Undescribed)])
 
 
-def attended(process: Terminal) -> bool | Undescribed:
+def interactive(process: Terminal) -> bool | Undescribed:
     """Whether its stdin and stdout are both its terminal, as `[ -t 0 ] && [ -t 1 ]` finds them at a terminal: its
     controlling terminal's device, or /dev/tty, which is that terminal under the name each process has for its own.
     False for one that has exited since it was listed, which reads nothing; the refusal if the kernel would not say."""

@@ -227,11 +227,11 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
         loaded.append(model)
         return config.Settings(None, Config(), model)
 
-    class Again(Exception):
+    class Execed(Exception):
         pass
 
-    def again(argv: list[str]) -> None:
-        raise Again(argv)
+    def execv(argv: list[str]) -> None:
+        raise Execed(argv)
 
     def hold(_clock: Clock, _home: Home, _record: object, *, restarted: bool) -> None:
         pass
@@ -242,13 +242,13 @@ def test_a_restart_runs_again_on_the_model_flag_the_run_was_given(tmp_path: Path
     monkeypatch.setattr(cli, "hold", hold)
     monkeypatch.setattr(cli, "door", door)
     monkeypatch.setattr(cli, "run_here", run_here)
-    monkeypatch.setattr(cli, "again", again)
-    with pytest.raises(Again) as restarted:
+    monkeypatch.setattr(cli, "execv", execv)
+    with pytest.raises(Execed) as restarted:
         cli.main(["--home", str(home.root), "run", *given])
     assert loaded == [loads]
     assert restarted.value.args[0][-2 - len(carried):] == ["--restarted", "42", *carried]
     # The restart's own command line parses back to the run it restarts, an id that begins with a dash and all.
-    with pytest.raises(Again):
+    with pytest.raises(Execed):
         cli.main(["--home", str(home.root), "run", *restarted.value.args[0][-2 - len(carried):]])
     assert loaded == [loads, loads]
 
