@@ -6,7 +6,7 @@ audio. The clip owner (`hands.voice.clipowner`) cuts and numbers every clip and 
 in the order they were captured. A model is one of two things to it:
 
 - a `Listener`, which hears every clip of the key's as it is spoken and says what it heard, tagged by the owner with the
-  clip it heard it in: what cuts hands off as the user speaks over it;
+  clip it heard it in, and who: what cuts hands off as a person speaks over it;
 - the `Transcriber`, which is given each clip the key sent, whole, once it ends, and says what was said in it: the words
   the turn sends to the brain.
 
@@ -163,9 +163,21 @@ class Recording:
 
 @dataclass(frozen=True)
 class Heard:
-    """What a listener heard of the clip open: the words said in it, None where it heard none."""
+    """What a listener heard of the clip open: the words said in it, None where it heard none; and, where those words
+    clear the speaker who said them to cut hands off (`hands.voice.voiceprints.cleared`), when that speaker was first
+    heard, as `Cleared` tells it, None where they clear nobody."""
 
     words: str | None
+    barge_in_at: float | None
+
+
+# A speaker cleared to cut hands off in the clip open, told to the clip owner from whichever thread cleared them: how
+# many seconds after the clip opened they were first heard, under none for one heard in what it kept from before.
+type Cleared = Callable[[float], None]
+
+# A clip's last identification, at its end, told to the clip owner from whichever thread made it: when the first speaker
+# it cleared to cut hands off was first heard, as `Cleared` tells it, None where it cleared nobody.
+type Settle = Callable[[float | None], None]
 
 
 # A hearing: a listener's slow work on a clip, while it is open or after it closed, which the owner runs off the audio
@@ -192,18 +204,21 @@ class Listener(Protocol):
         """The listener, as its hearings' events name it."""
         ...
 
-    def opened(self, clip: Clip, before: Sound) -> Hearings:
+    def opened(self, clip: Clip, before: Sound, cleared: Cleared) -> Hearings:
         """`clip` opens, `before` the audio it keeps from before it opened: what was heard while the press was arming,
-        or the second the desk heard while it listened."""
+        or the second the desk heard while it listened; `cleared` is told of each speaker in it cleared to cut hands
+        off off the hearings, by work that outlasts them."""
         ...
 
     def heard(self, sound: Sound) -> Hearings:
         """More of the clip open, as it was captured."""
         ...
 
-    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
+    def ended(self, clip: Clip, fate: Fate, sound: Sound, settle: Settle) -> Hearings:
         """The clip open ends, sent or thrown away, `sound` all of it: what the listener still has to hear of it, such as
-        the last words the streaming recognizer decodes from the silence after it, which settle after it closes."""
+        the last words the streaming recognizer decodes from the silence after it, which settle after it closes. The
+        listener that identifies the clip's speakers tells `settle` what its last identification came to; every other
+        leaves it be."""
         ...
 
 

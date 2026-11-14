@@ -348,9 +348,9 @@ So that in conversation hands can tell the owner from another person, and from i
   TTS output, never from a person, and kept in the home. A speaker is `Person`, `Hands`,
   `Unsure` or `Unheard` by one table of score thresholds by how much of them was heard
   (`hands.voice.voiceprints.THRESHOLDS`), or `Unidentified` with why when there is nothing to score
-  against for a voice hands speaks in or played over them. It is measured, not yet acted on: a
-  `voiceprints.identified` event says who each speaker was as they reach each row and as their
-  clip ends, and the cut is on words as before. Fitted on one room and one voice
+  against for a voice hands speaks in or played over them. It decides the cut of a clip the voice
+  opened: a `voiceprints.identified` event says who each speaker was as they reach each row and as
+  their clip ends, and only a speaker who is not hands cuts hands off (`voiceprints.cleared`). Fitted on one room and one voice
   (`scripts/measure-voiceprints.py`, zoj's recordings): hands' echo, uncancelled, scored at least
   0.37 at 1 s, 0.64 at 1.5 s and 0.74 at 3 s, a person alone at most 0.21, a person over hands at
   most 0.66 at 1.5 s (only one line ran 3 s, at 0.36).

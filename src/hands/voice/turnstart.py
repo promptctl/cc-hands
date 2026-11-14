@@ -4,10 +4,10 @@ Every turn starts as the clip that opens it opens, so its words gather from the 
 from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
-heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the clip owner pushes words for
-it, Pipecat's transcription start: the first a listener hears in a clip still open (`InterimWords`), or the clip's own words as it
-closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
-be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
+heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the clip owner says a
+speaker who is not hands was heard in it (`SpeakerCleared`): while the clip is open, or as it closes, where it heard none before.
+Words cut nothing, since hands' own voice makes words too. A turn that ends uncut has taken nothing over: nothing is
+cut off, so nothing has to be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
 (`hands.voice.turnstop.Words`, `hands.voice.conversation.UserWords`): an interruption stops hands, never the user. And it lands just
 ahead of them, so the user aggregator takes none of them in until the reply the cut stopped is written as cut off
@@ -25,7 +25,8 @@ from pipecat.turns.user_start import BaseUserTurnStartStrategy
 from hands.clock import Clock
 from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import InterimWords, TurnOpened, Words
+from hands.voice.clips import Clip
+from hands.voice.turnstop import SpeakerCleared, TurnOpened
 
 
 class BargeInWritten(SystemFrame):
@@ -35,12 +36,15 @@ class BargeInWritten(SystemFrame):
 
 @dataclass
 class _Open:
-    """The turn open: when the trigger that opened it has it cut, when it opened, and how long after that it cut, None until
-    it has."""
+    """The turn open: when the trigger that opened it has it cut, when it opened, when each of its clips did; how long
+    after the turn opened it cut, None until it has, and how long after the speaker who cut it was first heard, None
+    where no speaker did."""
 
     start: TurnStart
     opened: float
+    clips: dict[Clip, float]
     barge_in_after: float | None = None
+    barge_in_after_speech: float | None = None
 
 
 class TriggerTurnStart(BaseUserTurnStartStrategy):
@@ -64,19 +68,21 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame, self._turn:
             case TurnOpened(clip=clip), None:
-                start = turn_start(clip.opener)
-                self._turn = _Open(start, self._now())
+                start, now = turn_start(clip.opener), self._now()
+                self._turn = _Open(start, now, {clip: now})
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._barge_in_where(start, self._turn)
             case TurnOpened(clip=clip), _Open() as turn:
                 # A clip opened while the clip owner is still on the last joins its turn, and cuts as its own trigger says.
+                turn.clips[clip] = self._now()
                 await self._barge_in_where(turn_start(clip.opener), turn)
-            case Words() | InterimWords(), _Open() as turn:
-                # Words, in whichever clip, heard while it was open or as it closed, are someone speaking.
-                await self._barge_in(turn)
-            case Words() | InterimWords(), None:
-                # [LAW:no-silent-failure] a turn ends only once the clip owner is done with every clip, behind each one's words.
-                raise RuntimeError("the clip owner pushed words outside any user turn")
+            case SpeakerCleared(clip=clip, first=first), _Open() as turn:
+                # A person, in whichever clip of the turn, heard while it was open or as it closed. [LAW:nothing-unseen]
+                # the cut's delay from their first voice, which the clip that opened before them may have kept.
+                await self._barge_in(turn, self._now() - (turn.clips[clip] + first))
+            case SpeakerCleared(), None:
+                # [LAW:no-silent-failure] a turn ends only once the clip owner is done with every clip, behind each one's cut.
+                raise RuntimeError("the clip owner cut outside any user turn")
             case BargeInWritten(), _:
                 await self._call_event_handler("on_barge_in_written")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
             case _:
@@ -85,9 +91,9 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
 
     async def handle_user_turn_stopped(self) -> None:
         match self._turn:
-            case _Open(start=start, barge_in_after=barge_in_after):
+            case _Open(start=start, barge_in_after=barge_in_after, barge_in_after_speech=after_speech):
                 # [LAW:nothing-unseen] every turn is a line: how its trigger had it cut, and when, or that it cut nothing.
-                self._record(UserTurn(start, barge_in_after))
+                self._record(UserTurn(start, barge_in_after, after_speech))
                 self._turn = None
             case None:
                 # [LAW:no-silent-failure] Pipecat stops only a turn it started, and nothing but this starts one.
@@ -96,15 +102,15 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
     async def _barge_in_where(self, start: TurnStart, turn: _Open) -> None:
         match start:
             case "on the clip":
-                await self._barge_in(turn)
-            case "on words":
+                await self._barge_in(turn, None)
+            case "on a person":
                 pass
 
-    async def _barge_in(self, turn: _Open) -> None:
-        """Cut hands off, once a turn."""
+    async def _barge_in(self, turn: _Open, after_speech: float | None) -> None:
+        """Cut hands off, once a turn, `after_speech` seconds after the speaker who cut it was first heard."""
         match turn.barge_in_after:
             case None:
-                turn.barge_in_after = self._now() - turn.opened
+                turn.barge_in_after, turn.barge_in_after_speech = self._now() - turn.opened, after_speech
                 await self._call_event_handler("on_barge_in")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
             case _:
                 pass

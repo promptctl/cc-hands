@@ -92,6 +92,11 @@ def _settle[T](loop: asyncio.AbstractEventLoop, settled: asyncio.Future[T], work
         if not settled.cancelled():
             report()
 
+    tell(loop, deliver)
+
+
+def tell[*Args](loop: asyncio.AbstractEventLoop, callback: Callable[[*Args], object], *args: *Args) -> None:
+    """Run `callback` on `loop`, from whichever thread. [LAW:single-enforcer] the one hop onto the loop that lets go of
+    a loop already closed: that is only when the run has already ended, and there is nobody left to tell."""
     with contextlib.suppress(RuntimeError):
-        # The loop is closed only when the run has already ended; there is nobody left to tell.
-        loop.call_soon_threadsafe(deliver)
+        loop.call_soon_threadsafe(callback, *args)
