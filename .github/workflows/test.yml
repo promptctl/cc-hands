@@ -61,6 +61,7 @@ jobs:
       # a model's directory holds only links into the hub's shared store of blobs, where its weights are. Keyed on the
       # revisions, the one thing the weights depend on, so an edit to the rest of any of the files still finds them.
       - name: The speech models' pinned revisions
+        if: matrix.fetches
         id: speech
         run: |
           revisions=""
@@ -80,6 +81,7 @@ jobs:
       # checksum, and the mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the
       # pin and on the release.
       - name: The brain's pinned Claude Code and the mock's release
+        if: matrix.fetches
         id: e2e
         run: |
           claude=$(sed -n 's/^VERSION = "\([0-9.]*\)"$/\1/p' src/hands/brain/pinned.py)

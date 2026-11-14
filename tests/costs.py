@@ -1,10 +1,11 @@
-"""What each test cost, read from the report log every run of the suite writes (pyproject's addopts): the run, each module,
+"""What each test cost, read from the report log a run of the suite writes: the run, each module,
 then each test, slowest first. CI prints this into the job's log, so `gh run view <id> --log` reads any run's, cancelled or
 red ones too, and reading it starts nothing.
 
     uv run --no-sync python tests/costs.py [LOG]
 
-LOG is the report log to read, where a run was given one of its own (the Makefile's targets each write theirs).
+LOG is the report log to read: a bare pytest writes the one pyproject's addopts names, which is where no LOG looks, and each of
+the Makefile's targets writes its own, which CI's cost report is given.
 """
 
 import json
