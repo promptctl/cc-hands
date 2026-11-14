@@ -1,5 +1,5 @@
-"""Whisper, the transcriber on the hold owner (`hands.voice.clipowner`): it transcribes each hold the key sent, whole, as it
-ends (hands.voice.transcription), and those are the words a turn sends. A hold still open is heard by the streaming
+"""Whisper, the transcriber on the clip owner (`hands.voice.clipowner`): it transcribes each clip the key sent, whole, as it
+ends (hands.voice.transcription), and those are the words a turn sends. A clip still open is heard by the streaming
 recognizer (`hands.voice.streaming`), whose words only cut."""
 
 import threading
@@ -23,20 +23,20 @@ _REPEATING = 2.4
 # -0.89 to -1.11 (hands-dictation-d7i).
 _GUESSED = -1.5
 
-# Silence after a hold's last sample: a segment that ends right where the speech stopped has its last word dropped or
+# Silence after a clip's last sample: a segment that ends right where the speech stopped has its last word dropped or
 # garbled, so Whisper hears half a second of it past the end, as Pipecat padded every segment it gave a transcriber.
 _TRAILING_SILENCE = bytes(SECOND // 2)
 
 
 class Whisper:
-    """Whisper large-v3-turbo on MLX: the hold owner's transcriber."""
+    """Whisper large-v3-turbo on MLX: the clip owner's transcriber."""
 
     def __init__(self, *, clock: Clock, prompt: Callable[[], Awaitable[str | None]], record: Record) -> None:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
             annotate(model=transcription.MODEL)
-        # The vocabulary each hold is transcribed with, read as it is: see hands.voice.vocabulary.
+        # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
         self._prompt = prompt
         self._record = record
         # [LAW:single-enforcer] the one thread the model runs on: a transcription given up on is still running, and the
@@ -44,22 +44,22 @@ class Whisper:
         self._model = SerialThread("Whisper")
 
     async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
-        """The words said in a hold of the key's, primed with the vocabulary as it is now; recorded, so "I spoke and nothing
+        """The words said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke and nothing
         happened" can be looked into."""
         heard = await self._heard(clip.number, audio, await self._prompt())
         self._record(heard)
         return heard.said
 
     async def _heard(self, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
-        """What was said in a hold's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the vocabulary.
+        """What was said in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the vocabulary.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in and one Whisper only guessed
-        at: that is what a primed Whisper makes of noise. A hold with nothing said in it comes back with no segment.
+        at: that is what a primed Whisper makes of noise. A clip with nothing said in it comes back with no segment.
         """
-        # Set once nobody waits for this hold's transcription any more: the model is not run on it if it has yet to be.
+        # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
-            # Off the loop: the model runs for a third of a second a hold, and the speaker and the key go on meanwhile.
+            # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
             scored = await self._model.run(lambda: [] if given_up.is_set() else transcription.segments(audio + _TRAILING_SILENCE, prompt))
         finally:
             given_up.set()

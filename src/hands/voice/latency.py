@@ -56,12 +56,12 @@ class Window:
 
 @dataclass
 class Turn:
-    """The user's turn being taken in, since the last one ended: whether any hold of it had words, whether a stage
+    """The user's turn being taken in, since the last one ended: whether any clip of it had words, whether a stage
     failed while it was taken in, whether it took over from hands (`hands.voice.turnstart`), the window its last release
     opened, and the window its first release found open.
 
-    A turn is Pipecat's and takes in every hold pressed before the hold owner was done with the one before (see
-    hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
+    A turn is Pipecat's and takes in every clip opened before the clip owner was done with the one before (see
+    hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one clip: a clip
     with nothing said in it, or one Whisper failed on, released beside one whose words are in, is still answered.
     """
 
@@ -92,22 +92,22 @@ class LatencyObserver(BaseObserver):
         # the speaker going from silent to sounding is the first audio, and the user falling silent is the
         # release [LAW:one-source-of-truth].
         self._speaking = False
-        self._holding = False
+        self._clip_open = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
         now = self._clock.now()
         frame = data.frame
         if isinstance(frame, VADUserStartedSpeakingFrame):
-            self._holding = True
+            self._clip_open = True
             return
         if isinstance(frame, ClipDiscarded):
-            # A hold thrown away is no release: nothing of it is sent, so there is no reply to time from it.
-            if self._holding:
+            # A clip thrown away is no release: nothing of it is sent, so there is no reply to time from it.
+            if self._clip_open:
                 self._told("discarded")
-            self._holding = False
+            self._clip_open = False
             return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
-            if self._holding:
+            if self._clip_open:
                 # The release is what the window's numbers are measured from, so it is also what opens the
                 # window — and what opens it is the user falling silent, not each push of the frame saying so.
                 # Opened on the frame, the second push would throw away the milestones the first push's window had
@@ -117,7 +117,7 @@ class LatencyObserver(BaseObserver):
                     self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
                 self._told("released")
-            self._holding = False
+            self._clip_open = False
             return
         if isinstance(frame, BotStartedSpeakingFrame):
             if not self._speaking:
@@ -163,7 +163,7 @@ class LatencyObserver(BaseObserver):
                         # No release is waiting on anything, so the error is of nothing a user asked for.
                         pass
                     case window if window is self._turn.released:
-                        # The turn is still being taken in, so nothing has been asked of the model for it: a hold
+                        # The turn is still being taken in, so nothing has been asked of the model for it: a clip
                         # Whisper failed on ends the wait only if the turn ends with no words from any other.
                         self._turn.failed = True
                     case window:

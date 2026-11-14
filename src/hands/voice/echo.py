@@ -4,8 +4,8 @@ With speakers on, the room carries every reply to the microphone. WebRTC's echo 
 binding of its audio processing module) is told what the speaker plays, the far-end or reference signal, and subtracts
 the echo of it from every microphone buffer, the near-end signal, estimating the delay and the room's response as it
 goes. Measured 2026-10-03 on MacBook Pro speakers and microphone, through hands' own transport: about 27 dB of the
-echo removed; a press mid-reply with nobody speaking left no word of the reply in 8 holds of 8, where the raw
-microphone made one of it ("Run.", "in the") in every hold; a voice starting 50 ms after the press kept its first word
+echo removed; a press mid-reply with nobody speaking left no word of the reply in 8 clips of 8, where the raw
+microphone made one of it ("Run.", "in the") in every clip; a voice starting 50 ms after the press kept its first word
 in 8 of 8, where muting the microphone until the reply's sound had died away lost it in 8 of 8.
 """
 

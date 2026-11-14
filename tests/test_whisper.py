@@ -1,4 +1,4 @@
-"""Whisper on MLX: each hold transcribed in hands' own process, with mlx_whisper's transcription standing in for the
+"""Whisper on MLX: each clip transcribed in hands' own process, with mlx_whisper's transcription standing in for the
 model, and what hands takes as said from the segments it answers with."""
 
 from collections.abc import Awaitable, Callable
@@ -50,7 +50,7 @@ def primed(*prompts: str | None) -> Callable[[], Awaitable[str | None]]:
 
 SILENCE = b"\x00\x00" * 16_000
 
-# Half a second of silence, which Whisper hears after every hold.
+# Half a second of silence, which Whisper hears after every clip.
 TRAILING = np.zeros(8_000, dtype=np.float32)
 
 
@@ -58,31 +58,31 @@ def clip(number: int) -> Clip:
     return Clip(number, "shortcut")
 
 
-async def test_whisper_has_loaded_the_model_its_holds_transcribe_with_once_built(model: Model) -> None:
-    """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first hold pays for
-    no load only if the one done at construction asked for exactly what a hold's transcription asks for."""
+async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
+    """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first clip pays for
+    no load only if the one done at construction asked for exactly what a clip's transcription asks for."""
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     await whisper.transcribed(clip(1), SILENCE)
 
-    [(_, loaded), (_, held)] = model.asked
-    assert loaded == held == {"path_or_hf_repo": transcription.MODEL, "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
+    [(_, loaded), (_, transcribed)] = model.asked
+    assert loaded == transcribed == {"path_or_hf_repo": transcription.MODEL, "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert (event.outcome, model_facts(event)) == ("ok", {"model": transcription.MODEL})
 
 
-async def test_each_hold_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:
+async def test_each_clip_is_transcribed_from_its_samples_primed_with_the_vocabulary_as_it_is_then(model: Model) -> None:
     whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware", None, "sessionStore"), record=lambda _: None)
     samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
 
     for number in (1, 2, 3):
         await whisper.transcribed(clip(number), samples.tobytes())
 
-    held = model.asked[1:]
-    # The hold's own samples, then the silence a segment is heard with after its last word.
-    assert all(np.array_equal(audio, np.concatenate([samples.astype(np.float32) / 32768.0, TRAILING])) for audio, _ in held)
-    assert [options["initial_prompt"] for _, options in held] == ["authMiddleware", None, "sessionStore"]
+    transcribed = model.asked[1:]
+    # The clip's own samples, then the silence a segment is heard with after its last word.
+    assert all(np.array_equal(audio, np.concatenate([samples.astype(np.float32) / 32768.0, TRAILING])) for audio, _ in transcribed)
+    assert [options["initial_prompt"] for _, options in transcribed] == ["authMiddleware", None, "sessionStore"]
 
 
 async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) -> None:
@@ -102,7 +102,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
     said = [await whisper.transcribed(clip(number), SILENCE) for number in range(1, 6)]
 
     assert said == [None, None, None, None, "Okay."]
-    # Each hold is recorded with what was dropped from it and why, so a hold that sent nothing can be looked into.
+    # Each clip is recorded with what was dropped from it and why, so a clip that sent nothing can be looked into.
     assert [entry for entry in recorded if isinstance(entry, ClipHeard)] == [
         ClipHeard(1, None, ()),
         ClipHeard(2, None, (Unsaid(".", 0.11, -0.5),)),
@@ -112,7 +112,7 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
     ]
 
 
-async def test_a_hold_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
+async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
     model.answers += [[], RuntimeError("Metal ran out of memory"), [("Okay.", 0.38, -0.5)]]
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)

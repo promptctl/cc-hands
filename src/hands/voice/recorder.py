@@ -1,18 +1,18 @@
-"""The recorder: each hold of the key's kept on disk as hands heard it, after the echo canceller, beside what hands was
+"""The recorder: each clip of the key's kept on disk as hands heard it, after the echo canceller, beside what hands was
 playing over it, so real use becomes labelled data to fit the voiceprint thresholds on (`hands.voice.voiceprints`);
 nothing here loads Pipecat, and nothing here plays a sound.
 
-It is one listener on the hold owner (`hands.voice.clipowner`), given each hold whole as it ends, and writes it off the
-event loop into its run's own directory: `<hold>.heard.wav`, mono 16-bit at RATE; `<hold>.played.wav`, what the desk's
-speaker played over it, the echo canceller's reference, put in the hold's format so the two line up sample for sample,
-which the phone has none of; and `<hold>.json`, what opened it, what the gate did with it, and every voice of hands'
+It is one listener on the clip owner (`hands.voice.clipowner`), given each clip whole as it ends, and writes it off the
+event loop into its run's own directory: `<clip>.heard.wav`, mono 16-bit at RATE; `<clip>.played.wav`, what the desk's
+speaker played over it, the echo canceller's reference, put in the clip's format so the two line up sample for sample,
+which the phone has none of; and `<clip>.json`, what opened it, what the gate did with it, and every voice of hands'
 own TTS played over it.
 
-It keeps hands' own echo too, labelled. While the desk is at the off level, where only a held key opens a hold, with
+It keeps hands' own echo too, labelled. While the desk is at the off level, where only the shortcut opens a clip, with
 no press arming or held, and the speaker is playing hands' TTS, what the desk's microphone hears is nobody's but
-hands', whatever is left of it after the canceller: the user is on the held key alone until promptctl-voice-i15t.8vg.idh.
-Each stretch of it is an echo span, kept as a hold is, `echo-<span>.*`, its `.json` saying no hold was open, and
-identified as one speaker at its end, so the speaker check is fitted on held-key use (promptctl-voice-i15t.8vg.xvr).
+hands', whatever is left of it after the canceller: the user is on the shortcut alone until promptctl-voice-i15t.8vg.idh.
+Each stretch of it is an echo span, kept as a clip is, `echo-<span>.*`, its `.json` saying no clip was open, and
+identified as one speaker at its end, so the speaker check is fitted on shortcut use (promptctl-voice-i15t.8vg.xvr).
 """
 
 import asyncio
@@ -78,7 +78,7 @@ def written(path: Path, audio: bytes) -> int:
 
 
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
-    """[LAW:single-enforcer] one recording, a hold's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
+    """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was and
     every voice of hands' TTS over it; how many bytes they are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)
@@ -142,10 +142,10 @@ def echoed(each: Overheard) -> bool:
 
 
 class Recorder:
-    """Keeps every hold of the key's, and each echo span, in a directory of the run's own under `root`, named `named`,
+    """Keeps every clip of the key's, and each echo span, in a directory of the run's own under `root`, named `named`,
     and the store under `cap`.
 
-    [LAW:no-silent-failure] a hold that cannot be written fails its hearing, the unit it is written in, with why, a
+    [LAW:no-silent-failure] a clip that cannot be written fails its hearing, the unit it is written in, with why, a
     span its `echo.kept` unit, and a prune that fails its own `clips.pruned` unit; the next is written as if none had.
     """
 
@@ -175,7 +175,7 @@ class Recorder:
 
     def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
         async def keep() -> Heard:
-            # [LAW:nothing-unseen] how long the hold was, whether what hands played over it went with it, and in which voices.
+            # [LAW:nothing-unseen] how long the clip was, whether what hands played over it went with it, and in which voices.
             annotate(seconds=round(sound.seconds, 3), played=sound.played is not None, voices=voices(sound))
             facts: dict[str, object] = dict(clip=clip.number, opener=clip.opener, fate=fate)
             directory = await asyncio.to_thread(self._written, str(clip.number), sound, facts)
@@ -204,7 +204,7 @@ class Recorder:
     async def overhear(self, echoes: Callable[[], AbstractAsyncContextManager[AsyncIterator[Overheard]]]) -> None:
         """Keep each echo span the desk overhears, until cancelled: a span runs while each buffer is hands' echo, as it
         was captured (`echoed`), and ends at the first that is not, a press or a level that would let a voice open a
-        hold included."""
+        clip included."""
         heard, played = bytearray(), list[Reference | None]()
         async with echoes() as overheard:
             async for each in overheard:

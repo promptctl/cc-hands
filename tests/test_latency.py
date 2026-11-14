@@ -64,7 +64,7 @@ async def test_an_answered_turn_is_told_milestone_by_milestone_each_once_however
     assert milestones == ["released", "transcript", "first LLM token", "first audio"]
 
 
-async def test_a_hold_thrown_away_is_told_as_discarded_once_and_never_as_released() -> None:
+async def test_a_clip_thrown_away_is_told_as_discarded_once_and_never_as_released() -> None:
     discarded = ClipDiscarded()
     assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == ["discarded"]
 
@@ -111,8 +111,8 @@ async def test_a_reply_that_finished_while_a_wordless_turn_was_open_is_not_given
     assert lines[-1] == "latency: first audio, answering no user turn"
 
 
-async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_transcribed() -> None:
-    """A press thrown away while the hold before it is with Whisper is done with at once; the earlier hold's words are
+async def test_another_clip_done_with_says_nothing_of_the_clip_still_being_transcribed() -> None:
+    """A press thrown away while the clip before it is with Whisper is done with at once; the earlier clip's words are
     still to come."""
     milestones = await told(
         opened(1),
@@ -127,9 +127,9 @@ async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_trans
     assert milestones == ["released", "discarded", "transcript"]
 
 
-async def test_a_hold_with_no_words_in_a_turn_that_has_some_is_still_answered_and_timed_from_its_release() -> None:
-    """A press while Whisper is on the hold before joins that hold's turn. Its own silence sends nothing more, but the
-    turn is sent with the earlier hold's words, and the reply is the answer to the release the user made last."""
+async def test_a_clip_with_no_words_in_a_turn_that_has_some_is_still_answered_and_timed_from_its_release() -> None:
+    """A press while Whisper is on the clip before joins that clip's turn. Its own silence sends nothing more, but the
+    turn is sent with the earlier clip's words, and the reply is the answer to the release the user made last."""
     lines, milestones = await observed(
         opened(1),
         VADUserStoppedSpeakingFrame(),
@@ -166,18 +166,18 @@ async def test_a_press_thrown_away_after_a_turn_was_sent_says_nothing_of_the_rep
 
 
 async def test_a_stage_failing_while_a_release_waits_is_told_as_failed_and_never_as_no_words() -> None:
-    """Whisper pushes its error and then says it is done with the hold, so the turn ends with no words in it: the page
+    """Whisper pushes its error and then says it is done with the clip, so the turn ends with no words in it: the page
     and the log would both say the user said nothing. What hands says next is the failure, and no answer."""
-    error = ErrorFrame("Whisper could not transcribe hold 1")
+    error = ErrorFrame("Whisper could not transcribe clip 1")
     lines, milestones = await observed(opened(1), VADUserStoppedSpeakingFrame(), error, error, resolved(1), UserStoppedSpeakingFrame(), BotStartedSpeakingFrame())
     assert milestones == ["released", "failed"]
     assert lines[-1] == "latency: first audio, answering no user turn"
 
 
-async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_and_the_reply_is_timed() -> None:
-    """The turn is sent with the other hold's words and answered. The error's frame is still crossing boundaries
+async def test_a_clip_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_and_the_reply_is_timed() -> None:
+    """The turn is sent with the other clip's words and answered. The error's frame is still crossing boundaries
     upstream after the turn has ended, and is the same failure it was."""
-    error = ErrorFrame("Whisper could not transcribe hold 1")
+    error = ErrorFrame("Whisper could not transcribe clip 1")
     lines, milestones = await observed(
         opened(1),
         VADUserStoppedSpeakingFrame(),
@@ -197,7 +197,7 @@ async def test_a_hold_whisper_failed_on_in_a_turn_that_has_words_fails_nothing_a
 
 
 async def test_an_error_with_no_release_waiting_says_nothing_of_the_next_turn() -> None:
-    """A narration nobody asked for failing is no failure of the hold pressed after it."""
+    """A narration nobody asked for failing is no failure of the clip opened after it."""
     milestones = await told(ErrorFrame("no voice"), opened(1), VADUserStoppedSpeakingFrame(), resolved(1), UserStoppedSpeakingFrame())
     assert milestones == ["released", "no words"]
 
@@ -243,7 +243,7 @@ async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Fra
     assert all("after key release" not in line for line in await logged(frame))
 
 
-async def test_a_hold_thrown_away_is_no_release_to_measure_a_narration_from() -> None:
+async def test_a_clip_thrown_away_is_no_release_to_measure_a_narration_from() -> None:
     lines = await logged(VADUserStartedSpeakingFrame(), ClipDiscarded(), BotStartedSpeakingFrame())
     assert lines == ["latency: first audio, answering no user turn"]
 

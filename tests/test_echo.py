@@ -98,7 +98,7 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
 
 
 def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_of_its_frames_as_it_was_played() -> None:
-    """What hands keeps of what it said over a hold: the reference frame each 10 ms of the microphone was matched with,
+    """What hands keeps of what it said over a clip: the reference frame each 10 ms of the microphone was matched with,
     in the speaker's own format, untouched on the capture thread, where it was hands' TTS; None for anything else."""
     canceller = EchoCanceller()
     tone = (8000 * np.sin(2 * np.pi * 440 * np.arange(int(0.02 * PLAYED_RATE)) / PLAYED_RATE)).astype(np.int16).tobytes()

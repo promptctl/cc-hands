@@ -1,7 +1,7 @@
 """Voiceprints: each speaker decided by the one table of score thresholds by length, and told with the window scored;
 hands' own prints made from its TTS on threads of their own, once ever for each voice and kept in the home, of the voice
 it speaks in now and the one before; every speaker Unidentified, saying why, where there is no model or no print of a
-voice to score against; a person in a hold one for that hold alone; and a model that does not load failing loudly,
+voice to score against; a person in a clip one for that clip alone; and a model that does not load failing loudly,
 naming its file. The real model on recorded echo is test_streaming's."""
 
 import asyncio
@@ -256,7 +256,7 @@ async def test_a_model_that_does_not_load_fails_its_unit_and_every_speaker_says_
     assert whos(event) == [Unidentified(3.0, "the voiceprint model did not load: RuntimeError: the voiceprint model x.onnx did not load")]
 
 
-async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_end_comes_after_the_next_holds_start(tmp_path: Path) -> None:
+async def test_a_person_in_a_clip_stays_one_for_that_clip_alone_even_where_its_end_comes_after_the_next_clips_start(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     # Speaker 0 is a person's voice at 5 samples and hands' at 7.
     model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
@@ -265,9 +265,9 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(CLIP, (voiced(5, 1.5),))
     prints.identify(SECOND, (voiced(7, 3.0),))
-    # Hold 1's end, behind hold 2's first identification: still its person.
+    # Clip 1's end, behind clip 2's first identification: still its person.
     prints.ended(CLIP, (voiced(7, 3.0),))
-    # And hold 2's speaker is not hold 1's person.
+    # And clip 2's speaker is not clip 1's person.
     prints.identify(SECOND, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 4)]
     window = Window(0.0, 0.0)
@@ -275,14 +275,14 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
     assert [event.facts["clip"] for event in entries(recorded, "voiceprints.identified")] == [1, 2, 1, 2]
 
 
-async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_person_in_it(tmp_path: Path) -> None:
+async def test_a_clip_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_person_in_it(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(CLIP, (voiced(5, 1.5),))
-    # A broken stream, or an end the owner gave up on, ends the hold with nobody: no event, and the person let go of.
+    # A broken stream, or an end the owner gave up on, ends the clip with nobody: no event, and the person let go of.
     prints.ended(CLIP, ())
     prints.identify(CLIP, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 2)]

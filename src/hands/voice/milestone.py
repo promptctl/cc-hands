@@ -6,8 +6,8 @@ phone's page, which shows the user holding it what became of what they said.
 
 from typing import Literal
 
-# In the order a turn that is answered passes them. `released` is the hold taken, to be transcribed and sent, and
-# `discarded` the hold thrown away instead; `no words` is a turn Whisper found nothing said in, and `failed` a stage
+# In the order a turn that is answered passes them. `released` is the clip taken, to be transcribed and sent, and
+# `discarded` the clip thrown away instead; `no words` is a turn Whisper found nothing said in, and `failed` a stage
 # failing so that the release goes unanswered, each of which ends the wait. `first audio` is the speaker's first sound
 # after the release, whatever hands said with it.
 Milestone = Literal["released", "discarded", "transcript", "no words", "failed", "first LLM token", "first audio"]

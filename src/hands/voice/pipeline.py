@@ -56,7 +56,7 @@ class VoiceConfig:
 
 @dataclass(frozen=True)
 class Voice:
-    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the phone, the three stages that report failures (the hold owner for the user's words, the model's stage, pocket-tts), and the two sides of the conversation."""
+    """The assembled pipeline plus the handles its edges need: the key, the audio devices, the phone, the three stages that report failures (the clip owner for the user's words, the model's stage, pocket-tts), and the two sides of the conversation."""
 
     worker: PipelineWorker
     key: PushToTalk
@@ -82,12 +82,12 @@ def build_voice(
     clips: Path,
     record: Record,
 ) -> Voice:
-    """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer and the recorder
+    """Wire mic, push-to-talk, the clip owner with Whisper transcribing and the streaming recognizer and the recorder
     listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each speaker the
-    streaming recognizer hears is identified by `prints`, and each hold the recorder hears is kept under `clips`, in a
+    streaming recognizer hears is identified by `prints`, and each clip the recorder hears is kept under `clips`, in a
     directory of this build's own."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
-    # it mutes the microphone at the transport, and the hold owner reads it off
+    # it mutes the microphone at the transport, and the clip owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
     # aggregator runs no VAD of its own. The turn opens on the press, and cuts
     # hands off there or, where the voice pressed it, on its first words
@@ -112,10 +112,10 @@ def build_voice(
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
     # hands' own print of the voice it speaks in, made on the voiceprints' own threads: nothing here waits on it.
     prints.speaking_in(voices.source(config.voice))
-    # Whisper says what each hold sent held; the streaming recognizer hears each hold's words while it is open, each with
-    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each hold, and
+    # Whisper says what each clip sent held; the streaming recognizer hears each clip's words while it is open, each with
+    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each clip, and
     # each echo span the run overhears (`Voice.recorder`), in a directory of the run's own, named by when the voice was
-    # built: a hold's number is the run's.
+    # built: a clip's number is the run's.
     recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
     listeners = (streaming.StreamingRecognizer(clock, streaming.load, prints, record), recorder)
     stt = ClipOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
@@ -126,9 +126,9 @@ def build_voice(
         stop=[KeyTurnStop()],
     )
     user_aggregator, assistant_aggregator = conversation.turns(
-        # [LAW:single-enforcer] the key's holds alone end a user turn. Pipecat's aggregator also ends one itself after
+        # [LAW:single-enforcer] the key's clips alone end a user turn. Pipecat's aggregator also ends one itself after
         # this long with no speech and no transcript, which a slow or queued transcription outlasts: the turn would end
-        # empty and the hold's words go out with the next one. The hold owner resolves every hold it opens, heard or not
+        # empty and the clip's words go out with the next one. The clip owner resolves every clip it opens, heard or not
         # or failed, and fails one it cannot transcribe within a minute or as long as it ran, so every turn ends.
         LLMUserAggregatorParams(user_turn_strategies=turns, user_turn_stop_timeout=math.inf),
     )

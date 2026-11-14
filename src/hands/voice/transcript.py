@@ -17,7 +17,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 
 @dataclass(frozen=True)
 class Heard:
-    """The user's words, as Whisper heard one hold of them."""
+    """The user's words, as Whisper heard one clip of them."""
 
     text: str
 
@@ -44,10 +44,10 @@ Line = Heard | Saying | Spoken | BargeIn
 
 
 class TranscriptObserver(BaseObserver):
-    """Tells `told` each line of the transcript, read off what `stt`, the hold owner, and `output`, the output transport, push.
+    """Tells `told` each line of the transcript, read off what `stt`, the clip owner, and `output`, the output transport, push.
 
     Every frame is observed once per processor boundary it crosses, so each line is read off the one processor that
-    makes it: the user's words where the hold owner pushes them, hands' where the output transport lets them go.
+    makes it: the user's words where the clip owner pushes them, hands' where the output transport lets them go.
     """
 
     def __init__(self, stt: FrameProcessor, output: FrameProcessor, told: Callable[[Line], None]) -> None:
