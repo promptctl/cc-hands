@@ -104,7 +104,7 @@ def _lines(directory: Path) -> list[dict[str, object]]:
 def _event(**overrides: Any) -> WideEvent:
     fields: dict[str, Any] = {
         "event": "delta.read", "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7", "parent_id": None,
-        "started_at": STARTED, "duration_ms": 12.5, "outcome": "ok", "error": None, "trace": (),
+        "started_at": STARTED, "duration_ms": 12.5, "outcome": "ok", "error": None, "stacktrace": (),
         "counts": {"commits": 2, "files": 0}, "facts": {"session": "s1", "clean": True, "paths": ("a", "b")},
     }  # fmt: skip
     return WideEvent(**{**fields, **overrides})
@@ -131,15 +131,15 @@ def test_an_event_is_one_span_under_its_trace_with_its_counts_and_facts_as_attri
 
 
 def test_a_failed_event_is_an_error_span_carrying_what_it_raised_and_a_cancelled_one_is_unset() -> None:
-    failure = _event(outcome="failed", error="RuntimeError: the disk is full", trace=("RuntimeError: the disk is full", "delta.py:9 in read"))
+    failure = _event(outcome="failed", error="RuntimeError: the disk is full", stacktrace=("RuntimeError: the disk is full", "delta.py:9 in read"))
     failed, cancelled = _spans(spans([failure, _event(outcome="cancelled")]))
     assert failed["status"] == {"code": 2, "message": "RuntimeError: the disk is full"}
-    assert {"key": "trace", "value": {"stringValue": "RuntimeError: the disk is full\ndelta.py:9 in read"}} in failed["attributes"]
+    assert {"key": "exception.stacktrace", "value": {"stringValue": "RuntimeError: the disk is full\ndelta.py:9 in read"}} in failed["attributes"]
     assert cancelled["status"] == {"code": 0, "message": ""}
 
 
 def test_an_event_is_one_log_record_named_by_its_body_at_its_audit_level_carrying_its_span_and_its_attributes() -> None:
-    sent = logs([_event(), _event(outcome="failed", error="RuntimeError: the disk is full", trace=("RuntimeError: the disk is full",))])
+    sent = logs([_event(), _event(outcome="failed", error="RuntimeError: the disk is full", stacktrace=("RuntimeError: the disk is full",))])
     [resource] = cast(list[dict[str, Any]], sent["resourceLogs"])
     assert resource["resource"] == {"attributes": [{"key": "service.name", "value": {"stringValue": "hands"}}]}
     ok, failed = _log_records(sent)

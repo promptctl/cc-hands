@@ -43,7 +43,7 @@ type Fact = None | bool | int | float | str | datetime | timedelta | Path | StrE
 class WideEvent:
     """One run of one unit of work: what it was, when it began and how long it took, how it ended, and every count and
     fact the run annotated it with. `trace_id` is shared by every unit opened inside another, so a run's parts are one
-    trace, and `span_id` is this run's own within it, named as `parent_id` by each unit opened inside it. `error` and `trace` say what a failed run raised, as a Logged line does. `counts` holds every count the unit
+    trace, and `span_id` is this run's own within it, named as `parent_id` by each unit opened inside it. `error` and `stacktrace` say what a failed run raised, as a Logged line does. `counts` holds every count the unit
     declared, 0 for one the run never counted: ran and did nothing is a count of zero, where never ran is no event at all."""
 
     event: str
@@ -54,7 +54,7 @@ class WideEvent:
     duration_ms: float
     outcome: Outcome
     error: str | None
-    trace: tuple[str, ...]
+    stacktrace: tuple[str, ...]
     counts: Mapping[str, int]
     facts: Mapping[str, Fact]
 
@@ -120,16 +120,16 @@ def unit(event: str, emit: Callable[[WideEvent], None], began: Begun, counts: tu
         # A task the body started copied this unit along and may outlive it: what it adds now would change an event
         # already emitted and never reach the log, so it is refused instead.
         opened.closed = True
-        outcome, error, trace = _how(raised, opened.failure)
-        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, began.started_at, since(began.clock, began.began), outcome, error, trace, opened.counts, opened.facts))
+        outcome, error, stacktrace = _how(raised, opened.failure)
+        emit(WideEvent(event, opened.trace_id, opened.span_id, opened.parent_id, began.started_at, since(began.clock, began.began), outcome, error, stacktrace, opened.counts, opened.facts))
 
 
 def ended(event: str, emit: Callable[[WideEvent], None], began: Begun, raised: BaseException | None, failure: str | None = None, /, **facts: Fact) -> None:
     """Emit the event of a unit of work `began` elsewhere that no one body runs, as it ends: ok where nothing `raised`,
     cancelled where a CancelledError did, failed with what did otherwise, or with the `failure` it said, as `fail` says
     one. What raised is only written down, never raised again here, so its traceback stays the one it came up through."""
-    outcome, error, trace = _how(raised, failure)
-    emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.clock, began.began), outcome, error, trace, {}, facts))
+    outcome, error, stacktrace = _how(raised, failure)
+    emit(WideEvent(event, began.span.trace_id, began.span.span_id, began.span.parent_id, began.started_at, since(began.clock, began.began), outcome, error, stacktrace, {}, facts))
 
 
 def _how(raised: BaseException | None, failure: str | None) -> tuple[Outcome, str | None, tuple[str, ...]]:

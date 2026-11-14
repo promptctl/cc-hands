@@ -247,7 +247,7 @@ class Logged:
     source: str
     message: str
     where: str
-    trace: tuple[str, ...]
+    stacktrace: tuple[str, ...]
 
 
 Entry = (
@@ -508,7 +508,7 @@ def logged_to(record: Record, shown: "Callable[[LogRecord], bool]") -> int:
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",
-                trace=() if exception is None or exception.value is None else chain(exception.value),
+                stacktrace=() if exception is None or exception.value is None else chain(exception.value),
             )
         )
 

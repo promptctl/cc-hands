@@ -529,7 +529,7 @@ async def test_a_permission_whose_read_breaks_is_no_turns_and_is_refused_said_on
     assert (dialogs(brain), turn.broken) == ((), None)
     [permission] = events(recorded, "brain.permission")
     assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "OSError: the transcript went", Deny(BROKEN))
-    assert permission.trace
+    assert permission.stacktrace
 
 
 async def test_a_permission_the_model_could_not_hold_is_refused_at_its_hook_and_said_once() -> None:

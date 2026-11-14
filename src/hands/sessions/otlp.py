@@ -426,8 +426,8 @@ def _ended(event: WideEvent) -> int:
 
 def _fields(event: WideEvent) -> dict[str, object]:
     # [LAW:one-source-of-truth] the event's own fields under the names its audit line gives them, so one query reads
-    # either; counts and facts are flattened under their names, as OTLP attributes are spelled.
-    failed: dict[str, object] = {} if event.error is None else {"error": event.error, "trace": "\n".join(event.trace)}
+    # either, bar the stacktrace, which OTLP names exception.stacktrace; counts and facts are flattened under their names, as OTLP attributes are spelled.
+    failed: dict[str, object] = {} if event.error is None else {"error": event.error, "exception.stacktrace": "\n".join(event.stacktrace)}
     return {"outcome": event.outcome, **failed, **{f"counts.{name}": n for name, n in event.counts.items()}, **{f"facts.{name}": fact for name, fact in event.facts.items()}}
 
 

@@ -476,7 +476,7 @@ async def test_an_offer_whose_body_cannot_be_read_is_one_failed_event_saying_wha
     assert unread.status == 500
     [event] = calls(recorded)
     assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "127.0.0.1"})
-    assert event.error is not None and event.error.startswith("UnicodeDecodeError") and event.trace
+    assert event.error is not None and event.error.startswith("UnicodeDecodeError") and event.stacktrace
 
 
 async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> None:
@@ -486,7 +486,7 @@ async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> 
         await phone.answer(Offer("not a session description", "offer", PAGE_RATE, FIRST), "192.168.7.23", begun(SYSTEM))
     [event] = calls(recorded)
     assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "192.168.7.23", "asked": FIRST})
-    assert event.error is not None and event.error.startswith("ValueError") and event.trace
+    assert event.error is not None and event.error.startswith("ValueError") and event.stacktrace
 
 
 class Desk:

@@ -153,4 +153,4 @@ async def test_a_call_that_raises_is_one_failed_event_with_what_raised_and_where
     event = run(recorded)
     assert (event.outcome, event.error, event.facts) == ("failed", "RuntimeError: the transcript went away", {"tool": "broken", "called": Called({"session": "s1"}, None)})
     # Where it was raised, a frame of the test's own, is the last frame.
-    assert event.trace[-1].endswith(" in broken")
+    assert event.stacktrace[-1].endswith(" in broken")

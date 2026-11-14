@@ -169,7 +169,7 @@ def test_each_entry_is_one_line_stamped_with_when_it_was_written(tmp_path: Path)
 def test_a_line_is_an_error_when_it_is_a_failure_or_says_what_failed_and_nothing_else_is(tmp_path: Path) -> None:
     path = tmp_path / "audit"
     log = AuditLog(path, clock=lambda: AT)
-    log.record(Logged(level="error", source="hands.x:f", message="broke", where="/x.py:1", trace=()))
+    log.record(Logged(level="error", source="hands.x:f", message="broke", where="/x.py:1", stacktrace=()))
     with unit("name.judged", log.record, begun(SYSTEM)):
         pass
     with unit("name.judged", log.record, begun(SYSTEM)):
@@ -544,16 +544,16 @@ def test_an_error_logged_anywhere_is_a_failure_line_with_its_exception_where_it_
             source="test_audit:_write_heartbeat",
             message="cannot write the heartbeat: OSError: no space left",
             where=f"{__file__}:{at['write'] + 5}",
-            trace=("OSError: no space left", f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
+            stacktrace=("OSError: no space left", f"{__file__}:{at['write'] + 3} in _write_heartbeat", f"{__file__}:{at['raise'] + 1} in _out_of_space"),
         ),
-        Logged(level="error", source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", trace=()),
+        Logged(level="error", source="test_audit:_write_heartbeat", message="no exception here", where=f"{__file__}:{at['write'] + 6}", stacktrace=()),
         # Raised from another, it comes after the one it was raised from: the first cause, where it began, is first.
         Logged(
             level="error",
             source="test_audit:_write_heartbeat",
             message="the daemon is not beating: RuntimeError: the heartbeat is lost",
             where=f"{__file__}:{at['write'] + 13}",
-            trace=(
+            stacktrace=(
                 "OSError: no space left",
                 f"{__file__}:{at['write'] + 9} in _write_heartbeat",
                 f"{__file__}:{at['raise'] + 1} in _out_of_space",

@@ -50,8 +50,8 @@ def test_a_failed_start_traces_only_the_frames_its_error_came_up_through() -> No
     with pytest.raises(ValueError, match="x"), run_start.ending(recorded.append):
         raise ValueError("x")
     [event] = events(recorded)
-    assert event.trace[0] == "ValueError: x"
-    assert not [line for line in event.trace if "wide.py" in line or line.endswith(" in ended")]
+    assert event.stacktrace[0] == "ValueError: x"
+    assert not [line for line in event.stacktrace if "wide.py" in line or line.endswith(" in ended")]
 
 
 def test_a_start_told_to_stop_before_it_was_ready_is_cancelled() -> None:

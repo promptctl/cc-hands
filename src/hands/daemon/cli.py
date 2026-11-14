@@ -116,14 +116,14 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
 
     [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
     than logs, still reaches the terminal its run is read on, as a logged error does. A unit that failed by raising has a
-    trace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
+    stacktrace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
     A backlog pass's line is read off its event alone, so the two can never disagree.
     """
 
     def both(entry: audit.Entry) -> None:
         record(entry)
         match entry:
-            case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
+            case wide.WideEvent(outcome="failed", stacktrace=(), event=event, error=error):
                 # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
                 audit.said(f"{event} failed" if error is None else f"{event} failed: {error}")
             case _:
