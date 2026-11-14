@@ -79,7 +79,7 @@ REFUSED = "the unit layer holds a test to nothing outside the process (tests/uni
 
 
 def held(config: pytest.Config) -> bool:
-    """Whether the run is in a layer's hold (tests/offline.py), the one place the option is read for it."""
+    """Whether the run is in a layer's hold (tests/offline.py)."""
     return config.getoption("layer", None) is not None
 
 
