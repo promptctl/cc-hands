@@ -64,11 +64,11 @@ class Home:
         return self.root / "wake-word"
 
     @property
-    def holds(self) -> Path:
-        """Each hold the desk or the phone heard, as hands heard it and with what hands was playing over it, one
+    def clips(self) -> Path:
+        """Each clip the desk or the phone heard, as hands heard it and with what hands was playing over it, one
         directory for each run, written by the daemon alone (hands.voice.recorder): the labelled data its voiceprint
         thresholds are fitted on."""
-        return self.root / "holds"
+        return self.root / "clips"
 
     @property
     def voiceprints(self) -> Path:

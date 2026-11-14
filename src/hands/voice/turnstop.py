@@ -2,7 +2,7 @@
 
 A turn is Pipecat's; a hold is the key's. They are not one to one: Pipecat keeps a turn open until it ends, so a press
 while the last hold is still being transcribed joins that turn rather than opening one. The hold owner
-(`hands.voice.holdowner`) numbers each hold as it opens, and says when it is done with it, after pushing whatever text the
+(`hands.voice.clipowner`) numbers each hold as it opens, and says when it is done with it, after pushing whatever text the
 hold had, or as soon as the holds ahead of it are done for a hold the key dropped. The turn ends when every hold it took
 in is done, so no hold's words are left out of it, and a hold with no words ends it as promptly as one with.
 """
@@ -21,7 +21,7 @@ from pipecat.frames.frames import (
 from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_stop import BaseUserTurnStopStrategy
 
-from hands.voice.holds import Hold
+from hands.voice.clips import Clip
 
 
 @dataclass(kw_only=True)
@@ -39,10 +39,10 @@ class Typed(DataFrame, UninterruptibleFrame):
 class TurnOpened(VADUserStartedSpeakingFrame):
     """The user started speaking: the key went down, opening this hold."""
 
-    hold: Hold
+    clip: Clip
 
 
-class HoldDiscarded(VADUserStoppedSpeakingFrame):
+class ClipDiscarded(VADUserStoppedSpeakingFrame):
     """The user stopped speaking, and what the hold recorded is thrown away: nothing of it is transcribed or sent."""
 
 
@@ -64,7 +64,7 @@ class TurnResolved(DataFrame, UninterruptibleFrame):
     Nothing else ends a turn, so the interruption a turn broadcasts cannot drop it on its way.
     """
 
-    hold: Hold
+    clip: Clip
 
 
 class KeyTurnStop(BaseUserTurnStopStrategy):
@@ -75,16 +75,16 @@ class KeyTurnStop(BaseUserTurnStopStrategy):
         # [LAW:one-source-of-truth] the hold owner opens and resolves the holds; this is the set it has opened and not yet
         # resolved. A set, because typed words are a hold that opens and ends at once, so it resolves ahead of a hold of the
         # key's that opened before it and is still open.
-        self._open: set[Hold] = set()
+        self._open: set[Clip] = set()
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame:
-            case TurnOpened(hold=hold):
-                self._open.add(hold)
-            case TurnResolved(hold=hold):
+            case TurnOpened(clip=clip):
+                self._open.add(clip)
+            case TurnResolved(clip=clip):
                 # The hold owner opens a hold, a system frame, before it pushes anything that resolves it, and a system frame is
                 # never overtaken; a hold resolved but never opened is the owner's bug, so it fails here.
-                self._open.remove(hold)
+                self._open.remove(clip)
                 if not self._open:
                     # A turn whose holds had no text ends with nothing aggregated, so nothing is sent to the model.
                     await self.trigger_user_turn_stopped()

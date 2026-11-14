@@ -3,7 +3,7 @@
 Pipecat's turn machinery, and the hold owner that cuts the holds every model
 hears, both run off the key. So the key *is* the VAD: every microphone frame
 carries the key it was captured under, and the hold owner
-(`hands.voice.holdowner`) says the user started or stopped speaking where those
+(`hands.voice.clipowner`) says the user started or stopped speaking where those
 keys change. The key is also the mute: the microphone bytes are silence unless
 the key is pressed (applied where they are captured, in
 `hands.voice.microphone`), and a hold's audio begins at its press, so what was
@@ -28,8 +28,8 @@ from hands.clock import Clock
 from hands.core.place import Modality, Place, modality_at
 from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
-from hands.voice.hold import Move
-from hands.voice.holds import Played
+from hands.voice.clips import Played
+from hands.voice.shortcut import Move
 from hands.voice.trigger import Trigger, place_of
 
 # [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
@@ -76,7 +76,7 @@ class Gate:
     dropped: int = 0
     # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
     # what reads a hold's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
-    opened: Trigger = "held key"
+    opened: Trigger = "shortcut"
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.

@@ -22,7 +22,7 @@ from hands.voice.pipeline import Voice
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
-from hands.voice.hold import TURN_LIMIT_SECONDS, Move
+from hands.voice.shortcut import TURN_LIMIT_SECONDS, Move
 
 
 @dataclass(frozen=True)

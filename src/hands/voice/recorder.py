@@ -2,7 +2,7 @@
 playing over it, so real use becomes labelled data to fit the voiceprint thresholds on (`hands.voice.voiceprints`);
 nothing here loads Pipecat, and nothing here plays a sound.
 
-It is one listener on the hold owner (`hands.voice.holdowner`), given each hold whole as it ends, and writes it off the
+It is one listener on the hold owner (`hands.voice.clipowner`), given each hold whole as it ends, and writes it off the
 event loop into its run's own directory: `<hold>.heard.wav`, mono 16-bit at RATE; `<hold>.played.wav`, what the desk's
 speaker played over it, the echo canceller's reference, put in the hold's format so the two line up sample for sample,
 which the phone has none of; and `<hold>.json`, what opened it, what the gate did with it, and every voice of hands'
@@ -33,14 +33,14 @@ import soxr
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
+from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Reference, Sound, decoded, voices
 from hands.voice.echo import Cancelled
-from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Reference, Sound, decoded, voices
 from hands.voice.voiceprints import WINDOW, Voiced
 
-# The most the holds store keeps, about nine hours of holds at 64 KB a second, heard and played. The recordings are the
+# The most the clips store keeps, about nine hours of clips at 64 KB a second, heard and played. The recordings are the
 # dataset the speaker check is fitted and checked on (promptctl-voice-i15t.8vg.xvr), kept as the most recent real use:
 # past this, whole runs go, oldest first.
-HOLDS_BYTES = 2 * 1024**3
+CLIPS_BYTES = 2 * 1024**3
 
 # A 10 ms slot of a recording, in samples at RATE: what the speaker's reference comes in.
 SLOT = RATE // 100
@@ -146,12 +146,12 @@ class Recorder:
     and the store under `cap`.
 
     [LAW:no-silent-failure] a hold that cannot be written fails its hearing, the unit it is written in, with why, a
-    span its `echo.kept` unit, and a prune that fails its own `holds.pruned` unit; the next is written as if none had.
+    span its `echo.kept` unit, and a prune that fails its own `clips.pruned` unit; the next is written as if none had.
     """
 
     name = "recorder"
 
-    def __init__(self, clock: Clock, root: Path, named: str, identify: Callable[[int, Voiced], None], record: Record, cap: int = HOLDS_BYTES) -> None:
+    def __init__(self, clock: Clock, root: Path, named: str, identify: Callable[[int, Voiced], None], record: Record, cap: int = CLIPS_BYTES) -> None:
         self._root = root
         self._named = named
         self._identify = identify
@@ -167,19 +167,19 @@ class Recorder:
         self._current = 0
         self._runs: dict[Path, int] = {}
 
-    def opened(self, hold: Hold, before: Sound) -> Hearings:
+    def opened(self, clip: Clip, before: Sound) -> Hearings:
         return ()
 
     def heard(self, sound: Sound) -> Hearings:
         return ()
 
-    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
         async def keep() -> Heard:
             # [LAW:nothing-unseen] how long the hold was, whether what hands played over it went with it, and in which voices.
             annotate(seconds=round(sound.seconds, 3), played=sound.played is not None, voices=voices(sound))
-            facts: dict[str, object] = dict(hold=hold.number, opener=hold.opener, fate=fate)
-            directory = await asyncio.to_thread(self._written, str(hold.number), sound, facts)
-            annotate(kept=directory / f"{hold.number}.heard.wav")
+            facts: dict[str, object] = dict(clip=clip.number, opener=clip.opener, fate=fate)
+            directory = await asyncio.to_thread(self._written, str(clip.number), sound, facts)
+            annotate(kept=directory / f"{clip.number}.heard.wav")
             return Heard(None)
 
         return (keep,)
@@ -197,7 +197,7 @@ class Recorder:
             self._current += recording(directory, name, sound, facts)
             if self._runs and self._current + sum(self._runs.values()) > self._cap:
                 # Its own unit: what was written is kept whether or not the prune after it fails, which its event says.
-                with contextlib.suppress(Exception), unit("holds.pruned", self._record, begun(self._clock)):
+                with contextlib.suppress(Exception), unit("clips.pruned", self._record, begun(self._clock)):
                     self._runs = pruned(self._runs, self._current, self._cap)
             return directory
 
@@ -227,7 +227,7 @@ class Recorder:
         span = self._spans
         with contextlib.suppress(Exception), unit("echo.kept", self._record, begun(self._clock)):
             annotate(span=span, seconds=round(sound.seconds, 3), voices=voices(sound))
-            facts: dict[str, object] = dict(span=span, hold=None, echo=True)
+            facts: dict[str, object] = dict(span=span, clip=None, echo=True)
             directory = await asyncio.to_thread(self._written, f"echo-{span}", sound, facts)
             annotate(kept=directory / f"echo-{span}.heard.wav")
         voice = decoded(sound.heard)

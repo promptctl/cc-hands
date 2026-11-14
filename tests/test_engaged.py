@@ -15,7 +15,7 @@ from hands.sessions.wide import WideEvent
 from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import Ears, Hears, drive
 from hands.voice.trigger import Choice
-from hands.voice.hold import KeyEvent, Move, Pressed, Released, Ripe
+from hands.voice.shortcut import KeyEvent, Move, Pressed, Released, Ripe
 
 # Right Shift's triple tap: what engages, and what disengages.
 TAP: tuple[KeyEvent, ...] = tuple(e for i in range(3) for e in (Pressed(1.0 + i / 10), Released()))
@@ -181,7 +181,7 @@ async def test_off_the_room_opens_nothing_and_the_held_key_still_talks() -> None
         rig.keys[0](event)
     await rig.settle(3)
     await stopped(driving)
-    assert rig.made_by == [Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
+    assert rig.made_by == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
 
 
 async def test_a_level_the_tool_chose_is_stepped_as_a_tap_is() -> None:
@@ -215,7 +215,7 @@ async def test_the_key_talks_and_a_choice_is_stepped_while_the_models_load() -> 
     await rig.settle(3)
     assert await rig.choose("engaged") == "off"
     await stopped(driving)
-    assert rig.made_by == [Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key"), Made("listen", "engaged conversation")]
+    assert rig.made_by == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut"), Made("listen", "engaged conversation")]
 
 
 async def test_a_model_that_cannot_be_loaded_fails_the_drive() -> None:

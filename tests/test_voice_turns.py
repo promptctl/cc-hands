@@ -39,7 +39,7 @@ from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import BargeIn, Entry, HoldHeard, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -56,13 +56,12 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
-from hands.voice.holds import Hold
+from hands.voice.clips import Clip
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import desk, hold, holdowner, streaming
+from hands.voice import clipowner, desk, shortcut, streaming
 from hands.voice.desk import Act
-from hands.voice.hold import Move as HoldMove
-from hands.voice.hold import Idle, KeyEvent, Move, Pressed, Released
-from hands.voice.holdowner import HoldOwner
+from hands.voice.clipowner import ClipOwner
+from hands.voice.shortcut import Idle, KeyEvent, Move, Pressed, Released
 from hands.voice.whisper import Whisper
 from test_narrator import heard
 from test_playback import ended, spoken
@@ -116,10 +115,10 @@ class Recorded(FrameProcessor):
                 self.order.append(f"told: {text}")
             case TextFrame(text=text):
                 self.order.append(text)
-            case TurnResolved(hold=hold):
-                self.resolved.append(hold.number)
-            case TurnOpened(hold=hold):
-                self.holds.append(hold.number)
+            case TurnResolved(clip=clip):
+                self.resolved.append(clip.number)
+            case TurnOpened(clip=clip):
+                self.holds.append(clip.number)
             case VADUserStoppedSpeakingFrame():
                 self.released += 1
             case InterruptionFrame():
@@ -184,7 +183,7 @@ Captured = Key | Literal["dropped"]
 @dataclass
 class Rig:
     worker: PipelineWorker
-    stt: HoldOwner
+    stt: ClipOwner
     out: Recorded
     recorded: list[Entry]
     clock: VirtualClock
@@ -208,7 +207,7 @@ class Rig:
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
 
-    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Trigger = "held key", captured: bytes | None = None) -> None:
+    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Trigger = "shortcut", captured: bytes | None = None) -> None:
         """A frame captured under each key, by `by`'s microphone, counted as the gate counts them: the key leaving down
         for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
         "dropped" throws it away; a hold it opens is opened by `by`. `captured` is the sound before the echo canceller,
@@ -285,17 +284,17 @@ async def rigged(
         floor=Floor(lambda id: id, dict, SYSTEM),
         prompt=vocabulary,
         prints=stood_in(SYSTEM, tmp_path / "voiceprints"),
-        holds=tmp_path / "holds",
+        clips=tmp_path / "clips",
         record=recorded.append,
     )
     out, clock, live = Recorded(), VirtualClock(), dict[SessionId, Session]()
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, hold: int, audio: bytes, _prompt: str | None) -> HoldHeard:
+    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
         heard.append(audio)
-        return HoldHeard(hold, await texts.get() or None, ())
+        return ClipHeard(clip, await texts.get() or None, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between the hold owner and the user aggregator.
@@ -319,13 +318,13 @@ async def test_a_spoken_hold_is_sent(rig: Rig) -> None:
     assert await rig.everything_sent(holds=1) == ["what time is it"]
 
 
-def holds_heard(rig: Rig) -> list[HoldHeard]:
-    return [entry for entry in rig.recorded if isinstance(entry, HoldHeard)]
+def holds_heard(rig: Rig) -> list[ClipHeard]:
+    return [entry for entry in rig.recorded if isinstance(entry, ClipHeard)]
 
 
 def holds_told(rig: Rig) -> list[WideEvent]:
-    """Each hold's `hold` event, as the owner resolved it."""
-    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "hold"]
+    """Each clip's `clip` event, as the owner resolved it."""
+    return [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "clip"]
 
 
 async def test_a_holds_event_says_how_loud_it_was_before_and_after_the_echo_canceller(rig: Rig) -> None:
@@ -336,8 +335,8 @@ async def test_a_holds_event_says_how_loud_it_was_before_and_after_the_echo_canc
     await rig.texts.put("run")
     await rig.until(lambda: len(holds_told(rig)) == 1)
     [told] = holds_told(rig)
-    assert (told.facts["hold"], told.facts["fate"], told.facts["levels"], told.facts["transcript"]) == (1, "sent", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0), "words")
-    assert holds_heard(rig) == [HoldHeard(1, "run", ())]
+    assert (told.facts["clip"], told.facts["fate"], told.facts["levels"], told.facts["transcript"]) == (1, "sent", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0), "words")
+    assert holds_heard(rig) == [ClipHeard(1, "run", ())]
     # The event is of the audio Whisper was given: the three frames from the press on.
     assert rig.heard[0] == residual * 3
 
@@ -507,7 +506,7 @@ async def test_a_hold_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_
         assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (0, 1, 0, [], False)
         assert await rig.everything_sent(holds=1) == []
         # The closing hold is the held key's, which cut the reading at once.
-        assert user_turns(rig) == [("on words", False), ("on the hold", True)]
+        assert user_turns(rig) == [("on words", False), ("on the clip", True)]
 
 
 async def test_a_hold_the_voice_opened_cuts_hands_off_once_whisper_hears_words_in_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -555,7 +554,7 @@ async def test_words_said_over_hands_in_a_hold_the_voice_opened_cut_it_off_while
         assert user_turns(rig)[0] == ("on words", True)
         # What cut hands off is on the hearing's event, to be looked into where the hold heard whole says nothing.
         [first, *_] = hearings(rig)
-        assert (first.facts["hold"], first.facts["heard"], first.facts["barge_in"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
+        assert (first.facts["clip"], first.facts["heard"], first.facts["barge_in"], first.facts["added"]) == (1, "words", True, (streaming.Said(0, "wait, not"),))
 
 
 async def test_a_hold_the_voice_opened_cuts_nothing_off_where_no_words_are_heard_in_it_while_it_is_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -613,7 +612,7 @@ async def test_a_hold_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.until(lambda: user_turns(rig) == [("on words", True)])
         *_, whole = hearings(rig)
-        assert (whole.outcome, whole.error, whole.facts["hold"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
+        assert (whole.outcome, whole.error, whole.facts["clip"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
 
 
 async def test_a_turn_the_voice_opened_cuts_once_for_all_its_holds_words_and_ends_once_every_hold_resolves(rig: Rig) -> None:
@@ -639,7 +638,7 @@ async def test_a_held_key_pressed_in_a_turn_the_voice_opened_cuts_at_once(rig: R
     assert user_turns(rig)[0] == ("on words", True)
 
 
-@pytest.mark.parametrize(("by", "held"), [("held key", ["down", "down", "up"]), ("engaged conversation", OPENED_BY_THE_VOICE)])
+@pytest.mark.parametrize(("by", "held"), [("shortcut", ["down", "down", "up"]), ("engaged conversation", OPENED_BY_THE_VOICE)])
 async def test_the_reply_a_turn_cut_off_is_written_ahead_of_the_words_that_cut_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger, held: list[Captured]
 ) -> None:
@@ -658,7 +657,7 @@ async def test_the_reply_a_turn_cut_off_is_written_ahead_of_the_words_that_cut_i
         assert written == [Replied("The parser is fixed.", interrupted=True), Transcribed("wait, not yet")]
 
 
-@pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])
+@pytest.mark.parametrize("by", ["shortcut", "phone button", "wake word"])
 async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_without_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(["down", "down", "up"], by=by)
@@ -667,7 +666,7 @@ async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_
         assert cut == [BargeIn("The parser is fixed.", 1)]
         await rig.texts.put("")
         assert await rig.everything_sent(holds=1) == []
-        assert user_turns(rig)[0] == ("on the hold", True)
+        assert user_turns(rig)[0] == ("on the clip", True)
 
 
 async def test_words_typed_are_sent_as_a_turn_of_their_own(rig: Rig) -> None:
@@ -682,7 +681,7 @@ async def test_words_typed_cut_hands_off_at_once(monkeypatch: pytest.MonkeyPatch
         assert await line is False
         assert cut == [BargeIn("The parser is fixed.", 1)]
         assert await rig.everything_sent(holds=1) == ["stop there"]
-        assert user_turns(rig)[0] == ("on the hold", True)
+        assert user_turns(rig)[0] == ("on the clip", True)
 
 
 async def test_words_typed_while_a_hold_is_open_join_its_turn_and_leave_its_audio_to_it(rig: Rig) -> None:
@@ -744,7 +743,7 @@ class Timeline:
 
 
 def play_out[S, E](
-    step: Callable[[S, E], tuple[S, tuple[Act | HoldMove, ...]]],
+    step: Callable[[S, E], tuple[S, tuple[Act | Move, ...]]],
     state: S,
     asked: Callable[[S, E, S], tuple[tuple[float, E], ...]],
     told: Sequence[tuple[float, E]],
@@ -782,7 +781,7 @@ def play_out[S, E](
 
 def held_key(told: Sequence[tuple[float, KeyEvent]], seconds: float) -> Timeline:
     """The talk key's own hold, told `told`, with its press's Ripe and Overlong told as `keys.tapped` tells them."""
-    return play_out(hold.step, Idle(), lambda _was, event, _now: hold.asked(event), told, seconds, "held key")
+    return play_out(shortcut.step, Idle(), lambda _was, event, _now: shortcut.asked(event), told, seconds, "shortcut")
 
 
 def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: float) -> Timeline:
@@ -790,7 +789,7 @@ def engaged_conversation(told: Sequence[tuple[float, desk.Event]], seconds: floa
     `engaged.drive` tells it."""
 
     def asked(was: desk.Desk, event: desk.Event, now: desk.Desk) -> tuple[tuple[float, desk.Event], ...]:
-        return (*(hold.asked(event) if isinstance(event, KeyEvent) else ()), *desk.deadline(was.phase, now.phase))
+        return (*(shortcut.asked(event) if isinstance(event, KeyEvent) else ()), *desk.deadline(was.phase, now.phase))
 
     return play_out(desk.step, desk.Desk(), asked, told, seconds, "engaged conversation")
 
@@ -819,7 +818,7 @@ async def test_an_engaged_turn_of_three_minutes_of_speech_reaches_the_brain_whol
 
 
 async def test_a_turn_whose_release_never_comes_is_sent_at_the_limit_with_all_it_recorded(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 3.0)
+    monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 3.0)
     # Pressed, and never released: a key stuck down, or a release macOS never reported.
     timeline = held_key([(0.0, Pressed(0.0))], 5.0)
     assert timeline.moves == ["arm", "start", "timeout"]
@@ -910,7 +909,7 @@ async def test_a_hold_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(ri
 
 
 async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def refused(_self: Whisper, hold: int, audio: bytes, prompt: str | None) -> HoldHeard:
+    async def refused(_self: Whisper, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
         raise ConnectionError("LowTalker is not serving")
 
     monkeypatch.setattr(Whisper, "_heard", refused)
@@ -920,12 +919,12 @@ async def test_a_hold_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
 
 
 async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def hung(_self: Whisper, hold: int, audio: bytes, prompt: str | None) -> HoldHeard:
+    async def hung(_self: Whisper, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
         await asyncio.Event().wait()
         raise AssertionError("a transcription that never returns returned")
 
     monkeypatch.setattr(Whisper, "_heard", hung)
-    monkeypatch.setattr(holdowner, "TRANSCRIBING_SECONDS", 0.2)
+    monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
     await held(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
     assert rig.told == ["released", "failed"]
@@ -933,7 +932,7 @@ async def test_a_hold_whisper_never_finishes_transcribing_fails_and_ends_its_tur
 
 async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     # The least a transcription is given, made far shorter than this turn's transcription takes.
-    monkeypatch.setattr(holdowner, "TRANSCRIBING_SECONDS", 0.2)
+    monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
     timeline = held_key([(0.0, Pressed(0.0)), (180.0, Released())], 181.0)
     await rig.worker.queue_frames(timeline.frames)
     await rig.until(lambda: len(rig.heard) == 1)
@@ -953,7 +952,7 @@ async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, 
     # Whisper as it is, down to the model: the rig's stand-in is put aside.
     monkeypatch.setattr(Whisper, "_heard", WHISPER_HEARD)
     monkeypatch.setattr(transcription, "segments", stuck)
-    monkeypatch.setattr(holdowner, "TRANSCRIBING_SECONDS", 0.2)
+    monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
     try:
         await held(rig, 1)
         await rig.until(lambda: rig.out.stopped == 1)
@@ -988,7 +987,7 @@ def let_go(unprompted: Unprompted) -> dict[str, Fact]:
 
 # A hold the held key opens and lets go of, and one the voice opens and its end of turn closes.
 HOLDS: list[tuple[Trigger, list[Captured], list[Captured]]] = [
-    ("held key", ["down", "down"], ["up"]),
+    ("shortcut", ["down", "down"], ["up"]),
     ("engaged conversation", ["listening", "arming", "down", "down"], ["listening"]),
 ]
 
@@ -1021,15 +1020,15 @@ async def test_a_press_that_passes_the_floor_ahead_of_the_last_turns_stop_keeps_
     """The stop comes back up from the user aggregator while a press goes down past the floor, so the press can arrive
     first: the floor stays the user's through the turn that press opened."""
     out = Recorded()
-    one, two = Hold(1, "held key"), Hold(2, "engaged conversation")
+    one, two = Clip(1, "shortcut"), Clip(2, "engaged conversation")
     async with running([Floor(lambda id: id, dict, SYSTEM), out], []) as run:
-        await run.worker.queue_frames([TurnOpened(hold=one), TurnResolved(hold=one)])
+        await run.worker.queue_frames([TurnOpened(clip=one), TurnResolved(clip=one)])
         await until(out, lambda: out.resolved == [1])
         # The aggregator stops the first turn behind its hold's resolution, as the second hold opens.
-        await run.worker.queue_frames([TurnOpened(hold=two), UserStoppedSpeakingFrame(), waiting(), TextFrame("marker")])
+        await run.worker.queue_frames([TurnOpened(clip=two), UserStoppedSpeakingFrame(), waiting(), TextFrame("marker")])
         await until(out, lambda: "marker" in out.order)
         assert not any(each.startswith("said:") for each in out.order)
-        await run.worker.queue_frame(TurnResolved(hold=two))
+        await run.worker.queue_frame(TurnResolved(clip=two))
         await until(out, lambda: out.resolved == [1, 2])
         await run.worker.queue_frame(UserStoppedSpeakingFrame())
         await until(out, lambda: "said: The session api is gone." in out.order)
@@ -1109,8 +1108,8 @@ async def test_a_request_answered_before_it_reaches_the_floor_is_not_told(rig: R
     assert let_go(answered) == {"held_ms": 0.0, "fate": "dropped"}
 
 
-def owned() -> HoldOwner:
-    return HoldOwner(SYSTEM, Whisper(clock=SYSTEM, prompt=unprimed, record=lambda _: None), (), lambda _: None)
+def owned() -> ClipOwner:
+    return ClipOwner(SYSTEM, Whisper(clock=SYSTEM, prompt=unprimed, record=lambda _: None), (), lambda _: None)
 
 
 async def test_the_hold_owner_hears_only_the_keyed_microphone() -> None:
@@ -1148,8 +1147,8 @@ async def test_each_hold_the_key_sent_or_dropped_is_told_with_each_speakers_word
         await rig.hold(["down", "dropped"], sound=struct.pack("<h", 1000) * 320)
         await rig.until(lambda: len(ends(rig)) == 2)
         sent, dropped = ends(rig)
-        assert (sent.facts["hold"], sent.facts["fate"], sent.facts["words"]) == (1, "sent", (streaming.Said(0, "what time"), streaming.Said(1, "is it")))
-        assert (dropped.facts["hold"], dropped.facts["fate"], dropped.facts["words"]) == (2, "dropped", (streaming.Said(1, "never mind"),))
+        assert (sent.facts["clip"], sent.facts["fate"], sent.facts["words"]) == (1, "sent", (streaming.Said(0, "what time"), streaming.Said(1, "is it")))
+        assert (dropped.facts["clip"], dropped.facts["fate"], dropped.facts["words"]) == (2, "dropped", (streaming.Said(1, "never mind"),))
 
 
 def ends(rig: Rig) -> list[WideEvent]:
@@ -1165,4 +1164,4 @@ async def test_a_hold_whose_streaming_breaks_still_sends_its_words(monkeypatch: 
         assert await rig.everything_sent(holds=1) == ["what time is it"]
         # The broken stream fails every hold from it on, the one `everything_sent` closes the run with too.
         await rig.until(lambda: len(ends(rig)) == 2)
-        assert [(event.facts["hold"], event.outcome) for event in ends(rig)] == [(1, "failed"), (2, "failed")]
+        assert [(event.facts["clip"], event.outcome) for event in ends(rig)] == [(1, "failed"), (2, "failed")]

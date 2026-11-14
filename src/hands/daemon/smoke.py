@@ -46,7 +46,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
-from hands.voice import holds, transcription
+from hands.voice import clips, transcription
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
 # Each stage of the pipeline, in the order the turns reach it: hands running; a session started from the `claude` on
@@ -78,7 +78,7 @@ FINISH_SECONDS = 180.0
 POLL_SECONDS = 0.2
 
 # The call's audio, both ways: 16-bit mono at the rate `say` is asked for and Whisper hears at, in the page's 20 ms frames.
-RATE = holds.RATE
+RATE = clips.RATE
 FRAME_SECS = 0.02
 FRAME_BYTES = round(RATE * FRAME_SECS) * 2
 # A frame of hands' speech is voiced above this RMS; the silence it sends between utterances is all zeros.
@@ -123,9 +123,9 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
     sending: tuple[str, str] | None = None
     for line in lines:
         match stage, line:
-            case "heard", {"type": "HoldHeard", "said": str(said)}:
+            case "heard", {"type": "ClipHeard", "said": str(said)}:
                 return f"heard {said!r}"
-            case "heard", {"type": "HoldHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
+            case "heard", {"type": "ClipHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
                 raise NotReached("heard", f"Whisper took no words from the hold; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
             case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
                 sending = (span, prompt)
@@ -453,7 +453,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     # The request: heard, and hands answering aloud about the session.
     since = smoked.mark()
     released = await caller.say("heard", asking)
-    smoked.reached("heard", await logged("heard", since, "transcription of the hold (HoldHeard)")())
+    smoked.reached("heard", await logged("heard", since, "transcription of the clip (ClipHeard)")())
     smoked.reached("answered", await told_back("answered", released, FOLDER))
 
     # The go-ahead: the draft typed into the session, and the session's turn run to its end.

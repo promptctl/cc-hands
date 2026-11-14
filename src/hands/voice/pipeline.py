@@ -38,7 +38,7 @@ from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, loads, streaming, voiceprints, voices
 from hands.voice.recorder import Recorder
 from hands.sessions.wide import annotate
-from hands.voice.holdowner import HoldOwner
+from hands.voice.clipowner import ClipOwner
 from hands.voice.whisper import Whisper
 from hands.voice.backends import ClaudeCodeBackend
 
@@ -62,7 +62,7 @@ class Voice:
     key: PushToTalk
     audio: KeyedAudioTransport
     phone: Phone
-    stt: HoldOwner
+    stt: ClipOwner
     llm: FrameProcessor
     tts: SaidInTTS
     user_turns: conversation.UserTurns
@@ -79,12 +79,12 @@ def build_voice(
     floor: Floor,
     prompt: Callable[[], Awaitable[str | None]],
     prints: voiceprints.Voiceprints,
-    holds: Path,
+    clips: Path,
     record: Record,
 ) -> Voice:
     """Wire mic, push-to-talk, the hold owner with Whisper transcribing and the streaming recognizer and the recorder
     listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each speaker the
-    streaming recognizer hears is identified by `prints`, and each hold the recorder hears is kept under `holds`, in a
+    streaming recognizer hears is identified by `prints`, and each hold the recorder hears is kept under `clips`, in a
     directory of this build's own."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and the hold owner reads it off
@@ -116,9 +116,9 @@ def build_voice(
     # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each hold, and
     # each echo span the run overhears (`Voice.recorder`), in a directory of the run's own, named by when the voice was
     # built: a hold's number is the run's.
-    recorder = Recorder(clock, holds, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
+    recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
     listeners = (streaming.StreamingRecognizer(clock, streaming.load, prints, record), recorder)
-    stt = HoldOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
+    stt = ClipOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
 
     start = TriggerTurnStart(clock, record)
     turns = UserTurnStrategies(

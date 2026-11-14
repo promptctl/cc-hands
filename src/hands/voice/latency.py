@@ -29,7 +29,7 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from hands.clock import Clock
 from hands.voice.milestone import Milestone
-from hands.voice.turnstop import HoldDiscarded, Words
+from hands.voice.turnstop import ClipDiscarded, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
@@ -100,7 +100,7 @@ class LatencyObserver(BaseObserver):
         if isinstance(frame, VADUserStartedSpeakingFrame):
             self._holding = True
             return
-        if isinstance(frame, HoldDiscarded):
+        if isinstance(frame, ClipDiscarded):
             # A hold thrown away is no release: nothing of it is sent, so there is no reply to time from it.
             if self._holding:
                 self._told("discarded")

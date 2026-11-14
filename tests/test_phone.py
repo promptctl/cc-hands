@@ -196,7 +196,7 @@ async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_
 async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
-    assert call.key.move("disarm", "held key") is None  # a Shift typed at the desk
+    assert call.key.move("disarm", "shortcut") is None  # a Shift typed at the desk
     assert (call.key.gate.key, call.key.gate.place) == ("down", "phone")
 
 
@@ -532,7 +532,7 @@ async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, D
 async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk, list[bytes]]) -> None:
     transport, desk, pushed = a_transport
     echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
-    call.key.move("start", "held key")  # a turn opened at the desk takes hands there...
+    call.key.move("start", "shortcut")  # a turn opened at the desk takes hands there...
     assert call.key.gate.place == "desk"
     call.page.send("press")  # ...and one opened at the phone takes it back
     await call.until(lambda: call.key.gate.place == "phone")

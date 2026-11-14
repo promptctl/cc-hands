@@ -11,7 +11,7 @@ hold to the last: a new session, or the session's own end, numbers everyone from
 Each hearing hands each speaker's voice in the hold, the frames the diarizer heard them in, to be identified against
 hands' own (`hands.voice.voiceprints`), after its words have gone out: who they were decides nothing yet.
 
-It is one listener on the hold owner (`hands.voice.holdowner`), which cuts hands off on the first words it hears in a hold
+It is one listener on the hold owner (`hands.voice.clipowner`), which cuts hands off on the first words it hears in a hold
 still open, so a turn engaged conversation opened cuts while the user is still speaking over hands, not once they stop.
 Its words are never sent: the model is weak on conversational speech (about 20% WER on AMI, against 6 to 8% for the
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each hold held.
@@ -31,7 +31,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads, voiceprints
 from hands.threads import SerialThread
-from hands.voice.holds import RATE, Fate, Heard, Hearings, Hold, Samples, Sound, decoded, slots
+from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Samples, Sound, decoded, slots
 from hands.voice.voiceprints import WINDOW, Identifier, Voiced
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
@@ -153,7 +153,7 @@ def joined(texts: Iterable[str | None]) -> str | None:
 # A 10 ms slot of a hold: the unit the speaker's reference, and so the voices hands played, come in.
 SLOT = RATE // 100
 
-# The voices of hands' TTS played over each 10 ms of a stretch of a hold, in order (`hands.voice.holds.slots`).
+# The voices of hands' TTS played over each 10 ms of a stretch of a hold, in order (`hands.voice.clips.slots`).
 type Played = tuple[tuple[str, ...], ...]
 
 
@@ -376,7 +376,7 @@ class StreamingRecognizer:
         # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a hold.
         self._fed = 0
         # The hold open, or the last one, as the owner told it.
-        self._hold = Hold(0, "held key")
+        self._clip = Clip(0, "shortcut")
 
     def _load(self, model: Callable[[int], Session]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each hold with why.
@@ -397,10 +397,10 @@ class StreamingRecognizer:
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
-    def opened(self, hold: Hold, before: Sound) -> Hearings:
-        """`hold` opens: what it kept from before it opened is the start of its words."""
+    def opened(self, clip: Clip, before: Sound) -> Hearings:
+        """`clip` opens: what it kept from before it opened is the start of its words."""
         samples, start, voices = decoded(before.heard), self._fed, slots(before)
-        self._hold = hold
+        self._clip = clip
         self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start, voices)))
         return self._fed_with(len(samples))
 
@@ -421,7 +421,7 @@ class StreamingRecognizer:
             logger.opt(exception=error).error("the streaming session's decoding broke; no hold is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, hold: Hold, silence: int) -> Ended:
+    def _ended(self, clip: Clip, silence: int) -> Ended:
         """The hold open, heard through the silence after it, on the thread, and every speaker in it handed on to be
         identified at its end. [LAW:single-enforcer] a hold's end is handed on here whatever comes of it, nobody in it
         for a hold the stream could not hear: the identifier lets go of all it held for the hold, and no hearing that
@@ -433,14 +433,14 @@ class StreamingRecognizer:
             voices = heard.voices
             return heard
         finally:
-            self._identify.ended(hold, voices)
+            self._identify.ended(clip, voices)
 
-    def _said(self, hold: Hold) -> Since:
+    def _said(self, clip: Clip) -> Since:
         """What the stream found since the last hearing, on the thread, each speaker who reached a row handed on to be
         identified in the same step that marked the row reached, so a hearing cancelled after it loses none."""
         since = self._stream.said()
         if since.reached:
-            self._identify.identify(hold, since.reached)
+            self._identify.identify(clip, since.reached)
         return since
 
     def _fed_with(self, samples: int) -> Hearings:
@@ -454,8 +454,8 @@ class StreamingRecognizer:
             case _:
                 # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its table:
                 # the words go out without waiting on it.
-                hold = self._hold
-                said = self._thread.settles(lambda: self._said(hold))
+                clip = self._clip
+                said = self._thread.settles(lambda: self._said(clip))
 
                 async def hear() -> Heard:
                     since = await said
@@ -465,11 +465,11 @@ class StreamingRecognizer:
 
                 return (hear,)
 
-    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
+    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
         """The hold open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same hold."""
         silence = through(self._fed) - self._fed
-        ended = self._thread.settles(lambda: self._ended(hold, silence))
+        ended = self._thread.settles(lambda: self._ended(clip, silence))
         self._fed += silence
 
         async def settle() -> Heard:

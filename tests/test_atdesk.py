@@ -19,9 +19,9 @@ from hands.sessions.audit import Entry, Played
 from hands.sessions.wide import WideEvent
 from hands.voice.atdesk import serve_desk
 from hands.voice.cues import ENGAGED, OFF, WAKE_WORD, Cue
-from hands.voice.hold import HOLD_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.keys import tapped
 from hands.voice.ptt import PushToTalk
+from hands.voice.shortcut import SHORTCUT_SECONDS, CommandPressed, CommandReleased, KeyEvent, Move, Pressed, Released, Typed
 from hands.voice.tools import listening_tools
 from hands.voice.trigger import Levels
 from hands.voice.wake import SAMPLE_RATE
@@ -163,7 +163,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
     # Right Shift typing a capital opens nothing.
     keyboard.press(Pressed(time.monotonic()), Typed())
     # Held past the hold, so its Ripe has been told: still nothing opens.
-    await asyncio.sleep(HOLD_SECONDS * 2)
+    await asyncio.sleep(SHORTCUT_SECONDS * 2)
     await settled()
     assert taken[3:] == ["arm", "disarm"]
     keyboard.press(Released())

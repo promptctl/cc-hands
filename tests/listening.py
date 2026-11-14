@@ -4,15 +4,15 @@
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.holds import Hold
+from hands.voice.clips import Clip
 from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
 # A turn's hold opens LEAD before its first word and ends `after` past its last, in one of the two shapes a hold takes:
-# the held key, let go RELEASE after it, or engaged conversation, closed on the STOP_SECS of silence after it.
+# the shortcut, let go RELEASE after it, or engaged conversation, closed on the STOP_SECS of silence after it.
 LEAD = 0.1
 RELEASE = 0.2
-SHAPES = {"held": RELEASE, "engaged": engaged.STOP_SECS}
+SHAPES = {"shortcut": RELEASE, "engaged": engaged.STOP_SECS}
 
 
 def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
@@ -28,10 +28,10 @@ def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
 class Unidentifying:
     """Nobody identified: what a test of the words alone measures is the words."""
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         pass
 
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         pass
 
 

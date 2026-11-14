@@ -28,7 +28,7 @@ from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice.holds import RATE, Samples
+from hands.voice.clips import RATE, Samples
 from hands.voice.library import Found, Library, address
 from hands.voice.voiceprints import Synthesize
 

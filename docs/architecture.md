@@ -1765,7 +1765,7 @@ turn after the brain listed it is left alone, even before its busy status is rea
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
-it was captured under, and the hold owner (`hands.voice.holdowner`) pushes the VAD frames
+it was captured under, and the hold owner (`hands.voice.clipowner`) pushes the VAD frames
 where those keys change, numbering each hold, so the turn the strategies see and the audio
 every model hears are cut at the same frame. How a turn ended is not a key position: the gate counts the
 turns it has sent and thrown away, every frame carries both counts, and the hold owner
@@ -1850,7 +1850,7 @@ how many it slipped; each speaker stream let go of is one `speaker.let_go`, carr
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
 was captured, before the canceller (`KeyedAudio.captured`), and the hold owner keeps it for the
-frames a hold is made of, so each hold's `hold` event says its mean power in dBFS
+frames a hold is made of, so each clip's `clip` event says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
 reply's echo left over reads loud captured and quiet heard, one of the room with nobody
 speaking reads quiet on both. A level is null for digital silence, and at the phone,
@@ -1862,8 +1862,8 @@ one in every hold. "Stop. What time is it?", said from 50 ms after the press, ke
 sound had died away, and lost that first word in 8 of 8.
 
 **One owner cuts every hold, and each model is a listener on it.** The hold owner
-(`hands.voice.holdowner`) cuts and numbers each hold where the gate's counts move, and gives
-every listener (`hands.voice.holds.Listener`) the same samples of it in capture order: what
+(`hands.voice.clipowner`) cuts and numbers each hold where the gate's counts move, and gives
+every listener (`hands.voice.clips.Listener`) the same samples of it in capture order: what
 the hold kept from before it opened, each frame while it is open, and its end. A listener's
 slow work, while the hold is open or after it closes, is a hearing the owner runs on that
 listener's own lane, so a slow listener holds up only itself, under a bound of a minute
@@ -1871,7 +1871,7 @@ from when the listener returned it.
 Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether its
 words cut hands off, which only words heard while their hold is still open do. The
 transcriber is given each spoken hold the key sent, whole, in the order the holds ended;
-each hold, spoken or typed, is one `hold` event, from its end to its resolution: what opened
+each clip, spoken or typed, is one `clip` event, from its end to its resolution: what opened
 it, what the gate did with it, how long and loud it was, and what its transcription came to.
 
 Each live word carries the speaker who said it (`hands.voice.streaming`): NVIDIA's Nemotron 3
@@ -1926,7 +1926,7 @@ them against every voice they may be: the model did not load, there is no print 
 hands speaks in, or hands played a voice over them that it holds no print of.
 
 Every hold is kept on disk by one more listener, the recorder (`hands.voice.recorder`), in a
-directory of the run's own under `holds/` in the home, claimed so two runs started in the same
+directory of the run's own under `clips/` in the home, claimed so two runs started in the same
 second never share one. Each hold is kept as the pipeline heard it, after the canceller, with
 what the desk's speaker played over it. That is the canceller's own reference, kept as the
 speaker played it and put in the hold's format only as the hold is written, so the two line up
@@ -1940,7 +1940,7 @@ microphone overhears is nobody's but hands'. Each stretch of such buffers is an 
 `echo-<span>.*` in the same directory, its `.json` saying no hold was open. It is identified as
 one voice at its end, on a `voiceprints.identified` unit carrying the span number. A press or a
 change of level ends the span. The store is kept under 2 GB by deleting whole runs, oldest first
-and never the current one (`holds.pruned`). The size is counted once as the run's directory is
+and never the current one (`clips.pruned`). The size is counted once as the run's directory is
 claimed and kept as a running total after that. So held-key use is the data the voiceprint
 table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A hold
 that cannot be written fails its `hearing` event with why, and a span its `echo.kept` event.
@@ -1991,7 +1991,7 @@ turn's `UserAsked` says it:
 
 | Trigger | Down | Up |
 |---|---|---|
-| `held key` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
+| `shortcut` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.shortcut`) | released; another key pressed while it is held drops the turn unsent |
 | `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |

@@ -35,8 +35,8 @@ from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
 from hands.threads import settles_off_loop
 from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Heard, Keyed, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, Woke, Woken, deadline, listens, step
-from hands.voice.hold import KeyEvent, Move
-from hands.voice.holds import Trigger
+from hands.voice.shortcut import KeyEvent, Move
+from hands.voice.clips import Trigger
 from hands.voice.trigger import Choice
 
 

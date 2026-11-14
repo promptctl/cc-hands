@@ -26,16 +26,16 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import PAIRS, events, hearing_with, running
 from listening import unidentified
-from test_streaming import NOT_SPEECH, READER, fixture_holds, hearings, pcm
+from test_streaming import NOT_SPEECH, READER, fixture_clips, hearings, pcm
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
+from hands.voice.clipowner import ClipOwner
+from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears
-from hands.voice.hold import KeyEvent, Move
-from hands.voice.holdowner import HoldOwner
-from hands.voice.holds import RATE, Fate, Hearings, Hold, Sound
 from hands.voice.ptt import PushToTalk
+from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
 
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -46,7 +46,7 @@ FRAME = 320
 # The first four utterances of the reader, then a cough, then the keyboard, each after 4 s of exact zeros, and 4 s after
 # the last: longer than Smart Turn's stop_secs (3 s), so the desk ends every hold before the next sound, whatever Smart
 # Turn judges.
-SOUNDS = [*fixture_holds(READER)[:4], *NOT_SPEECH]
+SOUNDS = [*fixture_clips(READER)[:4], *NOT_SPEECH]
 GAP = np.zeros(4 * RATE, np.float32)
 TIMELINE = np.concatenate([*(part for sound in SOUNDS for part in (GAP, sound)), GAP])
 # The frames the desk hears it in, the last one short.
@@ -88,14 +88,14 @@ class Counted:
     returned: list[int] = field(default_factory=list[int])
     name: str = streaming.StreamingRecognizer.name
 
-    def opened(self, hold: Hold, before: Sound) -> Hearings:
-        return self._counted(self.recognizer.opened(hold, before))
+    def opened(self, clip: Clip, before: Sound) -> Hearings:
+        return self._counted(self.recognizer.opened(clip, before))
 
     def heard(self, sound: Sound) -> Hearings:
         return self._counted(self.recognizer.heard(sound))
 
-    def ended(self, hold: Hold, fate: Fate, sound: Sound) -> Hearings:
-        return self._counted(self.recognizer.ended(hold, fate, sound))
+    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
+        return self._counted(self.recognizer.ended(clip, fate, sound))
 
     def _counted(self, hearings: Hearings) -> Hearings:
         self.returned += [self.captured()] * len(hearings)
@@ -155,7 +155,7 @@ class Downstream(FrameProcessor):
 class Unheard:
     """A transcriber that says nothing of any hold: what the cut is, not what the hold held, is heard here."""
 
-    async def transcribed(self, hold: Hold, audio: bytes) -> str | None:
+    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
         return None
 
 
@@ -231,7 +231,7 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     assert load.outcome == "ok", load.error
     listener = Counted(recognizer, lambda: captured * FRAME)
     downstream = Downstream()
-    async with running([HoldOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record) as models:
+    async with running([ClipOwner(SYSTEM, Unheard(), (listener,), record), downstream]) as run, engaged.loaded(SYSTEM, RATE, record) as models:
         async def capture(audio: bytes) -> None:
             nonlocal captured
             captured += 1
@@ -291,11 +291,11 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     cuts: dict[int, int] = {}
     for at, event in zip(listener.returned, heard, strict=True):
         match event.facts:
-            case {"barge_in": True, "hold": int() as hold}:
-                cuts.setdefault(hold, at)
+            case {"barge_in": True, "clip": int() as clip}:
+                cuts.setdefault(clip, at)
             case _:
                 pass
-    assert {hold: (at - FIRST[sound_at(at)]) * 1000 // RATE for hold, at in cuts.items()} == {1: 940, 2: 810, 3: 910, 4: 890}, moves
+    assert {clip: (at - FIRST[sound_at(at)]) * 1000 // RATE for clip, at in cuts.items()} == {1: 940, 2: 810, 3: 910, 4: 890}, moves
     # Every cut the owner said reached the frame after it.
     assert downstream.cuts == sum(bool(event.facts["barge_in"]) for event in heard)
     # Nothing cut from the cough's first sample to the timeline's end.

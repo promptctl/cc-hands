@@ -29,7 +29,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
-from hands.voice.holds import RATE, Hold, Samples
+from hands.voice.clips import RATE, Clip, Samples
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
 MODEL = "csukuangfj/speaker-embedding-models"
@@ -188,8 +188,8 @@ class Identifier(Protocol):
     """What identifies the speakers the stream hears: each as they reach a row of the table, and every one at the end
     of their hold."""
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
 
 
 # What hands says to make its own voiceprint in a voice: about twelve seconds of the kind of thing it says, never played.
@@ -367,20 +367,20 @@ class Voiceprints:
             case samples, embed:
                 return embed(samples)
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
         `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
         began = begun(self._clock)
-        self._lane.give(lambda: self._identified(hold, voiced, began))
+        self._lane.give(lambda: self._identified(clip, voiced, began))
 
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
+        """Who each speaker in `clip` is, at its end: its last identification, after which no speaker of it is
         remembered."""
         began = begun(self._clock)
 
         def last() -> None:
-            self._identified(hold, voiced, began)
-            self._people.pop(hold.number, None)
+            self._identified(clip, voiced, began)
+            self._people.pop(clip.number, None)
 
         self._lane.give(last)
 
@@ -399,19 +399,19 @@ class Voiceprints:
 
         self._lane.give(identified)
 
-    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...], began: Begun) -> None:
+    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], began: Begun) -> None:
         if not voiced:
             return
         try:
-            speakers = tuple(Speaker(each.speaker, self._who(hold, each)) for each in voiced)
+            speakers = tuple(Speaker(each.speaker, self._who(clip, each)) for each in voiced)
         except Exception as error:
-            ended("voiceprints.identified", self._record, began, error, hold=hold.number)
+            ended("voiceprints.identified", self._record, began, error, clip=clip.number)
             return
-        ended("voiceprints.identified", self._record, began, None, hold=hold.number, speakers=speakers)
+        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers)
 
-    def _who(self, hold: Hold, voiced: Voiced) -> Who:
+    def _who(self, clip: Clip, voiced: Voiced) -> Who:
         """[LAW:single-enforcer] once a person in a hold, a speaker is one for the rest of it."""
-        people = self._people.setdefault(hold.number, {})
+        people = self._people.setdefault(clip.number, {})
         match people.get(voiced.speaker):
             case Person() as known:
                 return known

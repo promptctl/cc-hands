@@ -15,14 +15,14 @@ from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
 from hands.voice import keys, talkkey
-from hands.voice.hold import CommandPressed, CommandReleased, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
+from hands.voice.shortcut import CommandPressed, CommandReleased, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Shortcut, Typed, step
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
-    hold: Hold = Idle()
+    shortcut: Shortcut = Idle()
     made: list[Move] = []
     for event in events:
-        hold, now = step(hold, event)
+        shortcut, now = step(shortcut, event)
         made.extend(now)
     return made
 
@@ -100,10 +100,10 @@ def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int,
 async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Clock, Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
     """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
-    hold: Hold = Idle()
+    shortcut: Shortcut = Idle()
     async with keys.tapped(SYSTEM, heard.put_nowait, tap):
         while True:
-            hold, moves = step(hold, await heard.get())
+            shortcut, moves = step(shortcut, await heard.get())
             for move in moves:
                 await on_move(move)
 
@@ -116,7 +116,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         taps.append(heard)
         return lambda: stopped.append(None)
 
-    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.shortcut.SHORTCUT_SECONDS", 0.05)
     made: list[Move] = []
     started = asyncio.Event()
 
@@ -147,8 +147,8 @@ async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch:
         taps.append(heard)
         return lambda: None
 
-    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
-    monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 0.1)
+    monkeypatch.setattr("hands.voice.shortcut.SHORTCUT_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 0.1)
     made: list[Move] = []
 
     async def on_move(move: Move) -> None:

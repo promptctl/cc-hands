@@ -87,7 +87,7 @@ from hands.voice.conversation import UserWords
 from hands.voice.system import system_text
 from hands.voice.player import Marker
 from hands.voice.trigger import Trigger
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
@@ -514,7 +514,7 @@ class BrainStage(FrameProcessor):
                         # simply the next turn. A telling is not answered in, as it is not acknowledged: what it says is
                         # the session's, and its words are all heard of it.
                         pass
-            case HoldDiscarded():
+            case ClipDiscarded():
                 await self.push_frame(frame, direction)
             case UserStartedSpeakingFrame():
                 # Broadcast by the cut alone, just ahead of its interruption (`hands.voice.turnstart.interrupting`).

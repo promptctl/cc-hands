@@ -260,8 +260,8 @@ Need 2.
   branch, then every running session's project and name, newest last, at most
   40 of them and the oldest dropped until the rest fit the 223 prompt tokens Whisper
   keeps. Each hold's words and their token count are a `Primed` line in the audit log,
-  and what Whisper made of it, with each segment dropped as not said, a `HoldHeard` line;
-  how loud the hold was before and after the echo canceller is on its `hold` event. Primed, Whisper turns
+  and what Whisper made of it, with each segment dropped as not said, a `ClipHeard` line;
+  how loud the clip was before and after the echo canceller is on its `clip` event. Primed, Whisper turns
   noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
   (compression ratio 17), which are dropped. Measured
   2026-10-03 through that code, ten sentences said by `say` in a repository with
@@ -280,9 +280,9 @@ Need 2.
 
 Need 8. Where the microphone is.
 
-- **Gate triggers as values of one type.** `held key | engaged conversation | wake word | phone button`
-  as `Trigger` (`hands.voice.holds`); the desk's level says which of its triggers open turns
-  besides the held key. The `held key` trigger is a macOS event tap that reports real key-down and
+- **Gate triggers as values of one type.** `shortcut | engaged conversation | wake word | phone button`
+  as `Trigger` (`hands.voice.clips`); the desk's level says which of its triggers open turns
+  besides the held key. The `shortcut` trigger is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
 - **One desk mode, off by default.** Right Shift held alone talks at every level.
   The microphone is off between turns until a triple tap of Right Command turns on
@@ -357,7 +357,7 @@ So that in conversation hands can tell the owner from another person, and from i
   Built: tests/test_voiceprints.py, tests/test_streaming.py (the real model, on recorded echo
   and a second voice over it: the echo is never a person); not verified live.
 - **Each hold, and hands' own echo, kept as labelled data.** The recorder keeps every hold
-  under `holds/<run>/` in the home, as heard after the canceller and beside what hands was
+  under `clips/<run>/` in the home, as heard after the canceller and beside what hands was
   playing over it and in which voices. It also keeps each echo span, what the desk heard while
   hands spoke with no hold open, identified as it ends. The store is kept under 2 GB, oldest runs
   first, so the voiceprint table is refitted on held-key use. Built: tests/test_recorder.py,

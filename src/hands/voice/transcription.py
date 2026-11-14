@@ -13,7 +13,7 @@ import mlx_whisper
 import numpy as np
 
 from hands.sessions.audit import Unsaid
-from hands.voice.holds import LANGUAGE, RATE, decoded
+from hands.voice.clips import LANGUAGE, RATE, decoded
 
 # The model every hold is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
 MODEL = "mlx-community/whisper-large-v3-turbo"

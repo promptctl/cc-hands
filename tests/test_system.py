@@ -46,12 +46,12 @@ from hands.voice.system import (
     alarm,
     system_text,
 )
+from hands.voice.clipowner import ClipOwner
+from hands.voice.clips import Clip
 from hands.voice.microphone import Devices
-from hands.voice.hold import Move
 from hands.voice.ptt import Gate
+from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words
-from hands.voice.holdowner import HoldOwner
-from hands.voice.holds import Hold
 
 
 BUILT_IN = Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
@@ -338,7 +338,7 @@ class Said:
     def __init__(self, *said: str | None | Exception) -> None:
         self.said = list(said)
 
-    async def transcribed(self, hold: Hold, audio: bytes) -> str | None:
+    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
         match self.said.pop(0):
             case Exception() as error:
                 raise error
@@ -351,36 +351,36 @@ class Told(FrameProcessor):
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self.holds: list[list[type[Frame]]] = [[]]
+        self.clips: list[list[type[Frame]]] = [[]]
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
             case Words() | TurnResolved():
-                self.holds[-1].append(type(frame))
+                self.clips[-1].append(type(frame))
                 if isinstance(frame, TurnResolved):
-                    self.holds.append([])
+                    self.clips.append([])
             case _:
                 pass
         await self.push_frame(frame, direction)
 
 
 async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in() -> None:
-    owner, told = HoldOwner(SYSTEM, Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
+    owner, told = ClipOwner(SYSTEM, Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
     async with running([owner, told]) as run:
         # Three turns sent, one for each transcription.
         gate = Gate()
         for _ in range(3):
-            for gate in (gate.after("start", "held key"), gate.after("start", "held key").after("stop", "held key")):
+            for gate in (gate.after("start", "shortcut"), gate.after("start", "shortcut").after("stop", "shortcut")):
                 await run.worker.queue_frame(gate.framed(b"\x00\x00", b"\x00\x00", None, 16000, 1, "desk"))
         async with asyncio.timeout(10):
-            while len(told.holds) < 4:
+            while len(told.clips) < 4:
                 await asyncio.sleep(0.01)
         # Every transcription ends with the owner done with its hold, and one it heard nothing in yields nothing else: no
         # frame that could reach the speaker; one that failed is said aloud as an error from the owner.
-        assert told.holds[:3] == [[TurnResolved], [Words, TurnResolved], [TurnResolved]]
+        assert told.clips[:3] == [[TurnResolved], [Words, TurnResolved], [TurnResolved]]
         [failed] = run.errors
-        assert failed.processor is owner and "Hold 3 could not be transcribed: RuntimeError: model failed" == failed.error
+        assert failed.processor is owner and "Clip 3 could not be transcribed: RuntimeError: model failed" == failed.error
         assert failed.category is not None and not failed.category.is_permanent and owner.is_usable
 
 

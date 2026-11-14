@@ -63,14 +63,14 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
         match frame, self._turn:
-            case TurnOpened(hold=hold), None:
-                start = turn_start(hold.opener)
+            case TurnOpened(clip=clip), None:
+                start = turn_start(clip.opener)
                 self._turn = _Open(start, self._now())
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._barge_in_where(start, self._turn)
-            case TurnOpened(hold=hold), _Open() as turn:
+            case TurnOpened(clip=clip), _Open() as turn:
                 # A hold pressed while the hold owner is still on the last joins its turn, and cuts as its own trigger says.
-                await self._barge_in_where(turn_start(hold.opener), turn)
+                await self._barge_in_where(turn_start(clip.opener), turn)
             case Words() | InterimWords(), _Open() as turn:
                 # Words, in whichever hold, heard while it was open or as it closed, are someone speaking.
                 await self._barge_in(turn)
@@ -95,7 +95,7 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
 
     async def _barge_in_where(self, start: TurnStart, turn: _Open) -> None:
         match start:
-            case "on the hold":
+            case "on the clip":
                 await self._barge_in(turn)
             case "on words":
                 pass

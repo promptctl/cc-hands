@@ -6,7 +6,7 @@ import pytest
 
 from hands.voice.cues import level_cue
 from hands.voice.desk import ASK_SECONDS, Act, Chosen, NothingAsked, Resting, Woke, deadline, Desk, Event, Level, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, TurnTooLong, Woken, step
-from hands.voice.hold import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
+from hands.voice.shortcut import CommandPressed, CommandReleased, Move, Pressed, Released, Ripe, Typed
 
 
 def run(events: Sequence[Event], desk: Desk = Desk()) -> tuple[Desk, list[Act]]:
@@ -29,8 +29,8 @@ def taps(t: float, command: bool = False) -> list[Event]:
     return [e for i in range(3) for e in ([CommandPressed(t + i / 10), CommandReleased()] if command else [Pressed(t + i / 10), Released()])]
 
 
-KEY_TURN = [Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
-TAP_SHIFT = [Made("arm", "held key"), Made("disarm", "held key")] * 2 + [Made("arm", "held key")]
+KEY_TURN = [Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
+TAP_SHIFT = [Made("arm", "shortcut"), Made("disarm", "shortcut")] * 2 + [Made("arm", "shortcut")]
 
 
 def moves(acts: list[Act]) -> list[Act]:
@@ -55,7 +55,7 @@ def test_the_held_key_opens_a_turn_at_every_level(level: Level) -> None:
         ("off", taps(1.0, command=True), "wake word", [Made("listen", "wake word"), Leveled("off", "wake word", "tap")]),
         ("wake word", taps(1.0, command=True), "off", [Made("deafen", "wake word"), Leveled("wake word", "off", "tap")]),
         # Right Shift's toggles engaged as its third press is let go, known then to be no hold.
-        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("disarm", "held key"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap")]),
+        ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("disarm", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap")]),
         # Either switches straight from the other, with the desk listening throughout.
         ("engaged", taps(1.0, command=True), "wake word", [Leveled("engaged", "wake word", "tap")]),
         # Two taps are nothing, and a key between starts the count again.
@@ -102,14 +102,14 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
 def test_a_hold_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
     _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
-    assert moves(made)[-4:] == [Made(left, trigger), Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
+    assert moves(made)[-4:] == [Made(left, trigger), Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
 
 
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: list[Event]) -> None:
     trigger = "wake word" if level == "wake word" else "engaged conversation"
     desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict")], at(level))
-    assert moves(made)[-1] == Made("stop", trigger) and Made("arm", "held key") not in made and desk.level == level
+    assert moves(made)[-1] == Made("stop", trigger) and Made("arm", "shortcut") not in made and desk.level == level
 
 
 def test_a_hold_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
@@ -138,7 +138,7 @@ def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: lis
 
 def test_a_key_turn_goes_on_across_a_change_of_level() -> None:
     _, made = run([Pressed(1.0), Ripe(1.0), Chosen("engaged"), Released()])
-    assert made == [Made("arm", "held key"), Made("start", "held key"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool"), Made("stop", "held key")]
+    assert made == [Made("arm", "shortcut"), Made("start", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tool"), Made("stop", "shortcut")]
 
 
 def test_a_level_chosen_again_changes_nothing() -> None:

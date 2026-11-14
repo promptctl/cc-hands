@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from hands.voice.hold import CommandPressed, CommandReleased, KeyEvent, Pressed, Released, Ripe, Typed
+from hands.voice.shortcut import CommandPressed, CommandReleased, KeyEvent, Pressed, Released, Ripe, Typed
 from hands.voice.taps import TAP_SECONDS, TapKey, Taps, counted
 
 

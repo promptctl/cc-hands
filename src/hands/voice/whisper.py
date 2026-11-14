@@ -1,4 +1,4 @@
-"""Whisper, the transcriber on the hold owner (`hands.voice.holdowner`): it transcribes each hold the key sent, whole, as it
+"""Whisper, the transcriber on the hold owner (`hands.voice.clipowner`): it transcribes each hold the key sent, whole, as it
 ends (hands.voice.transcription), and those are the words a turn sends. A hold still open is heard by the streaming
 recognizer (`hands.voice.streaming`), whose words only cut."""
 
@@ -6,12 +6,12 @@ import threading
 from collections.abc import Awaitable, Callable
 
 from hands.clock import Clock
-from hands.sessions.audit import HoldHeard, Record, Unsaid
+from hands.sessions.audit import ClipHeard, Record, Unsaid
 from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice import transcription
-from hands.voice.holds import SECOND, Hold
+from hands.voice.clips import SECOND, Clip
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -43,14 +43,14 @@ class Whisper:
         # next must not run beside it.
         self._model = SerialThread("Whisper")
 
-    async def transcribed(self, hold: Hold, audio: bytes) -> str | None:
+    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
         """The words said in a hold of the key's, primed with the vocabulary as it is now; recorded, so "I spoke and nothing
         happened" can be looked into."""
-        heard = await self._heard(hold.number, audio, await self._prompt())
+        heard = await self._heard(clip.number, audio, await self._prompt())
         self._record(heard)
         return heard.said
 
-    async def _heard(self, hold: int, audio: bytes, prompt: str | None) -> HoldHeard:
+    async def _heard(self, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
         """What was said in a hold's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the vocabulary.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in and one Whisper only guessed
@@ -71,4 +71,4 @@ class Whisper:
                 said.append(segment.text)
             else:
                 dropped.append(segment)
-        return HoldHeard(hold, " ".join(said).strip() or None, tuple(dropped))
+        return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped))

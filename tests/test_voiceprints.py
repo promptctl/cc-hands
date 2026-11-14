@@ -17,7 +17,7 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice import voiceprints
-from hands.voice.holds import RATE, Hold, Samples
+from hands.voice.clips import RATE, Clip, Samples
 from hands.voice.voiceprints import (
     ALONE, HANDS, PERSON, Embed, Hands, Person, Print, Speaker, Synthesize, Unheard, Unidentified, Unsure, Voiced, Voiceprints, Who, Window,
     decided, scored,
@@ -111,8 +111,8 @@ def whos(event: WideEvent) -> list[Who]:
     return [rounded(speaker.who) for speaker in speakers if isinstance(speaker, Speaker)]
 
 
-HOLD = Hold(1, "engaged conversation")
-SECOND = Hold(2, "engaged conversation")
+CLIP = Clip(1, "engaged conversation")
+SECOND = Clip(2, "engaged conversation")
 
 
 async def test_hands_keeps_the_print_of_the_voice_it_speaks_in_and_the_one_before(tmp_path: Path) -> None:
@@ -123,7 +123,7 @@ async def test_hands_keeps_the_print_of_the_voice_it_speaks_in_and_the_one_befor
     prints.speaking_in("charles")
     prints.speaking_in("alba")
     await until(recorded, "voiceprints.enrolled", 2)
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     # Against charles's print, kept as the voice before the last change: hands.
     [first] = await until(recorded, "voiceprints.identified", 1)
     assert whos(first) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
@@ -161,7 +161,7 @@ async def test_each_voice_is_enrolled_once_ever_its_tts_loaded_for_that_alone_an
     again.speaking_in("charles")
     again.speaking_in("alba")
     await until(later, "voiceprints.recalled", 2)
-    again.identify(HOLD, (voiced(7, 3.0),))
+    again.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(later, "voiceprints.identified", 1)
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
     assert entries(later, "voiceprints.enrolled") == [] and made == ["loaded", "loaded"]
@@ -182,12 +182,12 @@ async def test_until_its_print_is_made_every_speaker_is_unidentified_and_nothing
     prints = Voiceprints(SYSTEM, lambda: model, speech, tmp_path, recorded.append)
     # Returns while the print is still being said.
     prints.speaking_in("charles")
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "no print yet of charles")]
     speaking.set()
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     assert whos((await until(recorded, "voiceprints.identified", 2))[1]) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
 
@@ -198,7 +198,7 @@ async def test_a_speaker_heard_over_a_voice_hands_holds_no_print_of_is_unidentif
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(HOLD, (voiced(7, 3.0, played=("charles", "fantine")),))
+    prints.identify(CLIP, (voiced(7, 3.0, played=("charles", "fantine")),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "hands played fantine over them and holds no print of it")]
 
@@ -218,7 +218,7 @@ async def test_a_print_that_cannot_be_made_fails_its_unit_and_every_speaker_says
     assert (enrolled.outcome, enrolled.error, enrolled.facts["voice"], enrolled.facts["seconds"]) == (
         "failed", "RuntimeError: the voice's embedding is not in the cache", "charles", None,
     )
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "hands' voiceprint of charles could not be made: RuntimeError: the voice's embedding is not in the cache")]
 
@@ -232,7 +232,7 @@ async def test_a_print_that_cannot_be_kept_fails_its_unit_and_is_still_scored_ag
     prints.speaking_in("charles")
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     assert (enrolled.outcome, enrolled.error) == ("failed", f"NotADirectoryError: [Errno 20] Not a directory: '{blocked / voiceprints.REVISION}'")
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
@@ -251,7 +251,7 @@ async def test_a_model_that_does_not_load_fails_its_unit_and_every_speaker_says_
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     # No TTS loaded for a print nothing could make.
     assert enrolled.outcome == "failed" and made == []
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "the voiceprint model did not load: RuntimeError: the voiceprint model x.onnx did not load")]
 
@@ -263,16 +263,16 @@ async def test_a_person_in_a_hold_stays_one_for_that_hold_alone_even_where_its_e
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(HOLD, (voiced(5, 1.5),))
+    prints.identify(CLIP, (voiced(5, 1.5),))
     prints.identify(SECOND, (voiced(7, 3.0),))
     # Hold 1's end, behind hold 2's first identification: still its person.
-    prints.ended(HOLD, (voiced(7, 3.0),))
+    prints.ended(CLIP, (voiced(7, 3.0),))
     # And hold 2's speaker is not hold 1's person.
     prints.identify(SECOND, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 4)]
     window = Window(0.0, 0.0)
     assert told == [[Person(0.0, 1.5, window)], [Hands(1.0, 3.0, window)], [Person(0.0, 1.5, window)], [Hands(1.0, 3.0, window)]]
-    assert [event.facts["hold"] for event in entries(recorded, "voiceprints.identified")] == [1, 2, 1, 2]
+    assert [event.facts["clip"] for event in entries(recorded, "voiceprints.identified")] == [1, 2, 1, 2]
 
 
 async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_person_in_it(tmp_path: Path) -> None:
@@ -281,10 +281,10 @@ async def test_a_hold_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_per
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(HOLD, (voiced(5, 1.5),))
+    prints.identify(CLIP, (voiced(5, 1.5),))
     # A broken stream, or an end the owner gave up on, ends the hold with nobody: no event, and the person let go of.
-    prints.ended(HOLD, ())
-    prints.identify(HOLD, (voiced(7, 3.0),))
+    prints.ended(CLIP, ())
+    prints.identify(CLIP, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 2)]
     assert told == [[Person(0.0, 1.5, Window(0.0, 0.0))], [Hands(1.0, 3.0, Window(0.0, 0.0))]]
 
@@ -297,7 +297,7 @@ async def test_an_echo_span_is_identified_as_one_voice_on_an_event_of_its_own(tm
     await until(recorded, "voiceprints.enrolled", 1)
     prints.spanned(3, voiced(7, 3.0, played=("charles",)))
     [event] = await until(recorded, "voiceprints.identified", 1)
-    assert event.facts["span"] == 3 and "hold" not in event.facts
+    assert event.facts["span"] == 3 and "clip" not in event.facts
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
 

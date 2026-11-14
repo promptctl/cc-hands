@@ -85,7 +85,7 @@ from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
 from hands.voice.player import Marker
 from hands.voice.trigger import Trigger
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.utterance import Uttered, Uttering
 
@@ -100,7 +100,7 @@ TAIL = "[hands] The Claude Code sessions running now: none of note."
 APART = Span("", "", None)
 UNREAD = FrontUnread("not read in this test")
 # A user's turn as the rig records it: the screen left unread, read in no time on the rig's clock.
-ASKED = UserAsked("screen", "held key", UNREAD, 0.0)
+ASKED = UserAsked("screen", "shortcut", UNREAD, 0.0)
 
 
 def heard(words: str) -> str:
@@ -457,7 +457,7 @@ async def rig() -> AsyncGenerator[Rig, None]:
         return fronts[-1]
 
     modalities: list[Modality] = ["screen"]
-    triggers: list[Trigger] = ["held key"]
+    triggers: list[Trigger] = ["shortcut"]
     call_spans = CallSpans()
 
     out = Spoken()
@@ -679,7 +679,7 @@ async def test_a_users_turn_carries_what_was_in_front_as_it_was_submitted_and_it
     rig.stream(exchange, "The docs session.")
     rig.brain.end()
     await rig.turned()
-    assert ((exchange,), "The docs session.", (), False, UserAsked("screen", "held key", front, 0.0), 0.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "The docs session.", (), False, UserAsked("screen", "shortcut", front, 0.0), 0.0, None) in spoke(rig.recorded)
     # Read again for the next turn, not kept: the screen has changed since.
     rig.fronts.append(NoSessionInFront("Safari"))
     await rig.say("and now?")
@@ -703,7 +703,7 @@ async def test_words_that_wait_behind_a_turn_carry_what_was_in_front_as_they_arr
     rig.stream(exchange, "Writing docs.")
     rig.brain.end()
     await rig.turned(2)
-    assert ((exchange,), "Writing docs.", (), False, UserAsked("screen", "held key", spoken_at, 0.0), 2500.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "Writing docs.", (), False, UserAsked("screen", "shortcut", spoken_at, 0.0), 2500.0, None) in spoke(rig.recorded)
 
 
 async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_words_arrived(rig: Rig) -> None:
@@ -723,7 +723,7 @@ async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_wor
     rig.stream(exchange, "Nothing.")
     rig.brain.end()
     await rig.turned(3)
-    assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "held key", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "shortcut", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
 
 
 async def test_a_users_turn_carries_the_trigger_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
@@ -735,7 +735,7 @@ async def test_a_users_turn_carries_the_trigger_that_opened_it_though_another_op
     rig.stream(exchange, "Nothing.")
     rig.brain.end()
     await rig.turned()
-    assert spoke(rig.recorded)[0][4] == UserAsked("screen", "held key", UNREAD, 0.0)
+    assert spoke(rig.recorded)[0][4] == UserAsked("screen", "shortcut", UNREAD, 0.0)
 
 
 async def test_a_turn_hands_narrates_is_not_read_against_the_screen(rig: Rig) -> None:
@@ -850,7 +850,7 @@ async def test_a_hold_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) ->
     rig.at(1000.0)
     await rig.release()
     rig.at(1003.0)
-    await rig.release(HoldDiscarded())
+    await rig.release(ClipDiscarded())
     rig.at(1003.5)
     await rig.say("hello")
     exchange, _ = rig.request()

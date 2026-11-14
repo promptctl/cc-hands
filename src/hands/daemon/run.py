@@ -58,8 +58,8 @@ from hands.core.attention import Attention
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
-from hands.voice.hold import Move
-from hands.voice.holds import Trigger
+from hands.voice.shortcut import Move
+from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
@@ -312,7 +312,7 @@ async def run(
                 # What Whisper is primed with, read as each hold is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
-                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
+                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
                     await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)

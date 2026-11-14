@@ -26,7 +26,7 @@ import soundfile
 import soxr
 
 from hands.voice import voiceprints
-from hands.voice.holds import RATE, Samples
+from hands.voice.clips import RATE, Samples
 
 PLAY_STARTS = 0.5
 OTHER_LAG = 1.0

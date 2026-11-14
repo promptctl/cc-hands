@@ -2,7 +2,7 @@
 
 The desk listens at one of three levels. Off, the start's, the microphone is closed between turns. Under the wake word,
 saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
-release sends it (`hands.voice.hold`). A triple tap of Right Command toggles the wake word, and one of Right Shift
+release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
 toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
 a level as a tap does. A turn the voice opened is closed by end-of-turn detection (`hands.voice.engaged`).
 
@@ -14,8 +14,8 @@ level never says the desk is deaf while a variant says it listens.
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from hands.voice.hold import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as hold_step
-from hands.voice.holds import Trigger
+from hands.voice.clips import Trigger
+from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
 
 # The levels the desk listens at between turns; it is deaf under "off" alone.
@@ -132,7 +132,7 @@ class Keyed:
     """Right Shift is down, at `level`: arming, a turn of the key's open, or Shift typing."""
 
     level: Level
-    hold: KeyDown
+    shortcut: KeyDown
 
 
 Phase = Resting | Starting | Woke | Voiced | Keyed
@@ -195,7 +195,7 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
             taps, tapped = counted(desk.taps, event)
             phase, acts = _keyed(desk.phase, event)
             # [LAW:one-source-of-truth] a press held to a turn is no tap: the hold that opened it is the one judge.
-            if any(act == Made("start", "held key") for act in acts):
+            if any(act == Made("start", "shortcut") for act in acts):
                 taps = Taps()
             if tapped is not None:
                 phase, more = _leveled(phase, toggled(level_of(phase), tapped), "tap")
@@ -215,28 +215,28 @@ def _keyed(phase: Phase, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
         case Starting() | Woke() | Voiced():
             return _over_voice(phase, event)
         case Resting():
-            hold, moves = hold_step(Idle(), event)
-        case Keyed(hold=down):
-            hold, moves = hold_step(down, event)
-    made = tuple(Made(move, "held key") for move in moves)
-    match hold:
+            shortcut, moves = shortcut_step(Idle(), event)
+        case Keyed(shortcut=down):
+            shortcut, moves = shortcut_step(down, event)
+    made = tuple(Made(move, "shortcut") for move in moves)
+    match shortcut:
         case Idle():
             return Resting(level), made
         case KeyArming() | KeyTalking() | Typing():
-            return Keyed(level, hold), made
+            return Keyed(level, shortcut), made
 
 
 def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
     """Right Shift under what the voice has open: nothing until it is held long enough to mean talk, so Shift typing a
     capital leaves the voice's turn as it is; held so long, it takes the desk for the key, what the voice armed disarmed
     and a turn it opened sent."""
-    hold, _ = hold_step(phase.key, event)
-    match hold:
+    shortcut, _ = shortcut_step(phase.key, event)
+    match shortcut:
         case KeyTalking():
             left = Made("disarm", "engaged conversation") if isinstance(phase, Starting) else Made("stop", _voice(phase))
-            return Keyed(level_of(phase), hold), (left, Made("arm", "held key"), Made("start", "held key"))
+            return Keyed(level_of(phase), shortcut), (left, Made("arm", "shortcut"), Made("start", "shortcut"))
         case Idle() | KeyArming() | Typing():
-            return replace(phase, key=hold), ()
+            return replace(phase, key=shortcut), ()
 
 
 def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tuple[Act, ...]]:
@@ -246,7 +246,7 @@ def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tupl
         case Idle():
             return Resting(level), (left,)
         case KeyArming():
-            return Keyed(level, key), (left, Made("arm", "held key"))
+            return Keyed(level, key), (left, Made("arm", "shortcut"))
         case Typing():
             return Keyed(level, key), (left,)
 
@@ -274,8 +274,8 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
             rest, left = _rest(now, key, Made("stop", _voice(phase)))
             return rest, (*left, *listening, Leveled(was, now, by))
         # A turn of the key's goes on as it is, at the new level.
-        case Keyed(hold=hold):
-            return Keyed(now, hold), (*listening, Leveled(was, now, by))
+        case Keyed(shortcut=shortcut):
+            return Keyed(now, shortcut), (*listening, Leveled(was, now, by))
 
 
 def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:

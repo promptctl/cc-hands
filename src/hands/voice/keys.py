@@ -11,7 +11,7 @@ from functools import partial
 
 from hands.clock import Clock
 from hands.voice import talkkey
-from hands.voice.hold import KeyEvent, asked
+from hands.voice.shortcut import KeyEvent, asked
 
 QUIT = "q"
 

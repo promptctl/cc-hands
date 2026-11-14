@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
+from hands.voice.clips import Reference
 from hands.voice.echo import EchoCanceller
-from hands.voice.holds import Reference
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 

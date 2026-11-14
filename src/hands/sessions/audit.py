@@ -97,11 +97,11 @@ class Levels:
 
 
 @dataclass(frozen=True)
-class HoldHeard:
-    """What Whisper made of one hold: what it took as said, None where nothing was, and each segment it dropped. How loud
-    the hold was is on its `hold` event, beside it."""
+class ClipHeard:
+    """What Whisper made of one clip: what it took as said, None where nothing was, and each segment it dropped. How loud
+    the clip was is on its `clip` event, beside it."""
 
-    hold: int
+    clip: int
     said: str | None
     dropped: tuple[Unsaid, ...]
 
@@ -136,9 +136,9 @@ class BargeIn:
     waiting: int
 
 
-# When a user turn cuts off what hands is saying: as the hold that opens it opens, Pipecat's VAD start; or once a listener
+# When a user turn cuts off what hands is saying: as the clip that opens it opens, Pipecat's VAD start; or once a listener
 # hears words in it while it is open (`hands.voice.streaming`), Pipecat's transcription start.
-TurnStart = Literal["on the hold", "on words"]
+TurnStart = Literal["on the clip", "on words"]
 
 
 @dataclass(frozen=True)
@@ -257,7 +257,7 @@ Entry = (
     | CopiesLost
     | Exchanged
     | Transcribed
-    | HoldHeard
+    | ClipHeard
     | Primed
     | Replied
     | BargeIn
@@ -298,7 +298,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
+            | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:

@@ -16,7 +16,7 @@ from typing import Protocol
 
 from livekit import rtc
 
-from hands.voice.holds import Reference
+from hands.voice.clips import Reference
 
 # The canceller works on 10 ms frames, in both directions.
 _FRAMES_PER_SECOND = 100

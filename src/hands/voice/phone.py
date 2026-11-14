@@ -38,9 +38,9 @@ from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
-from hands.voice.hold import Move
 from hands.voice.milestone import Milestone
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
 
 # The length of each frame sent to the phone: Opus's own 20 ms.

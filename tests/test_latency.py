@@ -16,10 +16,10 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import FramePushed
 
 from hands.virtualclock import VirtualClock
+from hands.voice.clips import Clip
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import Milestone
-from hands.voice.holds import Hold
-from hands.voice.turnstop import HoldDiscarded, TurnOpened, TurnResolved, Words
+from hands.voice.turnstop import ClipDiscarded, TurnOpened, TurnResolved, Words
 
 
 async def observed(*frames: Frame) -> tuple[list[str], list[Milestone]]:
@@ -42,11 +42,11 @@ async def logged(*frames: Frame) -> list[str]:
 
 
 def opened(number: int) -> TurnOpened:
-    return TurnOpened(hold=Hold(number, "held key"))
+    return TurnOpened(clip=Clip(number, "shortcut"))
 
 
 def resolved(number: int) -> TurnResolved:
-    return TurnResolved(hold=Hold(number, "held key"))
+    return TurnResolved(clip=Clip(number, "shortcut"))
 
 
 async def told(*frames: Frame) -> list[Milestone]:
@@ -65,7 +65,7 @@ async def test_an_answered_turn_is_told_milestone_by_milestone_each_once_however
 
 
 async def test_a_hold_thrown_away_is_told_as_discarded_once_and_never_as_released() -> None:
-    discarded = HoldDiscarded()
+    discarded = ClipDiscarded()
     assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == ["discarded"]
 
 
@@ -118,7 +118,7 @@ async def test_another_hold_done_with_says_nothing_of_the_hold_still_being_trans
         opened(1),
         VADUserStoppedSpeakingFrame(),
         opened(2),
-        HoldDiscarded(),
+        ClipDiscarded(),
         resolved(2),
         Words(text="hello", user_id="u", timestamp="t"),
         resolved(1),
@@ -156,7 +156,7 @@ async def test_a_press_thrown_away_after_a_turn_was_sent_says_nothing_of_the_rep
         resolved(1),
         UserStoppedSpeakingFrame(),
         opened(2),
-        HoldDiscarded(),
+        ClipDiscarded(),
         resolved(2),
         UserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
@@ -244,7 +244,7 @@ async def test_nothing_is_measured_from_a_release_that_never_happened(frame: Fra
 
 
 async def test_a_hold_thrown_away_is_no_release_to_measure_a_narration_from() -> None:
-    lines = await logged(VADUserStartedSpeakingFrame(), HoldDiscarded(), BotStartedSpeakingFrame())
+    lines = await logged(VADUserStartedSpeakingFrame(), ClipDiscarded(), BotStartedSpeakingFrame())
     assert lines == ["latency: first audio, answering no user turn"]
 
 
