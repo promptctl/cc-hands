@@ -491,6 +491,24 @@ async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_t
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
 
 
+async def test_a_clip_that_cut_while_it_was_open_resolves_without_waiting_on_its_last_identification() -> None:
+    clock = VirtualClock()
+    listener = Heeding("streaming")
+    # Nothing settles the clip's end, and the clock is never advanced: a wait on it would never end.
+    async with rigged(Scripted(["stop there"]), (listener,), clock) as rig:
+        down = rig.gate.after("start", "engaged conversation")
+        await rig.frame(down, frame_of(3), ("charles",))
+        await rig.until(lambda: listener.cleared is not None)
+        cleared = listener.cleared
+        assert cleared is not None
+        elsewhere(lambda: cleared(0.4))
+        await rig.until(lambda: barge_ins(rig) == [("barge_in", 1, 0.4)])
+        await rig.frame(down.after("stop", "engaged conversation"), frame_of(0), ("charles",))
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.4), ("words", "stop there"), ("resolved", 1)]
+        assert "identified" not in rig.events("clip")[0].facts
+
+
 async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint() -> None:
     # Nothing settles its identification: a clip with no echo of hands in it never waits on one.
     async with rigged(Scripted(["stop there", None]), (Heeding("streaming"),)) as rig:
