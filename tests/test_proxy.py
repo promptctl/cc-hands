@@ -29,8 +29,6 @@ from hands.core.wire import (
     Exchanged,
     Garbled,
     Heard,
-    Synthetic,
-    Synthesize,
     MainTurn,
     Message,
     Observed,
@@ -38,6 +36,8 @@ from hands.core.wire import (
     Route,
     Send,
     Sent,
+    Synthesize,
+    Synthetic,
     Tail,
     Written,
     Text,
@@ -689,7 +689,7 @@ UNIT = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba
 
 
 @pytest.mark.parametrize("route", [Send(span=UNIT), Synthesize("(stayed silent)", UNIT)], ids=["sent", "synthetic"])
-async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_held(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
+async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_synthesized(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
     _, wire = await serve(streamed)
     wire.route = lambda _sent: route
     await post(wire.proxy.url)

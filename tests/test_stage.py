@@ -34,7 +34,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import patiently, running, settled
-from hands.brain.process import BROKEN, NOBODY, BARGED_IN, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
+from hands.brain.process import BARGED_IN, BROKEN, NOBODY, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
 from hands.virtualclock import VirtualClock
 from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
 from hands.core.effects import Allow, Deny
@@ -61,7 +61,6 @@ from hands.core.wire import (
     Fork,
     Garbled,
     Heard,
-    Synthesize,
     JsonDelta,
     Kind,
     MainTurn,
@@ -70,6 +69,7 @@ from hands.core.wire import (
     Send,
     Sent,
     StreamError,
+    Synthesize,
     Tail,
     TextDelta,
     Unknown,
@@ -790,7 +790,7 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     assert {(event.trace_id, event.parent_id) for event in events if event is not turn} == {(turn.trace_id, turn.span_id)}
 
 
-async def test_a_turn_barged_in_before_its_answer_and_its_call_came_back_counts_them_cancelled(rig: Rig) -> None:
+async def test_a_turn_spoken_over_before_its_answer_and_its_call_came_back_counts_them_cancelled(rig: Rig) -> None:
     # Spoken over while its words still play.
     rig.out.holding = True
     await rig.say("what is api doing?")
@@ -1144,7 +1144,7 @@ async def test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_
     rig.brain.end()
 
 
-async def test_a_turn_barged_in_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed(rig: Rig) -> None:
+async def test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed(rig: Rig) -> None:
     await rig.say("tell me everything")
     exchange, _ = rig.request()
     rig.stream(exchange, "First, it rained. Then it snowed. ")
@@ -1173,7 +1173,7 @@ async def test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_th
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, ""),)
-    # Only the spoken-over note: no account of the broken reply as heard, which nobody heard.
+    # Only the barge-in note: no account of the broken reply as heard, which nobody heard.
     [words, over] = rig.brain.asked[1].rsplit("\n\n", 1)
     assert words == heard("and the logs?") and over.startswith('[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.".')
     rig.brain.end()
@@ -1291,7 +1291,7 @@ async def test_a_users_turn_that_ends_with_no_request_of_its_own_is_said_to_fail
     assert turn.facts["failed"] == ModelUnanswered()
 
 
-async def test_a_users_turn_barged_in_before_it_heard_anything_and_with_no_request_is_not_said_to_fail(rig: Rig) -> None:
+async def test_a_users_turn_spoken_over_before_it_heard_anything_and_with_no_request_is_not_said_to_fail(rig: Rig) -> None:
     await rig.say("first")
     # The user spoke over the turn while it had nothing to say: their words are answered by the turn that follows it.
     await rig.barge_in("second")

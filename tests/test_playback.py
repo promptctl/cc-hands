@@ -242,7 +242,7 @@ async def test_a_barge_in_on_a_quiet_speaker_is_a_line_that_cut_nothing_off() ->
     assert recorded == [BargeIn(None, 0)]
 
 
-async def test_a_cut_off_asked_for_ahead_of_a_barge_in_says_how_far_the_reading_played_when_it_reached_the_speaker() -> None:
+async def test_the_next_barge_in_asked_for_ahead_of_it_says_how_far_the_reading_played_when_it_reached_the_speaker() -> None:
     player = Player(lambda _: None)
     async with stood(player) as (run, heard):
         for frame in (spoken("The parser is fixed."), spoken("Its tests pass."), ended("The parser is fixed.")):

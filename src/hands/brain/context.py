@@ -25,8 +25,6 @@ from hands.core.wire import (
     Compaction,
     Exchanged,
     Fork,
-    Synthetic,
-    Synthesize,
     MainTurn,
     Observed,
     Reached,
@@ -35,6 +33,8 @@ from hands.core.wire import (
     Sent,
     Steer,
     Stub,
+    Synthesize,
+    Synthetic,
     Written,
     tool_answers,
 )

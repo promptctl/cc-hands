@@ -131,7 +131,7 @@ by (`brain/stage.py:85–92`), has `session` and `ask` and no interrupt, and the
 | the acknowledgement, and hands' answers to words said behind the turn | not said | nothing | `brain/stage.py:319–322`, `788–794`; `test_words_said_while_the_brains_words_still_play_are_a_barge_in_and_unanswered` |
 | a session telling | not played; quoted in the note; its utterance's fate is `barged_in` | the note; hands does not re-tell it (unverified by test) | `voice/utterance.py:146–160`; `core/pending.py:130–140`; `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` |
 | a session's permission, question or plan | untouched; it waits on the user | unchanged | `voice/tools.py:1365–1409`; `sessions/hookconfig.py:11–15`; unverified by test |
-| a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_barged_in_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
+| a reply that breaks after the cut; a turn that fails after it | the note says it was heard by nobody; the note adds only that it failed | the note | `test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_the_brain_as_heard_by_nobody`, `test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed` |
 
 The user, 2026-10-17, on the third and seventh rows: "Brain permissions, I understand we are blocked
 if stuck at a prompt so this is acceptable. The brain can re-ask. Session permissions should not be
@@ -355,7 +355,7 @@ sequenceDiagram
 - Mechanics tests: `test_a_barge_in_that_stops_the_telling_leads_nothing_more_on` (the cut);
   `test_a_barge_in_the_telling_goes_on_through_leads_the_rest_of_it_on_again` (no request had left,
   so not a barge-in: the telling plays whole).
-- Live check: the `utterance` event's `fate` is `cut`; the next turn's `asked`.
+- Live check: the `utterance` event's `fate` is `barged_in`; the next turn's `asked`.
 
 ### S6 — Words before the brain has started answering (not a barge-in)
 

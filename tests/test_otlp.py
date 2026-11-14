@@ -20,7 +20,7 @@ from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Answered, Ending, Exchanged, Garbled, Synthetic, MainTurn, Message, Reached, Unfinished, Unkept, Unreached, Written
+from hands.core.wire import Answered, Ending, Exchanged, Garbled, MainTurn, Message, Reached, Synthetic, Unfinished, Unkept, Unreached, Written
 from hands.daemon import indicator
 from hands.daemon.cli import main
 from hands.sessions import heartbeat

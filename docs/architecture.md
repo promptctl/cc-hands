@@ -377,7 +377,7 @@ Each thing a session gives hands to say unasked is one `utterance` wide event
 `noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
 `dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
 progress of a turn that ended before its summary), `silent` (handed on and nothing of it
-played), `played`, or `cut`. Its facts are what was
+played), `played`, or `barged_in`. Its facts are what was
 heard and from which session, what decided its route, how long the floor held it (`held_ms`),
 what it was told as and how many things heard were folded into that telling, and
 `first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates

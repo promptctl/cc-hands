@@ -287,16 +287,16 @@ async def test_talking_over_hands_cuts_at_the_first_words_heard_and_a_cough_or_t
     opened = [sound_at(frame * FRAME) for frame, move in moves if move == "start"]
     assert opened[:4] == [0, 1, 2, 3], moves
     # Each hold's words cut while it was open, at this sample of the audio, in ms from its utterance's first sample: the
-    # first `hearing` of the hold with `cut: true`, as the hold owner said it.
+    # first `hearing` of the hold with `barge_in: true`, as the hold owner said it.
     cuts: dict[int, int] = {}
     for at, event in zip(listener.returned, heard, strict=True):
         match event.facts:
-            case {"cut": True, "hold": int() as hold}:
+            case {"barge_in": True, "hold": int() as hold}:
                 cuts.setdefault(hold, at)
             case _:
                 pass
     assert {hold: (at - FIRST[sound_at(at)]) * 1000 // RATE for hold, at in cuts.items()} == {1: 940, 2: 810, 3: 910, 4: 890}, moves
     # Every cut the owner said reached the frame after it.
-    assert downstream.cuts == sum(bool(event.facts["cut"]) for event in heard)
+    assert downstream.cuts == sum(bool(event.facts["barge_in"]) for event in heard)
     # Nothing cut from the cough's first sample to the timeline's end.
-    assert [at for at, event in zip(listener.returned, heard, strict=True) if event.facts["cut"] and at >= FIRST_NOT_SPEECH] == []
+    assert [at for at, event in zip(listener.returned, heard, strict=True) if event.facts["barge_in"] and at >= FIRST_NOT_SPEECH] == []

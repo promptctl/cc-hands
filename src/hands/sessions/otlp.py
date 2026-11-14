@@ -30,7 +30,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from hands.clock import Clock
-from hands.core.wire import Answered, Body, Ending, Exchanged, Garbled, Synthetic, Reached, Uncopied, Unfinished, Unkept, Unreached, Written
+from hands.core.wire import Answered, Body, Ending, Exchanged, Garbled, Reached, Synthetic, Uncopied, Unfinished, Unkept, Unreached, Written
 from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent

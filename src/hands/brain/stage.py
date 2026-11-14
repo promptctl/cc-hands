@@ -42,7 +42,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
-from hands.brain.process import NOBODY, BARGED_IN, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
+from hands.brain.process import BARGED_IN, NOBODY, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
 from hands.clock import Clock
 from hands.core.attention import Attention
 from hands.voice.narrator import set_to
@@ -61,7 +61,6 @@ from hands.core.wire import (
     BlockStopped,
     Exchanged,
     Heard,
-    Synthesize,
     JsonDelta,
     MainTurn,
     Observed,
@@ -69,6 +68,7 @@ from hands.core.wire import (
     Seconds,
     Send,
     Sent,
+    Synthesize,
     Tail,
     TextDelta,
     ToolAnswer,
@@ -140,7 +140,7 @@ Asker = UserAsked | HandsAsked | Unawaited
 # What the brain is recorded as saying for a request hands answered itself. Never spoken: such a request joins no turn.
 SILENT = "(stayed silent)"
 # What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
-# the spoken-over note says what was heard, so this says only the failure.
+# the barge-in note says what was heard, so this says only the failure.
 FAILED_AFTER = "[hands] Your last turn then failed. Mention this only if the user asks."
 # What hands adds to the request after a stay_silent that would end a turn which acted with nothing heard after what it did.
 OWED = "[hands] You acted on the user's words this turn, so they were said to you, and the user has heard nothing since you did. Say in a sentence what you did."
