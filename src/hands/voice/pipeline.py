@@ -30,7 +30,7 @@ from hands.voice.utterance import Audible
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.phone import Phone
 from hands.sessions.audit import Record
-from hands.voice.player import Marks, Player
+from hands.voice.player import Markers, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import TriggerTurnStart, interrupting
@@ -137,13 +137,13 @@ def build_voice(
     # The floor ahead of the user aggregator, so what hands tells of the sessions waits out the user's turn before either the
     # user aggregator or the model's stage takes it, and follows the user's words when given back.
     # What the player says again enters just ahead of the speaker, and it reads what is played off the speaker's pushes.
-    # Right behind the output transport, which passes a mark on only once what was said ahead of it has played.
+    # Right behind the output transport, which passes a marker on only once what was said ahead of it has played.
     output = transport.output()
-    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, pieces, player.lines, tts, output, Marks(), assistant_aggregator])
+    pipeline = Pipeline([transport.input(), stt, floor, user_aggregator, llm, pieces, player.lines, tts, output, Markers(), assistant_aggregator])
     worker = PipelineWorker(
         pipeline,
         params=params,
-        # The phone is told each mark of every turn, as the latency log is, and each line of the transcript, and passes
+        # The phone is told each milestone of every turn, as the latency log is, and each line of the transcript, and passes
         # them to the page of the call that is up.
         observers=[LatencyObserver(clock, phone.tell), TranscriptObserver(stt, output, phone.tell), player.watching(tts, output), Audible(clock, output)],
         idle_timeout_secs=None,

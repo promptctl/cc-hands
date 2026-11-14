@@ -11,7 +11,7 @@ from loguru import logger
 
 from hands.core import drafts, keyboard
 from hands.core.drafts import DraftOutcome, DraftRequest
-from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unclosed, Unfiled, Unmarked, Unmatched, Unregistered, Unsettled, Withdraw
+from hands.core.effects import AfterEnd, Audit, AuditRecord, Compare, Decision, Effect, Heard, HookReply, Input, Narrate, NotTyped, Progress, Reply, Repository, SessionGone, Snapshot, Story, Submitted, Summarise, Tell, Type, Typed, Holding, HoldingBehind, NoneBehind, Overtaken, QueuedBehind, Resumed, Unbaselined, Unclosed, Unfiled, Unmatched, Unregistered, Unsettled, Withdraw
 from hands.core.events import Abandoned, Dequeued, Event, PermissionRequested, Removed, Stopped, Tick, ToolFinished, Unqueuing
 from hands.core.keyboard import KeyboardOutcome, KeyboardRequest
 from hands.core.permissions import Answer, Outcome, answer
@@ -167,7 +167,7 @@ class Sessions:
         # post's child.
         applying = begun(self._clock)
         # [LAW:no-ambient-temporal-coupling] the effects are scheduled as they are decided, before the applying opens its
-        # unit, so they are started inside its span: what an effect opens, such as a repository mark, is its child, and
+        # unit, so they are started inside its span: what an effect opens, such as a repository baseline, is its child, and
         # the applying is timed from before any of them ran.
         with continuing(applying.span):
             scheduled = self._scheduled(performed)
@@ -191,7 +191,7 @@ class Sessions:
         """The effects being performed, each session's once what was decided before them of that session is.
 
         [LAW:no-ambient-temporal-coupling] one session's effects are performed in the order they were decided, and no
-        session's wait on another's: the turn queued behind a turn is marked before that turn's Stop hook lets Claude
+        session's wait on another's: the turn queued behind a turn is baselined before that turn's Stop hook lets Claude
         Code go on to run it, and a turn is told before its session is said to be gone.
         """
         grouped: dict[SessionId | None, list[int]] = {}
@@ -218,7 +218,7 @@ class Sessions:
         """Apply a Stop, and return once the reducer has decided whose it is, or once the hold has passed without that,
         saying which.
 
-        Claude Code waits on the hook meanwhile, so what deciding it calls for, a comparison and the mark of a turn
+        Claude Code waits on the hook meanwhile, so what deciding it calls for, a comparison and the baseline of a turn
         queued behind it, is done before Claude Code goes on [LAW:no-ambient-temporal-coupling]. The hold is the one
         bound on that wait, whatever the transcript's reading costs: past it, the hook is let go.
         """
@@ -471,7 +471,7 @@ class Sessions:
             case Snapshot() | Compare():
                 # [LAW:no-silent-failure] what a repository says about a turn is best effort, and may never
                 # cost the turn the thing it was read for. Both reads are guarded here rather than each
-                # guarded where it is called [LAW:single-enforcer], because it is one promise: a mark may not
+                # guarded where it is called [LAW:single-enforcer], because it is one promise: a baseline may not
                 # fail the prompt hook that is waiting on it, and a reading may not cost the turn the
                 # Summarise queued behind it, which is what has the turn spoken at all.
                 try:
@@ -566,8 +566,8 @@ def _audited(record: AuditRecord) -> tuple[str, str]:
         case Resumed(session=session, prompt=prompt):
             return "INFO", f"turn {prompt} in session {session} is open again: Claude Code set the session going after its idle with no Stop of it heard, so its own end, or a record written since that idle, says which turn runs"
         case QueuedBehind(session=session, prompt=prompt, waiting=waiting):
-            return "INFO", f"Stop of turn {prompt} in session {session} left {waiting} message(s) waiting in Claude Code's queue: the turn they run as is marked"
+            return "INFO", f"Stop of turn {prompt} in session {session} left {waiting} message(s) waiting in Claude Code's queue: the turn they run as is baselined"
         case NoneBehind(session=session, prompt=prompt):
-            return "INFO", f"Stop of turn {prompt} in session {session}, held for the words waiting behind it, is let go unmarked: Claude Code's queue records took them all out before it fired"
-        case Unmarked(session=session, waiting=waiting):
-            return "INFO", f"{waiting} message(s) waited behind the last turn of session {session} and no mark is taken for them: a prompt opened a turn first, or the session ended or started again before its Stop was decided"
+            return "INFO", f"Stop of turn {prompt} in session {session}, held for the words waiting behind it, is let go unbaselined: Claude Code's queue records took them all out before it fired"
+        case Unbaselined(session=session, waiting=waiting):
+            return "INFO", f"{waiting} message(s) waited behind the last turn of session {session} and no baseline is taken for them: a prompt opened a turn first, or the session ended or started again before its Stop was decided"

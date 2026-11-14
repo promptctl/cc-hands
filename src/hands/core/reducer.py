@@ -23,7 +23,7 @@ from hands.core.effects import (
     QueuedBehind,
     Resumed,
     Unfiled,
-    Unmarked,
+    Unbaselined,
     Reply,
     SessionGone,
     Compare,
@@ -197,8 +197,8 @@ def _undecided(session: SessionId, stop: HeldStop, waiting: tuple[str, ...]) -> 
             # It ended nothing: no record named its id.
             return Unsettled(session, prompt)
         case Behind():
-            # It told its turn; the words behind it run, if they run, with no mark taken for them.
-            return Unmarked(session, len(waiting))
+            # It told its turn; the words behind it run, if they run, with no baseline taken for them.
+            return Unbaselined(session, len(waiting))
 
 
 def _let_go(session: SessionId, stop: HeldStop) -> list[Effect]:
@@ -266,7 +266,7 @@ def _moved(registry: Registry, was: Session, event: Moving) -> tuple[Registry, l
     after, settled = _settled(moved, event)
     # [LAW:single-enforcer] a turn another replaces was told as it was replaced, so its ids are earlier from here on.
     after = replace(after, earlier=was.earlier | (ids(was.turn) - ids(after.turn)))
-    # A turn left untold is told before what the event calls for, so before a prompt marks the next, and before the
+    # A turn left untold is told before what the event calls for, so before a prompt baselines the next, and before the
     # prompt's words are said to be taken: a telling the prompt decides is never theirs.
     return registry.put(after), [*_refused(event, was.ending), *_transition(was, after), *told, *_submitted(was, event), *stopped, *settled, *overtaken]
 
@@ -334,11 +334,11 @@ def _told_behind(session: Session, stop: Behind, event: Moving) -> tuple[Session
 
 def _behind(session: Session, stop: Behind, event: Moving) -> tuple[Session, list[Effect]]:
     """A Stop whose turn is told and words waited behind, with what it calls for of those still waiting, which Claude Code
-    runs once the Stop's hook returns as a turn no prompt hook opens: marked while the hook holds Claude Code, so before
+    runs once the Stop's hook returns as a turn no prompt hook opens: baselined while the hook holds Claude Code, so before
     that turn can have changed anything [LAW:no-ambient-temporal-coupling]. Held until the transcript is read through the
     Stop's firing, which holds the queue records Claude Code wrote before it that deliver them into the turn.
 
-    [LAW:single-enforcer] the one place a turn is marked for words that run with no hook of their own."""
+    [LAW:single-enforcer] the one place a turn is baselined for words that run with no hook of their own."""
     id = session.membership.id
     match session.turn:
         case Told(waiting=()) as told if _names(told, stop.prompt):
@@ -349,7 +349,7 @@ def _behind(session: Session, stop: Behind, event: Moving) -> tuple[Session, lis
         case Told() as told if _names(told, stop.prompt):
             return replace(session, stops=(*session.stops, stop)), []
         case _:
-            # The turn it ended is not the last any more: a prompt opened one, which said the words run unmarked (Unmarked).
+            # The turn it ended is not the last any more: a prompt opened one, which said the words run unbaselined (Unbaselined).
             return session, _let_go(id, stop)
 
 
@@ -478,7 +478,7 @@ def _refusing(registry: Registry, session: SessionId, refusal: DenyAndInterrupt)
 
 
 def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
-    """The turn after the event, and what the event calls for of it: told, compared, marked."""
+    """The turn after the event, and what the event calls for of it: told, compared, baselined."""
     id, turn = was.membership.id, was.turn
     match (event, turn):
         case (StatusReported(report=Report(status=at, stamp=stamp)), Opened() as opened) if isinstance(at, AtPrompt):
@@ -496,28 +496,28 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Prompted(prompt=prompt, text=text), _) if _filed(turn, prompt):
             # Claude Code files what is submitted while a turn runs, the user's words or a task's notification as it is
             # delivered, under the running turn's id, and leaves its status as it was: filed, until a queue record says
-            # Claude Code took it out of its queue. It marks nothing, or the mark would move into the middle of the work
-            # it is there to measure: words still waiting when the Stop before them fires are marked for there (_behind).
-            # Behind words already waiting, after the turn is told too: they run first, and the Stop of their turn marks
+            # Claude Code took it out of its queue. It baselines nothing, or the baseline would move into the middle of the work
+            # it is there to measure: words still waiting when the Stop before them fires are baselined for there (_behind).
+            # Behind words already waiting, after the turn is told too: they run first, and the Stop of their turn baselines
             # for these (see Taken). A turn's own prompt hook, heard after the shim gave up on a slow daemon, is read the
             # same way.
             return replace(turn, waiting=(*turn.waiting, text)), []
         case (Prompted(prompt=prompt), Told() as told) if _names(told, prompt):
             # Submitted after the wire told the turn, or after its Stop, with nothing waiting before it: filed under the
-            # turn's id and run as its own turn once that Stop's hook returns. Marked here, while its own prompt hook holds
-            # Claude Code, whether or not the Stop is still to come, so it waits on no Stop for its mark; its turn opens
+            # turn's id and run as its own turn once that Stop's hook returns. Baselined here, while its own prompt hook holds
+            # Claude Code, whether or not the Stop is still to come, so it waits on no Stop for its baseline; its turn opens
             # when it is taken (see Taken).
             return turn, [Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Opened() as opened):
             # A prompt under an id of its own is one Claude Code took at its prompt, the only place it gives one: the
             # open turn is over, though its idle may never have been read. An Escape and the next prompt set idle and
             # busy again 93 ms apart, inside one status read. Told as it stands, and compared now, while this
-            # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is marked.
-            return Opened(prompt), [*_over(id, opened)[1], *_unmarked(id, turn), Snapshot(id, was.membership.cwd)]
+            # prompt's hook holds Claude Code, so before the next turn has changed anything; then that turn is baselined.
+            return Opened(prompt), [*_over(id, opened)[1], *_unbaselined(id, turn), Snapshot(id, was.membership.cwd)]
         case (Prompted(prompt=prompt), Untold() | Told()):
-            # A turn opens at the prompt, and is marked, so what it changes is read against a repository it has not
-            # touched yet: after the one before is told, so that one is compared against its own mark.
-            return Opened(prompt), [*_told(id, turn, None)[1], *_unmarked(id, turn), Snapshot(id, was.membership.cwd)]
+            # A turn opens at the prompt, and is baselined, so what it changes is read against a repository it has not
+            # touched yet: after the one before is told, so that one is compared against its own baseline.
+            return Opened(prompt), [*_told(id, turn, None)[1], *_unbaselined(id, turn), Snapshot(id, was.membership.cwd)]
         case (Taken(prompt=prompt), Opened() as opened) if _names(opened, prompt):
             return turn, []
         case (Taken(prompt=prompt, written=written), Opened(resumed=True) as opened) if _opens(was, prompt, written):
@@ -535,8 +535,8 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case (Taken(prompt=prompt, written=written), Untold() | Told()) if _opens(was, prompt, written):
             # A turn no hook opened: a message queued behind a turn, a `!` command, a command such as /compact
             # Named, so its Stop ends it, or what it printed for a command Claude Code carries out itself (see
-            # CarriedOut). Not marked here, where a mark could land after Claude has begun changing the repository: a
-            # queued message was marked while the Stop hook before it held Claude Code (see _behind), and one nothing
+            # CarriedOut). Not baselined here, where a baseline could land after Claude has begun changing the repository: a
+            # queued message was baselined while the Stop hook before it held Claude Code (see _behind), and one nothing
             # was queued for, as a `!` command's answer, is told by its steps. What still waits behind the turn before
             # runs after this one.
             return Opened(prompt, waiting=turn.waiting), _told(id, turn, None)[1]
@@ -551,7 +551,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
                     # [LAW:nothing-unseen] none of the words filed under this turn: a notification's, or of a turn before.
                     return turn, [Audit(Unfiled(id, taken))]
                 case left:
-                    # Delivered into the running turn, run after a told one (the turn its Stop marked for), or taken out
+                    # Delivered into the running turn, run after a told one (the turn its Stop baselined for), or taken out
                     # of the queue for another reason: either way it no longer waits.
                     return replace(turn, waiting=left), []
         case (Closed(prompt=prompt, closing=closing), _):
@@ -585,7 +585,7 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
         case _:
             # A Stop, which _stopped decides. A record of a turn that is neither the one open nor the one waiting to be
             # told: read after that turn ended, or of one this registry never heard open. Ending it would end another turn
-            # and spend its mark: nothing moves.
+            # and spend its baseline: nothing moves.
             return turn, []
 
 
@@ -596,7 +596,7 @@ def _ending(was: Session, prompt: PromptId, closing: str | None, failure: StopFa
     match was.turn:
         case Opened() as opened if _names(opened, prompt):
             # Compared before the turn is handed over to be summarised, never after: see Compare. A turn queued behind it
-            # is marked by its Stop (see _behind), however the turn was told. Read against its prompt's mark even when the
+            # is baselined by its Stop (see _behind), however the turn was told. Read against its prompt's baseline even when the
             # Stop is one again: a first Stop hands never heard told nothing, so no reading left off anywhere for this turn.
             return _telling(id, Told(opened.turn, opened.others, opened.waiting), prompt, closing, failure, again=False)
         case Untold(turn=turn, others=others, waiting=waiting) as untold if _names(untold, prompt):
@@ -671,9 +671,9 @@ def _unqueued(waiting: tuple[str, ...], taken: Unqueuing) -> tuple[str, ...] | N
             return None
 
 
-def _unmarked(session: SessionId, turn: Turn) -> list[Effect]:
-    """A turn of a prompt of its own opening while words waited behind the last: they run after it, unmarked."""
-    return [Audit(Unmarked(session, len(turn.waiting)))] if turn.waiting else []
+def _unbaselined(session: SessionId, turn: Turn) -> list[Effect]:
+    """A turn of a prompt of its own opening while words waited behind the last: they run after it, unbaselined."""
+    return [Audit(Unbaselined(session, len(turn.waiting)))] if turn.waiting else []
 
 
 def _reported(event: Moving) -> Mode | None:

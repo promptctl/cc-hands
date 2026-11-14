@@ -46,7 +46,7 @@ from hands.voice import pipeline as built
 from hands.voice.conversation import AssistantTurns, UserTurns, UserWords, cue_receipt, record_turns
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
-from hands.voice.mark import Mark
+from hands.voice.milestone import Milestone
 from hands.voice import player as played
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
@@ -196,8 +196,8 @@ class Rig:
     heard: list[bytes] = field(default_factory=list[bytes])
     # Each turn hands said it received, as its words went to the brain.
     received: list[None] = field(default_factory=list[None])
-    # Each mark the latency observer told of the turns, as the phone's page would be told.
-    told: list[Mark] = field(default_factory=list[Mark])
+    # Each milestone the latency observer told of the turns, as the phone's page would be told.
+    told: list[Milestone] = field(default_factory=list[Milestone])
     # Both sides of the conversation, as build_voice wires them.
     conversation: tuple[UserTurns, AssistantTurns] = field(kw_only=True)
     # Each time Whisper read the vocabulary, which is none.
@@ -301,7 +301,7 @@ async def rigged(
     # The floor sits where build_voice puts it, between the hold owner and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
-    told: list[Mark] = []
+    told: list[Milestone] = []
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
     async with running(stages, [LatencyObserver(SYSTEM, told.append), *watching]) as run:
@@ -454,16 +454,16 @@ async def test_a_turn_ended_and_the_next_armed_between_two_frames_is_sent(rig: R
 
 
 class Speaker(FrameProcessor):
-    """Stands in for the output transport: a mark waits here, as behind audio still playing, until a barge-in drops it."""
+    """Stands in for the output transport: a marker waits here, as behind audio still playing, until a barge-in drops it."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
-        self.playing: list[played.Mark] = []
+        self.playing: list[played.Marker] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
-            case played.Mark():
+            case played.Marker():
                 self.playing.append(frame)
             case InterruptionFrame():
                 self.playing.clear()

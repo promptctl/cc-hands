@@ -83,7 +83,7 @@ from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed,
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
-from hands.voice.player import Mark
+from hands.voice.player import Marker
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated
@@ -223,16 +223,16 @@ class Received(DataFrame):
 
 
 class Spoken(FrameProcessor):
-    """What leaves the stage for TTS, played at once, as the speaker and the marks behind it would play it, unless held."""
+    """What leaves the stage for TTS, played at once, as the speaker and the markers behind it would play it, unless held."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         # How many frames have reached it: what a test's wait sees move while the stage has work it is getting through.
         self.received = 0
         self.frames: list[Frame] = []
-        # Marks not yet played, while `holding`: what is ahead of them is still being said.
+        # Markers not yet played, while `holding`: what is ahead of them is still being said.
         self.holding = False
-        self.marks: list[Mark] = []
+        self.markers: list[Marker] = []
         # How many key releases have passed the stage, the ones it was told to throw away included.
         self.releases = 0
         # How many of the user's turns have stopped past the stage.
@@ -255,10 +255,10 @@ class Spoken(FrameProcessor):
         match frame:
             case Received(reached=reached):
                 reached()
-            case Mark(played=played) if not self.holding:
+            case Marker(played=played) if not self.holding:
                 played()
-            case Mark():
-                self.marks.append(frame)
+            case Marker():
+                self.markers.append(frame)
             case VADUserStoppedSpeakingFrame():
                 self.releases += 1
                 await self.push_frame(frame, direction)
@@ -509,7 +509,7 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     assert ((exchange,), "api opened pull request 68.", (), False, HandsAsked(), 0.0, None) in spoke(rig.recorded)
 
 
-async def test_the_brain_s_turn_telling_a_finished_turn_is_part_of_its_utterance_and_sent_between_its_marks(rig: Rig) -> None:
+async def test_the_brain_s_turn_telling_a_finished_turn_is_part_of_its_utterance_and_sent_between_its_markers(rig: Rig) -> None:
     """The utterance is open from when hands heard the turn to when it was heard: the brain's turn telling it is a part
     of it, in its trace, and what it says is led and closed by the frames the output transport reads its fate off."""
     utterance = unasked()
@@ -560,7 +560,7 @@ async def test_a_telling_the_brain_fails_fails_its_utterance_with_why(rig: Rig) 
     assert turn.error is not None and utterance.failure == turn.error
 
 
-async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_marks(rig: Rig) -> None:
+async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_markers(rig: Rig) -> None:
     await rig.worker.queue_frame(Aloud(TTSSpeakFrame("The session api is gone."), (unasked(),)))
     await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
     assert rig.out.uttering == ["Uttering", "The session api is gone.", "Uttered"]

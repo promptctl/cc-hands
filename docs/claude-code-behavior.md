@@ -17,7 +17,7 @@ When a fact is re-measured on a newer release, add its release here rather than 
 - **statusfile:** Claude Code writes the status file as the session starts and sets a status in it a moment later (measured on 2.1.299)
 - **statusfile:** Claude Code set a status 91 ms after writing the file; an earlier release took 793 ms, a figure whose release was not recorded (measured on 2.1.299)
 - **statusfile:** Claude Code runs the end hook 330 to 640 ms after it removes the status file as its process exits (measured on 2.1.283)
-- **queued message status:** a message queued behind a turn has no prompt of its own, so the earlier turn's Stop marks it, and its hook holds Claude Code (measured on 2.1.282)
+- **queued message status:** a message queued behind a turn has no prompt of its own, so the earlier turn's Stop baselines it, and its hook holds Claude Code (measured on 2.1.282)
 - **background subagent busy state:** after a turn that starts a subagent in the background, Claude Code is busy from that turn on (measured on 2.1.289)
 - **cleared session with background shell:** a session cleared while a background poll it started still runs is reported as running a shell, though it sits at its prompt doing nothing (measured on 2.1.289)
 - **background subagent busy state until report:** Claude Code stays busy from a background subagent's launch until the turn reporting it back ends, after the launching turn has stopped (measured on 2.1.289)

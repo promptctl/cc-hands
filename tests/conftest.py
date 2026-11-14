@@ -45,7 +45,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
-from hands.sessions.delta import MARKING, PATIENCE, Deltas
+from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
@@ -177,17 +177,17 @@ class BrokenClock(VirtualClock):
 
 class RealWall(VirtualClock):
     """Deadlines that pass only when a test moves them, on the machine's wall clock: git and gh stamp what they write
-    with the real time, and a delta compares its marks with those stamps."""
+    with the real time, and a delta compares its baselines with those stamps."""
 
     def wall(self) -> datetime:
         return SYSTEM.wall()
 
 
-def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None = None, marking: float = MARKING, patience: float = PATIENCE) -> D:
-    """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a mark or a reading found,
+def patient[D: Deltas](kind: type[D], record: Record, clock: VirtualClock | None = None, baselining: float = BASELINING, patience: float = PATIENCE) -> D:
+    """A `kind` of Deltas on a clock that moves only when the test moves it: a test asserts what a baseline or a reading found,
     never whether a loaded machine's git found it in time. No deadline runs down, git's and gh's included, until a test
     spends it; a git that never ends is ended by the suite's timeout."""
-    return kind(record=record, inherited=os.environ, marking=marking, patience=patience, clock=clock or RealWall())
+    return kind(record=record, inherited=os.environ, baselining=baselining, patience=patience, clock=clock or RealWall())
 
 
 async def settled(steps: int = 100) -> None:

@@ -146,15 +146,15 @@ let tags = 0;
 
 function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
 
-// What the page says of the hold it shows, by the last mark of it. Two marks are the page's own: `held`, the button
-// down, and `sent`, the button let go with hands yet to say it took the hold. A mark that `counts` is waited on: the
+// What the page says of the hold it shows, by the last milestone of it. Two milestones are the page's own: `held`, the button
+// down, and `sent`, the button let go with hands yet to say it took the hold. A milestone that `counts` is waited on: the
 // time since the button was let go counts beside its line.
 const OWN = {
   "held": {text: () => "Listening…"},
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
 };
-// The marks hands tells (hands.voice.mark), each naming the marks it may come after. Nothing a mark carries says which
-// hold it is of, so what places it is where it falls: a mark that cannot come after the shown hold's last is of a hold
+// The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. Nothing a milestone carries says which
+// hold it is of, so what places it is where it falls: a milestone that cannot come after the shown hold's last is of a hold
 // the page has let go of, and until hands says it took this hold or threw it away, nothing else told is of it.
 const TOLD = {
   "released": {after: ["sent"], text: () => "Received. Transcribing…", counts: true},
@@ -166,7 +166,7 @@ const TOLD = {
   // The first sound after the button was let go, whatever hands said with it.
   "first audio": {after: ["released", "transcript", "first LLM token"], text: (hold) => `hands spoke after ${secs(hold.at - hold.released)}${hold.heard === null ? "" : `, your words heard at ${secs(hold.heard - hold.released)}`}.`},
 };
-// The hold shown: its last mark and when that came, when its button was let go, and when its words were heard.
+// The hold shown: its last milestone and when that came, when its button was let go, and when its words were heard.
 let hold = null;
 // The one timer the count runs on, while the hold shown is waited on.
 let ticking = null;
@@ -179,21 +179,21 @@ function tick() { count.textContent = secs(performance.now() - hold.released); }
 function show(next) {
   letGo();
   hold = next;
-  const line = OWN[hold.mark] ?? TOLD[hold.mark];
+  const line = OWN[hold.milestone] ?? TOLD[hold.milestone];
   say(line.text(hold), line.bad);
   if (line.counts) { ticking = setInterval(tick, 100); tick(); }
 }
 
-// Every time is the page's own, from the button let go to the mark arriving: the wait as it is felt at the phone.
-function mark(name) {
+// Every time is the page's own, from the button let go to the milestone arriving: the wait as it is felt at the phone.
+function milestone(name) {
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(TOLD, name)) { letGo(); say(`hands said "${name}", which this page does not know.`, true); return; }
-  if (hold === null || !TOLD[name].after.includes(hold.mark)) return;
+  if (hold === null || !TOLD[name].after.includes(hold.milestone)) return;
   const at = performance.now();
-  show({...hold, mark: name, at, heard: name === "transcript" ? at : hold.heard});
+  show({...hold, milestone: name, at, heard: name === "transcript" ? at : hold.heard});
 }
 
-// Lets go of the hold shown: no mark told from here is of it, and its count stops.
+// Lets go of the hold shown: no milestone told from here is of it, and its count stops.
 function letGo() { clearInterval(ticking); ticking = null; hold = null; count.textContent = ""; }
 
 // The sentence of hands' playing: its words, where each ends in its text, when it started, and the rate hands speaks
@@ -257,9 +257,9 @@ const LINES = {
   "bargein": () => stop(bargedIn),
 };
 
-// Everything hands tells the page, by its kind: a mark of the hold shown, or a line of the transcript.
+// Everything hands tells the page, by its kind: a milestone of the hold shown, or a line of the transcript.
 function told(message) {
-  if (message.kind === "mark") { mark(message.mark); return; }
+  if (message.kind === "milestone") { milestone(message.milestone); return; }
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(LINES, message.kind)) { say(`hands told a "${message.kind}", which this page does not know.`, true); return; }
   LINES[message.kind](message);
@@ -418,7 +418,7 @@ function down(event) {
   held = true;
   talk.classList.add("held");
   // A new hold takes the place of the one shown: what is shown from here is this hold's.
-  show({mark: "held", at: null, released: null, heard: null});
+  show({milestone: "held", at: null, released: null, heard: null});
   call.press();
 }
 
@@ -427,7 +427,7 @@ function up() {
   held = false;
   talk.classList.remove("held");
   // A hold hands threw away while the button was down stays said as that: nothing of it was sent to be waited on.
-  if (hold?.mark === "held") show({...hold, mark: "sent", released: performance.now()});
+  if (hold?.milestone === "held") show({...hold, milestone: "sent", released: performance.now()});
   call.release();
 }
 

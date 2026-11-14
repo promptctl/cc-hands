@@ -85,7 +85,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
 from hands.voice.system import system_text
-from hands.voice.player import Mark
+from hands.voice.player import Marker
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
@@ -343,8 +343,8 @@ class _Turn:
         return not self.withholding and (self.voicing is not None or self.reached < self.marked)
 
     def point(self, point: _Point) -> None:
-        """Puts what the brain said or asked to the user, counted until its Mark has played."""
-        # [LAW:single-enforcer] the one place a point is counted: `_speak` pushes its one Mark.
+        """Puts what the brain said or asked to the user, counted until its Marker has played."""
+        # [LAW:single-enforcer] the one place a point is counted: `_speak` pushes its one Marker.
         self.marked += 1
         self.said.put_nowait(point)
 
@@ -899,20 +899,20 @@ class BrainStage(FrameProcessor):
 
     async def _point(self, turn: _Turn, point: _Point) -> None:
         """Says a point of the brain's: the end of a text block, or the question it asks, while that is still open, then
-        the point's Mark, behind which a question waits for its answer."""
+        the point's Marker, behind which a question waits for its answer."""
         # Read once. One settled before its turn came to be said, by its hook's day ending, the turn's end, or an answer,
-        # asks nothing, and its Mark plays behind what is ahead of it.
+        # asks nothing, and its Marker plays behind what is ahead of it.
         question = point if isinstance(point, Asked) and point.open else None
-        # The reply so far ends first, so what TTS holds of it is said ahead of the Mark: a text block's last sentence as
+        # The reply so far ends first, so what TTS holds of it is said ahead of the Marker: a text block's last sentence as
         # the block closes, never held back for words that come after a call.
         match question:
             case Asked(permission=permission):
                 await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
             case None:
                 await self._reply(turn, False)
-        # [LAW:single-enforcer] each point's one Mark. [LAW:no-ambient-temporal-coupling] a question is answerable once
-        # the speaker has played it to its end, which the mark is told of, and never if a barge-in cut it off.
-        await self.push_frame(Mark(partial(turn.reach, point)))
+        # [LAW:single-enforcer] each point's one Marker. [LAW:no-ambient-temporal-coupling] a question is answerable once
+        # the speaker has played it to its end, which the marker is told of, and never if a barge-in cut it off.
+        await self.push_frame(Marker(partial(turn.reach, point)))
         match question:
             case Asked(permission=permission) as asked:
                 # One question at a time, so what the user answers is the question they heard last.

@@ -518,13 +518,13 @@ subagent's hooks keep the `prompt_id` of the turn that started it after that tur
 Only Claude Code's status moves a session between running and at its prompt. Hooks and
 records say which turn it is and what it did: a turn is `Opened`, `Untold` once Claude
 Code's idle ends it, and `Told`. A turn opens from a prompt heard with no turn open, which
-marks it, whether or not the busy that prompt set has been read yet. What is submitted
+baselines it, whether or not the busy that prompt set has been read yet. What is submitted
 while a turn runs, a queued message or a task's notification, fires `UserPromptSubmit`
 with the running turn's `prompt_id` and leaves the status as it was, so it is in
 the turn it names. Claude Code gives a prompt an id of its own only at its prompt, so a
 prompt under another id means the open turn is over, even when the `idle` between them
 was set and set again inside one status read (93 ms apart): that turn is told,
-compared while the new prompt's hook holds Claude Code, and the new turn is marked. Any
+compared while the new prompt's hook holds Claude Code, and the new turn is baselined. Any
 other id a record carries while a turn is open is a flush's, taken seconds before Claude
 answers under it, and joins the ids the turn goes by. A `Stop` carries
 the `prompt_id` of the turn it ends, which is how that turn is found in the tail, and it
@@ -911,19 +911,19 @@ where it began. A turn told a second time is read from where its first reading l
 instead (see "What git says is not the model's to say"). The summariser gets the `Delta` beside the steps, because it is the
 result of all of them together and the file a `sed` changed belongs to no step at all.
 
-A mark is taken only from a session sitting at the prompt, because a turn opens there
+A baseline is taken only from a session sitting at the prompt, because a turn opens there
 and nowhere else. Claude Code sends the hook for a prompt queued while a turn runs, and
 a `Stop` the daemon never heard leaves a session working as far as the registry knows;
-marked again at either, a turn would be compared against the middle of its own work and
+baselined again at either, a turn would be compared against the middle of its own work and
 everything it changed before that second prompt would be missing from the one telling
-that names it `[LAW:no-ambient-temporal-coupling]`. A mark whose `HEAD` could not be
-read is no mark at all. `rev-parse` says nothing both for a repository with no commit
+that names it `[LAW:no-ambient-temporal-coupling]`. A baseline whose `HEAD` could not be
+read is no baseline at all. `rev-parse` says nothing both for a repository with no commit
 yet and for one it could not answer for, and silence has more causes than a clock can
 account for — a `HEAD` caught mid-rewrite by a checkout in the next terminal along, a
 ref that cannot be read, a deadline with nothing left on it. So unbornness is asked for
 rather than inferred: `symbolic-ref` answering means `HEAD` names a branch that no
 commit is on, which is what every repository looks like between `git init` and its first
-commit, and nothing else counts. Read as unborn, a mark that is really unreadable
+commit, and nothing else counts. Read as unborn, a baseline that is really unreadable
 compares against no commit, so every commit ever made in that repository is reachable
 from where the turn ended and not from where it began — and the turn is spoken as having
 made all of them `[LAW:parse-dont-validate]`.
@@ -936,7 +936,7 @@ untracked file, and the file a code generator just wrote is exactly what a turn 
 able to name; it also touches the repository's index to do its work. The index is
 copied rather than started from nothing because it carries what git already knows about
 every file: 0.105 s against 1.409 s on a repository of 20,000 files, and this is taken
-while a prompt's hook waits on it `[LAW:carrying-cost]`. The one mark left behind is one
+while a prompt's hook waits on it `[LAW:carrying-cost]`. The one baseline left behind is one
 unreferenced object per content git has not stored already, which its own housekeeping
 collects. Content is what git names an object by, so a file that does not change costs
 its size once however many turns read it: measured at 1.6 MB the first time two hundred
@@ -951,13 +951,13 @@ and waits for none of it. Both hooks are blocking ones and the shim gives up aft
 effect queued after `Compare` is the one that has the turn spoken at all, so a reading
 that is slow, that fails, or whose handler is cancelled must cost the turn its delta
 and never its telling `[LAW:no-silent-failure]`. Measured: the stop hook waits 0 ms,
-and the prompt hook 40 ms here and 145 ms on 20,000 files, against a mark's whole
-budget of `POST_TIMEOUT_SECONDS - 0.5`. A mark and a reading are both best effort and
+and the prompt hook 40 ms here and 145 ms on 20,000 files, against a baseline's whole
+budget of `POST_TIMEOUT_SECONDS - 0.5`. A baseline and a reading are both best effort and
 neither may cost the turn what it was read for, so both are performed under one guard
-rather than one guard each `[LAW:single-enforcer]`: a mark may not fail the prompt hook
+rather than one guard each `[LAW:single-enforcer]`: a baseline may not fail the prompt hook
 waiting on it, and a reading may not cost the turn the `Summarise` queued behind it.
 
-A mark is held from the moment its snapshot starts, so a reading that needs one still
+A baseline is held from the moment its snapshot starts, so a reading that needs one still
 being taken waits for it; where it could not be taken at all, the turn is told without a
 delta. Readings stay one per telling, in the order the tellings are made.
 
@@ -1097,8 +1097,8 @@ included, and its calls' readbacks. A turn spoken over that then fails adds only
 cut was heard by nobody.
 
 A cut is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
-or a text block's end or a permission question whose Mark the speaker has not yet played. Each text block ends the
-reply as it closes, so its last sentence is said then, before the call after it runs, and a Mark behind it is exact.
+or a text block's end or a permission question whose Marker the speaker has not yet played. Each text block ends the
+reply as it closes, so its last sentence is said then, before the call after it runs, and a Marker behind it is exact.
 Only the text block's own stop, or the start of a block that is neither text nor thinking, ends it: a retry that opens
 with thinking goes on with the block the broken reply left streaming, still one sentence. A text block still open when
 the turn ends, in a reply broken past its retry or a brain that failed, ends with the turn, and hands' lines waiting
@@ -1340,36 +1340,36 @@ parse — two commands in five that push, and nearly every `checkout -b`. So the
 where it does leave a mark, and only for the branch the session's worktree is on, since every
 worktree and the terminal beside it share the repository's refs: that branch's own log saying it
 was created from something other than the remote branch of its name (a checkout or a rename is
-not a branch made), a remote-tracking ref of it whose log says `update by push` since the mark (a
+not a branch made), a remote-tracking ref of it whose log says `update by push` since the baseline (a
 fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not the one a
-remote's HEAD follows, a pull request the forge says was opened between the mark and the turn's end, allowing the
+remote's HEAD follows, a pull request the forge says was opened between the baseline and the turn's end, allowing the
 forge's clock `SKEW` ahead of this machine's. Each is bounded by where the turn's end was captured, never by where
 the repository stands when the reading gets to it, so a push the next turn makes is not this turn's. The forge is asked
 beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs out, so a slow forge costs the
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
-both saw is said once. Each mark is one `delta.mark` wide event and each reading one
+both saw is said once. Each baseline is one `delta.baseline` wide event and each reading one
 `delta.read`, and each says which index its snapshot started from: the repository's
 own, copied; an empty one; or none, because git would not say where the index is. Each
 also counts the git commands that did not answer, so a git that timed out reads
 differently from a repository with nothing to tell.
 
 A turn told twice has git read twice, each telling against where the one before it left off.
-No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
+No prompt baselines where the part after a blocked `Stop` began, so every reading also keeps where
 it found the repository, and `Compare(again=True)` reads against that instead of the prompt's
-mark: a commit made in the turn's second half — a heredoc commit, which no step records
+baseline: a commit made in the turn's second half — a heredoc commit, which no step records
 either — is told with the second telling, and nothing the first told is told again. A first
 reading that could not say where the repository stood leaves the second telling without a
 delta. Only a turn hands told before is read this way: one whose first `Stop` it never heard
-is read against its prompt's mark, or not at all where no prompt was heard, since the last
+is read against its prompt's baseline, or not at all where no prompt was heard, since the last
 reading is then another turn's.
 
 A turn's end is captured in the background, after its `Stop` lets Claude Code go, so the next prompt can arrive while
-the capture is still running. The next turn's mark therefore waits beside every capture under way, inside the
+the capture is still running. The next turn's baseline therefore waits beside every capture under way, inside the
 prompt hook's one budget, and the hook lets the next turn begin only once each capture is in or the budget is spent.
 A stage still unread then was read inside the next turn and is never told: a tree read late loses the turn's files
 and keeps its commits, branch, push and pull requests, and a late read of where the repository stood loses all of
 them. `delta.read` says which: `read`, `tree overtaken`, `end overtaken`, or `start overtaken` for a part after a
-blocked `Stop` whose start was a capture the next turn overtook, beside `unmarked` and `dropped`. `delta.mark` counts
+blocked `Stop` whose start was a capture the next turn overtook, beside `unbaselined` and `dropped`. `delta.baseline` counts
 the captures it waited on and those it overtook, and how long it waited. A turn with no reading still takes its
 place in the narrator's order, so each telling is paired with its own turn's delta, and turns in a row with none
 share one place, so a daemon whose voice never loaded holds no more per turn.
@@ -1558,7 +1558,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   written 37 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
-  opening (told before that turn's mark), the session ending, or a reading of the
+  opening (told before that turn's baseline), the session ending, or a reading of the
   transcript through `UNTOLD` ms past the `idle`'s stamp, which is what tells a double
   Escape that leaves no record. That wait is on Claude Code's clock: each reading says how
   far it read (`Read`), stamped before it opened the file, so a transcript hands reads late
@@ -2084,13 +2084,13 @@ hands' voice out of the phone's microphone, so the phone's audio is gated by its
 button alone.
 
 The same channel carries, the other way, what became of each hold. The latency
-observer (`hands.voice.latency`) tells the phone each mark of a turn as it logs it
-(`hands.voice.mark`): `released` or `discarded`, `transcript` or `no words`,
+observer (`hands.voice.latency`) tells the phone each milestone of a turn as it logs it
+(`hands.voice.milestone`): `released` or `discarded`, `transcript` or `no words`,
 `first LLM token`, `first audio`, and `failed` where a stage failed first. The page
 shows the last one under its button, with the time since the button was let go
 counting while a reply is waited on, and the time to the first sound once it
 comes. Every time shown is the page's own clock, from the button let go to the
-mark arriving, so it is the wait as felt at the phone, the network included.
+milestone arriving, so it is the wait as felt at the phone, the network included.
 
 `no words` is a fact of the turn and not of a hold: the user aggregator says the
 turn ended, and no hold it took in had words, so nothing is sent to the model. A
@@ -2102,15 +2102,15 @@ the turn's latency window, so what hands says next, the failure itself included,
 is not timed as the answer. `first audio` is the first sound after the release,
 whatever hands said with it, and the page says only that hands spoke.
 
-A mark carries no hold's number, so the page places it by where it falls: each
-mark names the marks it may come after, and until hands says it took the hold
-shown or threw it away, nothing else told is of that hold. A mark of a hold the
-page has let go of is not shown. A call's `phone.call` event counts the marks its
+A milestone carries no hold's number, so the page places it by where it falls: each
+milestone names the milestones it may come after, and until hands says it took the hold
+shown or threw it away, nothing else told is of that hold. A milestone of a hold the
+page has let go of is not shown. A call's `phone.call` event counts the milestones its
 page was told.
 
 The channel also carries the transcript (`hands.voice.transcript`), which the page
 keeps under a button, hidden until asked for. Every message on it is one JSON
-object whose `kind` says which it is: a `mark`, or a line. The user's words are
+object whose `kind` says which it is: a `milestone`, or a line. The user's words are
 the line Whisper heard of each hold. Each of hands' sentences is told twice: as the
 output transport writes its first audio, and as it lets the sentence's end go, or a
 barge-in cuts it off. Its text alone is no start: the first sentence of a reply is
@@ -2119,7 +2119,7 @@ measures its speaking rate off each sentence played to its end and tells it with
 the next; the page sweeps the highlight through a sentence's words at that rate,
 holds on the last word until hands says the sentence is done, and strikes through
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
-lines told beside the marks.
+lines told beside the milestones.
 
 **The phone's page shows what the brain is doing, and stops its turn** (`hands.voice.brainpage`).
 Below the Conversation link, one line says Idle, Thinking, or the call the brain runs, with how long
@@ -2134,7 +2134,7 @@ brain's one stop (`Brain.interrupt`, Escape then Ctrl-C with its input held), wh
 from. A turn stopped before any block of its reply ended is gone from the brain's history (Escape
 gives the prompt back to the input, and the Ctrl-C empties it), so what it asked is told the brain
 with its next turn. Both routes are served beside the phone's page under its key
-(`hands.voice.keyed`): `GET /brain?seen=<mark>` and `POST /brain/stop`. A read that has seen the
+(`hands.voice.keyed`): `GET /brain?seen=<version>` and `POST /brain/stop`. A read that has seen the
 work waits until it changes, by the conversation page's loop in `hands.voice.longpoll`, a look being
 a digest of what the stage holds in memory; its answer carries the Mac's clock, by which the page
 times the work. Each read is one `brain.read` event, with what the brain was doing, how many calls

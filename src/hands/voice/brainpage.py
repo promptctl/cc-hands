@@ -95,11 +95,11 @@ def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list
 
     @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:
-        mark, work = await waited(clock, look, request.query.get("seen"))
+        version, work = await waited(clock, look, request.query.get("seen"))
         annotate(doing=type(work).__name__)
         count(calls=len(running(work)))
-        # The Mac's clock as it answers, beside the mark: the page times the brain's work by it, never by its own.
-        return web.json_response({"seen": mark, "now": clock.wall().timestamp(), "work": shown(work)})
+        # The Mac's clock as it answers, beside the version: the page times the brain's work by it, never by its own.
+        return web.json_response({"seen": version, "now": clock.wall().timestamp(), "work": shown(work)})
 
     @keyed(clock, "brain.stop", record, key)
     async def stop(request: web.Request) -> web.Response:

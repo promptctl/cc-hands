@@ -73,19 +73,19 @@ def lines(log: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for base in segments(log) for line in segment(log, base).read_text().splitlines()]
 
 
-class Marking(NoChanges):
-    """Marks each turn as a repository reader does, in a unit of work of its own, and reads nothing."""
+class Baselining(NoChanges):
+    """Baselines each turn as a repository reader does, in a unit of work of its own, and reads nothing."""
 
     def __init__(self, record: Record) -> None:
         self._record = record
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
-        with unit("delta.mark", self._record, begun(SYSTEM)):
+        with unit("delta.baseline", self._record, begun(SYSTEM)):
             pass
 
 
 class Hanging(NoChanges):
-    """Marks no turn before it is cut short, as a reader whose repository never answers."""
+    """Baselines no turn before it is cut short, as a reader whose repository never answers."""
 
     def __init__(self) -> None:
         self.begun = asyncio.Event()
@@ -96,7 +96,7 @@ class Hanging(NoChanges):
 
 
 class Slow(NoChanges):
-    """Marks a turn once the test lets its repository answer, as a reader whose repository is slow."""
+    """Baselines a turn once the test lets its repository answer, as a reader whose repository is slow."""
 
     def __init__(self) -> None:
         self.begun = asyncio.Event()
@@ -696,19 +696,19 @@ async def test_an_answer_is_one_applied_event_with_the_reply_it_called_for() -> 
 
 async def test_what_an_effect_opens_is_the_child_of_the_event_that_called_for_it_heard_or_applied_inside_a_unit() -> None:
     recorded: list[Entry] = []
-    sessions = new_sessions(clock=SYSTEM, record=recorded.append, changes=Marking(recorded.append))
+    sessions = new_sessions(clock=SYSTEM, record=recorded.append, changes=Baselining(recorded.append))
     await sessions.apply(Joined(member(), "startup"))
     with unit("hook", recorded.append, begun(SYSTEM)):
         await sessions.apply(Prompted(member().id, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
     sessions.hear(Prompted(member().id, at=2.0, mode=None, prompt=PromptId("p2"), text=""))
     await asyncio.wait_for(asyncio.gather(*sessions._hearing), 1.0)  # pyright: ignore[reportPrivateUsage]
     hook = next(entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "hook")
-    marks = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    baselines = [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     prompted = [event for event in applied(recorded) if isinstance(event.facts["applied"], Prompted)]
     assert [(event.trace_id, event.parent_id) for event in prompted] == [(hook.trace_id, hook.span_id), (prompted[1].trace_id, None)]
-    assert [(mark.trace_id, mark.parent_id) for mark in marks] == [(event.trace_id, event.span_id) for event in prompted]
+    assert [(baseline.trace_id, baseline.parent_id) for baseline in baselines] == [(event.trace_id, event.span_id) for event in prompted]
     # Timed from when it was decided: what its effects did lies inside it.
-    assert all(event.started_at <= mark.started_at for event, mark in zip(prompted, marks, strict=True))
+    assert all(event.started_at <= baseline.started_at for event, baseline in zip(prompted, baselines, strict=True))
 
 
 async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_decided_before_it() -> None:
@@ -721,7 +721,7 @@ async def test_where_a_prompts_words_went_is_handed_over_after_every_telling_dec
     first, second = (Prompted(member().id, at=at, mode=None, prompt=PromptId(prompt), text=words) for at, prompt, words in [(1.0, "p1", "first"), (2.0, "p2", "second")])
     sessions.hear(first)
     await asyncio.wait_for(slow.begun.wait(), 1.0)
-    # The second prompt tells the turn the first opened, while that turn's mark is still being taken.
+    # The second prompt tells the turn the first opened, while that turn's baseline is still being taken.
     applying = asyncio.ensure_future(sessions.apply(second))
     slow.answer.set()
     await asyncio.wait_for(applying, 1.0)
@@ -745,7 +745,7 @@ async def test_an_effect_cut_short_is_cancelled_and_those_waiting_on_it_are_not_
     first, second = [next(event for event in applied(recorded) if event.facts["applied"] == prompted) for prompted in prompts]
     taken = Submitted(member().id, PromptId("p1"), "", queued=False)
     assert (first.outcome, performed(first)) == ("cancelled", [(Snapshot(member().id, member().cwd), "cancelled"), (taken, "not performed")])
-    # The second prompt ends the first's turn: its telling and its own mark wait behind the mark cut short, and never begin.
+    # The second prompt ends the first's turn: its telling and its own baseline wait behind the baseline cut short, and never begin.
     told = [Compare(member().id, again=False), Summarise(member().id, PromptId("p1"), None, ids=frozenset({PromptId("p1")})), Snapshot(member().id, member().cwd), Submitted(member().id, PromptId("p2"), "", queued=False)]
     assert (second.outcome, performed(second)) == ("cancelled", [(effect, "not performed") for effect in told])
     assert [each.duration_ms is None for each in effects(first) + effects(second)] == [False, True, True, True, True, True]
@@ -772,7 +772,7 @@ async def test_a_stop_that_ends_no_turn_is_a_line_saying_so() -> None:
     assert (Audit(Unmatched(stop.session, stop.prompt)), "ok") in performed(applied(recorded)[-1])
 
 
-async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_marks_the_turn_they_run_as() -> None:
+async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_baselines_the_turn_they_run_as() -> None:
     """[LAW:nothing-unseen] the facts the queue gives a Stop land on the applied event that decided them."""
     recorded: list[Entry] = []
     sessions = new_sessions(clock=SYSTEM, record=recorded.append)
@@ -789,7 +789,7 @@ async def test_words_left_waiting_at_a_stop_are_lines_as_it_is_held_and_as_it_ma
     assert (Audit(Unfiled(stop.session, Removed("a notification"))), "ok") in performed(applied(recorded)[-1])
 
 
-async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a_line_as_it_is_let_go_unmarked() -> None:
+async def test_a_stop_held_for_words_taken_out_of_the_queue_before_it_fired_is_a_line_as_it_is_let_go_unbaselined() -> None:
     recorded: list[Entry] = []
     sessions = new_sessions(clock=SYSTEM, record=recorded.append)
     await sessions.apply(Joined(member(), "startup"))

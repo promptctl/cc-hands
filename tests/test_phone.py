@@ -28,7 +28,7 @@ from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
-from hands.voice.mark import Mark
+from hands.voice.milestone import Milestone
 from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
@@ -210,13 +210,13 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
 
 
-async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
-    for mark in get_args(Mark):
-        call.phone.tell(mark)
+async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
+    for milestone in get_args(Milestone):
+        call.phone.tell(milestone)
     for line in LINES:
         call.phone.tell(line)
-    await call.until(lambda: len(call.page.told) == len(get_args(Mark)) + len(LINES))
-    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "mark", "mark": mark} for mark in get_args(Mark)] + [
+    await call.until(lambda: len(call.page.told) == len(get_args(Milestone)) + len(LINES))
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)] + [
         {"kind": "heard", "text": "Is the parser fixed?"},
         {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
         {"kind": "spoken"},
@@ -225,20 +225,20 @@ async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_trans
     ]
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)
-    assert (left(event).told, left(event).lines) == (len(get_args(Mark)), len(LINES))
+    assert (left(event).told, left(event).lines) == (len(get_args(Milestone)), len(LINES))
 
 
-async def test_a_mark_with_no_call_up_is_told_to_nobody() -> None:
-    """A turn taken at the desk passes the same marks, and no page is waiting on it."""
+async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
+    """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
     phone.tell("released")
 
 
-def test_the_page_knows_every_mark_hands_tells_it() -> None:
-    """The page says what each mark means by name, and names one it does not know as an error on its face."""
+def test_the_page_knows_every_milestone_hands_tells_it() -> None:
+    """The page says what each milestone means by name, and names one it does not know as an error on its face."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
-    assert [mark for mark in get_args(Mark) if f'"{mark}": ' not in table] == []
+    assert [milestone for milestone in get_args(Milestone) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
