@@ -133,7 +133,8 @@ ALONE, PERSON, HANDS = THRESHOLDS
 # The row a clip's last identification, at its end, adds under the table for a speaker heard under a second: a wake
 # phrase said alone over hands, then silence, is never heard long enough for the table, so it is told from hands' echo at
 # its length or not at all. At 0.8 s the echo scored as low as 0.19: under that is not hands. Only at the end, where
-# nothing more of the speaker is coming to decide by; as provisional as the table, and refitted with it.
+# nothing more of the speaker is coming to decide by. Measured at 0.8 s alone: the row's 0.5 s and its score, which sits
+# on the echo's lowest and leaves no margin, are provisional, and refitted with the table.
 CLOSING = Threshold(0.5, 0.19)
 ENDING = (CLOSING, *THRESHOLDS)
 
@@ -160,17 +161,17 @@ def decided(scored: float, seconds: float, window: Window, thresholds: tuple[Thr
             return Unsure(scored, seconds, window)
 
 
-def cleared(who: Who, played: bool) -> bool:
-    """Whether a speaker, `played` over by hands or not, clears hands to be cut off.
+def cleared(who: Who, played: bool, said: bool) -> bool:
+    """Whether a speaker, `played` over by hands or not, who has `said` words or not, clears hands to be cut off.
 
     [LAW:single-enforcer] the one rule of who cuts hands off. A speaker hands played nothing over has no echo of hands
-    in them, so whoever they are clears it, as their words do before any voiceprint. One hands played over may be hands'
-    own echo, so only a person clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not
-    be scored at all (the model loading, a print being made) cut nothing, and their `voiceprints.identified` unit says
-    why."""
+    in them, so whoever they are, their words clear them, before any voiceprint, and a sound the diarizer took for a
+    speaker with no words in it, a cough, clears nothing. One hands played over may be hands' own echo, so only a person
+    clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not be scored at all (the model
+    loading, a print being made) cut nothing, and their `voiceprints.identified` unit says why."""
     match played, who:
         case False, _:
-            return True
+            return said
         case True, Person():
             return True
         case True, Hands() | Unsure() | Unheard() | Unidentified():
@@ -181,8 +182,8 @@ def cleared(who: Who, played: bool) -> bool:
 class Voiced:
     """One speaker in a clip, as the stream heard them: their number in the run, the latest WINDOW of their voice in
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
-    every voice of hands' TTS played over any of them, and how many seconds after the clip opened they were first
-    heard, under none in what it kept from before."""
+    every voice of hands' TTS played over any of them, how many seconds after the clip opened they were first heard,
+    under none in what it kept from before, and whether the stream has decoded any words of theirs."""
 
     speaker: int
     voice: Samples
@@ -190,6 +191,7 @@ class Voiced:
     shared: float
     played: tuple[str, ...]
     first: float
+    said: bool
 
 
 @dataclass(frozen=True)
@@ -453,7 +455,7 @@ class Voiceprints:
         except Exception as error:
             ended("voiceprints.identified", self._record, began, error, clip=clip.number)
             return None
-        first = min((each.first for each, speaker in zip(voiced, speakers, strict=True) if cleared(speaker.who, bool(each.played))), default=None)
+        first = min((each.first for each, speaker in zip(voiced, speakers, strict=True) if cleared(speaker.who, bool(each.played), each.said)), default=None)
         # [LAW:nothing-unseen] who each speaker is, and when the first of them who cuts hands off was first heard.
         ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first)
         return first

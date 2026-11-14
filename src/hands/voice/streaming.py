@@ -216,13 +216,14 @@ class _Voice:
         self.seconds += len(heard) / RATE
         self.played |= dict.fromkeys(played)
 
-    def voiced(self, speaker: int) -> Voiced:
-        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared."""
+    def voiced(self, speaker: int, said: bool) -> Voiced:
+        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared; `said` whether any
+        words of theirs have been decoded."""
         voice = np.concatenate([samples for samples, _ in self.latest])
         # The oldest frame kept is cut to the window, and its share with it.
         cut = max(0, self.held - round(WINDOW * RATE))
         shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
-        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played), self.first)
+        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played), self.first, said)
 
 
 @dataclass
@@ -323,18 +324,19 @@ class Stream:
             rows = voiceprints.reached(voice.seconds)
             if rows > voice.reached:
                 voice.reached = rows
-                reached.append(voice.voiced(speaker))
+                reached.append(voice.voiced(speaker, bool(clip.said.get(speaker))))
         # Their words, ahead of any voiceprint of them: a speaker unheard by it, who clears hands to be cut off only
         # where hands played nothing over them.
         voiced = (clip.voices[said.speaker] for said in added if said.speaker in clip.voices)
-        barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.played))), default=None)
+        barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.played), True)), default=None)
         return Since(tuple(added), tuple(reached), barge_in_at)
 
     def ended(self) -> Ended:
         """The clip open, heard to the silence after it, with every speaker heard in it."""
         clip = self._open
         spoken = tuple(Said(speaker, said) for speaker, text in clip.text.items() if (said := words(text)))
-        voices = tuple(voice.voiced(speaker) for speaker, voice in clip.voices.items())
+        speakers = {each.speaker for each in spoken}
+        voices = tuple(voice.voiced(speaker, speaker in speakers) for speaker, voice in clip.voices.items())
         return Ended(spoken, round(clip.tape.length / RATE, 3), clip.closed, voices)
 
 

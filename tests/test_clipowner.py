@@ -481,6 +481,16 @@ async def test_a_wake_phrase_said_alone_over_hands_cuts_it_off_as_its_clip_close
         assert clip.facts["identified"] == "a person"
 
 
+async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_transcription_is_still_running() -> None:
+    transcribing = asyncio.Event()
+    async with rigged(Scripted([transcribing]), (Heeding("streaming", settling=settling(0.3)),)) as rig:
+        await rig.clip([frame_of(3)], by="wake word", voices=("charles",))
+        await rig.until(lambda: barge_ins(rig) == [("barge_in", 1, 0.3)])
+        assert ("resolved", 1) not in rig.seen.seen
+        transcribing.set()
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+
+
 async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint() -> None:
     # Nothing settles its identification: a clip with no echo of hands in it never waits on one.
     async with rigged(Scripted(["stop there", None]), (Heeding("streaming"),)) as rig:

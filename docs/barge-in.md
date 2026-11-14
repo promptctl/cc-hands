@@ -39,7 +39,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | the trigger that opened the clip | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a clip the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
-| a clip the voice opened, the wake word's or engaged conversation's, cuts once a speaker who is not hands is heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for a speaker its voiceprint tells from its own echo, or for words where it played nothing over them, so neither its own voice nor a cough cuts |
+| a clip the voice opened, the wake word's or engaged conversation's, cuts once a speaker who is not hands is heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for a speaker its voiceprint tells from its own echo, or for words where it played nothing over them, so its own voice cuts nothing, and nor does a cough where it played nothing over it; one it played over, which a voiceprint alone decides, a sound the diarizer took for a speaker could still cut |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
 | the note | context carry-over: what the next turn is told about the one cut off |
@@ -56,7 +56,7 @@ flowchart TD
     opened -- "push-to-talk, the phone's button" --> now["Cut as the window opens"]
     opened -- "wake word, engaged conversation" --> whisper{"Is a speaker who is not hands heard in it?"}
     whisper -- "yes" --> words["Cut once they are"]
-    whisper -- "no: hands' own voice, a cough" --> nocut(["No cut: the reply plays on as if nothing had opened"])
+    whisper -- "no: hands' own voice, or no words where hands played nothing" --> nocut(["No cut: the reply plays on as if nothing had opened"])
     now --> inflight{"Is a brain turn in flight?"}
     words --> inflight
     inflight -- "no" --> nextturn(["Not a barge-in: the words are the next turn"])

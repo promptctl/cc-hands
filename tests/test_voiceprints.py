@@ -49,8 +49,8 @@ def by_length(prints: dict[int, Print]) -> Embed:
     return lambda voice: prints[len(voice)]
 
 
-def voiced(length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0) -> Voiced:
-    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first)
+def voiced(length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True) -> Voiced:
+    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said)
 
 
 def rounded(who: Who) -> Who:
@@ -84,10 +84,12 @@ def test_a_speaker_under_a_second_is_unheard_and_never_scored_and_one_heard_long
     [Person(0.0, 3.0, NONE), Hands(1.0, 3.0, NONE), Unsure(0.4, 1.2, NONE), Unheard(0.4), Unidentified(3.0, "no print yet of charles")],
     ids=["person", "hands", "unsure", "unheard", "unidentified"],
 )
-def test_a_speaker_hands_played_nothing_over_cuts_it_off_whoever_they_are_and_one_it_played_over_only_as_a_person(who: Who) -> None:
-    assert cleared(who, played=False)
+def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_it_played_over_only_as_a_person(who: Who) -> None:
+    assert cleared(who, played=False, said=True)
+    # A sound the diarizer took for a speaker, with no words in it, cuts nothing.
+    assert not cleared(who, played=False, said=False)
     # Hands' own echo, and anyone not yet told from it, the model loading or a print being made included, cuts nothing.
-    assert cleared(who, played=True) == isinstance(who, Person)
+    assert cleared(who, played=True, said=True) == cleared(who, played=True, said=False) == isinstance(who, Person)
 
 
 def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end_and_by_nothing_before() -> None:
@@ -100,6 +102,19 @@ def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end
     assert scored(embed, (hands,), echo, ENDING) == Unsure(1.0, 0.8, Window(0.0, 0.0))
     # Under the closing row, nothing is told even at the end.
     assert scored(embed, (hands,), voiced(5, CLOSING.seconds - 0.01), ENDING) == Unheard(CLOSING.seconds - 0.01)
+
+
+async def test_an_identification_clears_a_speaker_hands_played_nothing_over_only_where_the_stream_decoded_words_of_them(tmp_path: Path) -> None:
+    recorded: list[Entry] = []
+    prints = Voiceprints(SYSTEM, lambda: by_length({1: unit(1, 0), 5: unit(0, 1)}), said_in({"charles": 1}, []), tmp_path, recorded.append)
+    prints.speaking_in("charles")
+    await until(recorded, "voiceprints.enrolled", 1)
+    cleared_at: list[float] = []
+    # A sound the diarizer took for a speaker, no words of it: nothing cuts. A speaker with words decoded: they do.
+    prints.identify(CLIP, (voiced(5, 1.5, said=False, first=0.2),), cleared_at.append)
+    prints.identify(SECOND, (voiced(5, 1.5, said=True, first=0.4),), cleared_at.append)
+    # The lane runs one identification at a time, so the first's silence is settled by the time the second tells.
+    assert await appeared(cleared_at, 1) == [0.4]
 
 
 async def appeared[T](items: list[T], count: int) -> list[T]:
