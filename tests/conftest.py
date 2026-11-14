@@ -1,7 +1,6 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
-import functools
 import gc
 import hashlib
 import json
@@ -77,6 +76,11 @@ LAYERS = ("unit", "audit")
 # the refusal's outcome, not the 120 s of a test that is let run.
 AUDIT_TIMEOUT = 10.0
 REFUSED = "the unit layer holds a test to nothing outside the process (tests/unit.sb): mark it @pytest.mark.outside if it is about a process, a socket or the models"
+
+
+def held(config: pytest.Config) -> bool:
+    """Whether the run is in a layer's hold (tests/offline.py), the one place the option is read for it."""
+    return config.getoption("layer", None) is not None
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -160,7 +164,8 @@ def layered(config: pytest.Config, items: list[pytest.Item], layer: str) -> None
     items[:] = kept
     if layer == "audit":
         for item in kept:
-            item.add_marker(pytest.mark.xfail(reason="marked outside, and nothing the hold refuses stopped it: drop the mark", strict=True))
+            # First, since pytest reads the first xfail on a test: a quarantine's non-strict one would let a mark nothing refuses pass.
+            item.add_marker(pytest.mark.xfail(reason="marked outside, and nothing the hold refuses stopped it: drop the mark", strict=True), append=False)
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
@@ -331,16 +336,15 @@ class Pairs:
 PAIRS = Pairs()
 
 
+# The reader the fixture below replaces, taken before any test runs: the one test about the question checks it.
+KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
+
+
 @pytest.fixture(autouse=True)
 def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
-    about but the one that checks the question: it takes the real reader from `__wrapped__`."""
-
-    @functools.wraps(library._keychain_token)  # pyright: ignore[reportPrivateUsage]
-    def unkept() -> None:
-        return None
-
-    monkeypatch.setattr(library, "_keychain_token", unkept)
+    about but the one that checks the question, on KEYCHAIN_READER."""
+    monkeypatch.setattr(library, "_keychain_token", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -612,15 +616,15 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     wake_word = config.cache.mkdir("wake-word")
     claude_code = config.cache.mkdir("claude-code")
     layer = config.getoption("layer", None)
-    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine, unit=layer is not None)
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine, unit=held(config))
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
-    if layer is None:
+    if not held(config):
         write(f"offline: nothing past loopback and no Claude Code policy from here ({offline.hold()})\n")
     else:
-        held = offline.hold(offline.Unit((Path(huggingface_hub.constants.HF_HUB_CACHE), Path(huggingface_hub.constants.HF_XET_CACHE), wake_word)))
-        write(f"unit layer ({layer}): nothing outside the process, no fetched weight read and no Claude Code policy from here ({held})\n")
+        hold = offline.hold(offline.Unit((Path(huggingface_hub.constants.HF_HUB_CACHE), Path(huggingface_hub.constants.HF_XET_CACHE), wake_word)))
+        write(f"unit layer ({layer}): nothing outside the process, no fetched weight read and no Claude Code policy from here ({hold})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 

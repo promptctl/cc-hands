@@ -9,11 +9,7 @@ import subprocess
 
 import pytest
 
-from conftest import REFUSED, RUN, layered, refused
-
-
-def held(config: pytest.Config) -> bool:
-    return config.getoption("layer") is not None
+from conftest import REFUSED, RUN, held, layered, refused
 
 
 def test_a_process_start_is_refused_in_a_layer_run_and_made_in_any_other(pytestconfig: pytest.Config) -> None:
@@ -41,7 +37,7 @@ def test_the_fetched_weights_are_unread_in_a_layer_run_and_read_in_any_other(pyt
         assert weights.is_dir()
 
 
-def test_a_look_at_a_tool_finds_it_where_a_process_cannot_be_started(pytestconfig: pytest.Config) -> None:
+def test_a_look_at_a_tool_finds_it_where_a_process_cannot_be_started() -> None:
     assert shutil.which("true") is not None
 
 
@@ -81,6 +77,13 @@ def test_a_layer_run_takes_the_tests_no_mark_sends_outside_or_the_ones_that_it_d
     assert [item.name for item in audit] == ["test_out"]
     (strict,) = audit[0].iter_markers("xfail")
     assert strict.kwargs["strict"] is True
+
+
+def test_an_audit_reads_its_strict_expected_failure_before_a_quarantines(pytester: pytest.Pytester) -> None:
+    [item] = pytester.getitems("import pytest\n\n@pytest.mark.outside\ndef test_out():\n    pass\n")
+    item.add_marker(pytest.mark.xfail(reason="quarantined", strict=False))
+    layered(item.config, [item], "audit")
+    assert next(item.iter_markers("xfail")).kwargs["strict"] is True
 
 
 def failed_with(text: str) -> pytest.TestReport:
