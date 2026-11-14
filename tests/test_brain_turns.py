@@ -108,6 +108,7 @@ def _bare() -> Brain:
     return brain
 
 
+@pytest.mark.outside
 async def test_a_dialog_between_turns_or_with_a_body_that_does_not_parse_is_answered_no_and_said() -> None:
     recorded: list[Entry] = []
     brain = _bare()
@@ -342,6 +343,7 @@ async def test_a_brain_whose_reading_failed_still_lets_go_of_what_it_held_as_it_
         brain._reading.result()  # pyright: ignore[reportPrivateUsage]
 
 
+@pytest.mark.outside
 async def test_a_hook_whose_hearing_fails_unexpectedly_is_said_once_and_the_hooks_after_it_are_still_heard() -> None:
     recorded: list[Entry] = []
 

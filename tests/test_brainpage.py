@@ -19,6 +19,9 @@ from hands.voice import longpoll
 from hands.voice.brainpage import brain_routes
 from conftest import events
 
+
+pytestmark = pytest.mark.outside
+
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
 SLEEPING = Working("turn-1", Epoch(1000.0), (Running("Bash", {"command": "sleep 30", "description": "Wait"}, Epoch(1002.0)),))

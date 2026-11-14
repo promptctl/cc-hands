@@ -1009,6 +1009,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     assert live is not None and isinstance(live.turn, Told) and live.turn.turn == PromptId("p2")
 
 
+@pytest.mark.outside
 async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_itself_with_its_own_changes(tmp_path: Path) -> None:
     """hands-keyboard-gxr.90g, end to end: p1 is taken, writes a file, and is interrupted, Claude Code says so, and p2's
     hook is applied and marked, all before the tail reads a record of p1. p1 is told as itself, with the file it wrote

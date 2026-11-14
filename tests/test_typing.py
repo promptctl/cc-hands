@@ -71,12 +71,14 @@ def asked(path: Path, answer: bytes, send: Callable[[Typist], None]) -> dict[str
     return json.loads(fritter.asked)
 
 
+@pytest.mark.outside
 def test_text_reaches_fritter_as_text_for_the_process_it_wrapped(short_dir: Path) -> None:
     # A newline is text: fritter pastes it, so only the chord fritter adds behind it sends the message.
     sent = asked(short_dir / "f.sock", b'{"ok":true}\n', lambda t: t.type(PromptText("first\nsecond"), "ctrl_q"))
     assert sent == {"pid": 4242, "kind": "text", "text": "first\nsecond", "submit": "ctrl_q"}
 
 
+@pytest.mark.outside
 def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
     path = short_dir / "f.sock"
     fritter = FakeFritter(path, b'{"ok":true}\n')
@@ -89,6 +91,7 @@ def test_a_type_effect_is_typed_behind_a_space(short_dir: Path) -> None:
     assert json.loads(fritter.asked) == {"pid": 4242, "kind": "text", "text": " /compact now", "submit": "enter"}
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("input", "sent"),
     [
@@ -102,10 +105,12 @@ def test_a_command_is_typed_as_itself_and_a_key_is_pressed(input: Input, sent: d
     assert asked(path, b'{"ok":true}\n', lambda _: asyncio.run(type_into(SYSTEM, {}, Type(SID, Fritter(path, pid=4242), input=input)))) == sent
 
 
+@pytest.mark.outside
 def test_a_named_key_is_sent_as_a_key_and_never_as_text(short_dir: Path) -> None:
     assert asked(short_dir / "f.sock", b'{"ok":true}\n', lambda t: t.press("escape")) == {"pid": 4242, "kind": "key", "key": "escape"}
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("answer", "says"),
     [
@@ -153,6 +158,7 @@ class MuteFritter:
         self._thread.join(timeout=8)
 
 
+@pytest.mark.outside
 def test_a_fritter_that_never_answers_does_not_hold_the_daemon(short_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(typing, "ANSWER_TIMEOUT", 0.3)
     path = short_dir / "mute.sock"

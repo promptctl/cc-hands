@@ -408,6 +408,7 @@ def skill(home: Home, cwd: Path, *arguments: str) -> subprocess.CompletedProcess
     return subprocess.run(skill_command("attention", *arguments), shell=True, env=environment, cwd=cwd, capture_output=True, text=True)
 
 
+@pytest.mark.outside
 def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     asked = skill(home, tmp_path)
@@ -417,6 +418,7 @@ def test_the_skill_sets_what_is_said_unprompted_and_says_what_is_set(tmp_path: P
     assert attention(home) == Attention(progress="brief", quiet="on")
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("arguments", "refused"),
     [

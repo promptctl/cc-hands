@@ -60,6 +60,7 @@ async def test_the_wake_word_the_settings_name_is_the_one_said(tmp_path: Path) -
         assert str((await level.body())["readback"]).startswith(f"The wake word: say {phrase}, then what you want;")
 
 
+@pytest.mark.outside
 async def test_a_trained_wake_word_is_heard_with_its_own_model(tmp_path: Path, models: Path) -> None:
     # openWakeWord's Hey Mycroft model stands in for one the user trained, under a name of their own.
     trained = tmp_path / "hey_computer.onnx"
@@ -72,7 +73,7 @@ async def test_a_trained_wake_word_is_heard_with_its_own_model(tmp_path: Path, m
     [
         (None, "no wake word model at {model}"),
         (b"not a model", "the wake word model at {model} cannot be loaded: "),
-        (TWO_WORDS.read_bytes(), "the wake word model at {model} scores 2 words, and a wake word is one"),
+        pytest.param(TWO_WORDS.read_bytes(), "the wake word model at {model} scores 2 words, and a wake word is one", marks=pytest.mark.outside),
     ],
 )
 def test_a_trained_wake_word_it_cannot_hear_with_is_refused_naming_the_model(tmp_path: Path, models: Path, model: bytes | None, said: str) -> None:

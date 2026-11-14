@@ -176,6 +176,7 @@ def only_exchange(wire: Wire) -> Exchanged:
     return exchanges[0]
 
 
+@pytest.mark.outside
 async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchange(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     status, headers, body = await post(wire.proxy.url)
@@ -195,6 +196,7 @@ async def test_a_stream_passes_byte_for_byte_and_is_one_classified_timed_exchang
     assert exchange.reply.body.message.content == (Text("hello from the wire"),)
 
 
+@pytest.mark.outside
 async def test_an_exchange_records_the_class_claude_code_named_it_beside_the_kind_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # A loop-shaped body Claude Code names auxiliary: what it was named, and what hands read it as, are both on the record.
     _, wire = await serve(streamed)
@@ -204,6 +206,7 @@ async def test_an_exchange_records_the_class_claude_code_named_it_beside_the_kin
     assert (exchange.named, exchange.kind) == ("auxiliary", Auxiliary("claude-opus-5-5"))
 
 
+@pytest.mark.outside
 async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     _, wire = await serve(streamed)
     await post(wire.proxy.url)
@@ -213,6 +216,7 @@ async def test_the_request_is_heard_before_the_reply_and_text_as_it_arrives(serv
     assert isinstance(wire.seen[-1], Exchanged)
 
 
+@pytest.mark.outside
 async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # Claude Code asks again without streaming once a stream fails, and is answered one whole message.
     usage = {"input_tokens": 7, "cache_read_input_tokens": 90, "output_tokens": 3}
@@ -245,6 +249,7 @@ async def test_a_message_sent_whole_is_heard_as_the_message_it_is(serve: Callabl
     assert reading is not None and (reading.in_context, reading.spent) == (100, Spent(97, 3, 1))
 
 
+@pytest.mark.outside
 async def test_a_message_sent_whole_is_heard_before_the_client_has_a_byte_of_it(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # Claude Code runs a whole reply's tool call once it has parsed it, and hands' tools read what the wire heard.
     answer = json.dumps({"type": "message", "id": "msg_3", "model": "m", "content": [{"type": "text", "text": "in two parts"}], "stop_reason": "end_turn"}).encode()
@@ -268,6 +273,7 @@ async def test_a_message_sent_whole_is_heard_before_the_client_has_a_byte_of_it(
             assert first + await response.read() == answer
 
 
+@pytest.mark.outside
 async def test_a_compressed_answer_reaches_the_client_compressed_and_is_read_decompressed(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     packed = gzip.compress(b'{"input_tokens": 5583}')
 
@@ -287,6 +293,7 @@ def zstd_frames(data: bytes) -> bytes:
     return zstandard.ZstdCompressor().compress(data[:50]) + zstandard.ZstdCompressor().compress(data[50:])
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("encoding", "pack"), [("br", brotli.compress), ("zstd", zstd_frames)])
 async def test_every_encoding_claude_code_asks_for_is_read(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], encoding: str, pack: Callable[[bytes], bytes]
@@ -303,6 +310,7 @@ async def test_every_encoding_claude_code_asks_for_is_read(
     assert reply.body.message.content == (Text("hello from the wire"),)
 
 
+@pytest.mark.outside
 async def test_a_reply_hands_cannot_read_still_reaches_the_client_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # A frame that is not UTF-8 breaks hands' reading of the stream, and nothing of the client's.
     sent = [*STREAM[:2], b"event: content_block_delta\ndata: \xff\xfe\n\n", *STREAM[2:]]
@@ -321,6 +329,7 @@ async def test_a_reply_hands_cannot_read_still_reaches_the_client_whole(serve: C
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body.reason.startswith("hands could not read it: UnicodeDecodeError")
 
 
+@pytest.mark.outside
 async def test_no_header_the_client_left_out_is_added_on_the_way_up(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     async with aiohttp.ClientSession(skip_auto_headers=("Accept-Encoding", "User-Agent", "Content-Type")) as client:
@@ -330,6 +339,7 @@ async def test_no_header_the_client_left_out_is_added_on_the_way_up(serve: Calla
     assert {"Accept-Encoding", "User-Agent", "Content-Type"}.isdisjoint(asked_headers)
 
 
+@pytest.mark.outside
 async def test_an_error_status_passes_through_with_its_body_read(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     error = b'{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
 
@@ -342,6 +352,7 @@ async def test_an_error_status_passes_through_with_its_body_read(serve: Callable
     assert isinstance(reply, Reached) and (reply.status, reply.body) == (529, Answered({"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}))
 
 
+@pytest.mark.outside
 async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_reaches_the_client_whole_and_is_kept_as_its_size_alone(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]],
 ) -> None:
@@ -356,6 +367,7 @@ async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_reaches_the_clie
     assert isinstance(reply, Reached) and (reply.reply_bytes, reply.body) == (len(hello), Unkept(None))
 
 
+@pytest.mark.outside
 async def test_an_api_that_cannot_be_reached_is_a_502_and_an_unreached_exchange() -> None:
     seen: list[Observed] = []
     # A port just released, so nothing listens on it.
@@ -378,6 +390,7 @@ OVERLOADED = b'{"type":"error","error":{"type":"overloaded_error","message":"Ove
 FAILED = b'{"type":"error","error":{"type":"api_error","message":"Internal server error"}}'
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("refusal", "status", "retry", "said", "final"),
     [
@@ -425,6 +438,7 @@ async def test_a_refusal_routed_final_is_the_proxys_own_502_the_client_does_not_
 SPENT = b'{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}'
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("refusal", "retry", "final"),
     [
@@ -457,6 +471,7 @@ async def test_a_spent_usage_limit_routed_final_reaches_the_client_as_nothing_it
     assert (answering.limit, only_exchange(wire).final) == (UsageLimitReached(RESETS), final)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("refusal", "final"), [("final", True), ("retried", False)])
 async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Literal["retried", "final"], final: bool) -> None:
     seen: list[Observed] = []
@@ -475,6 +490,7 @@ async def test_an_api_that_cannot_be_reached_is_final_when_routed_so(refusal: Li
     assert isinstance(exchange.reply, Unreached) and exchange.final is final
 
 
+@pytest.mark.outside
 async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_recorded(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream_ended = asyncio.Event()
 
@@ -500,6 +516,7 @@ async def test_a_client_that_hangs_up_mid_stream_ends_the_upstream_reply_and_is_
     assert isinstance(reply, Reached) and isinstance(reply.body, Garbled) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
 
 
+@pytest.mark.outside
 async def test_a_client_that_hangs_up_before_the_api_answers_ends_its_exchange_unfinished(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     asked = asyncio.Event()
     released = asyncio.Event()
@@ -523,6 +540,7 @@ async def test_a_client_that_hangs_up_before_the_api_answers_ends_its_exchange_u
     assert [seen.exchange for seen in wire.seen if isinstance(seen, Sent)] == [seen.exchange for seen in wire.seen if isinstance(seen, Exchanged)]
 
 
+@pytest.mark.outside
 async def test_a_request_upstream_that_raises_ends_its_exchange_naming_the_error_and_still_raises(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -539,6 +557,7 @@ async def test_a_request_upstream_that_raises_ends_its_exchange_naming_the_error
     assert isinstance(reply, Unfinished) and reply.reason == "RuntimeError: the client broke"
 
 
+@pytest.mark.outside
 async def test_a_route_change_that_cannot_be_made_ends_its_exchange_naming_the_error(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], monkeypatch: pytest.MonkeyPatch) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("a note"),), span=root(SYSTEM))
@@ -553,6 +572,7 @@ async def test_a_route_change_that_cannot_be_made_ends_its_exchange_naming_the_e
     assert isinstance(reply, Unfinished) and reply.reason == "KeyError: 'messages'"
 
 
+@pytest.mark.outside
 async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     async def endless(request: web.Request) -> web.StreamResponse:
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -575,6 +595,7 @@ async def test_closing_the_proxy_mid_stream_stops_at_once_and_records_the_reply(
     assert isinstance(reply, Reached) and reply.body == Garbled("the proxy stopped reading the reply: its client hung up or hands stopped")
 
 
+@pytest.mark.outside
 async def test_a_chunk_is_heard_before_the_client_can_have_it(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     # Whatever the client does once it has the bytes, its result line on stdout included, comes after hands heard them.
     rest = asyncio.Event()
@@ -624,6 +645,7 @@ def test_a_spent_usage_limit_is_read_from_the_answers_head(status: int, headers:
     assert spent(status, headers) == limit
 
 
+@pytest.mark.outside
 async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_client_can_have_any_of_it(
     serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]],
 ) -> None:
@@ -654,6 +676,7 @@ async def test_a_spent_usage_limit_is_heard_from_the_answers_head_before_the_cli
     assert answering.exchange == only_exchange(wire).exchange
 
 
+@pytest.mark.outside
 async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_routes_words(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Synthesize("(stayed silent)", root(SYSTEM))
@@ -671,6 +694,7 @@ async def test_a_held_request_never_reaches_the_api_and_is_answered_with_the_rou
     assert [type(seen) for seen in wire.seen] == [Sent, Exchanged]
 
 
+@pytest.mark.outside
 async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newest_block_and_says_so(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("[hands] how they stand"),), span=root(SYSTEM))
@@ -688,6 +712,7 @@ async def test_an_appended_request_reaches_the_api_with_the_tail_after_its_newes
 UNIT = Span("4bf92f3577b34da6a3ce929d0e0e4736", "1111111111111111", "00f067aa0ba902b7")
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("route", [Send(span=UNIT), Synthesize("(stayed silent)", UNIT)], ids=["sent", "synthetic"])
 async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_synthesized(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]], route: Route) -> None:
     _, wire = await serve(streamed)
@@ -696,6 +721,7 @@ async def test_a_request_is_recorded_with_the_span_its_route_chose_sent_or_synth
     assert only_exchange(wire).span == UNIT
 
 
+@pytest.mark.outside
 async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("tail"),), span=root(SYSTEM))
@@ -710,6 +736,7 @@ async def test_a_request_the_tail_cannot_be_appended_to_goes_on_as_it_came(serve
     assert [error.startswith("the proxy could not change exchange") for error in errors] == [True]
 
 
+@pytest.mark.outside
 async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_tail(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Send((Tail("tail"),), span=root(SYSTEM))
@@ -721,6 +748,7 @@ async def test_a_request_holding_a_string_cut_mid_emoji_still_goes_on_with_the_t
     assert (status, newest["content"][0]["text"], newest["content"][-1], only_exchange(wire).changes) == (200, "hi \ud83d", {"type": "text", "text": "tail"}, (Tail("tail"),))
 
 
+@pytest.mark.outside
 async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
     wire.route = lambda _sent: Synthesize("(interrupted)", root(SYSTEM))
@@ -730,6 +758,7 @@ async def test_a_held_request_that_did_not_ask_for_a_stream_is_answered_whole(se
     assert (answer["content"], answer["stop_reason"], answer["model"]) == ([{"type": "text", "text": "(interrupted)"}], "end_turn", "claude-opus-5-5")
 
 
+@pytest.mark.outside
 async def test_a_route_that_raises_is_logged_and_the_request_goes_on_as_it_came(serve: Callable[[Handler], Awaitable[tuple[Upstream, Wire]]]) -> None:
     upstream, wire = await serve(streamed)
 
@@ -775,6 +804,7 @@ MALFORMED = b'{"type":"error","error":{"type":"invalid_request_error","message":
 TOO_LONG = b'{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}'
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("route", "status", "said", "told"),
     [

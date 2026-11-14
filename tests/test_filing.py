@@ -136,6 +136,7 @@ def test_each_group_no_ticket_has_is_a_new_ticket_and_the_same_lines_against_tho
     assert description.endswith(f"Last seen: 2026-10-24T12:05:00.000+00:00 ({first[0].group.label})")
 
 
+@pytest.mark.outside
 def test_a_ticket_carries_none_of_the_line_and_the_command_it_gives_reads_the_lines_where_they_are(tmp_path: Path) -> None:
     clock = Clock()
     write_audit(tmp_path / "audit", clock)
@@ -238,6 +239,7 @@ def bugs(project: Path) -> list[dict[str, object]]:
     return [issue for issue in exported["issues"] if issue["issue_type"] == "bug"]
 
 
+@pytest.mark.outside
 @real_lit
 def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_on_one_seen_again(tmp_path: Path, project: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     repository, epic = project
@@ -271,6 +273,7 @@ def test_file_tickets_files_each_group_once_however_often_it_runs_and_comments_o
     assert passes[0]["facts"]["oldest"] == "2026-10-24T12:01:00.000+00:00" and passes[0]["facts"]["epic"] == epic
 
 
+@pytest.mark.outside
 @real_lit
 def test_file_tickets_names_an_epic_the_backlog_lists_or_fails_saying_so(tmp_path: Path, project: tuple[Path, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     repository, _ = project

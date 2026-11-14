@@ -61,11 +61,13 @@ async def set_trigger(trigger: str) -> dict[str, object]:
     return {"trigger": trigger}
 
 
+@pytest.mark.outside
 async def test_the_page_is_served_to_anyone(page: Page) -> None:
     shown = await page.client.get("/conversation")
     assert shown.status == 200 and "Type to hands" in await shown.text()
 
 
+@pytest.mark.outside
 async def test_the_conversation_is_what_the_user_and_hands_said_and_each_tool_hands_called(page: Page) -> None:
     page.log.record(Transcribed("switch to the wake word"))
     assert "trigger" in await audited(SYSTEM, tool(set_trigger), page.log.record).body(trigger="wake word")
@@ -85,6 +87,7 @@ async def test_the_conversation_is_what_the_user_and_hands_said_and_each_tool_ha
     assert (event.facts["looks"], event.facts["changed"]) == (1, True)
 
 
+@pytest.mark.outside
 async def test_a_tool_call_that_failed_says_why(page: Page) -> None:
     async def refused() -> dict[str, object]:
         return {"error": "no such session"}
@@ -94,6 +97,7 @@ async def test_a_tool_call_that_failed_says_why(page: Page) -> None:
     assert [moment["text"] for moment in body["moments"]] == ["{}\nfailed: no such session"]
 
 
+@pytest.mark.outside
 async def test_a_tool_call_cut_off_says_so(page: Page) -> None:
     started = asyncio.Event()
 
@@ -111,6 +115,7 @@ async def test_a_tool_call_cut_off_says_so(page: Page) -> None:
     assert [moment["text"] for moment in body["moments"]] == ["{}\ncancelled"]
 
 
+@pytest.mark.outside
 async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page: Page) -> None:
     page.log.record(Transcribed("what time is it"))
     first = await (await page.client.get("/conversation/moments", headers=KEYED)).json()
@@ -123,6 +128,7 @@ async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page
     assert body["changes"] == first["changes"] + 1
 
 
+@pytest.mark.outside
 async def test_a_read_whose_conversation_never_changes_is_answered_with_it_as_it_is(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.3)
     read = await page.client.get("/conversation/moments", params={"seen": "0"}, headers=KEYED)
@@ -144,6 +150,7 @@ async def test_the_conversation_is_read_on_across_the_segments_the_log_rolls_to(
     assert [moment.text for moment in moments] == ["first", "second", "third", "fourth"]
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("path", ["/conversation/moments", "/conversation/typed"])
 async def test_a_request_without_the_phones_key_is_refused_and_says_why(page: Page, path: str) -> None:
     page.log.record(Transcribed("the secret plan"))
@@ -154,6 +161,7 @@ async def test_a_request_without_the_phones_key_is_refused_and_says_why(page: Pa
     assert page.typed == []
 
 
+@pytest.mark.outside
 async def test_a_read_that_says_what_it_has_seen_in_no_number_is_refused(page: Page) -> None:
     refused = await page.client.get("/conversation/moments", params={"seen": "lots"}, headers=KEYED)
     assert refused.status == 400
@@ -161,6 +169,7 @@ async def test_a_read_that_says_what_it_has_seen_in_no_number_is_refused(page: P
     assert event.outcome == "failed"
 
 
+@pytest.mark.outside
 async def test_words_typed_are_handed_to_the_voice_and_counted(page: Page) -> None:
     sent = await page.client.post("/conversation/typed", json={"text": "  run the tests \n"}, headers=KEYED)
     assert sent.status == 202
@@ -169,6 +178,7 @@ async def test_words_typed_are_handed_to_the_voice_and_counted(page: Page) -> No
     assert (event.outcome, event.facts["chars"]) == ("ok", 13)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("body", [b'{"text": "   "}', b'{"words": "hi"}', b'"hi"', b"hi", b'{"text": "\xff"}'])
 async def test_words_typed_that_are_none_are_refused_and_handed_to_nobody(page: Page, body: bytes) -> None:
     refused = await page.client.post("/conversation/typed", data=body, headers={**KEYED, "Content-Type": "application/json"})

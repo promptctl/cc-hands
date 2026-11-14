@@ -1,6 +1,7 @@
 """Fixtures more than one test module needs."""
 
 import asyncio
+import functools
 import gc
 import hashlib
 import json
@@ -49,7 +50,7 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import streaming, voiceprints
+from hands.voice import library, streaming, voiceprints
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -69,11 +70,32 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
     return report
 
 
+# The layers a run can be held to (tests/offline.py): `unit` runs the tests that do not say they need the outside, and
+# `audit` the ones that do, each under the unit layer's hold.
+LAYERS = ("unit", "audit")
+# What a test is given in an audit run: a refusal does not wake a test waiting on what it asked for, so a timeout there is
+# the refusal's outcome, not the 120 s of a test that is let run.
+AUDIT_TIMEOUT = 10.0
+REFUSED = "the unit layer holds a test to nothing outside the process (tests/unit.sb): mark it @pytest.mark.outside if it is about a process, a socket or the models"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--layer", choices=LAYERS, help="hold the run to the unit layer (tests/offline.py): `unit` runs the tests not marked outside, `audit` those that are, each expected to be refused")
+
+
+def refused[R: pytest.TestReport](report: R, layer: str | None) -> R:
+    """[LAW:nothing-unseen] a test the unit layer's hold refused says what the layer is, beside the OS's own refusal, so
+    its author knows the mark that moves it out and why."""
+    if layer == "unit" and report.failed and "Operation not permitted" in str(report.longrepr):
+        report.sections.append(("the unit layer", REFUSED))
+    return report
+
+
 # [LAW:single-enforcer] every skip is reported by one of these two: a test's, from its marks or its body, and a module's,
 # skipped as it is collected.
 @pytest.hookimpl(wrapper=True)
-def pytest_runtest_makereport() -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    return in_ci((yield))
+def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    return refused(in_ci((yield)), item.config.getoption("layer"))
 
 
 # A quarantine may end no more than this many days after the day it is written.
@@ -107,7 +129,7 @@ def quarantines(item: pytest.Item) -> list[tuple[str, date]]:
     return held
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """[LAW:single-enforcer] the one owner of a quarantined test's rule in a run: pytest's own expected failure, so the test
     runs and reports, a failure in setup, call or teardown leaves the run green, and the summary below prints it. [LAW:nothing-unseen]
     A quarantine past its date, or ending more than QUARANTINE_DAYS from today, stops the run before any test, naming it,
@@ -123,6 +145,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
                 raise pytest.UsageError(f"{item.nodeid} is quarantined by {ticket} until {until}, more than {QUARANTINE_DAYS} days from {today}")
         if held:
             item.add_marker(pytest.mark.xfail(reason=f"quarantined by {held[0][0]} until {held[0][1]}", strict=False))
+    if (layer := config.getoption("layer")) is not None:
+        layered(config, items, layer)
+
+
+def layered(config: pytest.Config, items: list[pytest.Item], layer: str) -> None:
+    """[LAW:single-enforcer] the one owner of which tests a layer run takes: the unit layer's, the tests no mark says need
+    the outside; an audit's, the ones that do, each an expected failure that must fail, since a marked test the hold
+    refuses nothing for does not need its mark."""
+    outside = [item for item in items if item.get_closest_marker("outside") is not None]
+    inside = [item for item in items if item.get_closest_marker("outside") is None]
+    kept, dropped = (inside, outside) if layer == "unit" else (outside, inside)
+    config.hook.pytest_deselected(items=dropped)
+    items[:] = kept
+    if layer == "audit":
+        for item in kept:
+            item.add_marker(pytest.mark.xfail(reason="marked outside, and nothing the hold refuses stopped it: drop the mark", strict=True))
 
 
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
@@ -294,6 +332,18 @@ PAIRS = Pairs()
 
 
 @pytest.fixture(autouse=True)
+def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
+    about but the one that checks the question: it takes the real reader from `__wrapped__`."""
+
+    @functools.wraps(library._keychain_token)  # pyright: ignore[reportPrivateUsage]
+    def unkept() -> None:
+        return None
+
+    monkeypatch.setattr(library, "_keychain_token", unkept)
+
+
+@pytest.fixture(autouse=True)
 def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     """Building the voice hears holds with a pair that hears no word: its load would fetch 2.5 GB of weights, which no
     test is about but the ones that ask for the real models."""
@@ -435,6 +485,8 @@ def pytest_configure(config: pytest.Config) -> None:
     the run to fetch into, and a fixture shared by many tests counts against none of their timeouts (tests/timeouts.py)."""
     if not config.pluginmanager.has_plugin("timeout"):
         raise pytest.UsageError("pytest-timeout bounds every test the suite runs, and it is off: --timeout=0 lifts the bound")
+    if config.getoption("layer") == "audit":
+        config.option.timeout = AUDIT_TIMEOUT
     config.pluginmanager.register(timeouts, "timeouts")
     clockwatch.register(config, clockwatch.UNMOVED)
     if not config.pluginmanager.has_plugin("cacheprovider"):
@@ -559,11 +611,16 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     stack.enter_context(contextmanager(entered)(monkeypatch, machine, tools, sentences, home))
     wake_word = config.cache.mkdir("wake-word")
     claude_code = config.cache.mkdir("claude-code")
-    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine)
+    layer = config.getoption("layer")
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine, unit=layer is not None)
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)
-    write(f"offline: nothing past loopback and no Claude Code policy from here ({offline.hold()})\n")
+    if layer is None:
+        write(f"offline: nothing past loopback and no Claude Code policy from here ({offline.hold()})\n")
+    else:
+        held = offline.hold(offline.Unit((Path(huggingface_hub.constants.HF_HUB_CACHE), Path(huggingface_hub.constants.HF_XET_CACHE), wake_word)))
+        write(f"unit layer ({layer}): nothing outside the process, no fetched weight read and no Claude Code policy from here ({held})\n")
     monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
     config.stash[RUN] = Run(machine, tools, sentences, wake_word, pinned.claude(claude_code), fetches.mock_binary())
 

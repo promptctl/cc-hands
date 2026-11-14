@@ -75,6 +75,7 @@ def session(tmp_path: Path) -> Iterator[Membership]:
         process.wait()
 
 
+@pytest.mark.outside
 def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sessions(tmp_path: Path, session: Membership) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
@@ -111,6 +112,7 @@ def test_a_restart_asked_through_the_plugin_brings_the_daemon_back_with_its_sess
     assert stopped is not None and stopped.pipeline == "stopped"
 
 
+@pytest.mark.outside
 def test_an_edit_to_the_settings_brings_the_daemon_back_on_them_with_its_sessions(tmp_path: Path, session: Membership) -> None:
     home = Home(tmp_path / "home")
     write_membership(home, session)
@@ -196,6 +198,7 @@ async def test_settings_that_cannot_be_watched_stop_the_run_saying_so(tmp_path: 
     assert status is None or status.pipeline != "stopped"
 
 
+@pytest.mark.outside
 def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     done = restart(home, tmp_path)
@@ -207,6 +210,7 @@ def test_a_daemon_that_is_not_running_is_not_asked_and_the_skill_says_why(tmp_pa
     assert command["error"] == f"exited 1: hands was not restarted: hands has not run: there is no heartbeat at {home.status}."
 
 
+@pytest.mark.outside
 def test_a_daemon_still_starting_is_not_asked(tmp_path: Path) -> None:
     # Its pid is this test's, which a restart signal would end: being refused, it is never sent.
     home = Home(tmp_path / "home")
@@ -288,6 +292,7 @@ def zombie(pid: int) -> bool:
     return info.raw[P_STAT] == SZOMB
 
 
+@pytest.mark.outside
 def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
     shown = spawned("sleep", "60")
     assert retire(shown) == "ended"
@@ -296,6 +301,7 @@ def test_a_restart_ends_the_indicator_the_run_before_showed() -> None:
         os.waitpid(shown, os.WNOHANG)
 
 
+@pytest.mark.outside
 def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() -> None:
     ready, said = os.pipe()
     argv = ["sh", "-c", 'trap "" TERM; sleep 60 & echo; wait']
@@ -312,6 +318,7 @@ def test_an_indicator_that_does_not_end_when_asked_is_killed_with_its_group() ->
         assert lines.read() == ""
 
 
+@pytest.mark.outside
 def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> None:
     exited = spawned("false")
     # Exited and not reaped, as an indicator that exits during the exec is: no reap thread outlives it.
@@ -328,6 +335,7 @@ def test_an_indicator_that_exited_before_the_restart_is_reaped_and_said() -> Non
     assert retire(exited) == "reaped"
 
 
+@pytest.mark.outside
 def test_a_restarted_run_shows_itself_through_an_indicator_it_started(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The run before's indicator judged the heartbeat by the code that run had; this run's is started on the code it runs.
     from hands.voice import talkkey

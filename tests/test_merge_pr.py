@@ -13,6 +13,9 @@ import pytest
 
 from conftest import SYSTEM_PATH, executable
 
+
+pytestmark = pytest.mark.outside
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "merge-pr.sh"
 PR = "7"
 ENABLED = "2026-10-29T10:00:00Z"

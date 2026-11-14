@@ -55,6 +55,9 @@ class Fetches:
     claude_code: Path
     mock: Path
     machine: dict[str, str]
+    # The run is the unit layer's, held to nothing outside the process (tests/offline.py): of all this, its tests read only
+    # the sentence tokenizer, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
+    unit: bool = False
 
     def mock_binary(self) -> Path:
         """The mock at MOCK_RELEASE, in its release's own directory."""
@@ -66,7 +69,7 @@ class Fetches:
     @staticmethod
     def read(text: str) -> "Fetches":
         read = json.loads(text)
-        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), read["machine"])
+        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), read["machine"], read["unit"])
 
 
 def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
@@ -99,13 +102,15 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     """Every fetch the run makes, as `fetches` says, each named by `write` as it goes."""
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
     disable_progress_bars()
+    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
+    if fetches.unit:
+        return
     for repo, revision in WEIGHTS:
         # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
         # its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
         fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(get_model_path, repo, revision=revision))
     # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
     fetching(write, f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION))
-    fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(fetches.wake_word, word)))
     fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))

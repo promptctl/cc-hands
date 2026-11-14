@@ -152,6 +152,7 @@ async def call() -> AsyncGenerator[Call, None]:
     await phone.stop()
 
 
+@pytest.mark.outside
 async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
     assert call.key.gate.place == "phone"
     # A call's one event is written as it ends.
@@ -159,6 +160,7 @@ async def test_a_call_puts_hands_at_the_phone(call: Call) -> None:
 
 
 
+@pytest.mark.outside
 async def test_the_moves_a_call_makes_are_part_of_its_trace() -> None:
     recorded: list[Entry] = []
     key = PushToTalk(SYSTEM, recorded.append)
@@ -175,6 +177,7 @@ async def test_the_moves_a_call_makes_are_part_of_its_trace() -> None:
     await page.peer.close()
     await phone.stop()
 
+@pytest.mark.outside
 async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_else(call: Call) -> None:
     for said in [LOUD, "press", LOUD, LOUD, "release", LOUD]:
         call.page.send(said)
@@ -193,6 +196,7 @@ async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_
     assert call.key.gate.key == "up"
 
 
+@pytest.mark.outside
 async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
@@ -200,6 +204,7 @@ async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     assert (call.key.gate.key, call.key.gate.place) == ("down", "phone")
 
 
+@pytest.mark.outside
 async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
     speech = (np.full(24000 // 10, 6000, dtype=np.int16)).tobytes()  # 100 ms at the played rate
     await asyncio.wait_for(call.phone.play(speech), 5)
@@ -210,6 +215,7 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
 
 
+@pytest.mark.outside
 async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
     for milestone in get_args(Milestone):
         call.phone.tell(milestone)
@@ -247,6 +253,7 @@ def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
     assert [kind(line) for line in get_args(Line) if f'"{kind(line)}": ' not in table] == []
 
 
+@pytest.mark.outside
 async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was_playing(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
@@ -264,6 +271,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     assert (ended.told, ended.lines) == (0, 0)
 
 
+@pytest.mark.outside
 async def test_a_newer_call_replaces_the_one_before_it_once_it_connects(call: Call) -> None:
     page, offer = await a_page()
     answer = await answered(call.phone, offer, "100.66.66.10")
@@ -304,6 +312,7 @@ async def connected(phone: Phone, asked: Asked) -> Page:
     return page
 
 
+@pytest.mark.outside
 async def test_a_page_resuming_its_own_dropped_call_is_answered_and_takes_its_place(call: Call) -> None:
     """hands may not yet have noticed the call the page lost: the page's own stale call gives way to it."""
     page = await connected(call.phone, Asked(FIRST.page, "resume"))
@@ -313,6 +322,7 @@ async def test_a_page_resuming_its_own_dropped_call_is_answered_and_takes_its_pl
     await page.peer.close()
 
 
+@pytest.mark.outside
 async def test_a_page_resuming_while_another_page_has_the_call_is_declined_and_moves_nothing(call: Call) -> None:
     other = Asked("another page", "resume")
     _, offer = await a_page(other)
@@ -352,6 +362,7 @@ async def test_a_resume_answered_alongside_a_press_never_takes_the_phone_from_it
     await resumed.peer.close()
     await pressed.peer.close()
 
+@pytest.mark.outside
 async def test_a_page_resuming_with_no_call_up_is_answered() -> None:
     key, recorded = PushToTalk(SYSTEM, lambda _: None), list[Entry]()
     phone = Phone(SYSTEM, key, heard_rate=16000, played_rate=24000, record=recorded.append)
@@ -363,6 +374,7 @@ async def test_a_page_resuming_with_no_call_up_is_answered() -> None:
     await page.peer.close()
 
 
+@pytest.mark.outside
 async def test_a_page_taking_the_phone_takes_it_from_another_page(call: Call) -> None:
     page = await connected(call.phone, Asked("another page", "take"))
     [replaced] = calls(call.recorded)
@@ -370,6 +382,7 @@ async def test_a_page_taking_the_phone_takes_it_from_another_page(call: Call) ->
     await page.peer.close()
 
 
+@pytest.mark.outside
 async def test_a_message_that_is_neither_audio_nor_the_button_is_said_and_moves_nothing(call: Call) -> None:
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(str(message)), level="ERROR")
@@ -402,12 +415,14 @@ async def page_server() -> AsyncGenerator[Served, None]:
 
 
 
+@pytest.mark.outside
 async def test_the_page_is_served_to_anyone(page_server: Served) -> None:
     client, _, _, _ = page_server
     shown = await client.get("/")
     assert shown.status == 200 and "Hold to talk" in await shown.text()
 
 
+@pytest.mark.outside
 async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_server: Served) -> None:
     client, phone, key, recorded = page_server
     page, offer = await a_page()
@@ -430,6 +445,7 @@ async def test_an_offer_without_the_phone_key_is_refused_and_recorded(page_serve
     await page.peer.close()
 
 
+@pytest.mark.outside
 async def test_an_offer_that_is_no_offer_is_refused_and_is_one_event_saying_why(page_server: Served) -> None:
     client, _, _, recorded = page_server
     refused = await client.post("/offer", data="{}", headers={"Authorization": f"Bearer {KEY}"})
@@ -438,6 +454,7 @@ async def test_an_offer_that_is_no_offer_is_refused_and_is_one_event_saying_why(
     assert (event.outcome, event.error, event.facts["ended"]) == ("failed", await refused.text(), CallRefused(await refused.text()))
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     "body",
     [
@@ -455,6 +472,7 @@ async def test_an_offer_that_does_not_say_which_page_asks_what_is_refused(page_s
     assert event.facts["ended"] == CallRefused(await refused.text())
 
 
+@pytest.mark.outside
 async def test_a_resume_the_page_server_declines_is_a_conflict_the_page_can_tell_apart(page_server: Served) -> None:
     client, _, key, recorded = page_server
     taker, offer = await a_page()
@@ -470,6 +488,7 @@ async def test_a_resume_the_page_server_declines_is_a_conflict_the_page_can_tell
     await taker.peer.close()
 
 
+@pytest.mark.outside
 async def test_an_offer_whose_body_cannot_be_read_is_one_failed_event_saying_what_raised(page_server: Served) -> None:
     client, _, _, recorded = page_server
     unread = await client.post("/offer", data=b"\xff\xfe", headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json; charset=utf-8"})
@@ -529,6 +548,7 @@ async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, D
     await transport.output().cleanup()
 
 
+@pytest.mark.outside
 async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk, list[bytes]]) -> None:
     transport, desk, pushed = a_transport
     echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
@@ -545,6 +565,7 @@ async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_
     await call.until(lambda: any(np.abs(frame.to_ndarray()).max() > 1000 for frame in call.page.played))
 
 
+@pytest.mark.outside
 async def test_a_page_that_goes_quiet_is_hung_up_and_hands_is_at_the_desk_again(call: Call, monkeypatch: pytest.MonkeyPatch) -> None:
     # A browser closed outright says nothing; its microphone simply stops arriving.
     monkeypatch.setattr(phone_module, "QUIET_SECS", 0.2)
@@ -590,6 +611,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     return recorded
 
 
+@pytest.mark.outside
 async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path)
     cert, key = own_certificate(SYSTEM, home)
@@ -600,6 +622,7 @@ async def test_the_page_served_under_the_tailnet_name_is_one_event_naming_it(tmp
     assert dict(event.facts) == {"port": port, "tailnet": "hands.example.ts.net"} and isinstance(port, int) and port > 0
 
 
+@pytest.mark.outside
 async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     [event] = await _served(Home(tmp_path), Untailed("the tailscale command is not on the PATH"), monkeypatch)
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("phone.served", "ok")
@@ -607,6 +630,7 @@ async def test_the_page_served_on_the_lan_alone_is_one_event_saying_why(tmp_path
     assert dict(event.facts) == {"port": port, "untailed": "the tailscale command is not on the PATH"} and isinstance(port, int) and port > 0
 
 
+@pytest.mark.outside
 async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_the_brain_conversation_and_backlog_are_served_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The page's requests run in a context copied inside `phone.served`, which ended as the page came up.
     async def asked(_clock: Clock, _home: Home) -> Untailed:

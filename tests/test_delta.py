@@ -85,6 +85,7 @@ def readings(record: list[Entry]) -> list[WideEvent]:
     return [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.read"]
 
 
+@pytest.mark.outside
 async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file_it_changed(tmp_path: Path) -> None:
     """The done bar. A formatter, a code generator, or a `sed` leaves no `Edited` step to name what it did."""
     root = repo(tmp_path)
@@ -94,6 +95,7 @@ async def test_a_turn_whose_only_change_came_from_a_shell_command_names_the_file
     assert delta  # there is something to tell
 
 
+@pytest.mark.outside
 async def test_a_file_a_turn_created_is_named_even_though_git_was_never_told_about_it(tmp_path: Path) -> None:
     """A code generator writes files nobody adds. `git stash create` holds none of them, which is why this does not use it."""
     root = repo(tmp_path)
@@ -101,6 +103,7 @@ async def test_a_file_a_turn_created_is_named_even_though_git_was_never_told_abo
     assert [file.path for file in delta.files] == ["generated.py"]
 
 
+@pytest.mark.outside
 async def test_a_file_the_repository_ignores_is_not_a_result(tmp_path: Path) -> None:
     root = repo(tmp_path)
     (root / ".gitignore").write_text("*.log\n")
@@ -110,6 +113,7 @@ async def test_a_file_the_repository_ignores_is_not_a_result(tmp_path: Path) -> 
     assert delta.files == () and not delta
 
 
+@pytest.mark.outside
 async def test_a_commit_the_turn_made_is_named_and_the_work_in_it_is_still_the_turn_s(tmp_path: Path) -> None:
     """Committed work is still what the turn did: the delta is against where the turn began, not against HEAD."""
     root = repo(tmp_path)
@@ -124,6 +128,7 @@ async def test_a_commit_the_turn_made_is_named_and_the_work_in_it_is_still_the_t
     assert [file.path for file in delta.files] == ["a.py"]
 
 
+@pytest.mark.outside
 async def test_work_already_in_the_tree_before_the_turn_is_not_the_turn_s(tmp_path: Path) -> None:
     """The baseline holds the working tree as it stood, so what was already changed is not reported as done now."""
     root = repo(tmp_path)
@@ -132,10 +137,12 @@ async def test_work_already_in_the_tree_before_the_turn_is_not_the_turn_s(tmp_pa
     assert not delta and delta.files == ()
 
 
+@pytest.mark.outside
 async def test_a_turn_that_changed_nothing_has_nothing_to_tell(tmp_path: Path) -> None:
     assert not await turn(repo(tmp_path))
 
 
+@pytest.mark.outside
 async def test_reading_a_repository_leaves_it_exactly_as_it_was_found(tmp_path: Path) -> None:
     """[LAW:effects-at-boundaries] reading what a turn did must never be something the user has to undo.
 
@@ -191,6 +198,7 @@ def stamp(at: datetime) -> str:
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+@pytest.mark.outside
 async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_logged_it_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`git commit -m x && git push` carries no push operation, and the remote-tracking ref says it anyway."""
     root = published(tmp_path)
@@ -205,6 +213,7 @@ async def test_a_push_no_step_recorded_is_read_from_the_remote_tracking_ref_git_
     assert delta.changes == (Pushed(git(root, "branch", "--show-current")),)
 
 
+@pytest.mark.outside
 async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: Path) -> None:
     root = published(tmp_path)
     other = tmp_path / "other"
@@ -217,6 +226,7 @@ async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: P
     assert delta.changes == ()
 
 
+@pytest.mark.outside
 async def test_a_branch_the_turn_made_is_read_from_the_branches_the_baseline_did_not_hold(tmp_path: Path) -> None:
     """`checkout -b` inside a compound command is the one Claude Code nearly never records."""
     root = repo(tmp_path)
@@ -225,6 +235,7 @@ async def test_a_branch_the_turn_made_is_read_from_the_branches_the_baseline_did
     assert delta  # a new branch alone is something to tell
 
 
+@pytest.mark.outside
 async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_the_forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`gh pr create` writes nothing in the repository, so the forge is the one witness — and a pull request the
     branch had before the turn is not the turn's."""
@@ -245,6 +256,7 @@ async def test_a_pull_request_opened_from_a_branch_the_turn_pushed_is_read_from_
     assert asked.read_text().split() == ["pr", "list", "--head", "fix", "--author", "@me", "--state", "all", "--json", "number,url,createdAt"]
 
 
+@pytest.mark.outside
 async def test_the_forge_is_not_asked_about_a_turn_that_pushed_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     asked = forge(tmp_path, monkeypatch, "[]")
@@ -257,6 +269,7 @@ async def test_the_forge_is_not_asked_about_a_turn_that_pushed_nothing(tmp_path:
     assert not asked.exists()
 
 
+@pytest.mark.outside
 async def test_a_forge_that_answers_in_a_shape_hands_does_not_read_costs_the_pull_request_and_not_the_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -289,6 +302,7 @@ def slow_forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: float) 
     monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
 
 
+@pytest.mark.outside
 async def test_a_branch_made_and_pushed_in_another_worktree_is_not_this_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Worktrees share every branch and remote-tracking ref; only the one checked out here is this session's."""
     root = published(tmp_path)
@@ -304,6 +318,7 @@ async def test_a_branch_made_and_pushed_in_another_worktree_is_not_this_turns(tm
     assert not asked.exists()
 
 
+@pytest.mark.outside
 async def test_checking_out_a_branch_the_remote_already_had_is_not_making_one(tmp_path: Path) -> None:
     root = cloned(tmp_path)
     git(tmp_path / "work", "push", "-q", "origin", "HEAD:theirs")
@@ -312,6 +327,7 @@ async def test_checking_out_a_branch_the_remote_already_had_is_not_making_one(tm
     assert delta.changes == ()
 
 
+@pytest.mark.outside
 async def test_renaming_a_branch_is_not_making_one(tmp_path: Path) -> None:
     """A rename carries the log of the branch it renamed, and that branch was made before the turn began."""
     root = repo(tmp_path)
@@ -321,6 +337,7 @@ async def test_renaming_a_branch_is_not_making_one(tmp_path: Path) -> None:
     assert delta.changes == ()
 
 
+@pytest.mark.outside
 async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = cloned(tmp_path)
     forge(tmp_path, monkeypatch, "[]")
@@ -339,6 +356,7 @@ async def test_a_push_the_turn_followed_with_a_pull_is_still_a_push(tmp_path: Pa
     assert Pushed("fix") in delta.changes
 
 
+@pytest.mark.outside
 async def test_one_branch_pushed_to_two_remotes_is_one_push_and_one_question(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     git(tmp_path, "init", "-q", "--bare", str(tmp_path / "fork.git"))
@@ -355,6 +373,7 @@ async def test_one_branch_pushed_to_two_remotes_is_one_push_and_one_question(tmp
     assert len(asked.read_text().splitlines()) == 1
 
 
+@pytest.mark.outside
 async def test_the_forge_is_not_asked_about_a_push_to_the_default_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No pull request is opened from the branch the remote's HEAD follows, and it is where most pushes go."""
     root = cloned(tmp_path)
@@ -371,6 +390,7 @@ async def test_the_forge_is_not_asked_about_a_push_to_the_default_branch(tmp_pat
     assert [event.facts["forge"] for event in readings(record)] == ["unasked"]
 
 
+@pytest.mark.outside
 async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The narrator waits for the whole reading at once, so the forge is asked beside the tree and inside that wait."""
     root = published(tmp_path)
@@ -398,6 +418,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     assert (read.facts["forge"], read.facts["forge_seconds"]) == ("unanswered", asked)
 
 
+@pytest.mark.outside
 async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A remote that is not GitHub, or a gh not signed in: gh says no at once, and that is not a failure of hands."""
     from loguru import logger
@@ -420,6 +441,7 @@ async def test_a_forge_that_refuses_is_told_apart_from_a_slow_one_and_nothing_fa
     assert errors == []
 
 
+@pytest.mark.outside
 async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from loguru import logger
 
@@ -441,6 +463,7 @@ async def test_a_machine_with_no_gh_has_no_forge_to_ask_and_nothing_failed(tmp_p
     assert errors == []
 
 
+@pytest.mark.outside
 async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing_else(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, '[{"number": 7, "url": "https://x/7", "createdAt": "2099-01-01T00:00:00"}]')
@@ -448,6 +471,7 @@ async def test_a_pull_request_stamped_with_no_zone_is_not_told_and_costs_nothing
     assert delta.changes == (Branched("fix", "created branch"), Pushed("fix"))
 
 
+@pytest.mark.outside
 async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_forge_cost(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, "[]")
@@ -474,6 +498,7 @@ async def test_a_turn_outside_a_repository_is_one_unbaselined_reading_that_count
     assert "forge" not in read.facts and "index" not in read.facts
 
 
+@pytest.mark.outside
 async def test_a_reading_says_which_index_its_snapshot_started_from_and_counts_zero_where_nothing_changed(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -487,6 +512,7 @@ async def test_a_reading_says_which_index_its_snapshot_started_from_and_counts_z
     assert baseline.trace_id != read.trace_id
 
 
+@pytest.mark.outside
 async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_and_says_why(tmp_path: Path) -> None:
     root = tmp_path / "work"
     git(tmp_path, "init", "-q", str(root))
@@ -500,6 +526,7 @@ async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_a
     assert read.counts == {"commits": 0, "files": 1, "git_unanswered": 0}
 
 
+@pytest.mark.outside
 async def test_a_session_whose_directory_is_gone_is_not_logged_as_git_failing_to_start(tmp_path: Path) -> None:
     from loguru import logger
 
@@ -530,6 +557,7 @@ async def test_a_turn_stopping_with_no_baseline_before_it_reads_nothing(tmp_path
     assert not await deltas.taken(SID)
 
 
+@pytest.mark.outside
 async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     """A delta told is a delta spent; the next turn's is the next turn's."""
     root = repo(tmp_path)
@@ -541,6 +569,7 @@ async def test_a_delta_is_told_once_and_never_twice(tmp_path: Path) -> None:
     assert not await deltas.taken(SID)
 
 
+@pytest.mark.outside
 async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path: Path) -> None:
     """Git trusts a file whose stat matches its index entry unless the file is as new as the index itself. Pinned
     here to the one second the commit, the index and the edit all share, which a fast turn lands in by chance."""
@@ -559,6 +588,7 @@ async def test_an_edit_that_keeps_a_files_size_and_second_is_still_told(tmp_path
     assert [file.path for file in (await deltas.taken(SID)).files] == ["a.py"]
 
 
+@pytest.mark.outside
 async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before(tmp_path: Path) -> None:
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
@@ -573,6 +603,7 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
+@pytest.mark.outside
 async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_first_stop(tmp_path: Path) -> None:
     """Another Stop hook blocked the first Stop and Claude went on, with no prompt to baseline from: the second part is read
     against where the first part's reading found the repository, so each change is told once."""
@@ -588,6 +619,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
+@pytest.mark.outside
 async def test_a_turn_no_prompt_baselined_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
     """Between the two, the user may have edited by hand or pulled for hours: none of it is this turn's."""
     root = repo(tmp_path)
@@ -602,6 +634,7 @@ async def test_a_turn_no_prompt_baselined_is_not_read_against_where_the_turn_bef
     assert not await deltas.taken(SID)
 
 
+@pytest.mark.outside
 async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed(tmp_path: Path) -> None:
     """End to end through the parts that decide it: the reducer emits, the registry performs, in that order.
 
@@ -628,6 +661,7 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     assert "x = 99" in delta.patch
 
 
+@pytest.mark.outside
 async def test_a_baseline_that_would_cost_more_than_the_hook_can_afford_is_not_taken(tmp_path: Path) -> None:
     """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
     the daemon — on every prompt and every stop. A repository too slow to baseline has its turn told without."""
@@ -639,6 +673,7 @@ async def test_a_baseline_that_would_cost_more_than_the_hook_can_afford_is_not_t
     assert not await deltas.taken(SID)
 
 
+@pytest.mark.outside
 async def test_a_stop_waits_for_none_of_the_reading_it_starts(tmp_path: Path) -> None:
     """The turn's telling is queued right after this, and a reading that is slow, that fails, or whose hook
     gives up must cost the turn its delta and never its telling."""
@@ -687,6 +722,7 @@ print(slowest)
 """
 
 
+@pytest.mark.outside
 def test_a_loop_ended_mid_reading_kills_and_reaps_its_git_and_closes(tmp_path: Path) -> None:
     """The daemon's shutdown cancels a reading wherever it is, and must not then wait for ever on a git it spawned.
 
@@ -700,6 +736,7 @@ def test_a_loop_ended_mid_reading_kills_and_reaps_its_git_and_closes(tmp_path: P
     assert float(ran.stdout) < 1.0, f"the slowest loop took {ran.stdout.strip()}s to close"
 
 
+@pytest.mark.outside
 async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(tmp_path: Path) -> None:
     """The narrator summarises one turn at a time and takes seconds over each, so a session can stop twice
     before the first is told. Told the newer delta, the first turn would be given results it never had."""
@@ -718,6 +755,7 @@ async def test_two_turns_that_stop_before_either_is_told_keep_their_own_changes(
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
 
 
+@pytest.mark.outside
 async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_the_order(tmp_path: Path) -> None:
     """One reading is made for every turn that stops, so every telling takes exactly one and the two stay in
     step. A stop that reads nothing must still leave something to take, or every later turn is told the one
@@ -760,6 +798,7 @@ async def test_a_baseline_that_fails_outright_still_lets_the_prompt_through(tmp_
     assert [listing.session.turn for listing in sessions.live()] == [Opened(PromptId("p1"))]
 
 
+@pytest.mark.outside
 async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_path: Path) -> None:
     """`git init` and a first prompt: there is no commit to be on, so there is no `HEAD` to compare against.
 
@@ -781,6 +820,7 @@ async def test_a_repository_with_no_commit_yet_still_says_what_the_turn_did(tmp_
     assert [commit.subject for commit in delta.commits] == ["the very first commit"]
 
 
+@pytest.mark.outside
 async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     """What a bisect or a checkout of a bare sha leaves behind, which is a working state and not a broken one."""
     root = repo(tmp_path)
@@ -789,6 +829,7 @@ async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     assert [file.path for file in delta.files] == ["b.py"]
 
 
+@pytest.mark.outside
 async def test_a_baseline_that_ran_out_of_time_reading_where_it_stands_is_no_baseline_at_all(tmp_path: Path) -> None:
     """Otherwise the history made before the turn is read as the history the turn made, and spoken that way.
 
@@ -830,6 +871,7 @@ class Unlocated(Deltas):
         return None if args[:2] == ("rev-parse", "--git-path") else await super()._git(cwd, *args, env=env, deadline=deadline)
 
 
+@pytest.mark.outside
 async def test_a_snapshot_whose_index_git_would_not_locate_says_so_and_not_that_it_was_empty(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -851,6 +893,7 @@ def piled(root: Path, count: int) -> None:
     subprocess.run(("git", "-C", str(root), "fast-import", "--quiet"), input=stream, text=True, check=True)
 
 
+@pytest.mark.outside
 async def test_a_turn_that_pulled_a_history_keeps_no_more_of_it_than_it_could_ever_say(tmp_path: Path) -> None:
     """A pull or a rebase brings commits by the hundred, and every one of them was held, whole, until told."""
     root = repo(tmp_path)
@@ -858,6 +901,7 @@ async def test_a_turn_that_pulled_a_history_keeps_no_more_of_it_than_it_could_ev
     assert len(delta.commits) == MOST_COMMITS
 
 
+@pytest.mark.outside
 async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_pairing(tmp_path: Path) -> None:
     """The bound drops readings; nothing drops the tellings they belong to, which queue unbounded beside them.
 
@@ -902,6 +946,7 @@ class Endless(Deltas):
         raise AssertionError("never reached")
 
 
+@pytest.mark.outside
 async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -920,6 +965,7 @@ async def test_a_reading_that_raises_is_one_failed_audit_line(tmp_path: Path) ->
     assert said.startswith("what a turn changed could not be read: ")
 
 
+@pytest.mark.outside
 async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_what_was_raised(tmp_path: Path) -> None:
     """The tree side would otherwise run on after the reading ended, and add what it found to an event already written."""
     root = repo(tmp_path)
@@ -943,6 +989,7 @@ class Halted(Deltas):
         raise asyncio.CancelledError
 
 
+@pytest.mark.outside
 async def test_a_reading_whose_one_side_is_cancelled_is_a_cancelled_reading_and_not_a_failed_one(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -967,6 +1014,7 @@ class Unmade(Deltas):
         return await super()._pushed(root, name, was, left, deadline)
 
 
+@pytest.mark.outside
 async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, "[]")
@@ -982,6 +1030,7 @@ async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
+@pytest.mark.outside
 async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -996,6 +1045,7 @@ async def test_a_reading_cancelled_by_the_shutdown_is_one_cancelled_audit_line(t
     assert [event.outcome for event in readings(record)] == ["cancelled"]
 
 
+@pytest.mark.outside
 async def test_a_reading_cancelled_before_it_ever_ran_leaves_no_capture_for_the_next_turn_to_wait_on(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1034,6 +1084,7 @@ class Torn(Deltas):
         return tree
 
 
+@pytest.mark.outside
 async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_commit_than_a_slow_one_is(tmp_path: Path) -> None:
     """Silence has several causes and only one of them means there is no commit, so unbornness is asked for.
 
@@ -1053,6 +1104,7 @@ async def test_a_head_that_could_not_be_read_is_no_more_a_repository_with_no_com
     assert await deltas.taken(SID) == Delta()
 
 
+@pytest.mark.outside
 async def test_a_turn_that_changed_more_lines_than_can_be_kept_is_told_by_its_files(tmp_path: Path) -> None:
     """git hands back a whole diff before a character of it is cut, and a generated file has no other bound."""
     root = repo(tmp_path)
@@ -1073,6 +1125,7 @@ class Blind(Deltas):
         return await super()._tree(root, deadline)
 
 
+@pytest.mark.outside
 async def test_a_commit_is_still_told_when_the_tree_it_left_behind_cannot_be_read(tmp_path: Path) -> None:
     """Two fast commands and one slow one, and the slow one held the fast ones' answer hostage.
 
@@ -1103,6 +1156,7 @@ class Uncounted(Deltas):
         return await super()._git(cwd, *args, env=env, deadline=deadline)
 
 
+@pytest.mark.outside
 async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unread(tmp_path: Path) -> None:
     """git saying nothing is not git saying nothing changed, and counted as the second the bound is not one.
 
@@ -1123,6 +1177,7 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
     assert [commit.subject for commit in delta.commits] == ["wrote the generated file"]
 
 
+@pytest.mark.outside
 async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_next_prompt_lands_first(tmp_path: Path) -> None:
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
     baselined, so p2 is told only what p2 changed."""
@@ -1144,6 +1199,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
 
 
+@pytest.mark.outside
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
     """hands-status-bpp.44l: no prompt of its own baselines it, so p1's Stop does, while its hook holds Claude Code."""
     root = repo(tmp_path)
@@ -1241,6 +1297,7 @@ async def test_a_session_is_told_gone_only_after_the_turn_it_finished_is_told(tm
     assert await asyncio.wait_for(sessions.story(), 2.0) == SessionGone(SID)
 
 
+@pytest.mark.outside
 async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_leaves_the_reading_running(tmp_path: Path) -> None:
     """The narrator waits its patience and no longer, and the reading it stopped waiting on is not its to end."""
     root = repo(tmp_path)
@@ -1364,6 +1421,7 @@ async def overtaking(deltas: Stalled, clock: RealWall, root: Path, *finishing: G
     await snapshot
 
 
+@pytest.mark.outside
 async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_turn_is_told_only_its_own_files(tmp_path: Path) -> None:
     """The turn before's end is still being read when the next prompt's hook arrives: the baseline waits beside it, and the
     hook lets Claude Code go on only once it is in, so nothing the next turn writes is read as the turn before's."""
@@ -1386,6 +1444,7 @@ async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_tu
     assert waited(baselines(record)[-1]) == WAITED
 
 
+@pytest.mark.outside
 async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and_the_turn_keeps_its_commit(tmp_path: Path) -> None:
     """Where the turn ended was read before the next turn began, so its commit is its own; its tree was read after, so
     the files in it may be the next turn's, and none is told. The event says which stage was lost."""
@@ -1413,6 +1472,7 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     assert waited(baselines(record)[-1]) == BASELINING
 
 
+@pytest.mark.outside
 async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_part_before_it(tmp_path: Path) -> None:
     """The first Stop has no words waiting behind it, so no baseline follows its capture. Another Stop hook blocks it, and the
     part going on stops with words queued: the baseline of the turn they run as waits on both parts' captures, each running
@@ -1437,6 +1497,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     assert [read.facts["reading"] for read in readings(record)] == ["read", "read"]
 
 
+@pytest.mark.outside
 async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_on(tmp_path: Path) -> None:
     """A `!` command runs as a turn no hook opens after p1's Stop, and p2's prompt lands on it: it is compared, then p2 is
     baselined. It has no baseline to read against, so nothing of it is read, and p2's baseline waits on p1's capture alone."""
@@ -1458,6 +1519,7 @@ async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_
     assert unhooked.facts == {"session": SID, "reading": "unbaselined"}
 
 
+@pytest.mark.outside
 async def test_a_turn_a_daemon_started_in_the_middle_of_has_no_capture_for_the_turn_behind_it_to_wait_on(tmp_path: Path) -> None:
     """Its Stop, with words waiting behind it: it is compared, then the turn the words run as is baselined."""
     root = repo(tmp_path)
@@ -1470,6 +1532,7 @@ async def test_a_turn_a_daemon_started_in_the_middle_of_has_no_capture_for_the_t
     assert waits(record) == [(0, 0)]
 
 
+@pytest.mark.outside
 async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_against_it(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1491,6 +1554,7 @@ async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_aga
     assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unbaselined"]
 
 
+@pytest.mark.outside
 async def test_a_dropped_turn_spends_its_baseline_so_a_turn_after_it_no_prompt_baselined_reads_nothing(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1508,6 +1572,7 @@ async def test_a_dropped_turn_spends_its_baseline_so_a_turn_after_it_no_prompt_b
     assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unbaselined"]
 
 
+@pytest.mark.outside
 async def test_a_turn_no_prompt_baselined_takes_its_own_place_between_the_turns_beside_it(tmp_path: Path) -> None:
     """A telling takes the oldest place in the order, and that is all that pairs it with its turn: the turn with nothing
     to read takes one too, or it is handed the next turn's files."""
@@ -1525,6 +1590,7 @@ async def test_a_turn_no_prompt_baselined_takes_its_own_place_between_the_turns_
     assert [[file.path for file in delta.files] for delta in told] == [["first.py"], [], ["second.py"]]
 
 
+@pytest.mark.outside
 async def test_dropped_turns_are_told_without_a_delta_and_the_turn_after_them_with_its_own(tmp_path: Path) -> None:
     """The narrator tells one turn, which makes room, before the two dropped turns are told: each dropped turn still has
     its place, so the turn after them is not told as either."""
@@ -1561,6 +1627,7 @@ def unread_places() -> int:
     return sum(isinstance(place, Unread) for place in gc.get_objects())
 
 
+@pytest.mark.outside
 async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_not_this_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """This turn fetched a branch someone else had pushed to, and the next turn committed and pushed to it before this
     turn's reading got to the ref's log: the log holds both, and only the fetch, which is no push, is this turn's."""
@@ -1591,6 +1658,7 @@ async def test_the_next_turns_push_made_while_this_turns_reading_still_runs_is_n
     assert Pushed("fix") in (await deltas.taken(SID)).changes
 
 
+@pytest.mark.outside
 async def test_a_pull_request_opened_as_the_turn_ended_is_the_turns_on_a_forge_whose_clock_runs_ahead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = published(tmp_path)
     forge(tmp_path, monkeypatch, "[]")
@@ -1605,6 +1673,7 @@ async def test_a_pull_request_opened_as_the_turn_ended_is_the_turns_on_a_forge_w
     assert PullRequested(7, "https://x/7", "created") in delta.changes
 
 
+@pytest.mark.outside
 async def test_a_pull_request_opened_after_the_turn_ended_is_not_the_turns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The forge is asked once the reading gets to it, by which time the next turn may have opened one from the same branch."""
     root = published(tmp_path)
@@ -1626,6 +1695,7 @@ class Fallen(Deltas):
         return await super()._standing(root, at, deadline)
 
 
+@pytest.mark.outside
 async def test_a_capture_that_raised_is_waited_on_by_no_turn_after_it(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1640,6 +1710,7 @@ async def test_a_capture_that_raised_is_waited_on_by_no_turn_after_it(tmp_path: 
     assert waits(record) == [(0, 0), (0, 0)]
 
 
+@pytest.mark.outside
 async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_against_nothing_and_says_so(tmp_path: Path) -> None:
     """Words wait behind the first Stop, so the turn they run as is baselined, and the first part's tree is still being read
     when that baseline returns. Another Stop hook blocks the Stop and the turn goes on: the end it would go on from was read
@@ -1665,6 +1736,7 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
     assert (going_on.outcome, going_on.counts, going_on.facts["changes"]) == ("ok", {"commits": 0, "files": 0, "git_unanswered": 0}, ())
 
 
+@pytest.mark.outside
 async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_its_start_is_read_against_nothing(tmp_path: Path) -> None:
     """The first part's tree is still being read when another Stop hook blocks its Stop and the part going on stops, and
     that part's reading is already waiting on the first's capture as its start when the next turn's baseline overtakes it.
@@ -1693,6 +1765,7 @@ async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_
     assert waits(record) == [(0, 0), (2, 1)]
 
 
+@pytest.mark.outside
 async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path: Path) -> None:
     """Nothing can be ordered before a turn that has already begun, so the start after it does not wait on it either."""
     root = repo(tmp_path)
@@ -1712,6 +1785,7 @@ async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path:
     assert waits(record) == [(0, 0), (1, 1), (0, 0)]
 
 
+@pytest.mark.outside
 async def test_a_part_going_on_after_a_blocked_stop_captures_its_end_while_the_part_before_is_still_being_read(tmp_path: Path) -> None:
     """The first part's capture is overtaken, and still held when the part going on stops with words still waiting: that
     part's capture runs its own git at once, and the next baseline waits on it alone and is answered with the first still held."""

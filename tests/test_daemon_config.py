@@ -51,6 +51,7 @@ def test_the_file_names_the_backend_and_its_model(tmp_path: Path) -> None:
     assert config.parse('[llm]\nmodel = "claude-opus-5-5"\n').llm == Claude(model="claude-opus-5-5")
 
 
+@pytest.mark.outside
 def test_the_file_names_how_hands_comes_across_in_the_users_words(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
@@ -71,6 +72,7 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
     assert config.parse('[talk]\nwake_word = " Hey   Computer "\nwake_word_model = "/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path("/wake/hey_computer.onnx"))
 
 
+@pytest.mark.outside
 def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
     # Left out, each side follows the system's default, as auto does, however it is capitalised.
     assert config.parse("").devices == Choices(Auto(), Auto())
@@ -154,6 +156,7 @@ def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() ->
         config.parse('[whisper]\nmodel = "mlx-community/whisper-large-v3-turbo"\n')
 
 
+@pytest.mark.outside
 def test_a_brain_it_cannot_reach_stops_the_start_naming_what_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     home = Home(tmp_path / ".hands")
@@ -168,6 +171,7 @@ def test_a_hands_setting_left_in_the_environment_stops_the_start_naming_the_file
         run.configured_from(home, config.load(home), {"HANDS_HOME": str(tmp_path), "HANDS_LLM": "claude", "HANDS_WHISPER_MODEL": "w"})
 
 
+@pytest.mark.outside
 def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
@@ -175,6 +179,7 @@ def test_claude_is_the_brain_on_the_login_in_hands_own_config_dir_with_no_key(fa
     assert backend(Claude(model="claude-opus-5-5"), home, os.environ).model == "claude-opus-5-5"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("model", CLAUDE_MODELS)
 def test_claude_runs_on_each_model_on_offer(fake_claude: Path, tmp_path: Path, model: str) -> None:
     home = Home(tmp_path / ".hands")
@@ -294,6 +299,7 @@ async def test_an_edit_to_the_files_model_is_no_edit_while_a_model_flag_outranks
     assert recorded == []
 
 
+@pytest.mark.outside
 def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_switches(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
@@ -305,6 +311,7 @@ def test_a_brain_that_would_load_its_accounts_skills_stops_the_run_naming_the_sw
         backend(Claude(), home, os.environ)
 
 
+@pytest.mark.outside
 def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_run_naming_the_modes(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain, b'{"syncClaudeAiSkills": false, "syncClaudeAiPlugins": false, "permissions": {"defaultMode": "acceptedits"}}')
@@ -312,6 +319,7 @@ def test_a_brain_whose_settings_name_a_mode_claude_code_does_not_take_stops_the_
         backend(Claude(), home, os.environ)
 
 
+@pytest.mark.outside
 def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake_claude: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)
@@ -320,6 +328,7 @@ def test_a_hands_built_without_its_fritter_stops_the_run_naming_the_rebuild(fake
         backend(Claude(), home, os.environ)
 
 
+@pytest.mark.outside
 def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_naming_hands_login(fake_claude: Path, tmp_path: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain, trusted=False)
@@ -327,6 +336,7 @@ def test_a_brain_that_would_start_on_claude_codes_first_screens_stops_the_run_na
         backend(Claude(), home, os.environ)
 
 
+@pytest.mark.outside
 def test_a_brain_with_no_login_stops_the_run_before_the_voice_loads_naming_the_command(monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(Rejected, match="`hands login` gives it one"):
@@ -426,6 +436,7 @@ def test_a_restart_lists_its_running_sessions_before_the_configuration_is_read(t
     assert order == ["sweep", "configure", "survey"]
 
 
+@pytest.mark.outside
 async def test_a_start_says_where_the_run_listens_as_it_serves_each(monkeypatch: pytest.MonkeyPatch) -> None:
     # A unix socket path is capped near 104 bytes on macOS, so not under pytest's long tmp_path.
     root = Path(tempfile.mkdtemp(prefix="hands-"))
@@ -539,6 +550,7 @@ def test_a_start_that_fails_before_its_launch_is_still_one_event(tmp_path: Path,
     assert (failed["outcome"], failed["error"]) == ("failed", "OSError: no indicator")
 
 
+@pytest.mark.outside
 def test_a_settings_file_it_cannot_read_refuses_the_start_at_the_door_and_a_restarts_in_its_heartbeat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     # Before its first heartbeat a run holds none: the one there, here a crash's, is left for the next run to read.
     from hands.voice import talkkey
@@ -664,6 +676,7 @@ def test_a_home_whose_fritter_cannot_be_read_refuses_the_start_at_the_door_sayin
     assert [event.facts["fritter"] for event in events] == ["unreadable"]
 
 
+@pytest.mark.outside
 def test_the_voice_is_charles_until_one_is_chosen_and_the_chosen_one_after_a_restart(fake_claude: Path, tmp_path: Path) -> None:
     """Charles by the name the installed pocket_tts resolves itself, until the user chooses another, which the next run
     is built in.
@@ -800,6 +813,7 @@ async def test_a_save_written_in_two_steps_is_weighed_once_whole(tmp_path: Path,
     assert recorded == []
 
 
+@pytest.mark.outside
 async def test_an_edit_naming_a_model_hands_cannot_reach_is_said_and_outlived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     home = Home(tmp_path / ".hands")
     onboard(home.brain)

@@ -132,6 +132,7 @@ def decision(stdout: str) -> object:
     return json.loads(stdout)["hookSpecificOutput"]["decision"]
 
 
+@pytest.mark.outside
 async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
     assert [[(held.on, held.request) for held in listing.session.dialogs] for listing in sessions.live()] == [[(moment.on, moment.request)]]
@@ -147,6 +148,7 @@ async def test_a_voice_allow_is_what_the_waiting_hook_prints(home: Home, session
     }
 
 
+@pytest.mark.outside
 async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_that_its_session_closed_it(home: Home, clock: VirtualClock) -> None:
     recorded: list[Entry] = []
 
@@ -174,6 +176,7 @@ async def test_a_permission_hook_is_one_event_saying_what_it_was_answered_or_tha
     assert [(entry.outcome, entry.facts.get("reply")) for entry in asks()] == [("ok", Allow()), ("cancelled", None)]
 
 
+@pytest.mark.outside
 async def test_voice_answers_to_a_question_are_what_the_waiting_hook_prints_in_its_input(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions, QUESTION)
     assert shim.process.returncode is None, "the hook returned before anyone answered"
@@ -185,6 +188,7 @@ async def test_voice_answers_to_a_question_are_what_the_waiting_hook_prints_in_i
     assert (code, decision(stdout)) == (0, {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": answers}})
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("tool", "arguments", "readback"),
     [
@@ -204,6 +208,7 @@ async def test_an_answer_that_does_not_fit_the_question_sends_nothing_and_it_sti
     await shim.finished()
 
 
+@pytest.mark.outside
 async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions, QUESTION)
     assert await call(named(sessions, "answer_question"), request=moment.request, answers=["green", ""]) == {
@@ -213,6 +218,7 @@ async def test_an_empty_answer_leaves_its_question_unanswered(home: Home, sessio
     assert decision(stdout) == {"behavior": "allow", "updatedInput": {**QUESTIONS, "answers": {"Which color?": "green", "Which fruits?": ""}}}
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("answers", "error"),
     [("green", "answers should be a list"), ([3], "answers[0] should be a string, got int")],
@@ -246,6 +252,7 @@ def test_a_question_reaches_the_model_whole_with_its_options_and_request_id() ->
     assert "Request id: q-7" in content and "answer_question" in content and "cut short" not in content
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("message", "agent_reads"), [("use git clean instead", "use git clean instead"), ("", DENIED_BY_VOICE)])
 async def test_a_voice_deny_carries_its_message_to_the_agent(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
     shim, moment = await asked(home, sessions)
@@ -256,6 +263,7 @@ async def test_a_voice_deny_carries_its_message_to_the_agent(home: Home, session
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})
 
 
+@pytest.mark.outside
 async def test_a_request_nobody_answers_waits_past_any_clock_and_a_voice_answer_still_reaches_it(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     """The user, 2026-10-19: no answer is timed. Ticks well past where the old deadline stood, and past a day of them,
     neither deny it nor say anything of it, and the user's answer then is the one the hook prints."""
@@ -270,6 +278,7 @@ async def test_a_request_nobody_answers_waits_past_any_clock_and_a_voice_answer_
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
 
 
+@pytest.mark.outside
 async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home, sessions: Sessions) -> None:
     shim, _ = await asked(home, sessions)
     # Claude Code says it is at its prompt: the dialog was answered at the keyboard, or escaped, and the turn is over.
@@ -278,6 +287,7 @@ async def test_a_session_that_moves_on_lets_its_hook_return_undecided(home: Home
     assert await shim.finished() == (0, "", "")
 
 
+@pytest.mark.outside
 async def test_a_hook_that_went_away_is_neither_answered_nor_spoken_of(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
@@ -305,6 +315,7 @@ async def asking_in_process(home: Home, sessions: Sessions) -> tuple[PermissionR
     return request, waiting
 
 
+@pytest.mark.outside
 async def test_a_reply_decided_as_the_hook_closes_is_logged_as_never_delivered(home: Home, sessions: Sessions) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
@@ -325,6 +336,7 @@ async def waits_on_its_reply(handler: asyncio.Task[HookReply], sessions: Session
         await asyncio.sleep(0)
 
 
+@pytest.mark.outside
 async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is_dropped(home: Home, sessions: Sessions) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
@@ -341,6 +353,7 @@ async def test_a_reply_decided_while_a_closed_hooks_cancellation_is_in_flight_is
     assert f"reply Allow() for session {SID} request r1 was never delivered: its hook has closed" in logged
 
 
+@pytest.mark.outside
 async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never_delivered(home: Home, sessions: Sessions) -> None:
     logged: list[str] = []
     sink = logger.add(lambda message: logged.append(message.record["message"]), level="INFO")
@@ -355,6 +368,7 @@ async def test_a_reply_decided_after_shutdown_let_its_hook_go_is_logged_as_never
     assert f"reply Allow() for session {SID} request r1 was never delivered: its hook was already given Withdraw()" in logged
 
 
+@pytest.mark.outside
 async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_out_its_day(home: Home, clock: VirtualClock) -> None:
     registry = new_sessions(clock=clock)
     runner = await serve_hooks(home, registry, Names(), lambda _: None, Reader(registry, Tails(registry), registry.apply))
@@ -364,6 +378,7 @@ async def test_a_daemon_shutting_down_lets_a_waiting_hook_go_instead_of_waiting_
     assert await shim.finished() == (0, "", "")
 
 
+@pytest.mark.outside
 async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Home, sessions: Sessions) -> None:
     assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     sessions.release_waiting()
@@ -371,6 +386,7 @@ async def test_a_hook_that_asks_after_shutdown_began_is_let_go_at_once(home: Hom
     assert await asyncio.wait_for(sessions.waited(request, sessions.hold(request)), WAIT_SECONDS) == Withdraw()
 
 
+@pytest.mark.outside
 async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(sessions: Sessions) -> None:
     # Every tool call of a session started before the daemon would otherwise bury the warnings that matter.
     levels: list[str] = []
@@ -382,6 +398,7 @@ async def test_tool_calls_from_a_session_that_never_joined_are_not_warned_about(
     assert levels == ["DEBUG"]
 
 
+@pytest.mark.outside
 async def test_a_request_from_a_session_this_daemon_never_met_joins_it_and_is_answered_aloud(home: Home, sessions: Sessions) -> None:
     # A session running since before the plugin was: no SessionStart ever fired, so the request is where it joins.
     shim = await Shim.run(home, ASK)
@@ -392,6 +409,7 @@ async def test_a_request_from_a_session_this_daemon_never_met_joins_it_and_is_an
     assert (code, decision(stdout)) == (0, {"behavior": "allow"})
 
 
+@pytest.mark.outside
 async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answered(home: Home, sessions: Sessions, clock: VirtualClock) -> None:
     shim, moment = await asked(home, sessions)
     shim.process.kill()
@@ -403,6 +421,7 @@ async def test_a_voice_answer_after_the_hook_went_away_is_told_nothing_was_answe
     }
 
 
+@pytest.mark.outside
 async def test_the_tool_running_after_a_keyboard_answer_lets_the_hook_go(home: Home, sessions: Sessions) -> None:
     shim, _ = await asked(home, sessions)
     finished = {**COMMON, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "rm -r build"}, "tool_use_id": "t", "tool_response": {}}
@@ -410,6 +429,7 @@ async def test_the_tool_running_after_a_keyboard_answer_lets_the_hook_go(home: H
     assert await shim.finished() == (0, "", "")
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
@@ -422,6 +442,7 @@ async def test_an_answer_that_does_not_parse_is_refused_out_loud(sessions: Sessi
     assert error in str((await call(named(sessions, "answer_permission"), **arguments))["error"])
 
 
+@pytest.mark.outside
 def test_the_tools_say_their_arguments(sessions: Sessions) -> None:
     tools = permission_tools(sessions)
     assert [(tool.name, tool.required) for tool in tools] == [("answer_permission", ("request", "decision")), ("answer_question", ("request", "answers")), ("answer_plan", ("request", "decision"))]
@@ -439,6 +460,7 @@ def test_a_request_reaches_the_model_with_its_tool_input_and_request_id() -> Non
 SET_MODE = [{"type": "setMode", "mode": "acceptEdits", "destination": "session"}], [{"type": "setMode", "mode": "default", "destination": "session"}]
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("choice", "permissions", "readback"),
     [
@@ -459,6 +481,7 @@ async def test_a_plan_approved_by_voice_leaves_plan_mode_for_the_mode_chosen(
     assert (code, decision(stdout)) == (0, {"behavior": "allow", "updatedInput": {}, "updatedPermissions": permissions})
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("message", "agent_reads"), [("split step 2 in two", "split step 2 in two"), ("", SENT_BACK_BY_VOICE)])
 async def test_a_plan_sent_back_by_voice_tells_the_agent_what_to_change(home: Home, sessions: Sessions, message: str, agent_reads: str) -> None:
     shim, moment = await asked(home, sessions, PLAN)
@@ -469,6 +492,7 @@ async def test_a_plan_sent_back_by_voice_tells_the_agent_what_to_change(home: Ho
     assert (code, decision(stdout)) == (0, {"behavior": "deny", "message": agent_reads})
 
 
+@pytest.mark.outside
 async def test_a_plan_allowed_as_a_permission_sends_nothing_and_it_still_waits(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions, PLAN)
     assert "that request is a plan" in str((await call(named(sessions, "answer_permission"), request=moment.request, decision="allow"))["readback"])
@@ -478,6 +502,7 @@ async def test_a_plan_allowed_as_a_permission_sends_nothing_and_it_still_waits(h
     await shim.finished()
 
 
+@pytest.mark.outside
 async def test_feedback_for_a_plan_sent_to_a_permission_sends_nothing_and_it_still_waits(home: Home, sessions: Sessions) -> None:
     shim, moment = await asked(home, sessions)
     assert "that request is a permission" in str((await call(named(sessions, "answer_plan"), request=moment.request, decision="keep planning", message="x"))["readback"])
@@ -487,6 +512,7 @@ async def test_feedback_for_a_plan_sent_to_a_permission_sends_nothing_and_it_sti
     await shim.finished()
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("arguments", "error"),
     [
@@ -508,6 +534,7 @@ def test_a_plan_reaches_the_model_whole_with_its_request_id() -> None:
     assert long in content and "Request id: p-3" in content and "answer_plan" in content
 
 
+@pytest.mark.outside
 async def test_a_permission_request_is_held_in_the_model_before_reader_asked_returns_with_its_session_joined(home: Home, sessions: Sessions) -> None:
     """[LAW:no-ambient-temporal-coupling] held as its hook arrives: nothing is awaited between the post and the hold, so no
     hook still being applied and no read of Claude Code through now comes first."""
@@ -521,6 +548,7 @@ async def test_a_permission_request_is_held_in_the_model_before_reader_asked_ret
     assert replying.done() and replying.result() == Allow()
 
 
+@pytest.mark.outside
 async def test_an_answer_has_replied_to_its_hook_by_the_time_it_returns(home: Home, sessions: Sessions) -> None:
     assert await (await Shim.run(home, START)).finished() == (0, STARTED, "")
     asked = PermissionRequested(SID, at=0.0, request=RequestId("r1"), on=Permission("Bash", {}), mode=None)

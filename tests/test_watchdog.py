@@ -10,6 +10,7 @@ from conftest import PATIENCE_SECS
 from hands.clock import SYSTEM
 from hands.sessions import audit, heartbeat
 from hands.sessions.home import Home
+import pytest
 
 WATCHED = Path(__file__).resolve().parent / "fixtures" / "watched_run.py"
 # Far past the fixture's deadline, and short of the suite's own timeout.
@@ -26,6 +27,7 @@ def errors(home: Home) -> list[str]:
     return [line["message"] for line in map(json.loads, audit.tail(home.audit, 100)[0]) if (line["type"], line["level"]) == ("Logged", "error")]
 
 
+@pytest.mark.outside
 def test_each_hung_run_ends_itself_and_the_next_says_where_its_threads_were_before_it_can_hang_in_turn(tmp_path: Path) -> None:
     # As the daemon hung: no Python thread, and no Python signal handler, runs while the regex holds the GIL.
     home = Home(tmp_path)
@@ -47,6 +49,7 @@ def test_each_hung_run_ends_itself_and_the_next_says_where_its_threads_were_befo
     assert home.hang.read_text() == ""
 
 
+@pytest.mark.outside
 def test_a_run_that_keeps_beating_is_never_ended_by_its_watchdog(tmp_path: Path) -> None:
     home = Home(tmp_path)
     ended = watched(home, "beats")

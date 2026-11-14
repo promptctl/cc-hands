@@ -27,6 +27,7 @@ from hands.sessions.hookconfig import (
     rendered,
 )
 from hands.sessions.hooks import hook_output
+import pytest
 
 REPOSITORY = Path(__file__).resolve().parent.parent
 
@@ -67,6 +68,7 @@ def test_the_checked_in_hooks_json_is_what_hookconfig_declares() -> None:
     assert (PLUGIN / HOOKS_FILE).read_text(encoding="utf-8") == rendered()
 
 
+@pytest.mark.outside
 def test_the_module_prints_the_hooks_json() -> None:
     printed = subprocess.run([sys.executable, "-m", "hands.sessions.hookconfig"], capture_output=True, text=True, check=True)
     assert printed.stdout == rendered()

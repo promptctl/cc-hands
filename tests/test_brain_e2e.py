@@ -49,6 +49,9 @@ from hands.voice.summaries import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Received, Spoken
 
+
+pytestmark = pytest.mark.outside
+
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang.
 PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")

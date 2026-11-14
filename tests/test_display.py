@@ -61,6 +61,7 @@ class Applying:
         self.applied.append(event)
 
 
+@pytest.mark.outside
 async def test_the_route_applies_what_was_displayed_and_refuses_anything_else() -> None:
     sessions = Applying()
     port = _free_port()
@@ -83,6 +84,7 @@ async def test_the_route_applies_what_was_displayed_and_refuses_anything_else() 
     assert posts == [("hook", "ok", None, {"hook": "MessageDisplay", "session": SID}), ("hook", "failed", refused, {})] and len(recorded) == 2
 
 
+@pytest.mark.outside
 async def test_a_daemon_that_cannot_take_the_port_does_not_start() -> None:
     with socket.socket() as held:
         held.bind(("127.0.0.1", 0))

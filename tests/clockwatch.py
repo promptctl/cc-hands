@@ -120,6 +120,7 @@ UNMOVED = frozenset({
     "test_tool_runs.py",
     "test_transcript.py",
     "test_typing.py",
+    "test_unit.py",
     "test_update.py",
     "test_usage.py",
     "test_utterance.py",

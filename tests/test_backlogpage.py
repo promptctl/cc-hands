@@ -364,6 +364,7 @@ def titled(items: list[dict[str, Any]]) -> list[tuple[str, list[str]]]:
     return [(node["title"], [child["id"] for child in node["children"]]) for node in items]
 
 
+@pytest.mark.outside
 async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_alone(page: Page) -> None:
     shown_page = await page.client.get("/backlog")
     assert shown_page.status == 200 and "drag its card up or down" in await shown_page.text()
@@ -375,6 +376,7 @@ async def test_the_page_is_served_to_anyone_and_its_backlog_to_the_phones_key_al
     assert [event.error for event in keyless] == ["asked without the phone's key"] * 4
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     "query, why",
     [("", "absolute path"), ("?project=relative/path", "absolute path"), ("?project=/no/such/directory", "no directory"), ("?project=/a%00b", "is no path")],
@@ -384,6 +386,7 @@ async def test_a_read_that_names_no_directory_is_refused_rather_than_asking_lit(
     assert response.status == 400 and why in await response.text()
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: Page, tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
@@ -393,6 +396,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
     assert event.outcome == "ok" and event.facts["tracked"] is False
 
 
+@pytest.mark.outside
 @real_lit
 async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -409,6 +413,7 @@ async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_re
     assert event.outcome == "ok" and event.facts["project"] == workspace.root and event.counts == {"tickets": 3, "summarised": 2}
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_drop_ranks_the_ticket_in_lit_and_the_page_is_answered_with_lits_order(page: Page, workspace: Workspace) -> None:
     _, mic, parser, docs = epic(workspace, "Voice", "Fix the mic", "Fix the parser", "Write the docs")
@@ -427,6 +432,7 @@ async def test_a_drop_ranks_the_ticket_in_lit_and_the_page_is_answered_with_lits
     assert second.outcome == "ok" and second.facts["place"] == Place("below", parser)
 
 
+@pytest.mark.outside
 @real_lit
 async def test_epics_are_dragged_among_themselves(page: Page, workspace: Workspace) -> None:
     voice, *_ = epic(workspace, "Voice", "Fix the mic")
@@ -435,6 +441,7 @@ async def test_epics_are_dragged_among_themselves(page: Page, workspace: Workspa
     assert status == 200 and workspace.order(voice, wire) == [wire, voice]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_move_across_epics_is_refused_and_nothing_in_lit_moves(page: Page, workspace: Workspace) -> None:
     voice, mic = epic(workspace, "Voice", "Fix the mic")
@@ -449,6 +456,7 @@ async def test_a_move_across_epics_is_refused_and_nothing_in_lit_moves(page: Pag
     assert [event.outcome for event in page.events("backlog.ranked")] == ["failed", "failed"]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_deleted_epics_child_is_moved_among_the_roots(page: Page, workspace: Workspace) -> None:
     root, *_ = epic(workspace, "Root", "Keep it")
@@ -459,6 +467,7 @@ async def test_a_deleted_epics_child_is_moved_among_the_roots(page: Page, worksp
     assert status == 200 and workspace.order(root, left, other) == [root, left, other]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_an_archived_epics_child_is_not_moved_among_the_roots(page: Page, workspace: Workspace) -> None:
     root, *_ = epic(workspace, "Root", "Keep it")
@@ -470,6 +479,7 @@ async def test_an_archived_epics_child_is_not_moved_among_the_roots(page: Page, 
     assert workspace.order(root, shelf, shelved) == before
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_is_a_conflict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -486,6 +496,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     assert event.facts["ranked"] == "yes" and f"ranked the epic {wire} instead" in str(event.facts["lit_said"])
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -498,6 +509,7 @@ async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, w
     assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] == "no"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was_ranked(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -518,6 +530,7 @@ async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was
     assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "yes"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_rank_lit_stops_without_a_reason_is_said_to_be_unknown_and_never_claimed_either_way(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -534,6 +547,7 @@ async def test_a_rank_lit_stops_without_a_reason_is_said_to_be_unknown_and_never
     assert event.outcome == "failed" and event.error == body and event.facts["ranked"] == "unknown"
 
 
+@pytest.mark.outside
 @real_lit
 @pytest.mark.parametrize("export, why", [('echo "error (code=5, reason=workspace_busy): locked" >&2; exit 5', "workspace_busy"), ("echo not json", "JSON")])
 async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, export: str, why: str) -> None:
@@ -549,6 +563,7 @@ async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(pag
     assert event.outcome == "failed" and event.error is not None and why in event.error
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("body, why", [(b"{}", "one of above or below"), (b'{"project": "/", "ticket": "a", "above": "b", "below": "c"}', "never both")])
 async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(page: Page, body: bytes, why: str) -> None:
     response = await page.client.post("/backlog/rank", data=body, headers=KEYED)
@@ -558,6 +573,7 @@ async def test_a_move_the_page_cannot_send_is_refused_and_its_event_says_why(pag
     assert event.outcome == "failed" and event.error == text
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page, workspace: Workspace) -> None:
     epic(workspace, "Voice", "Fix the mic")
@@ -573,6 +589,7 @@ async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page,
         await asyncio.wait_for(page.store.wanted(), 0.2)
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_moves_the_ticket_into_its_topics_epic_for_it_made_beside_its_epic_the_first_time(page: Page, workspace: Workspace) -> None:
     train, hey, custom, many = epic(workspace, "Train a new wake word", "Implement wake word mode", "Hey hands", "Many wake words", topic="wake-word")
@@ -597,6 +614,7 @@ async def test_a_level_moves_the_ticket_into_its_topics_epic_for_it_made_beside_
     assert third.outcome == "ok" and (third.facts["level"], third.facts["epic"], third.facts["created"]) == ("low", low, "yes")
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_moves(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -608,6 +626,7 @@ async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_mo
     assert [event.outcome for event in page.events("backlog.leveled")] == ["ok", "failed"]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -628,6 +647,7 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
     assert page.events("backlog.leveled")[1].facts["created"] == "no"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -642,6 +662,7 @@ async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Pag
     assert event.outcome == "failed" and event.facts["moved"] == "unknown"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_epic_made_keeps_its_topics_levels_in_order_whatever_epic_the_ticket_is_in(page: Page, workspace: Workspace) -> None:
     _, first, second, third = epic(workspace, "Train a new wake word", "Hey hands", "Many wake words", "Train your own", topic="wake-word")
@@ -659,6 +680,7 @@ async def test_a_level_epic_made_keeps_its_topics_levels_in_order_whatever_epic_
     assert epics == ["Train a new wake word", "wake word - high", "wake word - normal", "wake word - low"]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_epic_made_from_a_topics_high_one_goes_between_it_and_the_topics_epic(page: Page, workspace: Workspace) -> None:
     train, first, second = epic(workspace, "Train a new wake word", "Hey hands", "Many wake words", topic="wake-word")
@@ -672,6 +694,7 @@ async def test_a_level_epic_made_from_a_topics_high_one_goes_between_it_and_the_
     assert workspace.order(high, ids["wake word - normal"], ids["wake word - low"], train) == [high, ids["wake word - normal"], ids["wake word - low"], train]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_page(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -681,6 +704,7 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
     assert event.outcome == "ok" and event.counts == {}
 
 
+@pytest.mark.outside
 @real_lit
 @pytest.mark.parametrize(
     "before_rank, ranked, said",
@@ -703,6 +727,7 @@ async def test_a_rank_that_fails_after_the_epic_is_made_says_the_epic_is_made_an
     assert str(event.facts["epic"]) in body
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_ticket_whose_epic_is_inside_an_archived_one_is_refused_before_lit_makes_anything(page: Page, workspace: Workspace) -> None:
     room, *_ = epic(workspace, "Room", "Keep it", topic="room")
@@ -722,6 +747,7 @@ async def test_a_ticket_whose_epic_is_inside_an_archived_one_is_refused_before_l
     assert [(child["id"], child["standing"]) for child in shelved["children"]] == [(hey, None)]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_epic_whose_every_ticket_is_closed_is_used_again_and_never_made_twice(page: Page, workspace: Workspace) -> None:
     _, hey, custom = epic(workspace, "Train a new wake word", "Hey hands", "Custom wake word", topic="wake-word")
@@ -741,6 +767,7 @@ def exported_epics(workspace: Workspace) -> list[dict[str, Any]]:
     return [{**entry, "parent": parents.get(entry["id"])} for entry in sorted(exported["issues"], key=lambda entry: entry["rank"]) if entry["issue_type"] == "epic"]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_ticket_leveled_into_an_epic_holding_others_is_ranked_last_there(page: Page, workspace: Workspace) -> None:
     _, old, second, third = epic(workspace, "Train a new wake word", "Implement wake word mode", "Hey hands", "Many wake words", topic="wake-word")
@@ -752,6 +779,7 @@ async def test_a_ticket_leveled_into_an_epic_holding_others_is_ranked_last_there
     assert page.events("backlog.leveled")[2].facts["placed"] == "yes"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_topic_in_two_frames_has_its_own_level_epics_in_each(page: Page, workspace: Workspace) -> None:
     rooms = [workspace.lit("new", "--type", "epic", "--title", title, "--topic", topic) for title, topic in [("Kitchen", "kitchen"), ("Garage", "garage")]]
@@ -765,6 +793,7 @@ async def test_a_topic_in_two_frames_has_its_own_level_epics_in_each(page: Page,
     assert (event.facts["created"], again.facts["created"]) == ("yes", "yes")
 
 
+@pytest.mark.outside
 @real_lit
 async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked_is_a_failure(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     other, *_ = epic(workspace, "Other", "Keep it", topic="other")
@@ -781,6 +810,7 @@ async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked
     assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", "no", "no") and "epic" not in event.facts
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_project_lit_stops_tracking_once_the_epic_is_made_is_said_as_such(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -802,6 +832,7 @@ async def noted(page: Page, workspace: Workspace, ticket: str, text: str) -> tup
     return response.status, await response.text()
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -814,6 +845,7 @@ async def test_a_note_is_a_lit_comment_on_the_ticket_signed_by_the_person_not_a_
     assert event.outcome == "ok" and (event.facts["ticket"], event.facts["chars"], event.facts["noted"]) == (hey, 23, "yes")
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_with_lits_verdict(page: Page, workspace: Workspace) -> None:
     status, body = await noted(page, workspace, "page-nope", "Split it")
@@ -822,6 +854,7 @@ async def test_a_note_on_a_ticket_lit_does_not_hold_is_refused_with_lits_verdict
     assert event.outcome == "failed" and event.facts["noted"] == "no"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_note_for_a_flag_is_refused_before_lit_is_asked(page: Page, workspace: Workspace) -> None:
     status, body = await noted(page, workspace, "--help", "Split it")
@@ -836,6 +869,7 @@ def actors(workspace: Workspace) -> list[tuple[str, str]]:
     return [(event["action"], event["actor"]) for event in exported["events"]]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page: Page, workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -847,6 +881,7 @@ async def test_a_level_press_is_signed_by_the_person_even_inside_a_session(page:
     assert made and {actor for _, actor in made} == {getpass.getuser()}
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspace: Workspace, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -859,6 +894,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
     assert session in said["created_by"] and getpass.getuser() not in said["created_by"]
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
@@ -874,6 +910,7 @@ async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: 
     assert event.outcome == "failed" and event.facts["noted"] == "unknown"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_in(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
@@ -886,6 +923,7 @@ async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_
     assert status == 200 and seen.read_text() == "session=\n"
 
 
+@pytest.mark.outside
 @real_lit
 async def test_a_note_saved_while_a_ticket_is_leveled_waits_its_turn_and_is_kept(page: Page, workspace: Workspace) -> None:
     _, hey, custom = epic(workspace, "Train a new wake word", "Hey hands", "Custom wake word", topic="wake-word")

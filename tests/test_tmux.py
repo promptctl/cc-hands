@@ -10,6 +10,7 @@ from hands.core.tmux import Behind, Listed, NotInTmux, Pane, PaneUnread, Server,
 from hands.sessions import tmux
 from hands.sessions.tmux import Answered
 from hands.sessions.terminals import Process, ancestor_terminals, front_terminal
+import pytest
 
 # Terminals by device number: a pane of each of two servers, the pseudoterminal fritter runs a session on, and a tab.
 PANE, OTHER_PANE, FRITTER, TAB = 10, 11, 20, 1
@@ -64,6 +65,7 @@ def test_keys_reach_a_session_through_its_pane_only_while_it_is_in_front_of_that
     assert keyboard(300, [Listed({PANE: HANDS}), Unanswered("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")]) == PaneUnread("tmux at /tmp/tmux-501/play did not answer list-panes in 2 seconds")
 
 
+@pytest.mark.outside
 def test_a_relative_socket_whose_server_pid_is_now_another_users_names_no_server(tmp_path: Path) -> None:
     # Its server exited and its pid went to a process of root's: launchd's, pid 1, stands in for it. $TMUX is read from
     # a program built for the test, since macOS shows no one /bin/cat's.

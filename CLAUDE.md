@@ -9,6 +9,10 @@
 - HANDS NEVER STARTS A CLAUDE CODE PROCESS TO GET WHAT THE RUNNING BRAIN ALREADY GIVES IT.  hands is a realtime voice application, and every Claude Code started on the way to an answer is latency the user hears.  What the brain's Claude Code can do, hands gets without starting another: a request of its own through the proxy, completely consistent with the requests Claude Code itself sends (a shorthand for running the command inside Claude Code, the same in principle); a change to the brain's request that piggybacks on it; an API response the brain receives, written or rewritten by hands; a command sent to the brain's stdin; or some other way.  hands may write and rewrite the brain's requests and the API responses the brain receives.  A separate Claude Code started for each side question is this mistake.  One-shot `claude` CLI checks at startup are fine; repeated `claude` CLI commands for anything that can be done another way are not.  Effort spent on a design that breaks this is wasted, and someone has to clean it up later.
 
 <!-- BEGIN LIT INTEGRATION -->
+## Tests
+
+`make check` runs the unit layer, the tests that pass with everything outside the process refused by the OS, plus the type checks: it is the run to make on every turn, and it takes about a minute. Green on it is not green on CI, which runs `make check-all` (everything, with no hold, fritter's Go tests and wake-training's suite among it). A test that needs a process, a socket or the speech models is marked `@pytest.mark.outside`; docs/testing.md has the layers and where a new test belongs.
+
 ## lit Agent-Native Workflow
 
 This repository uses `lit` for agent-native issue tracking.

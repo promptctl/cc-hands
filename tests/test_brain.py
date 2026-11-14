@@ -94,6 +94,7 @@ def ran(recorded: Sequence[Entry]) -> list[tuple[str, str, Mapping[str, Fact]]]:
     return [(entry.event, entry.outcome, entry.facts) for entry in recorded if isinstance(entry, WideEvent)]
 
 
+@pytest.mark.outside
 async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_event() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
@@ -120,6 +121,7 @@ async def test_a_client_opens_lists_and_calls_the_tools_and_each_request_is_one_
         await server.close()
 
 
+@pytest.mark.outside
 async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_server_cannot_is_an_error() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append), audited(SYSTEM, tool(broken), recorded.append)], recorded.append, CallSpans())
@@ -162,6 +164,7 @@ async def test_a_call_the_tool_cannot_answer_is_told_to_the_model_and_one_the_se
         await server.close()
 
 
+@pytest.mark.outside
 async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_one_no_turn_is_running_is_a_root() -> None:
     recorded: list[Entry] = []
     spans = CallSpans()
@@ -181,6 +184,7 @@ async def test_a_call_a_turn_is_running_is_run_as_a_part_of_the_turns_call_and_o
     assert all(isinstance(run, WideEvent) and run.parent_id is None and run.trace_id != call.trace_id for run in (outside, after))
 
 
+@pytest.mark.outside
 async def test_a_request_without_the_brains_token_reaches_no_tool() -> None:
     recorded: list[Entry] = []
     server = await serve_mcp(SYSTEM, [audited(SYSTEM, tool(echo), recorded.append)], recorded.append, CallSpans())
@@ -310,6 +314,7 @@ def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None
     assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
 async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp_path: Path, given: dict[str, str]) -> None:
     # The brain is run in its tmux session; `hands login` and the brain's
@@ -328,6 +333,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     assert (tmp_path / "seen").read_text() == "updater=1"
 
 
+@pytest.mark.outside
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -414,6 +420,7 @@ def test_the_mode_the_brains_settings_name_is_read_as_claude_code_reads_it_and_o
         settings_mode(brain)
 
 
+@pytest.mark.outside
 async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_line_and_its_launch_says_which(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     workdir(tmp_path / "brain")
     (tmp_path / "brain" / "settings.json").write_text(json.dumps({"permissions": {"defaultMode": "manual"}}))
@@ -432,6 +439,7 @@ async def test_the_brain_starts_with_the_mode_its_settings_name_on_its_command_l
     assert launched.facts["mode"] == "default"
 
 
+@pytest.mark.outside
 async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_answered_and_only_a_yes_runs_the_tool(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
@@ -479,6 +487,7 @@ def _chord_read(tmp: Path) -> Callable[[float], Awaitable[None]]:
     return sleep
 
 
+@pytest.mark.outside
 async def test_a_dialog_still_drawn_after_it_was_answered_no_takes_no_key_and_the_next_turn_is_typed_once_the_prompt_shows(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -520,6 +529,7 @@ async def test_a_dialog_still_drawn_after_it_was_answered_no_takes_no_key_and_th
     assert first.facts["looks"] == 1 and isinstance(looks := second.facts["looks"], int) and looks >= 2
 
 
+@pytest.mark.outside
 async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_untaken_saying_what_the_screen_showed(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -535,6 +545,7 @@ async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_unt
     assert typed(tmp_path) == [["dropped", " hello"], ["unbound"]]
 
 
+@pytest.mark.outside
 async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start(tmp_path: Path, fake_claude: Path) -> None:
     keybindings = tmp_path / "brain" / "keybindings.json"
     keybindings.parent.mkdir(parents=True, exist_ok=True)
@@ -546,6 +557,7 @@ async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start
     assert KEYBINDINGS == {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]} and SUBMIT == "ctrl_q"
 
 
+@pytest.mark.outside
 async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chord_is_untaken_showing_its_words_at_the_prompt(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
@@ -558,6 +570,7 @@ async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chor
     assert "❯  hello" in str(untaken.value)
 
 
+@pytest.mark.outside
 async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_alone(tmp_path: Path, fake_claude: Path) -> None:
     read, takes = _chord_read(tmp_path), 0
 
@@ -581,6 +594,7 @@ async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_a
     assert [line[0] for line in typed(tmp_path) if line[0] not in ("prompt", "unbound", "dropped")] == ["ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h"]
 
 
+@pytest.mark.outside
 async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("hands.brain.process.BRAIN_REPLY_BY_SECONDS", 0.3)
     recorded: list[Entry] = []
@@ -609,6 +623,7 @@ async def test_a_permission_nobody_answers_is_refused_before_its_hooks_day_ends(
     assert not (tmp_path / "notes.txt").exists()
 
 
+@pytest.mark.outside
 async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_never_asked(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     held: list[Asked] = []
@@ -625,6 +640,7 @@ async def test_a_permission_posted_under_another_turns_prompt_is_refused_and_nev
     assert permission.parent_id == launched.span_id
 
 
+@pytest.mark.outside
 async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_failed_it(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -645,6 +661,7 @@ async def test_a_turn_the_api_fails_ends_at_its_stop_failure_hook_saying_what_fa
     ]
 
 
+@pytest.mark.outside
 async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_still_ends_its_turn(tmp_path: Path, fake_claude: Path) -> None:
     # Both only narrate the failure: refusing the hook over either would leave the turn waiting on an end already posted.
     brain = await start(SYSTEM, launch(tmp_path), list[Entry]().append)
@@ -659,6 +676,7 @@ async def test_a_stop_failure_whose_kind_or_text_is_missing_empty_or_not_text_st
     assert said == ["StopFailure carried last_assistant_message as dict, not a string, so its turn is told without it"]
 
 
+@pytest.mark.outside
 async def test_an_interrupt_stops_the_turn_in_flight_as_escape_does_and_with_none_types_nothing(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -697,6 +715,7 @@ class _Pressed:
         self._typist.press(key)
 
 
+@pytest.mark.outside
 async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the_model_reads_ahead_of_its_telling(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-ambient-temporal-coupling] the model has decided the stopped turn told, and the telling is still to be
     # performed: the turn is over only once the telling is heard, under its id, and the stop's Ctrl-C goes only then.
@@ -737,6 +756,7 @@ async def test_a_stopped_turn_ends_with_the_id_it_was_told_under_however_far_the
     assert isinstance(clear.facts["stopped_in"], float)
 
 
+@pytest.mark.outside
 async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_the_model_holds_and_what_it_showed(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-silent-failure] a turn Claude Code runs on after its Escape is no stopped turn: its asker is told so, once
     # the stop's time has passed, and the next turn is not typed into it as though it were over.
@@ -770,6 +790,7 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     assert (turn.outcome, turn.facts["taken"]) == ("failed", "p1") and turn.error is not None and turn.error.startswith("the brain failed the turn: the brain's Claude Code did not stop")
 
 
+@pytest.mark.outside
 async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_turn_is_not_typed_onto_its_prompt(tmp_path: Path, fake_claude: Path) -> None:
     # [LAW:no-silent-failure] Claude Code acts on the Escape and puts the stopped prompt back in its input, but the model
     # hears it only after the stop's time has passed: the stop fails, and its Ctrl-C still empties the input, so the next
@@ -820,6 +841,7 @@ class _Timed:
             self.cleared.append(time.monotonic())
 
 
+@pytest.mark.outside
 async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_last(tmp_path: Path, fake_claude: Path) -> None:
     # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. Each turn taken as
     # other words runs on, and the turn after it stops it before it is typed: two stops a take's wait apart, which the
@@ -846,6 +868,7 @@ def test_text_passed_on_to_the_brain_is_typed_as_the_characters_it_shows() -> No
     assert pasted("cut \ud83d, whole \U0001f600") == "cut \\ud83d, whole \U0001f600"
 
 
+@pytest.mark.outside
 async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_ended(
     tmp_path: Path, fake_claude: Path
 ) -> None:
@@ -867,6 +890,7 @@ async def test_a_brain_that_dies_mid_turn_fails_the_turn_and_says_once_how_it_en
     assert ran.facts["code"] == 3 and isinstance(shown, str) and "bye" in shown
 
 
+@pytest.mark.outside
 async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is_up(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -880,6 +904,7 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
         await brain.stop()
 
 
+@pytest.mark.outside
 async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
@@ -892,6 +917,7 @@ async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_
         await brain.stop()
 
 
+@pytest.mark.outside
 async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_running_is_stopped_before_the_next_is_typed(
     tmp_path: Path, fake_claude: Path
 ) -> None:
@@ -913,6 +939,7 @@ async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_runnin
     assert (answered.facts["taken"], answered.facts["ids"], answered.facts["matched"], answered.facts["told"]) == ("p2", ("p2",), "id", "p2")
 
 
+@pytest.mark.outside
 async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the_prompt_claude_code_queued_it_as(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -944,6 +971,7 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
     )
 
 
+@pytest.mark.outside
 async def test_a_turn_is_taken_as_claude_code_keeps_what_it_typed(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
     try:
@@ -982,6 +1010,7 @@ _SLOW = "sent_now_mid_batch"
 _SLOW_PAUSE = PATIENCE_SECS * 1.2 / _opening(_SLOW)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("name", "pause"), [*((name, 0.0) for name in RECORDINGS), (_SLOW, _SLOW_PAUSE)])
 async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_it_and_the_next_is_typed_with_nothing_before_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, name: str, pause: float) -> None:
     monkeypatch.setenv("PLAY_PAUSE", str(pause))
@@ -1008,6 +1037,7 @@ async def test_a_recorded_claude_code_turn_is_answered_under_the_stop_that_ends_
     assert typed(tmp_path) == [["prompt", f" play {name}"], ["played", name], ["prompt", " and then?"]]
 
 
+@pytest.mark.outside
 async def test_a_turn_whose_typing_fails_unexpectedly_fails_its_asker_says_so_once_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
@@ -1040,6 +1070,7 @@ async def _fails_as_it_is_ended(_take: float) -> None:
         raise RuntimeError("no clock") from None
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("sleep", "typed"), [(_fails_at_once, "deaf"), (_fails_as_it_is_ended, "wait")])
 async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(
     tmp_path: Path, fake_claude: Path, sleep: Callable[[float], Awaitable[None]], typed: str
@@ -1061,6 +1092,7 @@ async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_
     assert (failed.outcome, failed.error) == ("failed", "RuntimeError: no clock")
 
 
+@pytest.mark.outside
 async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_and_says_so_once(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     asked: list[Asked] = []
@@ -1089,6 +1121,7 @@ async def test_a_permission_that_fails_unexpectedly_is_refused_stops_its_turn_an
     assert not (tmp_path / "notes.txt").exists()
 
 
+@pytest.mark.outside
 async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_and_is_never_pressed_again(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
     pressed: list[object] = []
@@ -1115,6 +1148,7 @@ async def test_a_stop_whose_keys_fail_unexpectedly_ends_its_turn_says_so_once_an
     assert (pressed, said) == (["escape"], ["the brain's own work failed: RuntimeError('no voice')", "the brain's own work failed: OSError('jammed')"])
 
 
+@pytest.mark.outside
 async def test_an_asker_that_stops_waiting_leaves_the_turn_to_its_stop_and_the_next_turn_gets_its_own(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -1134,6 +1168,7 @@ def tmux_at(*arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["tmux", *arguments], capture_output=True, text=True, env=environment)
 
 
+@pytest.mark.outside
 async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server_that_a_person_can_attach_to(tmp_path: Path, fake_claude: Path) -> None:
     brain = await start(SYSTEM, launch(tmp_path), lambda _entry: None)
     try:
@@ -1147,6 +1182,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
     assert tmux_at("has-session", "-t", f"={brain_session(tmp_path / 'brain')}").returncode != 0
 
 
+@pytest.mark.outside
 async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and_ends_once_they_leave(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
@@ -1169,6 +1205,7 @@ async def test_a_brain_session_a_person_is_attached_to_outlives_hands_client_and
         shutil.rmtree(workspace)
 
 
+@pytest.mark.outside
 async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_its_session_is_ended_under_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
@@ -1186,6 +1223,7 @@ async def test_the_brains_exit_is_its_fritters_status_whether_it_ends_itself_or_
         shutil.rmtree(workspace)
 
 
+@pytest.mark.outside
 async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_brain_neither_ends_it_nor_keeps_it(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
@@ -1210,6 +1248,7 @@ async def test_a_person_who_detaches_hands_client_or_opens_a_window_beside_the_b
         shutil.rmtree(workspace)
 
 
+@pytest.mark.outside
 async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_session(tmp_path: Path) -> None:
     station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", dict(os.environ))
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
@@ -1224,6 +1263,7 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
         shutil.rmtree(workspace)
 
 
+@pytest.mark.outside
 async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_path: Path) -> None:
     # A server the user started holds their environment, a key among it; the brain is given only what environment() keeps.
     holder = tmux_at("new-session", "-d", "-s", "theirs", "-e", "ANTHROPIC_API_KEY=theirs", "sleep 60")
@@ -1246,6 +1286,7 @@ BRAIN = """
 brain = await start(SYSTEM, launch, lambda _entry: None)
 print(brain.pid, _child_of(brain.pid), flush=True)
 """
+@pytest.mark.outside
 @pytest.mark.parametrize("started", [BRAIN], ids=["brain"])
 async def test_a_hands_that_dies_without_stopping_its_claude_code_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path, started: str) -> None:
     # hands killed outright: no stop, no cleanup, only the kernel's hangup of the terminal it held.
@@ -1326,6 +1367,7 @@ LOOP_SECS = 30.0
 
 
 # The suite's timeout is for a test that hangs; this one's 55 loops each have LOOP_SECS, and the run must outlast them.
+@pytest.mark.outside
 @pytest.mark.timeout(600)
 async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_started_running(tmp_path: Path, fake_claude: Path) -> None:
     """The daemon's shutdown cancels the brain's launch wherever it is, and must not then wait for ever on what it spawned.
@@ -1360,6 +1402,7 @@ async def test_a_loop_ended_as_the_brain_starts_closes_and_leaves_nothing_it_sta
     await until(lambda: not running(tmp_path))
 
 
+@pytest.mark.outside
 async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_showed(tmp_path: Path, fake_claude: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     unrunnable = tmp_path / "fritter"
     shutil.copy(fritter, unrunnable)
@@ -1369,6 +1412,7 @@ async def test_a_fritter_that_cannot_be_run_is_refused_with_what_its_terminal_sh
         await start(SYSTEM, launch(tmp_path), lambda _entry: None)
 
 
+@pytest.mark.outside
 async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_showed_and_left_not_running(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1389,6 +1433,7 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     await until(lambda: not running(tmp_path))
 
 
+@pytest.mark.outside
 async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_start_begins_anew(
     tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1408,6 +1453,7 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
     assert conversation(brain, SessionId("n2")) == Fresh(SessionId("n2"), None)
 
 
+@pytest.mark.outside
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == Account("claude.ai", "brain@example.com")
     monkeypatch.setenv("LOGGED_IN", "0")
@@ -1421,6 +1467,7 @@ def logins(home: Path) -> list[tuple[str, dict[str, object]]]:
     return [(event["outcome"], event["facts"]) for event in events if event["type"] == "WideEvent" and event["event"] == "brain.login"]
 
 
+@pytest.mark.outside
 def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_codes_first_run_where_the_brain_runs(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not the brain's")
@@ -1443,6 +1490,7 @@ def test_hands_login_sets_a_new_brain_home_up_with_its_settings_then_claude_code
     assert logins(home) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": f"no {brain / '.claude.json'}", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
+@pytest.mark.outside
 def test_hands_login_on_a_brain_home_logs_it_in_again_leaving_its_settings_as_they_are(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     brain = tmp_path / "brain"
@@ -1455,6 +1503,7 @@ def test_hands_login_on_a_brain_home_logs_it_in_again_leaving_its_settings_as_th
     assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": False, "first_run": None, "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
+@pytest.mark.outside
 def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on_runs_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     # What `claude auth status` leaves, asked by a `hands run` before any `hands login`: its state, and no onboarding.
@@ -1467,6 +1516,7 @@ def test_hands_login_on_a_brain_home_claude_code_never_finished_its_first_run_on
     assert logins(tmp_path) == [("ok", {"asked": "claudeai", "settings_written": True, "first_run": "its onboarding unfinished", "account": {"type": "Account", "method": "claude.ai", "holder": "brain@example.com"}})]
 
 
+@pytest.mark.outside
 def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_to_trust_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     # Onboarded, then quit at the trust screen: the brain would start on that screen.
@@ -1476,6 +1526,7 @@ def test_hands_login_on_a_brain_home_whose_directory_claude_code_was_never_told_
     assert logins(tmp_path)[0][1]["first_run"] == f"{(tmp_path / 'brain' / 'cwd').resolve()} untrusted"
 
 
+@pytest.mark.outside
 def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
@@ -1485,6 +1536,7 @@ def test_hands_login_on_a_brain_home_whose_state_claude_code_cannot_have_written
     assert str(logins(tmp_path)[0][1]["first_run"]).startswith(f"{tmp_path / 'brain' / '.claude.json'} unreadable: ")
 
 
+@pytest.mark.outside
 def test_hands_login_whose_first_run_was_quit_before_its_last_screen_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_UNANSWERED", "1")
@@ -1499,6 +1551,7 @@ def test_hands_login_on_a_brain_whose_settings_would_sync_its_accounts_skills_ru
     assert "its account's syncClaudeAiSkills and syncClaudeAiPlugins" in capsys.readouterr().err
 
 
+@pytest.mark.outside
 def test_hands_login_after_a_first_run_that_failed_runs_it_again(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("LOGIN_EXIT", "130")
@@ -1515,6 +1568,7 @@ def test_hands_login_on_a_brain_path_that_is_no_directory_exits_1_saying_so(tmp_
     assert capsys.readouterr().err.startswith(f"hands login: [Errno 17] File exists: '{tmp_path / 'brain'}'")
 
 
+@pytest.mark.outside
 def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     onboard(tmp_path / "brain")
@@ -1524,12 +1578,14 @@ def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_p
     assert logins(tmp_path) == [("ok", {"asked": "console", "settings_written": False, "first_run": None, "account": {"type": "Account", "method": "api_key", "holder": "brain@example.com"}})]
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("method", "account"), [("api_key", Account("api_key", "brain@example.com")), ("oauth_token", Account("oauth_token", None))])
 def test_a_brain_on_any_anthropic_login_starts(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, method: str, account: Account) -> None:
     monkeypatch.setenv("AUTH_METHOD", method)
     assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == account
 
 
+@pytest.mark.outside
 def test_hands_login_that_leaves_the_brain_on_another_login_than_asked_exits_1_naming_both(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     # A token its settings.json sets ahead of the plan `claude auth login` made.
@@ -1540,6 +1596,7 @@ def test_hands_login_that_leaves_the_brain_on_another_login_than_asked_exits_1_n
     assert [(outcome, facts["asked"]) for outcome, facts in logins(tmp_path)] == [("failed", "claudeai")]
 
 
+@pytest.mark.outside
 def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked_about_runs_its_first_run(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     monkeypatch.setenv("AUTH_METHOD", "api_key")
@@ -1552,12 +1609,14 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
     assert unanswered(brain) is None
 
 
+@pytest.mark.outside
 def test_a_brain_reaching_claude_through_a_cloud_provider_is_refused_naming_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_PROVIDER", "bedrock")
     with pytest.raises(NotLoggedIn, match="through bedrock, not the Anthropic API hands' proxy forwards to"):
         logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("onboarded", "said"), [(False, "the brain's first run of Claude Code exited 3"), (True, "`claude auth login` for the brain exited 3")], ids=["first", "again"])
 def test_hands_login_that_claude_code_fails_exits_1_saying_so(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], onboarded: bool, said: str) -> None:
     monkeypatch.setenv("LOGIN_EXIT", "3")
@@ -1593,6 +1652,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
         await summarise("fail")
 
 
+@pytest.mark.outside
 async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(SYSTEM, lambda _observed: None)
@@ -1627,6 +1687,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
 
 
+@pytest.mark.outside
 async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
@@ -1649,6 +1710,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
     assert "\n\nDry and wry.\n\n" in launch.instruction
 
 
+@pytest.mark.outside
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
@@ -1665,6 +1727,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
     assert events(recorded, "brain.run") == []
 
 
+@pytest.mark.outside
 async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
@@ -1691,6 +1754,7 @@ def test_the_brain_is_posted_no_hook_that_says_a_tool_ran() -> None:
     assert {"PostToolUse", "PostToolUseFailure"}.isdisjoint(HOOKS)
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("asking", ["ask and wait", "ask twice and wait"], ids=["one dialog held", "two dialogs stacked"])
 async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_interrupt_ends_stopped_and_holds_none(tmp_path: Path, fake_claude: Path, asking: str) -> None:
     recorded: list[Entry] = []
@@ -1713,6 +1777,7 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(STOPPED))] * count
 
 
+@pytest.mark.outside
 async def test_the_turn_typed_after_a_clear_of_what_was_left_running_is_asked_its_permissions(tmp_path: Path, fake_claude: Path) -> None:
     """The clear's refusal lasts until a prompt starts new work, and the next turn's own prompt is that: its dialog is
     held and put to the user, never refused as the work the clear stopped."""
@@ -1733,6 +1798,7 @@ async def test_the_turn_typed_after_a_clear_of_what_was_left_running_is_asked_it
     assert ["permission", "allow", "", False] in typed(tmp_path)
 
 
+@pytest.mark.outside
 async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_stop_is_never_typed_into_it(tmp_path: Path, fake_claude: Path) -> None:
     stopping = asyncio.Event()
 
@@ -1760,6 +1826,7 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
     assert [line[0] for line in typed(tmp_path)].count("prompt") == 1
 
 
+@pytest.mark.outside
 async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unrecorded_after_the_bound(tmp_path: Path, fake_claude: Path) -> None:
     async def sleep(seconds: float) -> None:
         # The stop's bound never passes: only the brain's exit ends its wait.

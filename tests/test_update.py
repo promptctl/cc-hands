@@ -293,6 +293,7 @@ sys.exit(cli.main(["--home", home, "update"]))
 """
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("killed", [True, False], ids=["brain", "terminal"])
 def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not_its_caller_is_killed(killed: bool, tmp_path: Path) -> None:
     home, log, said = Home(tmp_path / "home"), tmp_path / "commands", tmp_path / "said"
@@ -353,6 +354,7 @@ os._exit(3)
 """
 
 
+@pytest.mark.outside
 def test_a_caller_the_update_ends_without_answering_exits_1_saying_so() -> None:
     caller = subprocess.run([sys.executable, "-c", UNANSWERED], capture_output=True, text=True, timeout=30)
 
@@ -555,6 +557,7 @@ def test_an_update_whose_caller_has_gone_says_its_line_to_the_event_alone(caller
     assert why in facts["untold"]
 
 
+@pytest.mark.outside
 def test_a_command_s_output_is_read_apart_from_its_errors(tmp_path: Path) -> None:
     # A warning uv or git prints is never taken for the path or the commit the update reads.
     assert update.run([sys.executable, "-c", "import sys; print('/tools'); print('warning: stale', file=sys.stderr)"], tmp_path, os.environ) == Done(0, "/tools\n", "warning: stale\n")

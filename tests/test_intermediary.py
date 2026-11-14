@@ -89,6 +89,7 @@ def test_a_personality_the_user_chose_is_told_last_before_the_closing_words() ->
     assert "\n\nDry and wry.\n\n" in chosen
 
 
+@pytest.mark.outside
 @pytest.mark.skipif(shutil.which("jq") is None, reason="the brain's commands read the log with jq")
 def test_the_commands_the_brain_is_shown_find_in_a_log_hands_wrote_what_they_say_they_find(tmp_path: Path) -> None:
     path = tmp_path / "a home" / "audit"

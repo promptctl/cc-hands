@@ -72,6 +72,7 @@ def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
 # The plugin
 
 
+@pytest.mark.outside
 def test_an_enabled_plugin_is_ready(root: Path) -> None:
     found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
@@ -86,6 +87,7 @@ def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
     assert isinstance(found, Missing) and f"claude plugin enable --scope user {PLUGIN_ID}" in found.said
 
 
+@pytest.mark.outside
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
     found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]))
     assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
@@ -108,6 +110,7 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> Non
     assert isinstance(readiness.plugin_listed(printed), Unknown)
 
 
+@pytest.mark.outside
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
     found = readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
@@ -119,6 +122,7 @@ def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
 
 
+@pytest.mark.outside
 def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     listing = json.dumps([listed(PLUGIN_ID, True)])
@@ -130,6 +134,7 @@ def test_no_claude_to_ask_is_unknown(root: Path) -> None:
     assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
 
 
+@pytest.mark.outside
 def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -> None:
     # Off a terminal the shim runs the real claude, so the answer is the real one, not fritter's.
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
@@ -289,10 +294,12 @@ def at_a_terminal(executable: Path, cwd: Path, arguments: Sequence[str] = ("30",
         os.close(terminal)
 
 
+@pytest.mark.outside
 def test_no_running_session_is_said_as_none_not_left_out(root: Path) -> None:
     assert readiness.sessions(Home(root / "home"), installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
+@pytest.mark.outside
 def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: Path) -> None:
     home = Home(root / "home")
     listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -318,6 +325,7 @@ def test_each_running_session_that_cannot_be_typed_into_is_named_with_why(root: 
     assert found.said.endswith(f"\n  these are typed into:\n    /code/wrapped (pid {sleepers[0].pid}) is typed into through its fritter")
 
 
+@pytest.mark.outside
 def test_a_session_started_outside_fritter_in_front_of_its_tmux_pane_is_typed_into_through_it(root: Path) -> None:
     home = Home(root / "home")
     sleeper = subprocess.Popen(["sleep", "30"])
@@ -377,6 +385,7 @@ def test_a_session_whose_reach_is_unknown_is_not_said_among_those_hands_cannot_r
     )
 
 
+@pytest.mark.outside
 def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     home = Home(root / "home")
     ended = subprocess.Popen(["true"])
@@ -385,6 +394,7 @@ def test_a_session_whose_process_has_ended_is_not_running(root: Path) -> None:
     assert readiness.sessions(home, installed(root), untmuxed) == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 0, subcommand 0, print 0")
 
 
+@pytest.mark.outside
 def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path) -> None:
     home = Home(root / "home")
     home.memberships.mkdir(parents=True)
@@ -395,6 +405,7 @@ def test_an_unreadable_membership_file_is_named_and_left_where_it_is(root: Path)
     assert bad.exists()
 
 
+@pytest.mark.outside
 def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -405,6 +416,7 @@ def test_a_session_that_never_ran_a_hook_is_named_by_cwd_and_pid_with_the_fix(ro
     assert isinstance(found, Missing) and f"{project} (pid {pid}) is a session hands has no record of" in found.said
 
 
+@pytest.mark.outside
 def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -414,6 +426,7 @@ def test_a_claude_printing_or_piped_into_at_a_terminal_is_no_session(root: Path)
     assert found == Ready("no running sessions", "running sessions hands knows of: 0, runs of claude at a terminal that are none: piped 1, subcommand 0, print 1")
 
 
+@pytest.mark.outside
 def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     gone = root / "gone"
     gone.mkdir()
@@ -423,6 +436,7 @@ def test_a_check_run_from_a_removed_directory_says_its_own_config_cannot_be_told
     assert isinstance(found, readiness.Unfindable) and found.said.startswith("cannot tell which Claude Code config this check runs under")
 
 
+@pytest.mark.outside
 def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_whether_it_reads_and_writes_it(root: Path) -> None:
     with at_a_terminal(Path("/bin/sleep"), root) as reading, at_a_terminal(Path("/bin/sleep"), root, ["31"], piped=True) as piped:
         found = {process.pid: process for process in terminal_processes().found}
@@ -430,6 +444,7 @@ def test_the_kernel_says_what_a_process_at_a_terminal_was_started_with_and_wheth
     assert said == {reading: (("30",), True), piped: (("31",), False)}
 
 
+@pytest.mark.outside
 def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path) -> None:
     controller, terminal = pty.openpty()
 
@@ -449,6 +464,7 @@ def test_a_process_reading_its_terminal_as_dev_tty_reads_its_terminal(root: Path
         os.close(terminal)
 
 
+@pytest.mark.outside
 def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     started_as = terminals._started_as  # pyright: ignore[reportPrivateUsage]
 
@@ -467,6 +483,7 @@ def test_a_process_the_kernel_will_not_describe_is_named_and_hides_no_other(root
     assert (unread, described in {process.pid for process in scan.found}) == ([Undescribed(refused, os.getpid(), "kern.procargs2", errno.EIO)], True)
 
 
+@pytest.mark.outside
 def test_a_process_that_has_ended_is_no_process_the_kernel_would_not_describe() -> None:
     process = subprocess.Popen(["/usr/bin/true"])
     process.wait()
@@ -503,6 +520,7 @@ def test_a_run_of_claude_whose_terminal_the_kernel_will_not_say_is_unknown_not_a
     assert (found.sessions, found.others, found.unread) == ([], {"piped": 1}, [refusal])
 
 
+@pytest.mark.outside
 def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_of(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -513,6 +531,7 @@ def test_a_reused_pid_of_an_ended_session_hides_no_session_hands_has_no_record_o
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
+@pytest.mark.outside
 def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -523,6 +542,7 @@ def test_a_session_on_a_version_pruned_since_it_started_is_still_found(root: Pat
     assert isinstance(found, Missing) and f"(pid {pid}) is a session hands has no record of" in found.said
 
 
+@pytest.mark.outside
 def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_changes_directory(root: Path) -> None:
     (root / "bin").mkdir()
     program = stand_in(root / "bin" / "claude")
@@ -539,6 +559,7 @@ def test_a_program_started_by_a_relative_path_is_named_where_it_is_after_it_chan
     assert (process.executable, process.cwd) == (program, worktree)
 
 
+@pytest.mark.outside
 def test_a_session_hands_knows_of_is_not_named_as_unknown(root: Path) -> None:
     home = Home(root / "home")
     path = installed(root)
@@ -695,6 +716,7 @@ def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot
     assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
+@pytest.mark.outside
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def refused(_pids: object) -> dict[int, float]:
         raise OSError(1, "sysctl refused")
@@ -738,6 +760,7 @@ def test_a_version_named_directory_above_claude_code_is_not_its_version(root: Pa
 # Claude Code
 
 
+@pytest.mark.outside
 def test_a_native_claude_on_path_is_ready(root: Path) -> None:
     found = readiness.claude(installed(root))
     assert found == Ready("Claude Code 9.9.9", f"Claude Code is installed: {root / 'install' / '9.9.9'}")
@@ -792,6 +815,7 @@ def hands_printing(root: Path, said: str, code: int = 0) -> str:
     return f"{root / 'tools'}:{SYSTEM_PATH}"
 
 
+@pytest.mark.outside
 def test_this_hands_on_path_is_ready(root: Path) -> None:
     found = readiness.installed(hands_printing(root, f"hands {version('hands')}"))
     assert isinstance(found, Ready) and str(root / "tools" / "hands") in found.said
@@ -802,6 +826,7 @@ def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -
     assert isinstance(found, Missing) and "`hands-shim`" in found.said and "`uv tool update-shell`" in found.said
 
 
+@pytest.mark.outside
 def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cannot_start(root: Path) -> None:
     # As with a hands from before the plugin ran `hands-shim`: its `hands` answers, and every hook of the plugin fails.
     path = hands_printing(root, f"hands {version('hands')}")
@@ -810,6 +835,7 @@ def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cann
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and "`hands update`" in found.fix
 
 
+@pytest.mark.outside
 def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> None:
     # As with a stale `hands-shim` left on PATH by an older install: it would run in place of this hands' own.
     hands_printing(root, f"hands {version('hands')}")
@@ -819,12 +845,14 @@ def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> 
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and str(root / "other" / "hands-shim") in found.said
 
 
+@pytest.mark.outside
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
     # As after an upgrade that left an older install ahead on PATH: sessions would run its hooks.
     found = readiness.installed(hands_printing(root, "hands 0.0.1"))
     assert isinstance(found, Missing) and "is hands 0.0.1, not this hands" in found.said
 
 
+@pytest.mark.outside
 def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
     found = readiness.installed(hands_printing(root, "broken", 3))
     assert isinstance(found, Unknown) and "(3)" in found.said
@@ -833,6 +861,7 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 # The backend
 
 
+@pytest.mark.outside
 def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
     found = readiness.configured(Home(root / "home"), os.environ)
@@ -942,6 +971,7 @@ def marks(capsys: pytest.CaptureFixture[str]) -> dict[str, str]:
     return found
 
 
+@pytest.mark.outside
 def test_every_step_done_is_ok_and_exits_0(root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = set_up(root, fritter, monkeypatch, [listed(PLUGIN_ID, True)])
     assert main(["--home", str(home.root), "check"]) == 0
@@ -983,6 +1013,7 @@ def not_running(_root: Path, home: Home, _monkeypatch: pytest.MonkeyPatch) -> No
     home.status.unlink()
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("undo", "step"),
     [(no_hands, "hands"), (unshimmed, "shim"), (no_plugin, "plugin"), (unpinned, "brain_claude"), (logged_out, "backend"), (ungranted, "grant"), (not_running, "running")],
@@ -1003,6 +1034,7 @@ def test_a_home_missing_one_step_names_that_step_and_exits_1(
     assert event["error"] == f"exited 1: {missing['step']}: {missing['detail'].partition('\n')[0]}: {missing['fix'].partition('\n')[0]}"
 
 
+@pytest.mark.outside
 def test_a_step_that_cannot_be_looked_at_exits_2_and_one_missing_outranks_it(
     root: Path, fritter: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

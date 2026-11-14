@@ -275,7 +275,8 @@ def test_the_keychain_is_asked_for_the_item_on_stdout_and_its_token_is_never_log
         return Completed()
 
     monkeypatch.setattr(library.subprocess, "run", run_security)
-    assert library._keychain_token() == "secret-token"  # pyright: ignore[reportPrivateUsage]
+    # conftest answers the keychain None in every test; the reader it replaced is what this one checks.
+    assert library._keychain_token.__wrapped__() == "secret-token"  # pyright: ignore[reportPrivateUsage, reportFunctionMemberAccess]
     assert commands == [["security", "find-generic-password", "-s", "HF_TOKEN", "-w"]]
 
 

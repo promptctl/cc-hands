@@ -74,6 +74,7 @@ def test_a_finished_line_that_is_no_record_is_loud() -> None:
         report(STARTED + "not a record\n" + FINISHED)
 
 
+@pytest.mark.outside
 def test_a_run_that_wrote_no_log_says_so(tmp_path: Path) -> None:
     told = subprocess.run([sys.executable, str(ROOT / "tests" / "costs.py")], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert told.stdout == f"no report log at {REPORT_LOG}: the run wrote none\n"

@@ -48,6 +48,7 @@ def test_a_tapped_session_s_environment_is_given_back_what_was_there_before() ->
     assert tapped(SESSION) and not tapped(untapped(SESSION))
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("environ", CASES.values(), ids=CASES.keys())
 def test_sh_gives_back_what_python_does(environ: dict[str, str]) -> None:
     printed = subprocess.run(["/bin/sh", "-c", untap_script() + "env -0"], env=environ, capture_output=True, text=True, check=True).stdout

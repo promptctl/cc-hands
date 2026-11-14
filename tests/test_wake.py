@@ -163,6 +163,7 @@ def wakes(word: WakeWord, audio: bytes) -> bool:
     return any(word.score(audio[start : start + 640]) >= 0.5 for start in range(0, len(audio), 640))
 
 
+@pytest.mark.outside
 async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(models: Path) -> None:
     events: list[WideEvent] = []
     async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained(), events.append) as word:
@@ -171,6 +172,7 @@ async def test_the_model_wakes_on_hey_jarvis_and_not_on_jarvis_named_in_passing(
     assert [(event.event, event.outcome, model_facts(event)["phrase"]) for event in events] == [("desk.wake_word_loaded", "ok", "Hey Jarvis")]
 
 
+@pytest.mark.outside
 async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: Path) -> None:
     events: list[WideEvent] = []
     async with loaded(SYSTEM, SAMPLE_RATE, models, Pretrained("Hey Mycroft"), events.append) as word:
@@ -179,6 +181,7 @@ async def test_another_wake_word_wakes_on_itself_and_not_on_hey_jarvis(models: P
     assert [(event.facts["phrase"], event.facts["model"]) for event in events] == [("Hey Mycroft", str(models / PRETRAINED["Hey Mycroft"]))]
 
 
+@pytest.mark.outside
 async def test_a_wake_word_the_user_trained_is_heard_with_their_model_wherever_they_keep_it(tmp_path: Path, models: Path) -> None:
     # openWakeWord's Hey Mycroft model stands in for one the user trained, under a name of their own.
     trained = tmp_path / "mine" / "hey_computer.onnx"
@@ -198,6 +201,7 @@ async def test_a_microphone_at_another_rate_is_refused_out_loud() -> None:
     assert [(event.event, event.outcome) for event in events] == [("desk.wake_word_loaded", "failed")]
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     "asked",
     [
@@ -263,6 +267,7 @@ async def release(model: Callable[[web.Request], Awaitable[web.StreamResponse]])
         await runner.cleanup()
 
 
+@pytest.mark.outside
 async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_path: Path) -> None:
     served: list[str] = []
 
@@ -295,6 +300,7 @@ async def test_the_models_are_fetched_whole_or_not_at_all_and_never_twice(tmp_pa
         assert served == [MELSPECTROGRAM, EMBEDDING, JARVIS]
 
 
+@pytest.mark.outside
 async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longer_than_githubs(tmp_path: Path) -> None:
     # GitHub's content-security-policy alone was 9243 bytes on 2026-10-23; this is three and a half times that.
     long = "x" * (32 * 1024)
@@ -307,6 +313,7 @@ async def test_the_models_are_fetched_from_a_release_whose_headers_are_far_longe
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == dict.fromkeys((MELSPECTROGRAM, EMBEDDING, JARVIS), b"features")
 
 
+@pytest.mark.outside
 async def test_a_long_header_line_still_arriving_when_a_read_ends_is_waited_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """aiohttp's own parser, the one it falls back to where its compiled one was not built, holds a line it has not had
     the end of against a limit of its own, so the header is split: its end is sent once its start has been read."""

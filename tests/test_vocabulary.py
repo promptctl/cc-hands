@@ -51,6 +51,7 @@ def repository(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.mark.outside
 async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sessions_names(repository: Path, tmp_path: Path, clock: VirtualClock) -> None:
     commit(repository, "src/old_billing.ts")
     commit(repository, "src/authMiddleware.ts", "README.md")
@@ -69,6 +70,7 @@ async def test_the_focused_sessions_newest_files_and_branch_come_before_the_sess
     assert level(primed) == "info"
 
 
+@pytest.mark.outside
 async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path, clock: VirtualClock) -> None:
     commit(repository, "billing.ts")
     (repository / "billing.ts").rename(repository / "ledger.ts")
@@ -80,6 +82,7 @@ async def test_a_rename_not_yet_staged_is_named_where_it_went(repository: Path, 
     assert primed.words == ("billing", "ledger", "auth-rework")
 
 
+@pytest.mark.outside
 async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path, clock: VirtualClock) -> None:
     commit(repository, "<|endoftext|>.ts", "ledger.ts")
     focus = session(repository)
@@ -91,6 +94,7 @@ async def test_a_word_whisper_refuses_in_a_prompt_is_left_out(repository: Path, 
     get_encoding("multilingual").encode(" " + prompt(primed.words))
 
 
+@pytest.mark.outside
 async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pytest.MonkeyPatch, clock: VirtualClock) -> None:
     # Room for every word, so the count alone decides.
     monkeypatch.setattr(lexicon, "TOKENS", 10_000)
@@ -104,6 +108,7 @@ async def test_only_the_newest_words_are_kept(repository: Path, monkeypatch: pyt
     assert primed.words[-2:] == ("authMiddleware", "auth-rework")
 
 
+@pytest.mark.outside
 async def test_the_oldest_words_are_dropped_until_the_rest_fit_the_prompt_tokens_whisper_keeps(repository: Path, clock: VirtualClock) -> None:
     named = [f"hands_dictation_{n}_transcription_server.py" for n in range(WORDS)]
     commit(repository, *named)
@@ -124,6 +129,7 @@ def test_the_prompt_is_counted_as_whisper_encodes_it() -> None:
     assert prompt(("Brynleigh", "Fryslie", "Jaxxon")) == "Brynleigh Fryslie Jaxxon"
 
 
+@pytest.mark.outside
 async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alone(tmp_path: Path, clock: VirtualClock) -> None:
     focus = session(tmp_path / "notes")
     (tmp_path / "notes").mkdir()
@@ -133,6 +139,7 @@ async def test_a_session_outside_any_repository_is_primed_with_the_sessions_alon
     assert (primed.words, primed.failed) == (("notes, planning",), None)
 
 
+@pytest.mark.outside
 async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_to_be_committed(repository: Path, clock: VirtualClock) -> None:
     (repository / "authMiddleware.ts").write_text("new")
     focus = session(repository)
@@ -142,6 +149,7 @@ async def test_a_repository_with_no_commits_yet_is_primed_with_what_is_waiting_t
     assert (primed.words, primed.failed) == (("authMiddleware", "auth-rework", "shop"), None)
 
 
+@pytest.mark.outside
 async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_why(repository: Path, clock: VirtualClock) -> None:
     focus = session(repository)
 
@@ -152,6 +160,7 @@ async def test_a_repository_git_cannot_read_primes_nothing_of_its_own_and_says_w
     assert level(primed) == "error"
 
 
+@pytest.mark.outside
 async def test_a_budget_spent_before_git_runs_primes_the_sessions_alone_and_says_why(repository: Path, clock: VirtualClock) -> None:
     commit(repository, "ledger.ts")
     focus = session(repository)
@@ -164,6 +173,7 @@ async def test_a_budget_spent_before_git_runs_primes_the_sessions_alone_and_says
     assert level(primed) == "error"
 
 
+@pytest.mark.outside
 async def test_a_git_still_running_when_the_budget_is_spent_primes_the_sessions_alone_and_says_why(repository: Path, tmp_path: Path, clock: VirtualClock) -> None:
     stuck = tmp_path / "bin"
     stuck.mkdir()
@@ -182,6 +192,7 @@ async def test_a_git_still_running_when_the_budget_is_spent_primes_the_sessions_
     assert level(primed) == "error"
 
 
+@pytest.mark.outside
 async def test_a_git_that_fails_ends_the_gits_still_running_before_the_vocabulary_is_read(repository: Path, tmp_path: Path, clock: VirtualClock) -> None:
     failing = tmp_path / "bin"
     failing.mkdir()

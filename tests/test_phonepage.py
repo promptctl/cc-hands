@@ -12,6 +12,9 @@ from hands.sessions.home import Home
 from hands.voice import phoneaddress
 from hands.voice.phoneaddress import Tailnet, Untailed, tailnet, tailnet_name
 
+
+pytestmark = pytest.mark.outside
+
 NAMED = """#!/bin/sh
 case "$1" in
 status) echo '{"CertDomains": ["hands.example.ts.net"]}' ;;

@@ -233,6 +233,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
+@pytest.mark.outside
 async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     summarise = Summariser()
@@ -250,6 +251,7 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
     assert (record.facts["left_out"], record.facts["errors"]) == ((), ())
 
 
+@pytest.mark.outside
 async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
@@ -274,6 +276,7 @@ async def test_a_rerank_or_a_status_change_asks_the_summariser_nothing(project: 
     assert summarise.pages == []
 
 
+@pytest.mark.outside
 async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
 
@@ -292,6 +295,7 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
     assert record.counts["stray"] == 3
 
 
+@pytest.mark.outside
 async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_alone(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     records: list[Entry] = []
@@ -346,6 +350,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
     ]
 
 
+@pytest.mark.outside
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:
     (project / "export.json").unlink()
     records: list[Entry] = []
@@ -355,6 +360,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
+@pytest.mark.outside
 async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, tmp_path / "removed-worktree", SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
@@ -362,6 +368,7 @@ async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
 
 
+@pytest.mark.outside
 async def test_a_removed_directory_reads_as_no_backlog_saying_it_is_gone(project: Path) -> None:
     # The spawn's failure names the missing directory, not lit (which the project fixture put on PATH).
     gone = project / "removed-worktree"
@@ -380,6 +387,7 @@ NEVER_INITIALIZED = (
 )
 
 
+@pytest.mark.outside
 async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_says_so_without_failing(project: Path, tmp_path: Path) -> None:
     fake_lit(NEVER_INITIALIZED)
     summarise = Summariser()
@@ -391,12 +399,14 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
 
 
+@pytest.mark.outside
 async def test_a_refusal_for_any_other_reason_is_unread_never_untracked(project: Path) -> None:
     fake_lit(NEVER_INITIALIZED.replace("reason=workspace_not_initialized", "reason=workspace_busy"))
     with pytest.raises(LitFailed, match="workspace_busy"):
         await read_backlog(SYSTEM, project)
 
 
+@pytest.mark.outside
 @pytest.mark.skipif(shutil.which("lit") is None, reason="lit's own refusals are what is matched")
 @pytest.mark.parametrize("git", [True, False], ids=["lit never initialised", "outside any git repository"])
 async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: Path, git: bool) -> None:
@@ -405,6 +415,7 @@ async def test_a_directory_real_lit_has_no_workspace_in_is_untracked(tmp_path: P
     assert await read_backlog(SYSTEM, tmp_path) == Untracked(tmp_path)
 
 
+@pytest.mark.outside
 async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_running(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_lit("echo $$ > pid\nexec sleep 30\n")
     monkeypatch.setattr("hands.sessions.backlog.LIT_TIMEOUT_SECONDS", 0.5)
@@ -425,6 +436,7 @@ async def test_an_export_that_hangs_is_unread_and_its_process_is_not_left_runnin
         os.kill(int((project / "pid").read_text()), 0)
 
 
+@pytest.mark.outside
 async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pass(project: Path, tmp_path: Path) -> None:
     async def no_claude(_page: str) -> str:
         raise SummaryFailed("the side question had no answer: no Claude Code to ask: claude")
@@ -438,6 +450,7 @@ async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pa
     assert record.error == f"the summariser failed on 3 things: {said}"
 
 
+@pytest.mark.outside
 async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_pass_is_all_zeros(project: Path, tmp_path: Path) -> None:
     (project / "export.json").write_bytes(export(issues=[ticket("t2", "01", "Old bug", status="closed")], relations=[]))
     summarise = Summariser()
@@ -459,6 +472,7 @@ async def tools(project: Path, store: SummaryStore) -> dict[str, Any]:
     return {tool.name: tool.body for tool in backlog_tools(sessions, store)}
 
 
+@pytest.mark.outside
 async def test_read_backlog_serves_titles_until_the_summaries_are_made_and_asks_for_them(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     read_backlog = (await tools(project, store))["read_backlog"]
@@ -478,6 +492,7 @@ async def test_read_backlog_serves_titles_until_the_summaries_are_made_and_asks_
     assert [item["summary"] for item in after["items"]] == ["said e1 2", "said t1 1"]
 
 
+@pytest.mark.outside
 async def test_read_ticket_gives_the_summary_and_what_is_open_under_it_and_its_own_words_only_when_asked(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
@@ -493,6 +508,7 @@ async def test_read_ticket_gives_the_summary_and_what_is_open_under_it_and_its_o
     assert leaf["parent"]["id"] == "e1" and leaf["open_children"] == []
 
 
+@pytest.mark.outside
 async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp_path: Path) -> None:
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     bodies = await tools(project, store)
@@ -506,6 +522,7 @@ async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp
     assert "has no backlog, so no ticket t1" in str((await bodies["read_ticket"](session="s1", ticket="t1"))["error"])
 
 
+@pytest.mark.outside
 @pytest.mark.skipif(shutil.which("lit") is None, reason="the brain works a tracker with lit")
 async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_directory_lands_in_the_tracker_read_backlog_reads(tmp_path: Path) -> None:
     repository, brain = tmp_path / "a project", tmp_path / "brain" / "cwd"

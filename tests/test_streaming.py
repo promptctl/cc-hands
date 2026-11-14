@@ -605,6 +605,7 @@ READER = "one_reader_quiet.flac"
 STOP = np.zeros(round(engaged.STOP_SECS * streaming.RATE), np.float32)
 
 
+@pytest.mark.outside
 def test_every_clip_engaged_conversation_would_close_has_words_heard_while_it_was_open(paired: Session) -> None:
     live = Live(paired)
     heard = [live.spoken(np.concatenate([samples, STOP])) for samples in fixture_clips(READER)[:8]]
@@ -615,6 +616,7 @@ def test_every_clip_engaged_conversation_would_close_has_words_heard_while_it_wa
     assert heard[0][1].words[0].text.rstrip(".") == "Door was ajar"
 
 
+@pytest.mark.outside
 def test_each_clip_opens_on_its_own_first_word_not_the_last_of_the_clip_before(paired: Session) -> None:
     # Clips 3 to 10 of the reading, each followed by the stop, as engaged conversation closes them. Their source text:
     # "...and found the bottle as he had been directed. But returning with the bottle, he noticed that the bolts of the
@@ -633,6 +635,7 @@ def test_each_clip_opens_on_its_own_first_word_not_the_last_of_the_clip_before(p
 NOT_SPEECH = [*fixture_clips("cough.flac"), *fixture_clips("keyboard_typing.flac")]
 
 
+@pytest.mark.outside
 def test_a_clip_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(paired: Session) -> None:
     # What a clip engaged conversation opens can hold with nobody speaking: the room, a hiss, a tap on the desk, a cough,
     # the keyboard.
@@ -643,6 +646,7 @@ def test_a_clip_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(paired: Ses
     assert [(open_, whole.words) for open_, whole in map(live.spoken, clips)] == [((), ())] * len(clips)
 
 
+@pytest.mark.outside
 def test_each_word_is_the_speaker_who_said_it_and_each_clip_closes_its_own_speakers_streams(paired: Session) -> None:
     # Clips of two women, each speaking alone, in the order they spoke: AMI Meeting Corpus ES2004a, mixed headsets,
     # speakers FEE013 and FEE016 (CC BY 4.0, University of Edinburgh). Each clip's speaker is the one the transformers
@@ -682,6 +686,7 @@ WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
 
 # Each woman heard alone first, then one clip of a turn of each, joined. One more clip of FEE013 before FEE016's first
 # is what gives each her own in 12 then 3 (the next test).
+@pytest.mark.outside
 @pytest.mark.parametrize(("alone", "joined"), [((1, 4), (3, 12)), ((1, 2, 4), (12, 3))], ids=["known-once", "known-twice"])
 def test_two_people_in_one_clip_come_out_as_each_persons_words(paired: Any, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
     # Decided on when each word starts, not on its text, which is about 20% wrong on AMI.
@@ -709,6 +714,7 @@ def test_two_people_in_one_clip_come_out_as_each_persons_words(paired: Any, alon
     assert [(speaker, start) for speaker, start in words if not (start < boundary + late if speaker == speakers[0] else boundary <= start)] == [], (boundary, words)
 
 
+@pytest.mark.outside
 def test_a_newcomer_first_in_a_clip_after_one_of_the_voice_the_run_knows_is_given_that_voice_s_speaker(paired: Session) -> None:
     # The miss docs/features.md states ("Who said each word"), pinned so that a change to it fails here and the claim is
     # measured again: after FEE013's clip 1 and FEE016's clip 4, 12 then 3 gives FEE016's words, heard first, FEE013's
@@ -721,6 +727,7 @@ def test_a_newcomer_first_in_a_clip_after_one_of_the_voice_the_run_knows_is_give
     assert whole.words[0].speaker == 0, whole.words
 
 
+@pytest.mark.outside
 def test_a_clip_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(paired: Session) -> None:
     # Clip 15 of the reading, "There was no answer.", runs to its last sample, and its length is the worst phase of the
     # grid: the step that commits the chunk holding its last sample commits nothing past it, so a silence one step
@@ -750,6 +757,7 @@ KNOWN = [
 ]
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("after", SHAPES.values(), ids=SHAPES.keys())
 def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker_says_them(paired: Session, after: float) -> None:
     # GATING decides how a clip's last words come out. At 4, four of these end otherwise in this run: "yeah" alone,
@@ -763,6 +771,7 @@ def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker
     assert ends == [(1, re.findall(r"[\w']+", known.lower())[-2:]) for _, _, known in KNOWN], heard
 
 
+@pytest.mark.outside
 def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> None:
     # [LAW:one-source-of-truth] the diarizer's own count of the frames it committed, against `steps`, fed 20 ms at a time.
     # The session's own diarizer, as `streaming.diarizer` set it to its preset.
@@ -831,6 +840,7 @@ class Fed:
 
 # Each test below decodes the whole echo once, the longest decoding in this file; one decoding it twice overran the
 # per-test timeout on CI.
+@pytest.mark.outside
 def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_at(paired: Session, hands_print: HandsPrint) -> None:
     [echo] = fixture_clips("hands_echo_uncancelled.flac")
     fed = Fed(streaming.Stream(paired))
@@ -844,6 +854,7 @@ def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_
     assert min(scored) < voiceprints.PERSON.seconds and max(scored) > voiceprints.HANDS.seconds, whos
 
 
+@pytest.mark.outside
 def test_hands_own_echo_heard_whole_as_one_clip_is_hands(paired: Session, hands_print: HandsPrint) -> None:
     [echo] = fixture_clips("hands_echo_uncancelled.flac")
     _, ended = Fed(streaming.Stream(paired)).feed_clip(echo)
@@ -851,6 +862,7 @@ def test_hands_own_echo_heard_whole_as_one_clip_is_hands(paired: Session, hands_
     assert whole and all(isinstance(who, voiceprints.Hands) for who in whole), whole
 
 
+@pytest.mark.outside
 def test_a_second_voice_over_hands_is_a_person_and_hands_alone_after_it_is_hands(paired: Session, hands_print: HandsPrint) -> None:
     [mic] = fixture_clips("hands_and_another.flac")
     fed = Fed(streaming.Stream(paired))
@@ -939,6 +951,7 @@ async def overheard(paired: Session, hands_print: HandsPrint, tmp_path: Path) ->
     return Overheard(Fed(streaming.Stream(paired)), prints, recorded)
 
 
+@pytest.mark.outside
 async def test_hands_own_echo_over_a_reading_cuts_nothing_while_heard_or_as_each_clip_closes(overheard: Overheard) -> None:
     [echo] = fixture_clips("hands_echo_uncancelled.flac")
     starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
@@ -947,6 +960,7 @@ async def test_hands_own_echo_over_a_reading_cuts_nothing_while_heard_or_as_each
     assert (overheard.barge_ins, closes) == ([], [None] * len(SENTENCES)), overheard.identified()
 
 
+@pytest.mark.outside
 async def test_a_person_over_hands_cuts_it_off_within_a_second_and_a_half_of_their_first_word(overheard: Overheard) -> None:
     [mic] = fixture_clips("hands_and_another.flac")
     over = mic[round(OVER_HANDS[0] * streaming.RATE) : round(OVER_HANDS[1] * streaming.RATE)]
@@ -957,6 +971,7 @@ async def test_a_person_over_hands_cuts_it_off_within_a_second_and_a_half_of_the
     assert first > 3.0 and asked - first <= CUT_SECONDS, (overheard.barge_ins, overheard.identified())
 
 
+@pytest.mark.outside
 async def test_a_person_too_brief_over_hands_to_cut_while_heard_cuts_it_off_as_their_clip_closes(overheard: Overheard) -> None:
     # A wake phrase said over hands, then the clip's close: under a second of the second voice, cut off after "Can you
     # hear", 0.9 s after it began, so no row of the table is reached while the clip is open.

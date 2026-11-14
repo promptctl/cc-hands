@@ -73,6 +73,7 @@ def at_a_terminal() -> Iterator[tuple[subprocess.Popen[bytes], int]]:
         os.close(terminal)
 
 
+@pytest.mark.outside
 def test_the_kernel_says_each_process_terminal_and_the_terminals_a_session_runs_under(at_a_terminal: tuple[subprocess.Popen[bytes], int]) -> None:
     process, device = at_a_terminal
     # Until the child has started: polled, since nothing of the child's says when it has.

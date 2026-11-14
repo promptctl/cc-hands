@@ -155,6 +155,7 @@ def test_an_event_is_one_log_record_named_by_its_body_at_its_audit_level_carryin
     assert {"key": "error", "value": {"stringValue": "RuntimeError: the disk is full"}} in failed["attributes"]
 
 
+@pytest.mark.outside
 def test_with_a_collector_each_event_is_in_the_log_and_reaches_the_collector_and_a_unit_inside_another_is_its_child(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     with exporting(collector.url, log.record, clock=SYSTEM) as record:
@@ -187,6 +188,7 @@ def _exchanged(reply: Ending, span: Span = Span(TURN.trace_id, "1111111111111111
     return Exchanged("x1", SessionId("brain"), MainTurn(None), None, "POST", "/v1/messages", 2, (), 1000.0, 1000.5, reply, True, span)
 
 
+@pytest.mark.outside
 def test_a_request_made_for_a_unit_of_work_reaches_the_collector_as_a_span_under_it_and_one_made_for_none_as_a_root(collector: Collector, tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     alone = root(SYSTEM)
@@ -233,6 +235,7 @@ def test_a_request_the_api_refused_or_never_heard_is_a_failed_span_and_one_answe
     assert synthetic is not None and (synthetic.outcome, synthetic.error, synthetic.duration_ms) == ("ok", None, 250.0)
 
 
+@pytest.mark.outside
 def test_with_the_collector_stopped_each_event_is_in_the_log_and_said_unexported_by_span_id(tmp_path: Path) -> None:
     log = AuditLog(tmp_path / "audit", clock=datetime.now)
     collector = _stopped()
@@ -257,6 +260,7 @@ def _sent(recorded: list[Entry]) -> tuple[WideEvent, Exported, Exported]:
     return event, by_signal["traces"], by_signal["logs"]
 
 
+@pytest.mark.outside
 def test_events_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) -> None:
     refusing = Collector(json.dumps({"partialSuccess": {"rejectedSpans": "1", "rejectedLogRecords": "1", "errorMessage": "too old"}}).encode())
     try:
@@ -271,6 +275,7 @@ def test_events_the_collector_rejected_are_said_with_its_reason(tmp_path: Path) 
     assert (logged.spans, logged.error) == ((event.span_id,), "the collector rejected 1 of 1 log records: too old")
 
 
+@pytest.mark.outside
 def test_a_request_the_collector_refused_is_said_with_the_reason_its_answer_gave() -> None:
     refusing = Collector(b'{"code": 3, "message": "invalid traceId"}', status=400)
     try:
@@ -284,6 +289,7 @@ def test_a_request_the_collector_refused_is_said_with_the_reason_its_answer_gave
     assert traces.error is not None and "400" in traces.error and "invalid traceId" in traces.error
 
 
+@pytest.mark.outside
 def test_a_collector_that_takes_the_spans_and_refuses_the_log_records_is_said_to_have_refused_only_those(tmp_path: Path) -> None:
     # A collector with no logs pipeline, which answers its logs path 404.
     refusing = Collector(status=404, refusing=("logs",))
@@ -312,6 +318,7 @@ def test_a_collector_that_took_every_event_answers_with_no_rejection() -> None:
     assert answered(LOGS, b'{"partialSuccess": {"rejectedLogRecords": "2"}}', 3) == ("the collector rejected 2 of 3 log records", None)
 
 
+@pytest.mark.outside
 def test_a_collector_that_took_every_event_and_warned_of_something_is_said_to_have_warned() -> None:
     # OTLP's warning: a partial success that rejected nothing, with a message.
     warned = b'{"partialSuccess": {"rejectedLogRecords": "0", "errorMessage": "attribute truncated"}}'
@@ -386,6 +393,7 @@ def test_a_stop_waits_on_a_collector_that_never_answers_for_one_timeout_and_says
     assert any(exported.error == STOPPED for exported in recorded)
 
 
+@pytest.mark.outside
 def test_a_send_to_a_real_collector_that_never_answers_gives_up_on_it_once_its_timeout_has_passed() -> None:
     with socket.socket() as silent:
         silent.bind(("127.0.0.1", 0))
@@ -408,6 +416,7 @@ def test_with_no_collector_the_log_alone_records_each_event(tmp_path: Path) -> N
         assert record == log.record
 
 
+@pytest.mark.outside
 def test_an_event_sent_once_the_exporter_is_closed_is_recorded_unsent(collector: Collector) -> None:
     recorded: list[Exported] = []
     exporter = Exporter(collector.url, recorded.append, clock=SYSTEM)
@@ -417,6 +426,7 @@ def test_an_event_sent_once_the_exporter_is_closed_is_recorded_unsent(collector:
     assert [(exported.signal, exported.spans, exported.error) for exported in recorded] == [("traces", (late.span_id,), STOPPED), ("logs", (late.span_id,), STOPPED)]
 
 
+@pytest.mark.outside
 def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_sent() -> None:
     # A collector, or a proxy before it, that answers an error status and drops the connection inside its body.
     with socket.socket() as cut:
@@ -454,6 +464,7 @@ def test_an_error_answer_cut_short_is_said_and_the_batches_after_it_are_still_se
         assert cut_short.error is not None and "IncompleteRead" in cut_short.error
 
 
+@pytest.mark.outside
 def test_a_batch_goes_straight_to_the_collector_past_a_proxy_in_the_environment(collector: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
     # A daemon started inside a session fritter taps holds the tap as its proxy, and the tap is not the way to the collector.
     monkeypatch.setenv("HTTP_PROXY", _stopped())
@@ -541,6 +552,7 @@ def test_a_signal_is_said_failing_only_once_its_run_is_more_than_a_blip_and_in_w
     assert said(FAILING_BATCHES + 5) == failing_now
 
 
+@pytest.mark.outside
 def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the_menu_bar_a_notice_and_hands_status_until_it_takes_a_batch(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

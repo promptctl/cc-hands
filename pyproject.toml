@@ -73,7 +73,10 @@ addopts = ["-p", "pytester", "-rxX", "--durations=20", "--report-log=.pytest_cac
 # quarantined(ticket, until): a flaky test that still runs and reports and whose failure cannot fail the run; the run stops
 # once its `until` date is past (tests/conftest.py). -rxX: the summary lists each quarantined test that failed (XFAIL) and each
 # that passed (XPASS, a quarantine its flake may have left), with its ticket and date, beside the log's pass count.
-markers = ["quarantined(ticket, until): a flaky test that runs and reports, and cannot fail the run until its date is past"]
+markers = [
+    "quarantined(ticket, until): a flaky test that runs and reports, and cannot fail the run until its date is past",
+    "outside: a test that needs a process, a socket or the speech models' weights, so it is not in the unit layer (tests/offline.py); `pytest --layer=audit` fails one the unit layer's hold stops nothing for",
+]
 # [LAW:single-enforcer] the one owner of "no test hangs": one that never finishes fails here, named, with the stack it
 # was stuck in. A wait inside a test (conftest's `patiently`) is for failing fast on a stall, and leans on this to end
 # a run that keeps moving for ever, or holds the loop for ever. The slowest test takes 14 s on a quiet machine, and
