@@ -28,11 +28,13 @@ jobs:
     runs-on: macos-15
     # A hung test fails the check instead of holding it for GitHub's 6 hours. The limit is a hung test's bound, set from the
     # slowest runner seen (pytest's time swings nearly 2x, promptctl-testing-px1f.hel), not a budget: the suite's are its own.
+    # It runs the job's setup too: a cold cache downloads the weights first, and a job that times out saves no cache, so a
+    # limit tight on a warm run fails every cold one again.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       matrix:
         include:
-          - { tier: unit, target: check, timeout: 10 }
+          - { tier: unit, target: check, timeout: 15 }
           - { tier: pair, target: check-pair, timeout: 40 }
           - { tier: rest, target: check-rest, timeout: 30 }
     steps:
