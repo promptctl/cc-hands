@@ -146,7 +146,7 @@ def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
     assert key.modality == "screen"
 
 
-def test_a_turn_is_known_by_the_edge_that_opened_it_until_another_opens() -> None:
+def test_a_turn_is_known_by_the_trigger_that_opened_it_until_another_opens() -> None:
     key = PushToTalk(VirtualClock(), lambda _: None)
     key.go("phone")  # a call arrives: it opens no turn
     assert key.opened == "held key"

@@ -36,7 +36,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | Here | In standard terms |
 |---|---|
 | the hold | the listening window: the time the microphone is the user's, opened by push-to-talk, a wake word, or an engaged conversation (open mic) |
-| the edge that opened the hold | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
+| the trigger that opened the hold | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a hold the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
 | a hold the wake word opened cuts as it opens | the wake word is VoiceXML's hotword, a recognized phrase rather than any sound, heard through the echo canceller while hands speaks as engaged conversation's speech is |
@@ -75,7 +75,7 @@ flowchart TD
 
 ## Two decisions
 
-**1. The cut.** The edge that opened the hold decides when the turn cuts (`voice/turnstart.py:1–15`;
+**1. The cut.** The trigger that opened the hold decides when the turn cuts (`voice/turnstart.py:1–15`;
 the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `InterruptionFrame`.
 
 | The hold was opened by | It cuts |

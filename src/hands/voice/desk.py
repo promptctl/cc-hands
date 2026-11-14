@@ -6,7 +6,7 @@ release sends it (`hands.voice.hold`). A triple tap of Right Command toggles the
 toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
 a level as a tap does. A turn the voice opened is closed by end-of-turn detection (`hands.voice.engaged`).
 
-[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which edge has
+[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which trigger has
 the turn, and whether the key is down are each said once: a key turn and a voice turn are never open together, and the
 level never says the desk is deaf while a variant says it listens.
 """
@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Literal
 
 from hands.voice.hold import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as hold_step
-from hands.voice.holds import Edge
+from hands.voice.holds import Trigger
 from hands.voice.taps import TapKey, Taps, counted
 
 # The levels the desk listens at between turns; it is deaf under "off" alone.
@@ -162,10 +162,10 @@ def level_of(phase: Phase) -> Level:
 
 @dataclass(frozen=True)
 class Made:
-    """A move of the gate, and the edge that made it."""
+    """A move of the gate, and the trigger that made it."""
 
     move: Move
-    by: Edge
+    by: Trigger
 
 
 @dataclass(frozen=True)
@@ -321,8 +321,8 @@ def _in_turn(turn: Woke | Voiced, heard: SpeechStopped | TurnEnded | TurnTooLong
             return turn, ()
 
 
-def _voice(turn: Woke | Voiced) -> Edge:
-    """The edge that opened a turn the voice has open."""
+def _voice(turn: Woke | Voiced) -> Trigger:
+    """The trigger that opened a turn the voice has open."""
     match turn:
         case Woke():
             return "wake word"
@@ -330,8 +330,8 @@ def _voice(turn: Woke | Voiced) -> Edge:
             return _voice_of(level)
 
 
-def _voice_of(level: Listens) -> Edge:
-    """The edge the desk's listening at `level` is: the wake word's or engaged conversation's."""
+def _voice_of(level: Listens) -> Trigger:
+    """The trigger the desk's listening at `level` is: the wake word's or engaged conversation's."""
     match level:
         case "wake word":
             return "wake word"

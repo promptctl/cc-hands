@@ -10,13 +10,13 @@ from dataclasses import dataclass
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
 from hands.voice.desk import Level, Leveled
-from hands.voice.holds import Edge, Opener
+from hands.voice.holds import Opener, Trigger
 from hands.voice.wakeword import Word
 
 
-def place_of(edge: Edge) -> Place:
-    """Where the user is when `edge` moves the gate."""
-    match edge:
+def place_of(trigger: Trigger) -> Place:
+    """Where the user is when `trigger` moves the gate."""
+    match trigger:
         case "held key" | "engaged conversation" | "wake word":
             return "desk"
         case "phone button":

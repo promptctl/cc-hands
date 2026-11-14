@@ -30,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
 from hands.voice.hold import Move
 from hands.voice.holds import Played
-from hands.voice.trigger import Edge, place_of
+from hands.voice.trigger import Trigger, place_of
 
 # [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
 # opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
@@ -57,8 +57,8 @@ class KeyedAudio(InputAudioRawFrame):
     sent: int
     dropped: int
     place: Place
-    # The edge that opened the last hold, as it opened it.
-    opened: Edge
+    # The trigger that opened the last hold, as it opened it.
+    opened: Trigger
 
 
 @dataclass(frozen=True)
@@ -74,9 +74,9 @@ class Gate:
     # every 20 ms and a turn can end and the next arm between two of them, so the hold owner ends each turn as these move.
     sent: int = 0
     dropped: int = 0
-    # [LAW:no-ambient-temporal-coupling] the edge that opened the last turn travels with the audio, as the key does, so
-    # what reads a hold's opening reads the edge that opened it, whichever is in use by the time its words arrive.
-    opened: Edge = "held key"
+    # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
+    # what reads a hold's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
+    opened: Trigger = "held key"
 
     def took(self, move: Move, at: Place) -> Move | None:
         """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
@@ -101,7 +101,7 @@ class Gate:
             case False, _, _:
                 return None
 
-    def after(self, move: Move, by: Edge) -> "Gate":
+    def after(self, move: Move, by: Trigger) -> "Gate":
         """The gate once a hold made by `by` has moved the turn."""
         at = place_of(by)
         rest = self._rest(at, self.listens)
@@ -174,9 +174,9 @@ class PushToTalk:
         self._modality: Modality = modality_at(self._gate.place)
         self._record = record
 
-    def move(self, move: Move, by: Edge) -> Move | None:
+    def move(self, move: Move, by: Trigger) -> Move | None:
         """Report what the hold made by `by` did to the turn, and get back what the gate took it as, to cue and tell: the
-        desk's edge and the phone's button call this."""
+        desk's trigger and the phone's button call this."""
         taken = self._gate.took(move, place_of(by))
         self._become(self._gate.after(move, by), "turn")
         return taken
@@ -192,7 +192,7 @@ class PushToTalk:
     def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
         before, self._gate = self._gate, gate
         # [LAW:nothing-unseen] the one writer of the gate writes each move of the place as one `place.moved` event,
-        # whichever edge made it: from where to where, what made it, and whether a hold open at the place it left was
+        # whichever trigger made it: from where to where, what made it, and whether a hold open at the place it left was
         # thrown away.
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
@@ -209,7 +209,7 @@ class PushToTalk:
         return self._modality
 
     @property
-    def opened(self) -> Edge:
-        """The edge that opened the last turn, as it opened it: a trigger switched since does not rewrite it."""
+    def opened(self) -> Trigger:
+        """The trigger that opened the last turn, as it opened it: a trigger switched since does not rewrite it."""
         return self._gate.opened
 

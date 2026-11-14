@@ -33,7 +33,7 @@ from hands.sessions.audit import Record
 from hands.voice.player import Marks, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
-from hands.voice.turnstart import EdgeTurnStart, interrupting
+from hands.voice.turnstart import TriggerTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
 from hands.voice import conversation, loads, streaming, voiceprints, voices
 from hands.voice.recorder import Recorder
@@ -120,7 +120,7 @@ def build_voice(
     listeners = (streaming.StreamingRecognizer(clock, streaming.load, prints, record), recorder)
     stt = HoldOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
 
-    start = EdgeTurnStart(clock, record)
+    start = TriggerTurnStart(clock, record)
     turns = UserTurnStrategies(
         start=[start],
         stop=[KeyTurnStop()],

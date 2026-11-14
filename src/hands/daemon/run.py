@@ -59,7 +59,7 @@ from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
 from hands.voice.hold import Move
-from hands.voice.holds import Edge
+from hands.voice.holds import Trigger
 from hands.voice.atdesk import serve_desk
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
@@ -179,7 +179,7 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
     log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
@@ -278,7 +278,7 @@ async def run(
         player = Player(record)
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
         refocus = Refocus(sessions, home, record)
-        # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
+        # [LAW:one-source-of-truth] one owner of where the user is: the voice's triggers move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(clock, record)
         # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple

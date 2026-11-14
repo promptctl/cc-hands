@@ -19,7 +19,7 @@ from hands.voice import holdowner
 from hands.voice.holdowner import HoldOwner
 from hands.voice.holds import Fate, Heard, Hearing, Hearings, Hold, Recording, Reference, Sound
 from hands.voice.ptt import Gate
-from hands.voice.trigger import Edge
+from hands.voice.trigger import Trigger
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed, Words
 
 
@@ -97,11 +97,11 @@ class Rig:
     recorded: list[Entry]
     gate: Gate = field(default_factory=Gate)
 
-    async def frame(self, gate: Gate, sound: bytes, by: Edge = "held key") -> None:
+    async def frame(self, gate: Gate, sound: bytes, by: Trigger = "held key") -> None:
         self.gate = gate
         await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound), 16000, 1, "desk"))
 
-    async def held(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Edge = "engaged conversation") -> None:
+    async def held(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation") -> None:
         """A hold opened by `by`, a frame of each sound captured while it is open, then sent or thrown away."""
         down = self.gate.after("start", by)
         for sound in sounds:

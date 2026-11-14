@@ -143,7 +143,7 @@ TurnStart = Literal["on the hold", "on words"]
 
 @dataclass(frozen=True)
 class UserTurn:
-    """A user turn as it ended: when the edge that opened it had it cut off what hands was saying, and how many seconds
+    """A user turn as it ended: when the trigger that opened it had it cut off what hands was saying, and how many seconds
     after it opened it did; None where it never did, a turn the voice opened that no words were heard in."""
 
     start: TurnStart

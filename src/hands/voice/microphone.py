@@ -552,7 +552,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
     @asynccontextmanager
     async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
         """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
-        says, and silent while hands is at the phone: what an edge listens to for when to open and close the turn."""
+        says, and silent while hands is at the phone: what a trigger listens to for when to open and close the turn."""
         async with self.echoes() as echoes:
 
             async def buffers() -> AsyncIterator[bytes]:
@@ -607,8 +607,8 @@ class KeyedMicrophone(LocalAudioInputTransport):
         loop = self.get_event_loop()
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
-        # [LAW:single-enforcer] the gate says which place is heard, by an edge as by the hold owner: while hands is at the
-        # phone, the desk's buffers reach an edge as silence of the same length, so the room there opens nothing.
+        # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the hold owner: while hands is at the
+        # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
         overheard = Overheard(cancelled, gate.hears("desk"), gate.key)
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)

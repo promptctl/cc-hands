@@ -50,7 +50,7 @@ from hands.voice.mark import Mark
 from hands.voice import player as played
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
-from hands.voice.trigger import Edge, place_of
+from hands.voice.trigger import Trigger, place_of
 from hands.core.effects import Asking, Narrate, SessionGone
 from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
@@ -208,7 +208,7 @@ class Rig:
     # The gate the last frame was captured under.
     gate: Gate = field(default_factory=Gate)
 
-    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Edge = "held key", captured: bytes | None = None) -> None:
+    async def hold(self, keys: Sequence[Captured], sound: bytes = b"\x00\x00" * 320, by: Trigger = "held key", captured: bytes | None = None) -> None:
         """A frame captured under each key, by `by`'s microphone, counted as the gate counts them: the key leaving down
         for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
         "dropped" throws it away; a hold it opens is opened by `by`. `captured` is the sound before the echo canceller,
@@ -493,7 +493,7 @@ OPENED_BY_THE_VOICE: list[Captured] = ["listening", "arming", "down", "down", "l
 
 
 def user_turns(rig: Rig) -> list[tuple[TurnStart, bool]]:
-    """Each user turn's line, as it ended: when its edge had it cut, and whether it did."""
+    """Each user turn's line, as it ended: when its trigger had it cut, and whether it did."""
     return [(entry.start, entry.barge_in_after is not None) for entry in rig.recorded if isinstance(entry, UserTurn)]
 
 
@@ -641,7 +641,7 @@ async def test_a_held_key_pressed_in_a_turn_the_voice_opened_cuts_at_once(rig: R
 
 @pytest.mark.parametrize(("by", "held"), [("held key", ["down", "down", "up"]), ("engaged conversation", OPENED_BY_THE_VOICE)])
 async def test_the_reply_a_turn_cut_off_is_written_ahead_of_the_words_that_cut_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge, held: list[Captured]
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger, held: list[Captured]
 ) -> None:
     # The pipeline's stages between the user's turn and the assistant aggregator, which writes the reply as cut off.
     stages: list[FrameProcessor] = [IdentityFilter() for _ in range(8)]
@@ -659,7 +659,7 @@ async def test_the_reply_a_turn_cut_off_is_written_ahead_of_the_words_that_cut_i
 
 
 @pytest.mark.parametrize("by", ["held key", "phone button", "wake word"])
-async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_without_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Edge) -> None:
+async def test_a_hold_the_user_opened_on_purpose_cuts_hands_off_at_once_with_or_without_words(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger) -> None:
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.hold(["down", "down", "up"], by=by)
         # Cut before Whisper has heard anything: its transcription waits on the test.
@@ -733,7 +733,7 @@ SPEECH = bytes([3, 3]) * 320
 
 @dataclass
 class Timeline:
-    """What a timeline captured: each frame, as the gate tagged it, and every move the edge made."""
+    """What a timeline captured: each frame, as the gate tagged it, and every move the trigger made."""
 
     frames: list[KeyedAudio]
     moves: list[Move]
@@ -749,9 +749,9 @@ def play_out[S, E](
     asked: Callable[[S, E, S], tuple[tuple[float, E], ...]],
     told: Sequence[tuple[float, E]],
     seconds: float,
-    by: Edge,
+    by: Trigger,
 ) -> Timeline:
-    """Speech captured every 20 ms for `seconds`, under the gate as the edge's own `step` moves it: each event of `told`,
+    """Speech captured every 20 ms for `seconds`, under the gate as the trigger's own `step` moves it: each event of `told`,
     and each that a step `asked` to be told later, stepped at its instant, as the loop delivers them. No keyboard, no
     microphone and no clock: hours play out in the time it takes to step them."""
     # In order of instant, then of arrival: the loop's own order for two calls due at once.
@@ -770,9 +770,9 @@ def play_out[S, E](
                 match act:
                     case "judge" | desk.Leveled():
                         pass
-                    case desk.Made(move=move, by=edge):
+                    case desk.Made(move=move, by=trigger):
                         moves.append(move)
-                        gate = gate.after(move, edge)
+                        gate = gate.after(move, trigger)
                     case move:
                         moves.append(move)
                         gate = gate.after(move, by)
@@ -987,7 +987,7 @@ def let_go(unprompted: Unprompted) -> dict[str, Fact]:
 
 
 # A hold the held key opens and lets go of, and one the voice opens and its end of turn closes.
-HOLDS: list[tuple[Edge, list[Captured], list[Captured]]] = [
+HOLDS: list[tuple[Trigger, list[Captured], list[Captured]]] = [
     ("held key", ["down", "down"], ["up"]),
     ("engaged conversation", ["listening", "arming", "down", "down"], ["listening"]),
 ]
@@ -999,7 +999,7 @@ HOLDS: list[tuple[Edge, list[Captured], list[Captured]]] = [
     (*HOLDS[1], ["marker", "started", "stopped"]),
 ])
 async def test_a_session_waiting_while_the_key_is_held_is_said_after_the_users_turn_is_sent_and_not_before(
-    rig: Rig, by: Edge, held: list[Captured], let_go_of: list[Captured], order: list[str]
+    rig: Rig, by: Trigger, held: list[Captured], let_go_of: list[Captured], order: list[str]
 ) -> None:
     rig.clock.at = 10.0
     # A turn the voice opens holds the floor from its opening, though it takes nothing over until its words are heard.

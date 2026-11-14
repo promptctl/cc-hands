@@ -84,7 +84,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
 from hands.voice.player import Mark
-from hands.voice.trigger import Edge
+from hands.voice.trigger import Trigger
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.utterance import Uttered, Uttering
@@ -309,8 +309,8 @@ class Rig:
     asking: asyncio.Task[None]
     # Whether the user can see a screen as their turn is submitted: the last of these.
     modalities: list[Modality]
-    # The edge that opened the gate's last turn: the last of these.
-    edges: list[Edge]
+    # The trigger that opened the gate's last turn: the last of these.
+    triggers: list[Trigger]
     # Each running call's span, as hands' MCP server finds it.
     call_spans: CallSpans
     # What the user set hands to say unprompted, the last of these, read as each turn nobody waits on starts.
@@ -457,17 +457,17 @@ async def rig() -> AsyncGenerator[Rig, None]:
         return fronts[-1]
 
     modalities: list[Modality] = ["screen"]
-    edges: list[Edge] = ["held key"]
+    triggers: list[Trigger] = ["held key"]
     call_spans = CallSpans()
 
     out = Spoken()
     settings = [Attention()]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.next_barge_in, lambda: settings[-1], clock)
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: triggers[-1], recorded.append, call_spans, out.next_barge_in, lambda: settings[-1], clock)
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, clock, refocused, fronts, asking, modalities, edges, call_spans, settings)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, clock, refocused, fronts, asking, modalities, triggers, call_spans, settings)
         finally:
             asking.cancel()
 
@@ -726,10 +726,10 @@ async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_wor
     assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "held key", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
 
 
-async def test_a_users_turn_carries_the_edge_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
+async def test_a_users_turn_carries_the_trigger_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
     await rig.release()
     # The phone's button pressed while the desk's words are still transcribed.
-    rig.edges.append("phone button")
+    rig.triggers.append("phone button")
     await rig.say("what is running?")
     exchange, _ = rig.request()
     rig.stream(exchange, "Nothing.")

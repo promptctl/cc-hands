@@ -101,15 +101,15 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
 @pytest.mark.parametrize(("level", "opening", "left"), [("wake word", [Woken(1.0)], "stop"), ("engaged", [SpeechStarted(1.0)], "stop"), ("engaged", [SpeechStarting()], "disarm")])
 def test_a_hold_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
     _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
-    edge = "wake word" if level == "wake word" else "engaged conversation"
-    assert moves(made)[-4:] == [Made(left, edge), Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
+    trigger = "wake word" if level == "wake word" else "engaged conversation"
+    assert moves(made)[-4:] == [Made(left, trigger), Made("arm", "held key"), Made("start", "held key"), Made("stop", "held key")]
 
 
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: list[Event]) -> None:
-    edge = "wake word" if level == "wake word" else "engaged conversation"
+    trigger = "wake word" if level == "wake word" else "engaged conversation"
     desk, made = run([*opening, SpeechStarted(1.5), Pressed(2.0), Typed(), Released(), SpeechStopped(), TurnEnded("verdict")], at(level))
-    assert moves(made)[-1] == Made("stop", edge) and Made("arm", "held key") not in made and desk.level == level
+    assert moves(made)[-1] == Made("stop", trigger) and Made("arm", "held key") not in made and desk.level == level
 
 
 def test_a_hold_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
@@ -131,8 +131,8 @@ def test_the_voice_opens_nothing_while_the_key_is_down(level: Level) -> None:
 @pytest.mark.parametrize(("level", "opening"), [("wake word", [Woken(1.0)]), ("engaged", [SpeechStarted(1.0)])])
 def test_a_level_left_with_a_voice_turn_open_sends_it(level: Level, opening: list[Event]) -> None:
     desk, made = run([*opening, Chosen("off")], at(level))
-    edge = "wake word" if level == "wake word" else "engaged conversation"
-    assert made[-3:] == [Made("stop", edge), Made("deafen", edge), Leveled(level, "off", "tool")]
+    trigger = "wake word" if level == "wake word" else "engaged conversation"
+    assert made[-3:] == [Made("stop", trigger), Made("deafen", trigger), Leveled(level, "off", "tool")]
     assert desk.level == "off"
 
 

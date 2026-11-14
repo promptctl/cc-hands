@@ -22,7 +22,7 @@ once it is built - types into sessions, through the fritter that wrapped them.
  │  voice                                                                        │
  │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
- │   gate edges              notes, │  │ tool   │ system speech                  │
+ │   gate triggers           notes, │  │ tool   │ system speech                  │
  │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
  │   button · phone · wake word     │  ▼        │                                │
  │  ───────────────────────────────────────────────────────────────────────────  │
@@ -1709,7 +1709,7 @@ eventually decide that editing the file is faster than routing your request; the
 surface above is the whole surface `[LAW:no-mode-explosion]`.
 
 `stay_silent` is how the model declines to answer words that were not addressed to
-it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
+it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word trigger,
 which opens the mic without a hand, does. It does not end a turn that did something, because by voice silence after
 work reads as nothing done, or as a crash. A turn the user asked and did not speak over has acted when it called a tool
 the model goes on from, such as `send_draft`, or one that is not hands' own, such as Bash. If its closing reply has no
@@ -1780,8 +1780,8 @@ interruption that flushes queued audio, cancels the reply still streaming from t
 model and its calls in flight, and settles a line said through the player's `heard()`
 as cut off. That is barge-in.
 
-When a turn cuts is the edge's that opened its hold (`turn_start` in
-`hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
+When a turn cuts is the trigger's that opened its hold (`turn_start` in
+`hands.voice.trigger`, enforced by `TriggerTurnStart`), and each hold carries that trigger
 from the gate, as it carries the key. A hold the user's hand opens, the held key or the
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose and
@@ -1804,7 +1804,7 @@ their way to the model, so they are uninterruptible: an interruption stops hands
 the user. And the user aggregator takes none of them in until the assistant aggregator,
 at the end of the pipeline, says the reply the cut stopped is written as
 cut off (`BargeInWritten`), so the audit log reads that reply ahead of the words that cut it
-off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
+off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its trigger had it cut, and how
 long after it opened it did, or that it never did. A turn ends once the hold owner is done with every
 hold it took in (`KeyTurnStop`): a press while the last hold is still being
 transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
@@ -1983,13 +1983,13 @@ changes the default input, so the follower opens it like any other move. This is
 tested against a PortAudio that lists no default input. A MacBook cannot be put in
 that state, since macOS always falls back to the built-in microphone.
 
-**The gate has one owner and several edges.** `PushToTalk` holds the key position;
-whatever reads the physical world calls `PushToTalk.move`, naming itself. The edges are
-values of one type, `Edge` (`hands.voice.trigger`), not modes of the gate
+**The gate has one owner and several triggers.** `PushToTalk` holds the key position;
+whatever reads the physical world calls `PushToTalk.move`, naming itself. The triggers are
+values of one type, `Trigger` (`hands.voice.trigger`), not modes of the gate
 `[LAW:one-type-per-behavior]`; the gate keeps the one that opened the last turn, and each
 turn's `UserAsked` says it:
 
-| Edge | Down | Up |
+| Trigger | Down | Up |
 |---|---|---|
 | `held key` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
 | `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
@@ -1997,7 +1997,7 @@ turn's `UserAsked` says it:
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
-The wake-word edge opens the mic without a hand, as `engaged conversation` does, and
+The wake-word trigger opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
 while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
 it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
@@ -2153,7 +2153,7 @@ seen and waits up to 25 s for another, so it is answered once something is said,
 send seen to fail later, or a session named after it, is redrawn where it was. Words
 typed are queued into the voice's pipeline as `Typed`, which no interruption drops, and
 Whisper takes them as a hold of their own with the `typed` opener: opened and ended at
-once, and heard in line behind the holds of the key's still being transcribed. That is not an edge: it moves no gate and
+once, and heard in line behind the holds of the key's still being transcribed. That is not a trigger: it moves no gate and
 leaves hands where it is. A typed hold cuts hands off as it opens, as a press does,
 and joins a turn a hold of the key's has open. From there the words reach the model,
 and come back to the page through the log, as words said do. Each read is one

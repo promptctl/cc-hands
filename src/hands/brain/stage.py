@@ -86,7 +86,7 @@ from hands.sessions.wide import Begun, annotate, begun, child, continuing, count
 from hands.voice.conversation import UserWords
 from hands.voice.system import system_text
 from hands.voice.player import Mark
-from hands.voice.trigger import Edge
+from hands.voice.trigger import Trigger
 from hands.voice.turnstop import HoldDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
@@ -112,11 +112,11 @@ class Asking(Protocol):
 
 @dataclass(frozen=True)
 class UserAsked:
-    """The user's words: whether they could see a screen, the edge that opened their turn, and what was in front on the
+    """The user's words: whether they could see a screen, the trigger that opened their turn, and what was in front on the
     Mac's as they were submitted, and how long reading it took, in milliseconds."""
 
     modality: Modality
-    opened: Edge
+    opened: Trigger
     front: InFront
     read_ms: float
 
@@ -417,7 +417,7 @@ class BrainStage(FrameProcessor):
         refocus: Callable[[SessionId], Awaitable[None]],
         front: Callable[[], Awaitable[InFront]],
         modality: Callable[[], Modality],
-        opened: Callable[[], Edge],
+        opened: Callable[[], Trigger],
         record: Record,
         spans: CallSpans,
         next_barge_in: Callable[[], asyncio.Future[Bookmark]],
@@ -430,7 +430,7 @@ class BrainStage(FrameProcessor):
         self._front = front
         # Whether the user can see a screen, read as their words arrive.
         self._modality = modality
-        # The edge that opened the gate's last turn.
+        # The trigger that opened the gate's last turn.
         self._opened = opened
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
@@ -458,9 +458,9 @@ class BrainStage(FrameProcessor):
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
         # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
         # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
-        # the turn's words follow the last release of the holds it took in. Kept with the edge that opened that
+        # the turn's words follow the last release of the holds it took in. Kept with the trigger that opened that
         # hold, read from the gate as it is let go of, before any later hold can open.
-        self._released: tuple[Seconds, Edge] | None = None
+        self._released: tuple[Seconds, Trigger] | None = None
         # [LAW:one-source-of-truth] the question the user's next words answer, read once at the cut they open with: one
         # asked while they are still being transcribed is not what they were answering. Every turn that carries words is
         # cut first (`hands.voice.turnstart`).
@@ -584,7 +584,7 @@ class BrainStage(FrameProcessor):
                     for frame in uttering(utterances, (spoken,)):
                         await self.push_frame(frame)
 
-    async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
+    async def _read_front(self, modality: Modality, opened: Trigger) -> UserAsked:
         began = self._clock.now()
         front = await self._front()
         return UserAsked(modality, opened, front, (self._clock.now() - began) * 1000)

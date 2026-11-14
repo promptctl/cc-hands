@@ -39,7 +39,7 @@ async def test_loading_the_models_is_its_own_unit_of_work() -> None:
 
 @pytest.mark.parametrize(("said", "complete"), [("create a ticket to read session history.", True), ("can you tell me about the", False)])
 async def test_smart_turn_judges_a_finished_sentence_complete_and_one_broken_off_not(said: str, complete: bool) -> None:
-    # As the edge gives it: the speech as speech, then the silence the detector ends it at, then the question.
+    # As the trigger gives it: the speech as speech, then the silence the detector ends it at, then the question.
     audio = spoken(said)
     async with loaded(VirtualClock(), 16000, lambda event: None) as models:
         for at in range(0, len(audio), 640):

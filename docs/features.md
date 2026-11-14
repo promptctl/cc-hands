@@ -280,9 +280,9 @@ Need 2.
 
 Need 8. Where the microphone is.
 
-- **Gate edges as values of one type.** `held key | engaged conversation | wake word | phone button`
-  as `Edge` (`hands.voice.holds`); the desk's level says which of its edges open turns
-  besides the held key. The `held key` edge is a macOS event tap that reports real key-down and
+- **Gate triggers as values of one type.** `held key | engaged conversation | wake word | phone button`
+  as `Trigger` (`hands.voice.holds`); the desk's level says which of its triggers open turns
+  besides the held key. The `held key` trigger is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
 - **One desk mode, off by default.** Right Shift held alone talks at every level.
   The microphone is off between turns until a triple tap of Right Command turns on
@@ -305,7 +305,7 @@ Need 8. Where the microphone is.
   tailnet, beside the desk for the whole run; the place the last turn opened at is
   where hands hears and speaks. Done when a full turn round-trips from a phone with
   earbuds and the transcript contains no words from the reply.
-- **Wake word with VAD stop.** The `wake word` edge opens the gate on
+- **Wake word with VAD stop.** The `wake word` trigger opens the gate on
   the wake word and closes it when Silero reports the configured silence. Done when a turn completes
   with no button and no own-voice words in the transcript, speakers on.
 - **Acoustic echo cancellation.** WebRTC's AEC3 takes the speaker's echo out of

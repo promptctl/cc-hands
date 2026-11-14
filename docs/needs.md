@@ -111,7 +111,7 @@ in another room, with the phone's earbuds and its own talk button. Eventually, w
 no button at all. Activation without a hand is the last step, not the first, because
 an open mic in a room with speakers hears the pipeline's own voice.
 
-Carried by the transport variant and the gate-edge variant. Delivered by
+Carried by the transport variant and the gate-trigger variant. Delivered by
 **Presence**.
 
 ## 9. It lasts a whole day

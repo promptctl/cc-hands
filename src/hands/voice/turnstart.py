@@ -1,4 +1,4 @@
-"""The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the edge that opened it decides.
+"""The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the trigger that opened it decides.
 
 Every turn starts as the hold that opens it opens, so its words gather from the first hold and the floor is the user's
 from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
@@ -35,7 +35,7 @@ class BargeInWritten(SystemFrame):
 
 @dataclass
 class _Open:
-    """The turn open: when the edge that opened it has it cut, when it opened, and how long after that it cut, None until
+    """The turn open: when the trigger that opened it has it cut, when it opened, and how long after that it cut, None until
     it has."""
 
     start: TurnStart
@@ -43,8 +43,8 @@ class _Open:
     barge_in_after: float | None = None
 
 
-class EdgeTurnStart(BaseUserTurnStartStrategy):
-    """Starts the user turn as its first hold opens, and cuts hands off when the edge that opened each hold says
+class TriggerTurnStart(BaseUserTurnStartStrategy):
+    """Starts the user turn as its first hold opens, and cuts hands off when the trigger that opened each hold says
     (`hands.voice.trigger.turn_start`).
 
     [LAW:single-enforcer] the one place a turn's start and its cut are decided: the pipeline runs no other start strategy,
@@ -69,7 +69,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._barge_in_where(start, self._turn)
             case TurnOpened(hold=hold), _Open() as turn:
-                # A hold pressed while the hold owner is still on the last joins its turn, and cuts as its own edge says.
+                # A hold pressed while the hold owner is still on the last joins its turn, and cuts as its own trigger says.
                 await self._barge_in_where(turn_start(hold.opener), turn)
             case Words() | InterimWords(), _Open() as turn:
                 # Words, in whichever hold, heard while it was open or as it closed, are someone speaking.
@@ -86,7 +86,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
     async def handle_user_turn_stopped(self) -> None:
         match self._turn:
             case _Open(start=start, barge_in_after=barge_in_after):
-                # [LAW:nothing-unseen] every turn is a line: how its edge had it cut, and when, or that it cut nothing.
+                # [LAW:nothing-unseen] every turn is a line: how its trigger had it cut, and when, or that it cut nothing.
                 self._record(UserTurn(start, barge_in_after))
                 self._turn = None
             case None:
@@ -110,7 +110,7 @@ class EdgeTurnStart(BaseUserTurnStartStrategy):
                 pass
 
 
-def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
+def interrupting(start: TriggerTurnStart, turns: LLMUserAggregator) -> None:
     """Have `turns`, the user aggregator `start` is the start strategy of, broadcast each cut `start` makes, and go on
     with the turn only once the cut is written.
 
@@ -126,7 +126,7 @@ def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
     written = asyncio.Event()
 
     @start.event_handler("on_barge_in")
-    async def barge_in(_start: EdgeTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
+    async def barge_in(_start: TriggerTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
         written.clear()
         await turns.broadcast_frame(UserStartedSpeakingFrame)  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
         # The interruption resets what the aggregator holds back, so the hold is taken behind it.
@@ -136,6 +136,6 @@ def interrupting(start: EdgeTurnStart, turns: LLMUserAggregator) -> None:
             await turns.resume_processing_frames()
 
     @start.event_handler("on_barge_in_written")
-    async def barge_in_written(_start: EdgeTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
+    async def barge_in_written(_start: TriggerTurnStart) -> None:  # pyright: ignore[reportUnusedFunction]
         written.set()
         await turns.resume_processing_frames()

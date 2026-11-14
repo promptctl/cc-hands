@@ -34,14 +34,14 @@ RATE = 16_000
 SECOND = RATE * 2
 
 
-# [LAW:domain-language] an edge is what moves the gate (docs/architecture.md, "The gate has one owner and several
-# edges"). The desk has three (`hands.voice.desk`): Right Shift held alone, at every level (`hands.voice.hold`); speech,
+# [LAW:domain-language] a trigger is what moves the gate (docs/architecture.md, "The gate has one owner and several
+# triggers"). The desk has three (`hands.voice.desk`): Right Shift held alone, at every level (`hands.voice.hold`); speech,
 # engaged (`hands.voice.engaged`); and the wake word said, at its level (`hands.voice.wake`). The phone's is its page's
 # talk button, there for every call.
-Edge = Literal["held key", "engaged conversation", "wake word", "phone button"]
-# What opens a hold: an edge of the gate, or words the user typed into the conversation page
+Trigger = Literal["held key", "engaged conversation", "wake word", "phone button"]
+# What opens a hold: a trigger of the gate, or words the user typed into the conversation page
 # (`hands.voice.conversationpage`), which move no gate and are heard nowhere, so they are a hold of their own.
-Opener = Edge | Literal["typed"]
+Opener = Trigger | Literal["typed"]
 
 
 @dataclass(frozen=True)
