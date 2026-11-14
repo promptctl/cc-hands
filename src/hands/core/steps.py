@@ -13,7 +13,7 @@ from typing import cast
 
 from hands.core.testrun import report_of
 from hands.core.delta import Branched, Committed, GitChange, PullRequested, Pushed
-from hands.core.turn import AgentId, Delegated, Edited, Looked, Other, Planned, Question, Questioned, Ran, Ref, Step, Tested
+from hands.core.turn import AgentId, Edited, Looked, Other, Planned, Question, Questioned, Ran, Ref, Step, SubagentDispatched, Tested
 
 
 @dataclass(frozen=True)
@@ -106,7 +106,7 @@ def _planned(call: Call) -> Step | None:
     return Planned(call.ref, named or f"task {identifier}", change or ("created" if task is not None else "changed"))
 
 
-def _delegated(call: Call) -> Step | None:
+def _dispatched(call: Call) -> Step | None:
     description = _text(call.input.get("description"))
     if description is None:
         return None
@@ -114,7 +114,7 @@ def _delegated(call: Call) -> Step | None:
     # An agent launched to run in the background reports back later as a notification, which opens a turn of its own.
     launched = structured is not None and in_background(structured)
     report = None if launched or call.result is None else call.result.text
-    return Delegated(call.ref, _text(call.input.get("subagent_type")), description, report, _agent(structured))
+    return SubagentDispatched(call.ref, _text(call.input.get("subagent_type")), description, report, _agent(structured))
 
 
 def _forked(call: Call) -> Step | None:
@@ -129,7 +129,7 @@ def _forked(call: Call) -> Step | None:
     # Run in the background, it reports back as a notification, as an async agent does; run in the foreground, its
     # result is its report, which the record holds apart from the line Claude Code heads it with.
     report = None if in_background(structured) else _text(structured.get("result"))
-    return Delegated(call.ref, name, asked, report, _agent(structured))
+    return SubagentDispatched(call.ref, name, asked, report, _agent(structured))
 
 
 def in_background(structured: Mapping[str, object]) -> bool:
@@ -277,7 +277,7 @@ _RECOGNISERS: Mapping[str, Recogniser] = {
     "WebSearch": _looked,
     "TaskCreate": _planned,
     "TaskUpdate": _planned,
-    "Agent": _delegated,
+    "Agent": _dispatched,
     "Skill": _forked,
     "AskUserQuestion": _questioned,
 }

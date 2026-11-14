@@ -101,7 +101,7 @@ class Reported:
 
 
 @dataclass(frozen=True)
-class Delegated:
+class SubagentDispatched:
     """A subagent Claude dispatched. `report` is None while it is still running: an async agent reports back as a notification (`Notified`, or `Reported` mid-turn).
 
     `id` names its own transcript; None for a call whose result names no subagent, as a failed one does.
@@ -149,7 +149,7 @@ class Interruption:
 
 # [LAW:types-are-the-program] tool calls are content, not noise: a turn's results are mostly in what it used, and
 # one variant per kind of result is what lets the summariser be shown a test run's counts instead of its scrollback.
-Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Reported | Questioned | Other | Interruption
+Step = Said | Edited | Ran | Tested | Looked | Planned | SubagentDispatched | Reported | Questioned | Other | Interruption
 
 
 @dataclass(frozen=True)
@@ -407,7 +407,7 @@ def describe(happening: Happening, budget: Budget) -> str:
             return f"Claude used {tool} on {_cut(target, budget.input)}\nFound: {_cut(found, budget.result)}"
         case Planned(task=task, change=change):
             return f"Claude's plan: {_cut(task, budget.input)} is {change}"
-        case Delegated(agent=agent, description=description, report=report):
+        case SubagentDispatched(agent=agent, description=description, report=report):
             to = "a subagent" if agent is None else f"the {agent} subagent"
             return f"Claude gave {to} this job: {_cut(description, budget.input)}\n" + (
                 "It is still working." if report is None else f"It reported: {_cut(report, budget.result)}"

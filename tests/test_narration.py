@@ -6,7 +6,6 @@ from hands.core.spoken import spoken
 from hands.core.turn import (
     Asked,
     Budget,
-    Delegated,
     Edited,
     Interruption,
     Looked,
@@ -18,6 +17,7 @@ from hands.core.turn import (
     Ref,
     Reported,
     Said,
+    SubagentDispatched,
     Tested,
     Turn,
 )
@@ -258,7 +258,7 @@ def test_every_kind_of_step_lands_in_some_section_so_nothing_a_turn_did_is_dropp
         Tested(None, "pytest", 12, 0, (), ""),
         Looked(None, "Read", "/a/b.py", "x"),
         Planned(None, "write it", "completed"),
-        Delegated(None, "Explore", "find the thing", "found it", None),
+        SubagentDispatched(None, "Explore", "find the thing", "found it", None),
         Other(None, "Skill", "{}", "loaded", False),
     )
     narrated = told(*steps)

@@ -773,7 +773,7 @@ it were new.
 # One variant per kind of thing a turn does. Every step names the record it came from, except
 # where there is no record to name: one that carries no uuid, and the closing reply the Stop hook
 # hands over before Claude Code has written it.
-Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other
+Step = Said | Edited | Ran | Tested | Looked | Planned | SubagentDispatched | Questioned | Other
 
 @dataclass(frozen=True)
 class Said:       ref: Ref | None; text: str                 # assistant text; never spoken as is
@@ -788,7 +788,7 @@ class Looked:     ref: Ref | None; tool: str; target: str; found: str   # Read, 
 @dataclass(frozen=True)
 class Planned:    ref: Ref | None; task: str; change: str    # TaskCreate, TaskUpdate
 @dataclass(frozen=True)
-class Delegated:  ref: Ref | None; agent: str | None; description: str; report: str | None
+class SubagentDispatched: ref: Ref | None; agent: str | None; description: str; report: str | None
 @dataclass(frozen=True)
 class Questioned: ref: Ref | None; questions: tuple[Question, ...]   # AskUserQuestion
 @dataclass(frozen=True)
@@ -888,7 +888,7 @@ recognisers cover the rest, and the length budget applies to what is spoken, aft
 summarising.
 
 **Subagents.** On the parent's transcript a subagent is one call and its report, which
-becomes `Delegated`: an `Agent` call, or a `Skill` call whose result says `forked`, as
+becomes `SubagentDispatched`: an `Agent` call, or a `Skill` call whose result says `forked`, as
 /code-review's does. Either result carries the subagent's `agentId`. Its own records are
 in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true; the
 parent's transcript holds none of them. Where the subagent reports back, in a task
