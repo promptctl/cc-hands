@@ -27,6 +27,9 @@ from hands.voice.trigger import Levels
 from hands.voice.wake import SAMPLE_RATE
 from hands.voice.wakeword import Pretrained
 
+
+pytestmark = pytest.mark.outside
+
 # Twenty milliseconds of the desk's microphone, as it hands audio over.
 BUFFER = 640
 

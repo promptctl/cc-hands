@@ -42,6 +42,7 @@ def reaped(process: subprocess.Popen[bytes]) -> bool:
     return process.returncode is not None
 
 
+@pytest.mark.outside
 async def test_a_child_s_output_and_exit_are_what_it_ran_to(started: list[subprocess.Popen[bytes]]) -> None:
     exits: list[str] = []
     sink = logger.add(lambda message: exits.append(message.record["message"]), level="DEBUG")
@@ -52,6 +53,7 @@ async def test_a_child_s_output_and_exit_are_what_it_ran_to(started: list[subpro
     assert any(line.startswith(f"sh ({started[0].pid}) exited 3 in ") for line in exits)
 
 
+@pytest.mark.outside
 async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     start = time.monotonic()
     with pytest.raises(TimeoutError):
@@ -61,6 +63,7 @@ async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: lis
     assert any(f"killed sleep ({started[0].pid})" in line and "ran past 0.2s" in line for line in logged)
 
 
+@pytest.mark.outside
 async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     clock = VirtualClock()
     running = asyncio.create_task(run("sleep", "30", timeout=5, clock=clock))
@@ -72,6 +75,7 @@ async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subp
     assert any(f"killed sleep ({started[0].pid})" in line and "ran past 5.0s" in line for line in logged)
 
 
+@pytest.mark.outside
 async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure_leaves(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     with pytest.raises(RuntimeError, match="no timer"):
         await run("sleep", "30", timeout=5, clock=BrokenClock())
@@ -79,6 +83,7 @@ async def test_a_child_whose_clock_fails_is_killed_and_reaped_before_the_failure
     assert any(f"killed sleep ({started[0].pid})" in line and "its wait failed" in line for line in logged)
 
 
+@pytest.mark.outside
 async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
     pid = tmp_path / "pid"
     with pytest.raises(TimeoutError):
@@ -94,6 +99,7 @@ async def test_what_a_child_started_is_killed_with_it(tmp_path: Path) -> None:
     raise AssertionError(f"the sleep {grandchild} its timed-out parent started is still running")
 
 
+@pytest.mark.outside
 async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     running = asyncio.create_task(run("sleep", "30", timeout=30, clock=SYSTEM))
     await asyncio.sleep(0.1)
@@ -104,6 +110,7 @@ async def test_a_child_whose_caller_stops_waiting_is_killed_and_reaped(started: 
     assert any(f"killed sleep ({started[0].pid})" in line and "its caller stopped waiting" in line for line in logged)
 
 
+@pytest.mark.outside
 async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: pytest.MonkeyPatch, logged: list[str]) -> None:
     # What macOS says to a kill of a group whose processes have all exited but are not yet reaped.
     def exited(_pgid: int, _signal: int) -> None:
@@ -118,6 +125,7 @@ async def test_a_child_that_ended_as_it_was_killed_still_times_out(monkeypatch: 
     assert not any(line.startswith("killed") for line in logged)
 
 
+@pytest.mark.outside
 async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pytest.MonkeyPatch, logged: list[str]) -> None:
     def unreadable(*_args: object) -> Ran:
         raise OSError("the output could not be read")
@@ -133,6 +141,7 @@ async def test_a_child_that_cannot_start_says_so() -> None:
         await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
 
 
+@pytest.mark.outside
 async def test_a_child_stopped_on_a_clock_that_fails_is_killed_and_reaped_before_the_failure_leaves(logged: list[str]) -> None:
     # A child that ignores the terminate, so only the kill ends it.
     process = subprocess.Popen(["sh", "-c", "trap '' TERM; echo ready; sleep 30"], stdout=subprocess.PIPE, start_new_session=True)

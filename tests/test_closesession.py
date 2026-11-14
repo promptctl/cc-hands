@@ -31,6 +31,9 @@ from test_startsession import home_in
 from conftest import new_sessions
 
 
+pytestmark = pytest.mark.outside
+
+
 def run[T](home: Home, sessions: Sessions, body: Callable[[], Awaitable[T]]) -> T:
     """`body` run while the liveness sweep keeps `sessions`, as the daemon's does."""
 

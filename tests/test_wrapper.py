@@ -64,12 +64,14 @@ def on_a_terminal(argv: Sequence[str], path: str, env: dict[str, str] | None = N
     return printed.decode().replace("\r\n", "\n")
 
 
+@pytest.mark.outside
 def test_a_session_on_a_terminal_runs_under_fritter_around_the_real_claude(root: Path) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), "--resume", "abc"], f"{root / 'bin'}:{root / 'real'}:{SYSTEM_PATH}")
     assert printed == f"fritter {TAPPED} -- {root / 'real' / 'claude'} --resume abc socket=unset\n"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("args", [["-p", "hello"], ["--print", "hello"], ["--model", "opus", "-p", "hello"], ["-cp", "hello"], ["-pc", "hello"]])
 def test_print_on_a_terminal_runs_the_real_claude(root: Path, args: list[str]) -> None:
     shim = installed_shim(root)
@@ -77,12 +79,14 @@ def test_print_on_a_terminal_runs_the_real_claude(root: Path, args: list[str]) -
     assert printed == f"claude {' '.join(args)} socket=unset\n"
 
 
+@pytest.mark.outside
 def test_a_prompt_after_the_options_that_says_p_is_still_a_session(root: Path) -> None:
     shim = installed_shim(root)
     printed = on_a_terminal([str(shim), "--", "-p"], f"{root / 'bin'}:{root / 'real'}:{SYSTEM_PATH}")
     assert printed.startswith(f"fritter {TAPPED} -- ")
 
 
+@pytest.mark.outside
 def test_off_a_terminal_the_real_claude_runs_without_the_address_of_the_session_it_was_started_from(root: Path) -> None:
     shim = installed_shim(root)
     ran = on_a_pipe([str(shim), "mcp", "serve"], f"{root / 'bin'}:{root / 'real'}:{SYSTEM_PATH}", {"FRITTER_SOCKET": "/tmp/fritter-parent/sock"})
@@ -93,6 +97,7 @@ def test_off_a_terminal_the_real_claude_runs_without_the_address_of_the_session_
 UPDATER_RECORDER = '#!/bin/sh\nprintf "%s updater=%s\\n" "$(basename "$0")" "${DISABLE_AUTOUPDATER-unset}"\n'
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("given", [{}, {"DISABLE_AUTOUPDATER": "0"}], ids=["unset", "on"])
 def test_every_claude_the_shim_runs_has_claude_codes_auto_updater_off(root: Path, given: dict[str, str]) -> None:
     # A session's claude inherits fritter's environment, so what fritter is started with is what the session runs with.
@@ -106,6 +111,7 @@ def test_every_claude_the_shim_runs_has_claude_codes_auto_updater_off(root: Path
     assert on_a_terminal([str(shim), "update"], path, given) == "claude updater=1\n"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("args", [["-dp"], ["-rp"]])
 def test_an_option_whose_value_is_p_is_a_session(root: Path, args: list[str]) -> None:
     # -d and -r take a value, so -dp is a debug filter and -rp a session to resume.
@@ -114,6 +120,7 @@ def test_an_option_whose_value_is_p_is_a_session(root: Path, args: list[str]) ->
     assert printed.startswith(f"fritter {TAPPED} -- ")
 
 
+@pytest.mark.outside
 def test_every_hands_shim_is_skipped_however_path_names_it(root: Path) -> None:
     # Two homes' shims on one PATH would each take the other for the real claude, and nest fritters without end.
     shim = installed_shim(root)
@@ -136,6 +143,7 @@ def test_the_real_claude_is_found_as_the_shim_finds_it_past_every_shim(root: Pat
     assert wrapper.real_claude(f"{root / 'bin'}::/usr/bin") == root / "real" / "claude"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize("entries", ["{bin}::/usr/bin:/bin", "{bin}:/usr/bin:/bin:", ":{bin}:/usr/bin:/bin"])
 def test_an_empty_path_entry_is_the_current_directory(root: Path, entries: str) -> None:
     shim = installed_shim(root)
@@ -164,6 +172,7 @@ def test_a_marked_file_that_is_not_the_shim_this_hands_writes_is_stale(root: Pat
     assert wrapper.shim_of(executable(root / "claude", f"#!/bin/sh\n{wrapper.MARK}\n{lines}\n")) == wrapper.Stale()
 
 
+@pytest.mark.outside
 def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:
     shim = installed_shim(root)
     ran = on_a_pipe([str(shim)], f"{root / 'bin'}:{SYSTEM_PATH}")
@@ -171,6 +180,7 @@ def test_no_real_claude_on_path_is_said_and_runs_nothing(root: Path) -> None:
     assert (ran.stdout, ran.stderr) == ("", "claude: nothing on PATH named claude but hands' shims\n")
 
 
+@pytest.mark.outside
 def test_a_path_with_spaces_and_quotes_is_the_path_the_shim_names(root: Path) -> None:
     bin = root / "it's a bin"
     executable(bin / "fritter", RECORDER)
@@ -180,6 +190,7 @@ def test_a_path_with_spaces_and_quotes_is_the_path_the_shim_names(root: Path) ->
     assert printed == f"fritter {TAPPED} -- {root / 'real' / 'claude'} socket=unset\n"
 
 
+@pytest.mark.outside
 def test_install_copies_the_packaged_fritter_with_no_go_and_says_whether_path_finds_its_claude(root: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     home = Home(root / "home")
     executable(root / "real" / "claude", RECORDER)
@@ -271,6 +282,7 @@ TAP = "http://127.0.0.1:40000"
 INSIDE = {"ANTHROPIC_BASE_URL": "https://gateway.example", "FRITTER_TAP": TAP, "HTTPS_PROXY": TAP, "NODE_EXTRA_CA_CERTS": "/tmp/fritter-1/trusted.pem", "FRITTER_OUTER_HTTPS_PROXY": "http://corp:3128"}
 
 
+@pytest.mark.outside
 def test_a_claude_run_from_inside_a_session_reaches_the_api_as_the_session_would_have_without_its_tap(root: Path) -> None:
     # The tap ends when the session does; a run started inside it may not.
     shim = installed_shim(root)
@@ -279,6 +291,7 @@ def test_a_claude_run_from_inside_a_session_reaches_the_api_as_the_session_would
     assert ran.stdout == "claude api=https://gateway.example proxy=http://corp:3128 trust=unset tap=unset\n"
 
 
+@pytest.mark.outside
 def test_a_session_started_inside_a_session_is_tapped_by_its_own_fritter_alone(root: Path) -> None:
     bin = root / "bin"
     executable(bin / "fritter", REACH_RECORDER)
@@ -288,6 +301,7 @@ def test_a_session_started_inside_a_session_is_tapped_by_its_own_fritter_alone(r
     assert printed == "fritter api=https://gateway.example proxy=http://corp:3128 trust=unset tap=unset\n"
 
 
+@pytest.mark.outside
 def test_a_proxy_set_again_inside_a_session_is_the_one_a_claude_run_there_reaches_through(root: Path) -> None:
     shim = installed_shim(root)
     executable(root / "real" / "claude", REACH_RECORDER)
@@ -295,6 +309,7 @@ def test_a_proxy_set_again_inside_a_session_is_the_one_a_claude_run_there_reache
     assert ran.stdout == "claude api=https://gateway.example proxy=http://other:8080 trust=/tmp/fritter-1/trusted.pem tap=unset\n"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(("given", "tapped"), [({}, "https://api.anthropic.com"), ({"ANTHROPIC_BASE_URL": "https://gateway.example/v1"}, "https://gateway.example/v1")])
 def test_a_session_is_tapped_toward_the_api_it_was_given_and_still_names_it(root: Path, given: dict[str, str], tapped: str) -> None:
     # Claude Code keeps what it keeps for Anthropic's own API only while the API it names is Anthropic's.
@@ -306,6 +321,7 @@ def test_a_session_is_tapped_toward_the_api_it_was_given_and_still_names_it(root
     assert printed == f"--tap {tapped} --tap-ca NODE_EXTRA_CA_CERTS --tap-to {WIRE} -- {root / 'real' / 'claude'} api={given.get('ANTHROPIC_BASE_URL', 'unset')}\n"
 
 
+@pytest.mark.outside
 @pytest.mark.parametrize(
     ("args", "run"),
     [

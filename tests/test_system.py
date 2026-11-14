@@ -431,9 +431,9 @@ GONE = "a pid no process holds"
     ("pipeline", "pid", "written_ago", "crashed"),
     [
         (None, GONE, 0, False),  # never ran
-        ("stopped", GONE, 0, False),
-        ("running", GONE, 0, True),
-        ("starting", GONE, 0, True),
+        pytest.param("stopped", GONE, 0, False, marks=pytest.mark.outside),
+        pytest.param("running", GONE, 0, True, marks=pytest.mark.outside),
+        pytest.param("starting", GONE, 0, True, marks=pytest.mark.outside),
         ("running", os.getpid(), 0, False),  # up: this is not a restart
         ("running", os.getpid(), 60, True),  # hung, and something now holds its pid
     ],

@@ -12,6 +12,9 @@ from hands.voice.engaged import SMART_TURN, SMART_TURN_REVISION, STOP_SECS, load
 from test_engaged import Rig, stopped
 
 
+pytestmark = pytest.mark.outside
+
+
 class _Ticking(VirtualClock):
     """A clock that passes a tenth of a second at every read, so what is timed between two reads is never zero, and no real
     second is waited."""

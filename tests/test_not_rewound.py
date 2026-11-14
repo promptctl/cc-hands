@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+
+pytestmark = pytest.mark.outside
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "not-rewound.sh"
 # The real line's first commit, ab3ad39, as git stores it: parent 50557d9, subject (#270). Its hash is the script's
 # default, so the default is pinned without reading this repository's history or the network.

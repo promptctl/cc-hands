@@ -102,6 +102,7 @@ async def copy(path: Path, lines: Sequence[Mapping[str, object]], raw: bytes = b
     writer.close()
 
 
+@pytest.mark.outside
 async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), HEAD, *CHUNKS, END])
     await asyncio.wait_for(tap.done.wait(), 5)
@@ -124,6 +125,7 @@ async def test_a_copied_exchange_is_the_wire_s_values_with_the_session_s_id(tap:
     assert exchanged.span.parent_id is None and (len(exchanged.span.trace_id), len(exchanged.span.span_id)) == (32, 16)
 
 
+@pytest.mark.outside
 async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_is_kept_as_its_size_alone(tap: Heard_, socket_path: Path) -> None:
     profile = b'{"account": {"email_address": "user@example.com"}, "raw_key": "sk-ant-secret"}'
     await copy(
@@ -144,6 +146,7 @@ async def test_a_reply_from_elsewhere_than_the_model_s_endpoint_is_kept_as_its_s
 WORKER_STREAM: Mapping[str, object] = {**request_line(), "method": "GET", "path": "/v1/code/sessions/cse_1/worker/events/stream", "body": None}
 
 
+@pytest.mark.outside
 async def test_a_reply_from_elsewhere_cut_short_is_unkept_with_what_cut_it_and_is_no_error(tap: Heard_, socket_path: Path) -> None:
     # Remote Control's hour-long stream, which the server resets and Claude Code reopens: hands read none of it, so no
     # reading of it failed.
@@ -154,6 +157,7 @@ async def test_a_reply_from_elsewhere_cut_short_is_unkept_with_what_cut_it_and_i
     assert level(exchanged) == "info"
 
 
+@pytest.mark.outside
 async def test_a_copy_from_elsewhere_that_breaks_off_is_garbled_since_hands_could_not_read_its_own_copy(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [WORKER_STREAM, HEAD, CHUNKS[0]])
     await asyncio.wait_for(tap.done.wait(), 5)
@@ -162,18 +166,21 @@ async def test_a_copy_from_elsewhere_that_breaks_off_is_garbled_since_hands_coul
     assert level(exchanged) == "error"
 
 
+@pytest.mark.outside
 async def test_copies_lost_before_this_one_are_a_line_of_the_session_that_lost_them(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(lost=3), HEAD, *CHUNKS, END])
     await asyncio.wait_for(tap.done.wait(), 5)
     assert tap.entries == [CopiesLost(SessionId("s1"), 3)]
 
 
+@pytest.mark.outside
 async def test_a_reply_cut_short_upstream_is_garbled_with_what_cut_it(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), HEAD, *CHUNKS[:3], {**END, "error": "the reply ended early: EOF"}])
     await asyncio.wait_for(tap.done.wait(), 5)
     assert isinstance(reply := tap.exchanged().reply, Reached) and reply.body == Garbled("the reply ended early: EOF")
 
 
+@pytest.mark.outside
 async def test_a_reply_hands_could_not_read_before_it_was_cut_short_is_garbled_with_what_hands_could_not_read(tap: Heard_, socket_path: Path) -> None:
     unreadable = {"kind": "bytes", "at": 102.0, "bytes": b64(b"event: content_block_delta\ndata: \xff\xfe\n\n")}
     await copy(socket_path, [request_line(), HEAD, CHUNKS[0], unreadable, {**END, "error": "the reply ended early: EOF"}])
@@ -182,12 +189,14 @@ async def test_a_reply_hands_could_not_read_before_it_was_cut_short_is_garbled_w
     assert reply.body.reason.startswith("hands could not read it: UnicodeDecodeError")
 
 
+@pytest.mark.outside
 async def test_an_upstream_never_reached_is_unreached(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), {"kind": "unreached", "at": 100.2, "error": "connection refused"}])
     await asyncio.wait_for(tap.done.wait(), 5)
     assert tap.exchanged().reply == Unreached("connection refused", 100.2)
 
 
+@pytest.mark.outside
 async def test_a_copy_that_breaks_off_says_how_far_it_got(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line()])
     await asyncio.wait_for(tap.done.wait(), 5)
@@ -211,6 +220,7 @@ async def test_a_copy_cut_partway_through_its_request_tells_nothing_and_is_no_er
     assert (heard.observed, heard.entries) == ([], [])
 
 
+@pytest.mark.outside
 async def test_a_copy_cut_partway_through_a_line_of_its_reply_broke_off_and_is_not_a_line_hands_cannot_read(tap: Heard_, socket_path: Path) -> None:
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
@@ -224,6 +234,7 @@ async def test_a_copy_cut_partway_through_a_line_of_its_reply_broke_off_and_is_n
     assert errors == []
 
 
+@pytest.mark.outside
 async def test_a_line_hands_cannot_read_ends_the_copy_as_garbled_and_the_next_copy_is_read(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), HEAD], raw=b"not json\n")
     await asyncio.wait_for(tap.done.wait(), 5)
@@ -237,6 +248,7 @@ async def test_a_line_hands_cannot_read_ends_the_copy_as_garbled_and_the_next_co
     assert isinstance(reply := tap.exchanged().reply, Reached) and isinstance(reply.body, Written)
 
 
+@pytest.mark.outside
 async def test_a_line_out_of_its_order_ends_the_copy_as_broken_and_the_exchange_is_still_told(tap: Heard_, socket_path: Path) -> None:
     await copy(socket_path, [request_line(), CHUNKS[0]])
     await asyncio.wait_for(tap.done.wait(), 5)
@@ -284,6 +296,7 @@ async def test_a_copy_cancelled_mid_reply_ends_its_exchange_once_and_stays_cance
     assert isinstance(reply, Reached) and reply.body == CANCELLED
 
 
+@pytest.mark.outside
 async def test_a_copy_still_coming_when_the_tap_closes_has_ended_its_exchange_once_the_close_returns(socket_path: Path) -> None:
     heard = Heard_()
     tap = await serve_tap(socket_path, heard.observe, heard.entries.append, clock=VirtualClock(epoch=datetime.fromtimestamp(999.0, UTC)))
@@ -310,10 +323,12 @@ async def test_a_reply_reader_that_fails_ends_its_reached_exchange_once_and_its_
     assert heard.exchanged().reply == Reached(200, 100.5, 100.5, 0, Garbled("hands stopped reading the copy: RuntimeError: the reader broke"))
 
 
+@pytest.mark.outside
 async def test_the_socket_is_the_user_s_alone(tap: Heard_, socket_path: Path) -> None:
     assert socket_path.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.outside
 @pytest.mark.skipif(shutil.which("curl") is None, reason="needs curl to be the session")
 async def test_a_session_under_a_real_fritter_is_answered_by_the_api_and_heard_on_the_wire(tap: Heard_, socket_path: Path, fritter: Path) -> None:
 

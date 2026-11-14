@@ -333,6 +333,7 @@ def run(suite: pytest.Pytester, method: str, *args: str) -> pytest.RunResult:
     return suite.runpytest_subprocess("-p", "timeouts", *BOUND, f"--timeout-method={method}", *args, timeout=60)
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_bounded_by_its_own_work(suite: pytest.Pytester) -> None:
     # -vv: the summary's lines whole, not cut to the terminal's width.
     ran = run(suite, "signal", "-vv", "test_shared.py", "test_async_shared.py", "test_marked.py", "test_late.py", "test_hangs.py", "test_overruns.py")
@@ -347,6 +348,7 @@ def test_under_a_signal_a_shared_setup_counts_against_no_test_and_each_test_is_b
     )
 
 
+@pytest.mark.outside
 def test_under_a_signal_no_timer_runs_while_a_phase_is_reported(suite: pytest.Pytester) -> None:
     # pytest-timeout's one timer spans the whole protocol, reporting and all, so a timer that fires while pytest logs or
     # reports fires inside pytest's own code, and the run ends in INTERNALERROR with outcomes uncounted.
@@ -356,6 +358,7 @@ def test_under_a_signal_no_timer_runs_while_a_phase_is_reported(suite: pytest.Py
     assert "INTERNALERROR" not in ran.stdout.str()
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_test_skipped_in_its_setup_is_bounded_through_its_teardown(suite: pytest.Pytester) -> None:
     # The bound fires once: the shared teardown after it re-arms nothing, so the error is the one timeout, not a group.
     ran = run(suite, "signal", "-rsE", "test_skips.py")
@@ -367,6 +370,7 @@ def outermost_first(said: str) -> bool:
     return said.index("in test_that_awaits") < said.index("in outermost") < said.index("in deepest")
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_summary_stays_one_line(suite: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     # CI: pytest's summary then carries a failure's whole message, not the terminal's width of it.
     monkeypatch.setenv("CI", "true")
@@ -380,6 +384,7 @@ def test_under_a_signal_a_timeouts_failure_says_where_everything_was_and_its_sum
     assert "timed out" not in summary
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeout_says_where_each_task_waited_in_a_run_ended_before_its_report(suite: pytest.Pytester) -> None:
     suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
     said = run(suite, "signal", *UNFIRED, "test_awaits.py").stdout.str()
@@ -387,6 +392,7 @@ def test_under_a_signal_a_timeout_says_where_each_task_waited_in_a_run_ended_bef
     assert outermost_first(said[said.index("\ntest_awaits.py::test_that_awaits timed out") :])
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_that_no_loop_runs(suite: pytest.Pytester) -> None:
     suite.makeconftest(ENDED_BEFORE_ITS_REPORT)
     said = run(suite, "signal", *UNFIRED, "test_blocks.py").stdout.str()
@@ -395,17 +401,20 @@ def test_under_a_signal_a_timeout_in_a_sync_test_says_where_its_thread_was_and_t
     assert "in test_that_blocks" in where and "no task is pending" in where
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeout_says_where_a_task_on_another_threads_loop_waited(suite: pytest.Pytester) -> None:
     said = run(suite, "signal", *UNFIRED, "test_elsewhere.py").stdout.str()
     assert "in parked_off_the_main_thread" in said[said.index("parked_off_the_main_thread() running at") :]
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeout_says_where_a_task_on_a_stopped_loop_waited(suite: pytest.Pytester) -> None:
     said = run(suite, "signal", *UNFIRED, "test_stopped.py").stdout.str()
     chain = said[said.index("left_on_a_stopped_loop() running at") :]
     assert chain.index("running=False") < chain.index("in left_on_a_stopped_loop")
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timeout_fires_with_a_coroutine_running_and_the_run_survives_its_report(suite: pytest.Pytester) -> None:
     run(suite, "signal", *UNFIRED, "test_running.py").assert_outcomes(failed=1)
 
@@ -417,12 +426,14 @@ def test_a_step_whose_async_generator_is_no_longer_running_ends_its_chain() -> N
     assert [line.strip().split()[:2] for line in timeouts.awaits(generator().asend(None))] == [["awaiting", "<async_generator_asend"]]
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_timer_that_fires_under_a_debugger_says_nothing_timed_out(suite: pytest.Pytester) -> None:
     ran = run(suite, "signal", *UNFIRED, "test_debugged.py")
     ran.assert_outcomes(passed=1)
     assert "timed out" not in ran.stdout.str()
 
 
+@pytest.mark.outside
 def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: pytest.Pytester) -> None:
     suite.makeconftest(UNREPORTABLE.format(raised='RuntimeError("no report")'))
     ran = run(suite, "signal", *UNFIRED, "test_blocks.py")
@@ -430,11 +441,13 @@ def test_under_a_signal_a_report_that_fails_is_chained_onto_the_timeout(suite: p
     ran.stdout.fnmatch_lines(["*RuntimeError: no report", "FAILED test_blocks.py::test_that_blocks - Failed: Timeout*"])
 
 
+@pytest.mark.outside
 def test_under_a_signal_an_interrupt_during_a_report_ends_the_run(suite: pytest.Pytester) -> None:
     suite.makeconftest(UNREPORTABLE.format(raised="KeyboardInterrupt"))
     assert run(suite, "signal", *UNFIRED, "test_blocks.py").ret == pytest.ExitCode.INTERRUPTED
 
 
+@pytest.mark.outside
 def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(suite: pytest.Pytester) -> None:
     run(suite, "signal", "--junitxml=report.xml", "test_shared.py").assert_outcomes(passed=1)
     properties = ElementTree.parse(suite.path / "report.xml").iterfind(".//property")
@@ -448,16 +461,19 @@ def test_a_shared_setup_and_teardown_are_on_the_report_of_the_test_they_ran_in(s
     assert setup["left"] <= 2.0 and teardown["left"] <= setup["left"] - 1.3
 
 
+@pytest.mark.outside
 def test_under_the_thread_method_a_shared_setup_and_teardown_count_against_no_test(suite: pytest.Pytester) -> None:
     run(suite, "thread", "test_shared.py").assert_outcomes(passed=1)
 
 
+@pytest.mark.outside
 def test_under_the_thread_method_a_shared_setup_that_hangs_ends_the_run_in_its_own_bound(suite: pytest.Pytester) -> None:
     ran = run(suite, "thread", "test_hangs.py")
     assert ran.ret == 1
     ran.stdout.fnmatch_lines_random(["*+ Timeout +*", "*in shared_never_returns*", SUITE_MARKER])
 
 
+@pytest.mark.outside
 def test_under_the_thread_method_a_test_is_bounded_by_its_own_work_after_a_shared_setup(suite: pytest.Pytester) -> None:
     ran = run(suite, "thread", "test_rearmed.py")
     assert ran.ret == 1

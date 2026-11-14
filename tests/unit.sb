@@ -1,0 +1,8 @@
+; What the unit layer may not reach, on top of offline.sb's: the rules after those win, and hold the run to the process it
+; is. No process is started: macOS answers a process-fork deny to Popen, posix_spawn and fork alike. Denying process-exec*
+; as well would make `os.access(path, X_OK)` answer no for every file, so every `shutil.which` would find nothing, tests
+; that gate on a tool would skip and code under test would take its tool-absent branch; fork alone is enough. No socket is
+; bound or connected, loopback and local ones included. The weights the run fetched are unread: tests/offline.py appends a
+; deny of each folder that holds them after this file.
+(deny process-fork)
+(deny network*)

@@ -181,6 +181,7 @@ async def spotify_api(granted: list[str], searched: list[dict[str, str]]) -> Asy
         await runner.cleanup()
 
 
+@pytest.mark.outside
 async def test_a_search_holds_its_token_until_it_runs_out_and_its_event_says_which() -> None:
     granted: list[str] = []
     searched: list[dict[str, str]] = []
@@ -204,6 +205,7 @@ async def test_a_search_holds_its_token_until_it_runs_out_and_its_event_says_whi
     assert [event.facts["spotify_token"] for event in events] == ["fetched", "held", "fetched"]
 
 
+@pytest.mark.outside
 async def test_spotify_refusing_the_credentials_is_said_with_its_answer() -> None:
     async def token(_request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid_client"}, status=400)
@@ -222,6 +224,7 @@ async def test_spotify_refusing_the_credentials_is_said_with_its_answer() -> Non
     assert str(result["error"]).startswith("Spotify refused hands' developer app credentials (400)") and "invalid_client" in str(result["error"])
 
 
+@pytest.mark.outside
 async def test_a_search_spotify_cannot_be_reached_for_is_said() -> None:
     runner = web.AppRunner(web.Application())
     await runner.setup()

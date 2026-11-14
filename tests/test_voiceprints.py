@@ -382,11 +382,13 @@ async def test_an_echo_span_is_identified_as_one_voice_on_an_event_of_its_own(tm
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
 
+@pytest.mark.outside
 def test_the_model_loads_and_prints_are_of_unit_length() -> None:
     embed = voiceprints.load()
     assert np.linalg.norm(embed(np.random.default_rng(0).normal(0, 0.1, RATE).astype(np.float32))) == pytest.approx(1.0)
 
 
+@pytest.mark.outside
 async def test_the_models_load_is_a_unit_saying_what_it_loaded(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     loads: list[str] = []

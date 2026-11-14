@@ -34,6 +34,9 @@ from hands.sessions.tail import Tails
 from hands.sessions.wide import Fact, WideEvent
 from conftest import PLUGIN_PATH, hook_argv, new_sessions
 
+
+pytestmark = pytest.mark.outside
+
 SID = SessionId("0f1e2d3c-aaaa-bbbb-cccc-000000000001")
 COMMON = {"session_id": SID, "transcript_path": "/nowhere/t.jsonl", "cwd": "/code/a"}
 START = {**COMMON, "hook_event_name": "SessionStart", "source": "startup"}

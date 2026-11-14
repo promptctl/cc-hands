@@ -237,6 +237,7 @@ def test_every_kind_of_fact_is_written_on_its_audit_line_and_carried_by_its_otlp
     }
 
 
+@pytest.mark.outside
 def test_a_fact_neither_the_audit_log_nor_otlp_can_carry_is_refused_by_pyright_where_it_is_annotated(tmp_path: Path) -> None:
     annotated = tmp_path / "annotated.py"
     annotated.write_text(

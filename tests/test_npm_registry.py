@@ -12,6 +12,9 @@ from aiohttp import web
 from hands.brain import pinned
 from npm_registry import REGISTRY
 
+
+pytestmark = pytest.mark.outside
+
 RELEASE = b"#!/bin/sh\necho 'the pinned release'\n"
 
 

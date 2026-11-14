@@ -42,6 +42,9 @@ from hands.voice.turnstop import SpeakerCleared
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
 
+
+pytestmark = pytest.mark.outside
+
 FRAME = 320
 
 # The first four utterances of the reader, then a cough, then the keyboard, each after 4 s of exact zeros, and 4 s after

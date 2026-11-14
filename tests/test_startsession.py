@@ -76,6 +76,7 @@ def test_a_terminal_outside_any_session_has_nothing_of_one_and_keeps_the_users_o
     assert as_from_a_terminal({**inside, **users}) == {**users, "HTTPS_PROXY": "http://proxy.lan:3128"}
 
 
+@pytest.mark.outside
 def test_a_session_is_started_trusting_its_projects_mcp_servers_whose_dialog_would_hold_it_unjoined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = home_in(tmp_path)
     folder = tmp_path / "billing"

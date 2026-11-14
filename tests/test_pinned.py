@@ -134,6 +134,7 @@ async def releases(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[list[str]]:
     await runner.cleanup()
 
 
+@pytest.mark.outside
 async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is_not_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
@@ -152,6 +153,7 @@ async def test_install_fetches_the_pinned_build_once_and_replaces_a_copy_that_is
     assert pinned.claude(config_dir).read_bytes() == RELEASE and len(releases) == 2
 
 
+@pytest.mark.outside
 async def test_a_download_that_is_not_the_pinned_release_is_refused_and_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
     pin_bytes(monkeypatch, OTHER)
     config_dir = tmp_path / "brain"
@@ -160,6 +162,7 @@ async def test_a_download_that_is_not_the_pinned_release_is_refused_and_leaves_n
     assert list(pinned.claude(config_dir).parent.iterdir()) == []
 
 
+@pytest.mark.outside
 async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
@@ -169,6 +172,7 @@ async def test_install_replaces_a_copy_of_the_pin_that_cannot_be_run(tmp_path: P
     assert brain_claude(config_dir) == pinned.claude(config_dir) and len(releases) == 1
 
 
+@pytest.mark.outside
 async def test_two_installs_at_once_each_write_their_own_download_and_leave_the_pin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, releases: list[str]) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"
@@ -240,6 +244,7 @@ async def stalling(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[asyncio.Eve
     await runner.cleanup()
 
 
+@pytest.mark.outside
 async def test_a_stalled_download_fails_the_install_and_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stalling: asyncio.Event) -> None:
     pin_bytes(monkeypatch, RELEASE)
     monkeypatch.setattr(pinned, "STALL_SECONDS", 0.5)
@@ -249,6 +254,7 @@ async def test_a_stalled_download_fails_the_install_and_leaves_nothing(tmp_path:
     assert stalling.is_set() and list(pinned.claude(config_dir).parent.iterdir()) == []
 
 
+@pytest.mark.outside
 async def test_an_install_cut_short_leaves_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stalling: asyncio.Event) -> None:
     pin_bytes(monkeypatch, RELEASE)
     config_dir = tmp_path / "brain"

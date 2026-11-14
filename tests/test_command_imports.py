@@ -10,6 +10,9 @@ import pytest
 
 from conftest import SYSTEM_PATH
 
+
+pytestmark = pytest.mark.outside
+
 # Run in a fresh interpreter, since this one has Pipecat loaded by other tests: any import that reaches it, at the
 # CLI's top or inside the command, fails here, whichever module it runs through. The modules are written to a file,
 # so whatever the command prints is the command's own. Each command's reach past this machine has a stand-in: `log`

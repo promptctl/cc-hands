@@ -1,4 +1,4 @@
-# Every PR into master runs `make check` on the macOS a release builds on, and is refused if it is built on the line
+# Every PR into master runs `make check-all` on the macOS a release builds on, and is refused if it is built on the line
 # master was rewound away from on 2026-10-15. The check named `test` is required twice: on the PR, then in master's
 # merge queue on the commit master will be with the PR merged. A red one cannot merge, and release.yml publishes only
 # commits on master, so this is its gate.
@@ -122,10 +122,12 @@ jobs:
           for plists in "$preferences" "$account"; do
             echo "$policy" | sudo plutil -convert xml1 -o "$plists/com.anthropic.claudecode.plist" -
           done
-      # [LAW:one-source-of-truth] the suite is the Makefile's check.
-      - name: make check
+      # [LAW:one-source-of-truth] the suite is the Makefile's check-all: everything, with no layer's hold. `make check`, the unit
+      # layer under its hold, is what an agent runs; this job has no minute to run it beside (a 20-minute limit, 18.7 min
+      # taken), so CI runs the layers when the suite is split into tiers.
+      - name: make check-all
         id: check
-        run: make check
+        run: make check-all
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers: `gh run view --log` reads
       # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed. continue-on-error for
       # the same reason: a report that cannot be read shows red on its own step and does not gate the suite's verdict. --no-sync:

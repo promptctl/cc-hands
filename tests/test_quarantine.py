@@ -61,6 +61,7 @@ class Reports:
         self.reports.append(report)
 
 
+@pytest.mark.outside
 def test_a_quarantined_failure_in_any_phase_is_an_expected_failure_with_its_ticket_and_date(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(FAILURES)
     reports = Reports()
@@ -71,6 +72,7 @@ def test_a_quarantined_failure_in_any_phase_is_an_expected_failure_with_its_tick
     assert all(report.wasxfail == "quarantined by t-1 until 2026-01-12" for report in skipped.values())
 
 
+@pytest.mark.outside
 def test_the_original_traceback_survives_the_rewrite(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(FAILURES)
     reports = Reports()
@@ -81,6 +83,7 @@ def test_the_original_traceback_survives_the_rewrite(pytester: pytest.Pytester) 
     assert "the daemon did not stop" in texts["teardown"]
 
 
+@pytest.mark.outside
 def test_a_quarantined_run_exits_green(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(FAILURES)
     assert pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS]).ret == 0
@@ -137,6 +140,7 @@ def test_an_until_that_is_not_the_one_spelling_of_a_date_stops_the_run(pytester:
     ran.stderr.fnmatch_lines([f'*is quarantined until "{until}", which is not a date*'])
 
 
+@pytest.mark.outside
 def test_a_marker_on_a_module_or_a_class_quarantines_each_test_under_it(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
@@ -159,13 +163,14 @@ def test_a_marker_on_a_module_or_a_class_quarantines_each_test_under_it(pytester
     assert len([report for report in reports.reports if report.skipped]) == 3
 
 
-@pytest.mark.parametrize(("until", "stops"), [("2026-01-09", True), ("2026-01-10", False), ("2026-01-17", False), ("2026-01-18", True)])
+@pytest.mark.parametrize(("until", "stops"), [("2026-01-09", True), pytest.param("2026-01-10", False, marks=pytest.mark.outside), pytest.param("2026-01-17", False, marks=pytest.mark.outside), ("2026-01-18", True)])
 def test_a_quarantine_holds_from_today_through_a_week_ahead_and_nothing_beyond_either_end(pytester: pytest.Pytester, until: str, stops: bool) -> None:
     pytester.makepyfile(f'import pytest\n\n@pytest.mark.quarantined("t-5", until="{until}")\ndef test_flaky():\n    assert False\n')
     ran = pytester.runpytest_inprocess("-p", "no:asyncio", plugins=[HOOKS])
     assert (ran.ret != 0) is stops
 
 
+@pytest.mark.outside
 def test_a_quarantined_run_is_green_reports_each_failure_in_the_summary_and_a_pass_as_one(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(FAILURES)
     ran = pytester.runpytest_inprocess("-p", "no:asyncio", "-rxX", plugins=[HOOKS])

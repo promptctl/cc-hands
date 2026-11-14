@@ -8,12 +8,16 @@ import ctypes
 import errno
 import os
 import socket
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 # The sandbox profile a test run is held to.
 OFFLINE = Path(__file__).with_name("offline.sb")
+# What the unit layer is held to on top of OFFLINE: nothing outside the process, and the fetched weights unread.
+UNIT = Path(__file__).with_name("unit.sb")
 # The first macOS whose sandbox holds a run to OFFLINE without refusing loopback: on macOS 14, CI's macos-14 refused
 # some ten tests' binds and connects on 127.0.0.1 with EPERM on every run, under this profile and under Bazel's.
 SANDBOXED_MACOS = 15
@@ -35,30 +39,72 @@ def sandboxable(release: str) -> None:
         raise pytest.UsageError(f"the run holds itself offline with macOS's sandbox, which refuses loopback at random before macOS {SANDBOXED_MACOS}: this is macOS {release}")
 
 
-def hold() -> str:
-    """The calling process in the OFFLINE sandbox, which every process it starts inherits and none can leave, so a
-    connection a test, or any child of one, makes past loopback is refused by the OS before a packet leaves, and the
-    machine's Claude Code policy is nowhere it looks; and how it is held. It is macOS's sandbox_init, the call sandbox-exec
-    makes, on the run's own process, as Bazel's macOS sandbox holds a test with the network denied.
+@dataclass(frozen=True)
+class Unit:
+    """The unit layer's hold, which a run takes in place of OFFLINE: `weights` are the folders its fetched speech models are
+    read from, each refused to the run so no test loads a model."""
+
+    weights: tuple[Path, ...]
+
+
+def hold(unit: Unit | None = None) -> str:
+    """The calling process in the OFFLINE sandbox, or with `unit`, the unit layer's, which every process it starts inherits
+    and none can leave, so a connection a test, or any child of one, makes past loopback is refused by the OS before a
+    packet leaves, and the machine's Claude Code policy is nowhere it looks; and how it is held. The unit layer's is
+    refused more: a process started, a socket bound or connected anywhere, a fetched weight read. It is macOS's
+    sandbox_init, the call sandbox-exec makes, on the run's own process, as Bazel's macOS sandbox holds a test with the
+    network denied.
 
     [LAW:single-enforcer] what is proven is what the profile promises, a connection past loopback refused, loopback
-    open and no policy found, not that this call applied it: a run started inside a held one, as wake-training's test of
-    its own conftest starts one, is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process
-    held already.
+    open and no policy found (the unit layer's: loopback closed, a process start and each weights folder refused), not
+    that this call applied it: a run started inside a held one, as wake-training's test of its own conftest starts one,
+    is held by its parent's sandbox, and macOS 15 refuses a second sandbox_init in a process held already.
     [LAW:no-silent-failure] a run that is not so held stops before any test, with the OS's reason, whether the run was in
     a sandbox already, sandbox-exec's or Claude Code's sandboxed Bash among them, and which part of the promise failed."""
+    # A folder the sandbox refuses answers as absent to a look afterwards, and one that is not there holds no weight to refuse.
+    roots = () if unit is None else tuple(root.resolve() for root in unit.weights if root.exists())
+    profile = OFFLINE.read_text() if unit is None else OFFLINE.read_text() + UNIT.read_text() + "".join(f'(deny file-read* (subpath "{_quoted(root)}"))\n' for root in roots)
+    held = f"{OFFLINE}" if unit is None else f"{OFFLINE} and {UNIT}"
     sandbox = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
     sandbox.sandbox_init.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.POINTER(ctypes.c_char_p)]
     sandbox.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     error = ctypes.c_char_p()
-    sandbox.sandbox_init(OFFLINE.read_bytes(), 0, ctypes.byref(error))
+    sandbox.sandbox_init(profile.encode(), 0, ctypes.byref(error))
     refused, looped, found = _refused(), _looped(), policy_found()
-    if not (refused and looped and not found):
-        held = bool(sandbox.sandbox_check(os.getpid(), None, 0))
+    forked, unread = (True, True) if unit is None else (_forked(), _unread(roots))
+    kept = refused and not found and (looped if unit is None else not looped and forked and unread)
+    if not kept:
+        in_one = bool(sandbox.sandbox_check(os.getpid(), None, 0))
+        more = "" if unit is None else f"; a process start refused: {forked}; weights unread: {unread}"
         raise pytest.UsageError(
-            f"the run cannot hold itself to {OFFLINE}: {error.value!r}; in a sandbox already: {held}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}"
+            f"the run cannot hold itself to {held}: {error.value!r}; in a sandbox already: {in_one}; past loopback refused: {refused}; loopback open: {looped}; Claude Code policy found: {found}{more}"
         )
-    return f"{OFFLINE}" if error.value is None else f"{OFFLINE}, by the sandbox the run started in: sandbox_init said {error.value.decode()!r}"
+    return held if error.value is None else f"{held}, by the sandbox the run started in: sandbox_init said {error.value.decode()!r}"
+
+
+def _quoted(path: Path) -> str:
+    """`path` as a sandbox profile's string holds it."""
+    return str(path).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _forked() -> bool:
+    """Whether the OS refuses this process a child."""
+    try:
+        subprocess.run(["/usr/bin/true"], check=False)
+    except PermissionError:
+        return True
+    return False
+
+
+def _unread(roots: tuple[Path, ...]) -> bool:
+    """Whether the OS refuses this process a look at each of `roots`."""
+    for root in roots:
+        try:
+            os.stat(root)
+        except PermissionError:
+            continue
+        return False
+    return True
 
 
 def policy_found() -> list[str]:

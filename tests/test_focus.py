@@ -193,6 +193,7 @@ async def test_the_session_the_focus_stood_in_for_is_on_the_calls_event(tmp_path
     ]
 
 
+@pytest.mark.outside
 async def test_a_call_with_arguments_the_tool_does_not_take_is_refused_as_the_tool_would_refuse_it(tmp_path: Path) -> None:
     home = Home(tmp_path / "home")
     sessions = await two_sessions(tmp_path, [])

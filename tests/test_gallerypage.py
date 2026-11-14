@@ -142,6 +142,7 @@ async def page() -> AsyncGenerator[Page]:
         yield Page(client, voices, levels, desk, speaker, own, recorded)
 
 
+@pytest.mark.outside
 async def test_the_page_is_served_and_its_reads_and_choices_need_the_phones_key(page: Page) -> None:
     shown = await page.client.get("/gallery")
     assert shown.status == 200 and "hands' voices and options" in await shown.text()
@@ -155,6 +156,7 @@ async def test_the_page_is_served_and_its_reads_and_choices_need_the_phones_key(
     assert [event.outcome for event in page.events("gallery.read")] == ["failed"]
 
 
+@pytest.mark.outside
 async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page: Page) -> None:
     page.levels.level = "engaged"
     response = await page.client.get("/gallery/state", headers=KEYED)
@@ -169,6 +171,7 @@ async def test_the_read_lists_every_voice_the_speaking_one_and_the_options(page:
     assert (read.outcome, read.facts["speaking_in"], read.facts["level"], read.facts["modality"]) == ("ok", "charles", "engaged", "screen")
 
 
+@pytest.mark.outside
 async def test_hearing_a_voice_says_it_once_and_names_the_voice_in_the_event(page: Page) -> None:
     response = await page.client.post("/gallery/hear", headers=KEYED, json={"voice": "Bill Boerst"})
     assert response.status == 200
@@ -178,6 +181,7 @@ async def test_hearing_a_voice_says_it_once_and_names_the_voice_in_the_event(pag
     assert (hear.outcome, hear.facts["heard"], hear.facts["speaking_in"]) == ("ok", "bill_boerst", "charles")
 
 
+@pytest.mark.outside
 async def test_a_voice_name_hands_cannot_read_is_refused_and_nothing_is_heard(page: Page) -> None:
     response = await page.client.post("/gallery/hear", headers=KEYED, json={"voice": "Zed!"})
     assert response.status == 400
@@ -186,6 +190,7 @@ async def test_a_voice_name_hands_cannot_read_is_refused_and_nothing_is_heard(pa
     assert [hear.outcome for hear in page.events("gallery.hear")] == ["failed"]
 
 
+@pytest.mark.outside
 async def test_a_voice_that_cannot_be_fetched_is_a_503_and_says_why(page: Page) -> None:
     page.voices.failure = OSError("no network for the voice's embedding")
     response = await page.client.post("/gallery/hear", headers=KEYED, json={"voice": "charles"})
@@ -194,6 +199,7 @@ async def test_a_voice_that_cannot_be_fetched_is_a_503_and_says_why(page: Page) 
     assert [hear.outcome for hear in page.events("gallery.hear")] == ["failed"]
 
 
+@pytest.mark.outside
 async def test_choosing_a_voice_keeps_it_as_the_one_hands_speaks_in(page: Page) -> None:
     response = await page.client.post("/gallery/use", headers=KEYED, json={"voice": "mary"})
     assert response.status == 200
@@ -203,6 +209,7 @@ async def test_choosing_a_voice_keeps_it_as_the_one_hands_speaks_in(page: Page) 
     assert (use.outcome, use.facts["voice"]) == ("ok", "mary")
 
 
+@pytest.mark.outside
 async def test_a_body_that_is_not_a_request_is_refused_with_what_it_should_be(page: Page) -> None:
     response = await page.client.post("/gallery/use", headers=KEYED, data=b"not json")
     assert response.status == 400
@@ -212,6 +219,7 @@ async def test_a_body_that_is_not_a_request_is_refused_with_what_it_should_be(pa
     assert page.voices.used_asked == []
 
 
+@pytest.mark.outside
 async def test_a_listening_level_is_chosen_and_its_readback_is_the_one_the_voice_tool_gives(page: Page) -> None:
     response = await page.client.post("/gallery/level", headers=KEYED, json={"level": "wake word"})
     body = await response.json()
@@ -221,12 +229,14 @@ async def test_a_listening_level_is_chosen_and_its_readback_is_the_one_the_voice
     assert (choice.outcome, choice.facts["level"], choice.facts["was"]) == ("ok", "wake word", "off")
 
 
+@pytest.mark.outside
 async def test_a_level_hands_does_not_listen_at_is_refused(page: Page) -> None:
     response = await page.client.post("/gallery/level", headers=KEYED, json={"level": "loud"})
     assert response.status == 400
     assert page.levels.chosen == []
 
 
+@pytest.mark.outside
 async def test_a_modality_is_switched_and_one_outside_the_two_is_refused(page: Page) -> None:
     response = await page.client.post("/gallery/modality", headers=KEYED, json={"modality": "audio-only"})
     assert await response.json() == {"modality": "audio-only"}
@@ -237,6 +247,7 @@ async def test_a_modality_is_switched_and_one_outside_the_two_is_refused(page: P
     assert [choice.outcome for choice in page.events("gallery.modality")] == ["ok", "failed"]
 
 
+@pytest.mark.outside
 async def test_a_model_is_switched_once_its_line_is_heard_and_names_the_switch(page: Page) -> None:
     response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"})
     assert response.status == 200
@@ -248,6 +259,7 @@ async def test_a_model_is_switched_once_its_line_is_heard_and_names_the_switch(p
     assert (switch.outcome, switch.facts["model"], switch.facts["switching"]) == ("ok", "claude-opus-5-5", True)
 
 
+@pytest.mark.outside
 async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_model(page: Page) -> None:
     # The restart waits on the line being heard: a barge-in over it leaves the edit unkept, as the voice tool does.
     page.speaker.heard_in_full = False
@@ -259,6 +271,7 @@ async def test_a_model_switch_talked_over_is_refused_and_hands_stays_on_its_mode
     assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
 
 
+@pytest.mark.outside
 async def test_two_model_switches_at_once_are_made_one_after_the_other(page: Page) -> None:
     # Each weighs the file as the one before it kept it: never two weighed and open at once.
     page.speaker.hold = 0.05
@@ -271,6 +284,7 @@ async def test_two_model_switches_at_once_are_made_one_after_the_other(page: Pag
     assert sorted(page.own.kept) == ["claude-opus-5-5", "claude-sonnet-5-5"]
 
 
+@pytest.mark.outside
 async def test_a_model_the_weighing_refuses_is_a_400_and_nothing_is_said(page: Page) -> None:
     page.own.refused = Rejected("hands runs on claude-sonnet-5-5 already")
     response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-sonnet-5-5"})
@@ -280,6 +294,7 @@ async def test_a_model_the_weighing_refuses_is_a_400_and_nothing_is_said(page: P
     assert page.own.kept == []
 
 
+@pytest.mark.outside
 async def test_a_model_the_machine_cannot_keep_is_a_503_and_says_why(page: Page) -> None:
     page.own.refused = OSError("config.toml is not writable")
     response = await page.client.post("/gallery/model", headers=KEYED, json={"model": "claude-opus-5-5"})
@@ -290,6 +305,7 @@ async def test_a_model_the_machine_cannot_keep_is_a_503_and_says_why(page: Page)
     assert (switch.outcome, switch.facts["switching"]) == ("failed", False)
 
 
+@pytest.mark.outside
 async def test_the_library_search_returns_matches_and_records_the_listing(page: Page) -> None:
     response = await page.client.get("/gallery/library?q=vctk&limit=5", headers=KEYED)
     assert await response.json() == {"voices": ["vctk/p225"], "listed_at": 3.0, "from_cache": True}

@@ -204,6 +204,7 @@ def holding(home: Path, then: str) -> subprocess.Popen[str]:
 
 # To a run of its own, hands running is no fault, so the lock's answer is info and is never filed. To a restart's run,
 # the process that held the home, it lost the lock, and hands ends with it: an error, filed.
+@pytest.mark.outside
 @pytest.mark.parametrize(("run", "level", "outcome"), [(["run"], "info", "ok"), (["run", "--restarted", "0"], "error", "failed")])
 def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbeat_and_sockets(run: list[str], level: str, outcome: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     import shutil
@@ -246,6 +247,7 @@ def test_a_second_run_on_a_home_a_daemon_holds_is_refused_and_leaves_its_heartbe
         shutil.rmtree(root)
 
 
+@pytest.mark.outside
 def test_a_holder_that_lets_go_between_the_two_asks_is_asked_again_and_counted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from hands.sessions import wide
 
@@ -268,6 +270,7 @@ def test_a_holder_that_lets_go_between_the_two_asks_is_asked_again_and_counted(t
         holder.wait()
 
 
+@pytest.mark.outside
 def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path: Path) -> None:
     # Held, the process execs into hands again, as a restart's run does, and holds the home there too, through the one
     # descriptor it already had on the lock.

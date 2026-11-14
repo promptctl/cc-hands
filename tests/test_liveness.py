@@ -65,6 +65,7 @@ def test_a_listed_session_whose_file_stayed_gone_moved_on_if_another_session_hol
     assert observations([cleared, dead, current], records, started, unfiled) == ([Attached(current), MovedOn(cleared), Died(dead)], unfiled)
 
 
+@pytest.mark.outside
 def test_the_kernel_says_when_a_running_process_started_whoever_runs_it_and_leaves_out_a_dead_one(dead_pid: Callable[[], int]) -> None:
     before = time.time()
     child = subprocess.Popen(["sleep", "5"])
@@ -100,6 +101,7 @@ def test_an_unreadable_file_is_removed_and_a_staging_file_is_not_read(tmp_path: 
     assert (home.memberships / "half.tmp").exists()
 
 
+@pytest.mark.outside
 def test_a_dead_sessions_file_is_kept_when_a_new_process_has_rewritten_it(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     write_membership(home, member("a", os.getpid()))
@@ -109,6 +111,7 @@ def test_a_dead_sessions_file_is_kept_when_a_new_process_has_rewritten_it(dead_p
     assert not home.membership(SessionId("a")).exists()
 
 
+@pytest.mark.outside
 async def test_a_sweep_attaches_the_running_ends_the_dead_and_the_reused_and_speaks_each_death_once(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     running, dead, reused = member("running", os.getpid()), member("dead", dead_pid()), member("reused", os.getppid())
@@ -148,6 +151,7 @@ async def test_a_restart_lists_the_session_a_cleared_process_holds_now_not_the_o
         await asyncio.wait_for(registry.story(), 0.1)
 
 
+@pytest.mark.outside
 async def test_a_session_whose_end_hook_was_lost_after_its_file_went_is_ended_by_the_next_sweep(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     registry = new_sessions(clock=VirtualClock())
@@ -181,6 +185,7 @@ def test_a_file_naming_no_possible_pid_is_removed_before_the_process_table_is_as
     assert not home.membership(SessionId("bad")).exists()
 
 
+@pytest.mark.outside
 async def test_after_a_reboot_the_files_of_sessions_that_did_not_survive_are_removed_without_a_word(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     home = Home(tmp_path)
     for name in ("one", "two", "three"):

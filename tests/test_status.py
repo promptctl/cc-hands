@@ -237,6 +237,7 @@ def test_each_verdict_is_said_plainly(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.outside
 def test_looking_at_the_heartbeat_judges_it_against_the_process_table(dead_pid: Callable[[], int], tmp_path: Path) -> None:
     path = tmp_path / "status.json"
     now = datetime.now(UTC)
@@ -293,6 +294,7 @@ def test_a_relative_hands_home_is_refused_but_never_stands_in_the_way_of_an_expl
     assert "HANDS_HOME must be an absolute path, got 'relhome'" in capsys.readouterr().err
 
 
+@pytest.mark.outside
 def test_the_daemon_is_running_only_if_its_pid_is_held_by_the_process_that_started_then(dead_pid: Callable[[], int]) -> None:
     now = datetime.now(UTC)
     assert heartbeat.running(beat(pid=os.getpid(), started_at=now))
@@ -324,6 +326,7 @@ async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> Non
         await off_loop(lambda: (_ for _ in ()).throw(ValueError("no models")), "failure")
 
 
+@pytest.mark.outside
 async def test_a_process_exits_without_waiting_for_work_left_running_off_the_loop() -> None:
     script = (
         "import asyncio, time\n"

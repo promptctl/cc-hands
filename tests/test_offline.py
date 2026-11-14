@@ -21,6 +21,7 @@ def test_a_connection_a_test_makes_past_loopback_is_refused_by_the_os() -> None:
     assert refused.value.errno == errno.EPERM
 
 
+@pytest.mark.outside
 def test_a_connection_a_test_s_child_makes_past_loopback_is_refused_by_the_os() -> None:
     tried = subprocess.run(["nc", "-zv", "-w", "5", *map(str, UNROUTED)], capture_output=True, text=True, timeout=30)
     assert tried.returncode != 0
@@ -32,6 +33,7 @@ def test_a_name_off_this_machine_is_not_resolved() -> None:
         socket.getaddrinfo("example.com", 443)
 
 
+@pytest.mark.outside
 def test_loopback_is_reachable_by_address_and_by_localhost() -> None:
     with socket.create_server(("127.0.0.1", 0)) as server:
         port = server.getsockname()[1]
@@ -39,6 +41,7 @@ def test_loopback_is_reachable_by_address_and_by_localhost() -> None:
             socket.create_connection((host, port), timeout=5).close()
 
 
+@pytest.mark.outside
 def test_the_machine_s_claude_code_policy_is_not_found_by_a_test_or_its_child() -> None:
     assert policy_found() == []
     assert not os.access(POLICY_FOLDER, os.F_OK)
@@ -102,7 +105,20 @@ def test_a_macos_whose_sandbox_refuses_loopback_at_random_stops_the_run_saying_s
         sandboxable("14.8.9")
 
 
+@pytest.mark.outside
 def test_a_run_started_inside_the_held_run_is_held_and_says_how() -> None:
     held = subprocess.run([sys.executable, "-c", "import offline; print(offline.hold())"], cwd=Path(offline.__file__).parent, capture_output=True, text=True, timeout=30)
     assert held.returncode == 0, held.stderr
     assert held.stdout.startswith(str(offline.OFFLINE)), held.stdout
+
+
+def test_a_path_is_quoted_as_a_profile_string_holds_it() -> None:
+    assert offline._quoted(Path('/a "b"/c\\d')) == '/a \\"b\\"/c\\\\d'  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.outside
+def test_a_unit_hold_taken_inside_the_offline_held_run_stops_it_saying_what_is_open() -> None:
+    code = "import offline, pathlib; offline.hold(offline.Unit((pathlib.Path('.'),)))"
+    held = subprocess.run([sys.executable, "-c", code], cwd=Path(offline.__file__).parent, capture_output=True, text=True, timeout=30)
+    assert held.returncode != 0
+    assert "loopback open: True" in held.stderr and "a process start refused: False" in held.stderr, held.stderr

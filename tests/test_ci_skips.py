@@ -38,6 +38,7 @@ def test_never_collected():
 HOOKS = SimpleNamespace(pytest_runtest_makereport=conftest.pytest_runtest_makereport, pytest_make_collect_report=conftest.pytest_make_collect_report)
 
 
+@pytest.mark.outside
 def test_a_test_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CI", "true")
     pytester.makepyfile(SUITE)
@@ -55,6 +56,7 @@ def test_a_module_skipped_in_ci_fails_the_run_with_its_reason(pytester: pytest.P
     ran.stdout.fnmatch_lines(["*no mlx on this machine, in CI, where every test runs*"])
 
 
+@pytest.mark.outside
 def test_a_skip_outside_ci_is_skipped(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CI", raising=False)
     pytester.makepyfile(test_suite=SUITE, test_skipped_module=SKIPPED_MODULE)

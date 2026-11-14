@@ -133,6 +133,7 @@ def test_a_test_reaches_no_hub_for_a_weight() -> None:
         huggingface_hub.HfApi().model_info(SMART_TURN)
 
 
+@pytest.mark.outside
 def test_a_child_reaches_no_hub_for_a_weight_either() -> None:
     asked = subprocess.run([sys.executable, "-c", f"import huggingface_hub; huggingface_hub.HfApi().model_info({SMART_TURN!r})"], capture_output=True, text=True)
 
@@ -192,6 +193,7 @@ def test_a_fetch_process_that_fails_is_said_to_have_failed_as_it_did(returncode:
     assert failed(returncode) == said
 
 
+@pytest.mark.outside
 def test_a_run_with_pytest_s_cache_off_stops_saying_it_fetches_into_it(pytester: pytest.Pytester) -> None:
     pytester.makepyfile("def test_passed():\n    pass\n")
     ran = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", plugins=[SimpleNamespace(pytest_configure=conftest.pytest_configure)])

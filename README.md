@@ -443,7 +443,8 @@ uv run hands phone                      # the addresses a phone opens the talk p
                                         # there with `lit rank`; its High, Normal, and Low move it into its epic's topic's `<topic> - high/normal/low` epic
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict
-make check                              # pytest, pyright, fritter's Go tests and wake-training's suite; fails when any of them fails
+make check                              # the unit layer (tests that need nothing outside the process) and pyright; docs/testing.md
+make check-all                          # pytest, pyright, fritter's Go tests and wake-training's suite; fails when any of them fails: what CI runs
                                         # each test run holds itself offline in macOS's sandbox (tests/offline.py), hands' once its fetches are done, so it needs macOS 15 or later
 ```
 

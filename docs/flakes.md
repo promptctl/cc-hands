@@ -29,4 +29,4 @@ def test_the_flaky_one() -> None: ...
   that applies to a test is checked, the nearer one not hiding an expired one above it.
 - Do not retry a quarantined test to make it green.
 
-Layers and where a new test belongs: `laws:testing`.
+Layers and where a new test belongs: docs/testing.md.

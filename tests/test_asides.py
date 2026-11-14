@@ -245,6 +245,7 @@ def events(recorded: list[Entry]) -> list[WideEvent]:
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "brain.aside"]
 
 
+@pytest.mark.outside
 async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_answered_by_its_own_reply(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
@@ -265,6 +266,7 @@ async def test_a_side_question_is_the_brains_turn_forked_through_the_proxy_and_a
     assert isinstance(event.facts["forked"], str)
 
 
+@pytest.mark.outside
 async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
@@ -286,6 +288,7 @@ async def test_a_side_question_with_no_answer_fails_saying_why(brain: Callable[[
 # A refusal fails the question at once, saying what the API answered: nothing asks again. Those on record: a login at
 # its limit told to wait days, a login expired, and an organization with subscription access disabled; and an overload.
 # The limit and the overload are the two the proxy would hold final, and pass on as its own 502, for Claude Code.
+@pytest.mark.outside
 @pytest.mark.parametrize(("status", "error", "headers"), [
     (403, "permission_error", {}),
     (529, "overloaded_error", {}),
@@ -305,6 +308,7 @@ async def test_a_refused_side_question_fails_at_once_with_what_the_api_said(brai
     assert len(rig.asked) == 2
 
 
+@pytest.mark.outside
 async def test_a_side_question_the_api_refuses_is_logged_by_the_proxy_as_hands_bug_naming_the_message(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
@@ -385,6 +389,7 @@ def test_an_empty_reply_is_left_out_and_no_marker_lands_on_a_thinking_block() ->
     assert cast(list[object], thought["messages"])[1] == {"role": "assistant", "content": [text("So.", cache_control=MARK), {"type": "thinking", "thinking": "hm", "signature": "sig"}]}
 
 
+@pytest.mark.outside
 async def test_a_reply_that_breaks_off_fails_the_question_and_nothing_else(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
@@ -401,6 +406,7 @@ async def test_a_reply_that_breaks_off_fails_the_question_and_nothing_else(brain
     assert await rig.asides.ask(AsideKind.LINE, "again", Deadline(10)) == "Hello."
 
 
+@pytest.mark.outside
 async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs_from_its_turn(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
@@ -436,6 +442,7 @@ async def test_questions_wait_for_a_main_turn_side_by_side_and_a_time_limit_runs
     assert by["left"].outcome == "cancelled" and "queued_ms" not in by["left"].facts
 
 
+@pytest.mark.outside
 async def test_a_questions_own_request_is_part_of_its_unit_of_work(brain: Callable[[list[Entry]], Awaitable[Brain]]) -> None:
     recorded: list[Entry] = []
     rig = await brain(recorded)
