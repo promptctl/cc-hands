@@ -44,7 +44,7 @@ class UserWords(DataFrame, UninterruptibleFrame):
 
 
 class Unkept(LLMContext):
-    """A message list that keeps nothing written to it: what both aggregators write to, so nothing grows with the turns.
+    """A message list that keeps nothing written to it, a null object: what both aggregators write to, so nothing grows with the turns.
 
     [LAW:one-source-of-truth] the brain's transcript in Claude Code is the conversation; the audit log is hands' record of it.
     Every write Pipecat makes ends in one of these three (1.10.0): `transform_messages` sets, and the image and audio

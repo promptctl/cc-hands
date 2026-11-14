@@ -5,7 +5,7 @@ Markdown, code, diffs, tables, paths, hashes and URLs cannot be heard as written
 of syllables nobody can follow. Asking a model to write for the ear does not settle it: that is a rule held
 as an instruction, obeyed or not, checked by nobody — and on this machine the summariser has already been
 heard saying a bare file name, while session titles never passed the instruction at all. So spoken form is
-enforced where it can be, at the one seam every utterance crosses on its way out [LAW:single-enforcer].
+enforced where it can be, by text normalization at the one seam every utterance crosses on its way out [LAW:single-enforcer].
 
 Pure, and stdlib only, because it is the domain: what a developer who is not looking can hear. A leak is
 returned rather than logged, because logging is an effect and this is not the edge [LAW:effects-at-boundaries].

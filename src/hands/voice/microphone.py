@@ -208,7 +208,7 @@ class Playout:
 
 
 class NoInput:
-    """The microphone's stream when the system has no input device: nothing to start, stop, or close.
+    """The microphone's stream when the system has no input device, a null object: nothing to start, stop, or close.
 
     [LAW:dataflow-not-control-flow] the transport opens, starts, stops, and closes the microphone the same way with
     or without one; only this value differs.

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def replace_whole(path: Path, text: str, mode: int) -> None:
-    """Write text to a file beside path, give it mode, and rename it over path."""
+    """Atomically write text to a file beside path, give it mode, and rename it over path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, staged = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".partial")
     try:

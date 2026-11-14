@@ -6,7 +6,8 @@ one of the nine needs in [needs.md](needs.md); the work that delivers it is plan
 [features.md](features.md). The catalogue of what goes wrong, and the rule each entry
 produced, is [failure-modes.md](failure-modes.md).
 
-The design has one organizing idea: **the pure core decides, the edges act, and every
+The design has one organizing idea, functional core and imperative shell:
+**the pure core decides, the edges act, and every
 fact has one home.** State, events, and effects are typed unions. The reducer that turns
 an event into new state and a list of effects has no I/O, so every lifecycle transition
 is a unit test with no mocks. The adapters that perform the effects are thin, and there

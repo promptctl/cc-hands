@@ -1,4 +1,4 @@
-"""The brain's context kept small by rule: which tool results are old enough to go as one line, and what the line says.
+"""The brain's context kept small by rule, as a variant of context editing: which tool results are old enough to go as one line, and what the line says.
 
 A tool result goes as one line once it is more than `every` turns old, whatever its length, and results go in batches
 of `every` turns, so the history the API's cache holds changes once a batch and not every turn. What the line says is asked as a side

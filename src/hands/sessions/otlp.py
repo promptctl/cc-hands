@@ -189,7 +189,7 @@ def _said(body: Body) -> Mapping[str, Fact]:
 
 
 class _Closed:
-    pass
+    """The poison pill that marks the end of a lane's queue."""
 
 
 _CLOSED = _Closed()
