@@ -233,7 +233,7 @@ async def test_a_hold_that_ends_is_heard_through_the_silence_after_it_and_told_w
     await rig.ended(HELD, "sent")
     *_, whole = hearings(rig.recorded)
     # The words after it closed cut nothing: the hold is no longer open.
-    assert (whole.facts["fate"], whole.facts["words"], whole.facts["seconds"], whole.facts["cut"]) == ("sent", said("the parser is fixed"), 0.48, False)
+    assert (whole.facts["fate"], whole.facts["words"], whole.facts["seconds"], whole.facts["barge_in"]) == ("sent", said("the parser is fixed"), 0.48, False)
     # The hold's last sample is in the run's fourth chunk, so the silence runs to the step that commits it: the run fed
     # through 12896 samples.
     assert whole.facts["silence"] == 0.326
