@@ -83,8 +83,12 @@ def held(config: pytest.Config) -> bool:
     return config.getoption("layer", None) is not None
 
 
+CALLED = pytest.StashKey[pytest.TestReport]()
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--layer", choices=LAYERS, help="hold the run to the unit layer (tests/offline.py): `unit` runs the tests not marked outside, `audit` those that are, each expected to be refused")
+    parser.addoption("--record-decodes", action="store_true", help="a test that passes on the real pair writes the recording of the run it made (tests/recordings.py)")
 
 
 def refused[R: pytest.TestReport](report: R, layer: str | None) -> R:
@@ -99,7 +103,11 @@ def refused[R: pytest.TestReport](report: R, layer: str | None) -> R:
 # skipped as it is collected.
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item: pytest.Item) -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    return refused(in_ci((yield)), item.config.getoption("layer", None))
+    report = refused(in_ci((yield)), item.config.getoption("layer", None))
+    # What a fixture's teardown can ask of the test it served: whether it passed.
+    if report.when == "call":
+        item.stash[CALLED] = report
+    return report
 
 
 # A quarantine may end no more than this many days after the day it is written.

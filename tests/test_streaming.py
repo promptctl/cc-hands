@@ -4,10 +4,10 @@ conversation would close, none in noise, and each word from the speaker who said
 
 import asyncio
 import contextlib
-import dataclasses
 import itertools
 import re
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +18,8 @@ import pytest
 import soundfile
 from loguru import logger
 
-from conftest import PAIRS, model_facts
+import recordings
+from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
@@ -532,10 +533,41 @@ def paired(pair: Any) -> Any:
     return pair
 
 
+@pytest.fixture
+def real(request: pytest.FixtureRequest, pair: Any) -> Iterator[Callable[[str], Session]]:
+    """The real pair's session for each run, by name, as a run begins one. With --record-decodes, a test that passes writes
+    the recording of each run it made (tests/recordings.py), the only way one is made."""
+    recorders = dict[str, recordings.Recorder]()
+
+    def of(name: str) -> Session:
+        assert name not in recorders, f"the run {name!r} begun twice in one test: its first recording would be lost"
+        pair.reset()
+        recorders[name] = recordings.Recorder(pair)
+        return recorders[name]
+
+    yield of
+    # pytest types `node` as unknown on a fixture request, whatever the fixture's scope.
+    called = cast(pytest.Item, request.node).stash.get(CALLED, None)  # pyright: ignore[reportUnknownMemberType]
+    if request.config.getoption("record_decodes") and called is not None and called.passed:
+        for name, recorder in recorders.items():
+            recordings.write(name, recorder.recording())
+
+
+@pytest.fixture(params=["recorded", pytest.param("real", marks=pytest.mark.outside)])
+def session(request: pytest.FixtureRequest) -> Callable[[str], Session]:
+    """The session each run, by name, is heard through, in the unit layer or outside it. `recorded` serves what the real pair
+    decoded for the run; `real` is the pair. The test asserts the same of both, which is what holds the recording to the
+    pair: a recording the pair no longer decodes as fails a `real` case, and a run fed other than it was recorded from fails
+    a `recorded` one."""
+    return recordings.read if request.param == "recorded" else request.getfixturevalue("real")
+
+
 def fixture_clips(name: str) -> list[Samples]:
     audio, rate = cast(tuple[Samples, int], soundfile.read(FIXTURES / name, dtype="float32"))  # pyright: ignore[reportUnknownMemberType]  (untyped in soundfile)
     assert rate == streaming.RATE
-    silent = np.convolve(audio == 0, np.ones(GAP), mode="valid") == GAP
+    # Every window of GAP samples that is all exact zeros, from the running count of zeros: a sliding window's sum in one pass.
+    zeros = np.concatenate([[0], np.cumsum(audio == 0)])
+    silent = zeros[GAP:] - zeros[:-GAP] == GAP
     gaps = np.flatnonzero(np.diff(np.concatenate([[False], silent, [False]]).astype(np.int8)))
     edges = [0, *(edge + offset for edge, offset in zip(gaps, [0, GAP - 1] * (len(gaps) // 2))), len(audio)]
     return [audio[start:end] for start, end in zip(edges[0::2], edges[1::2])]
@@ -605,9 +637,8 @@ READER = "one_reader_quiet.flac"
 STOP = np.zeros(round(engaged.STOP_SECS * streaming.RATE), np.float32)
 
 
-@pytest.mark.outside
-def test_every_clip_engaged_conversation_would_close_has_words_heard_while_it_was_open(paired: Session) -> None:
-    live = Live(paired)
+def test_every_clip_engaged_conversation_would_close_has_words_heard_while_it_was_open(session: Callable[[str], Session]) -> None:
+    live = Live(session("reader-first-8"))
     heard = [live.spoken(np.concatenate([samples, STOP])) for samples in fixture_clips(READER)[:8]]
     assert all(open_ for open_, _ in heard), heard
     assert {said.speaker for open_, whole in heard for said in (*open_, *whole.words)} == {0}, heard
@@ -616,14 +647,13 @@ def test_every_clip_engaged_conversation_would_close_has_words_heard_while_it_wa
     assert heard[0][1].words[0].text.rstrip(".") == "Door was ajar"
 
 
-@pytest.mark.outside
-def test_each_clip_opens_on_its_own_first_word_not_the_last_of_the_clip_before(paired: Session) -> None:
+def test_each_clip_opens_on_its_own_first_word_not_the_last_of_the_clip_before(session: Callable[[str], Session]) -> None:
     # Clips 3 to 10 of the reading, each followed by the stop, as engaged conversation closes them. Their source text:
     # "...and found the bottle as he had been directed. But returning with the bottle, he noticed that the bolts of the
     # front door had been shot back, that the door was in fact simply on the latch. And with a flash of inspiration he
     # connected this with the stranger's room upstairs..." Clip 5 is heard and not asserted: its cut falls inside "he
     # noticed that", so the text does not say which word opens it.
-    live = Live(paired)
+    live = Live(session("reader-3-10"))
     first = {number: spoken_words(live.spoken(np.concatenate([samples, STOP]))[1].words)[0] for number, samples in enumerate(fixture_clips(READER)[2:10], 3)}
     del first[5]
     assert first == {3: (0, "and"), 4: (0, "but"), 6: (0, "that"), 7: (0, "simply"), 8: (0, "and"), 9: (0, "he"), 10: (0, "the")}
@@ -635,26 +665,24 @@ def test_each_clip_opens_on_its_own_first_word_not_the_last_of_the_clip_before(p
 NOT_SPEECH = [*fixture_clips("cough.flac"), *fixture_clips("keyboard_typing.flac")]
 
 
-@pytest.mark.outside
-def test_a_clip_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(paired: Session) -> None:
+def test_a_clip_with_no_speech_in_it_has_no_words_so_it_cuts_nothing(session: Callable[[str], Session]) -> None:
     # What a clip engaged conversation opens can hold with nobody speaking: the room, a hiss, a tap on the desk, a cough,
     # the keyboard.
     noise = np.random.default_rng(0).standard_normal(2 * streaming.RATE).astype(np.float32)
     clicks = np.where(np.arange(2 * streaming.RATE) % 4_000 == 0, 0.8, 0.0).astype(np.float32)
     clips = [np.zeros(2 * streaming.RATE, np.float32), noise * 0.01, noise * 0.056, clicks, *NOT_SPEECH]
-    live = Live(paired)
+    live = Live(session("no-speech"))
     assert [(open_, whole.words) for open_, whole in map(live.spoken, clips)] == [((), ())] * len(clips)
 
 
-@pytest.mark.outside
-def test_each_word_is_the_speaker_who_said_it_and_each_clip_closes_its_own_speakers_streams(paired: Session) -> None:
+def test_each_word_is_the_speaker_who_said_it_and_each_clip_closes_its_own_speakers_streams(session: Callable[[str], Session]) -> None:
     # Clips of two women, each speaking alone, in the order they spoke: AMI Meeting Corpus ES2004a, mixed headsets,
     # speakers FEE013 and FEE016 (CC BY 4.0, University of Edinburgh). Each clip's speaker is the one the transformers
     # path diarizing on the CPU gave it, which every word's speaker matched over all 16 clips, the run started at five
     # phases of the grid (promptctl-voice-i15t.qg8.5yl). The first six, so it stays inside the test timeout on a CPU: a
     # run's start is fed as the whole run's is, so it decides as the whole did. A later stretch alone does not: with less
     # of each voice heard, both paths take both speakers to be speaking in clip 15, and both speakers' streams say it.
-    live = Live(paired)
+    live = Live(session("ami-6"))
     ended = [whole for _, whole in map(live.spoken, fixture_clips("two_speakers_ami.flac")[:6])]
     assert [{said.speaker for said in clip.words} for clip in ended] == [{int(who)} for who in "000100"]
     # A clip where one person speaks closes their stream alone: one made from gate history carried across the close
@@ -684,26 +712,55 @@ class Timed:
 WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
 
 
-# Each woman heard alone first, then one clip of a turn of each, joined. One more clip of FEE013 before FEE016's first
-# is what gives each her own in 12 then 3 (the next test).
-@pytest.mark.outside
-@pytest.mark.parametrize(("alone", "joined"), [((1, 4), (3, 12)), ((1, 2, 4), (12, 3))], ids=["known-once", "known-twice"])
-def test_two_people_in_one_clip_come_out_as_each_persons_words(paired: Any, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
-    # Decided on when each word starts, not on its text, which is about 20% wrong on AMI.
-    timed = Timed(paired.session)
-    live = Live(dataclasses.replace(paired, session=timed))
-    clips = fixture_clips("two_speakers_ami.flac")
+AMI = "two_speakers_ami.flac"
+
+
+def spoken_alone(live: Live, alone: tuple[int, ...]) -> None:
+    """Each woman of `alone` heard alone first, a clip of her own, closed as engaged conversation closes it."""
+    clips = fixture_clips(AMI)
     for number in alone:
         live.spoken(np.concatenate([clips[number - 1], STOP]))
+
+
+def spoken_joined(live: Live, joined: tuple[int, int]) -> tuple[Ended, int]:
+    """One clip of a turn of each of `joined`, one after the other: what the clip came to, and how many samples the first
+    turn is."""
+    clips = fixture_clips(AMI)
     first, second = clips[joined[0] - 1], clips[joined[1] - 1]
-    opened, heard = live.fed, len(timed.tokens)
     _, whole = live.spoken(np.concatenate([first, second, STOP]))
-    # hands gives each person's words as theirs, each the speaker numbered by when the run first heard her, in the order
-    # each was first heard in the clip.
+    return whole, len(first)
+
+
+def each_persons_words(whole: Ended, alone: tuple[int, ...], joined: tuple[int, int]) -> list[int]:
+    """hands gives each person's words as theirs, each the speaker numbered by when the run first heard her, in the order
+    each was first heard in the clip: the speakers it gave, asserted."""
     arrived = list(dict.fromkeys(WOMAN[number] for number in alone))
     speakers = [arrived.index(WOMAN[number]) for number in joined]
     assert [said.speaker for said in whole.words] == speakers, whole.words
-    boundary = seconds(opened + len(first))
+    return speakers
+
+
+# Each woman heard alone first, then one clip of a turn of each, joined. One more clip of FEE013 before FEE016's first
+# is what gives each her own in 12 then 3 (the next test).
+TWO_PEOPLE = pytest.mark.parametrize(
+    ("name", "alone", "joined"), [("ami-known-once", (1, 4), (3, 12)), ("ami-known-twice", (1, 2, 4), (12, 3))], ids=["known-once", "known-twice"]
+)
+
+
+@pytest.mark.outside
+@TWO_PEOPLE
+def test_two_people_in_one_clip_come_out_as_each_persons_words_on_the_real_pair(real: Callable[[str], Session], pair: Any, monkeypatch: pytest.MonkeyPatch, name: str, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
+    # Decided on when each word starts, not on its text, which is about 20% wrong on AMI. The tap goes on the pair's own
+    # session, in place: a copy of the pair (`dataclasses.replace`) wraps the session's step again, and only its first
+    # decode would carry the diarizer's frames, so a recording made through it would not be the pair's.
+    timed = Timed(pair.session)
+    monkeypatch.setattr(pair, "session", timed)
+    live = Live(real(name))
+    spoken_alone(live, alone)
+    opened, heard = live.fed, len(timed.tokens)
+    whole, first = spoken_joined(live, joined)
+    speakers = each_persons_words(whole, alone, joined)
+    boundary = seconds(opened + first)
     words = [(speaker, start) for speaker, start, text in timed.tokens[heard:] if any(map(str.isalnum, text))]
     # Each person's words start in their own stretch of the clip, and nobody else's do. mlx-audio dates a word from the
     # chunk the encoder was pushed, and the encoder may still hold up to a chunk of the feed before it, so a word's start
@@ -714,12 +771,19 @@ def test_two_people_in_one_clip_come_out_as_each_persons_words(paired: Any, alon
     assert [(speaker, start) for speaker, start in words if not (start < boundary + late if speaker == speakers[0] else boundary <= start)] == [], (boundary, words)
 
 
-@pytest.mark.outside
-def test_a_newcomer_first_in_a_clip_after_one_of_the_voice_the_run_knows_is_given_that_voice_s_speaker(paired: Session) -> None:
+@TWO_PEOPLE
+def test_a_recording_of_two_people_in_one_clip_comes_out_as_each_persons_words(name: str, alone: tuple[int, ...], joined: tuple[int, int]) -> None:
+    live = Live(recordings.read(name))
+    spoken_alone(live, alone)
+    whole, _ = spoken_joined(live, joined)
+    each_persons_words(whole, alone, joined)
+
+
+def test_a_newcomer_first_in_a_clip_after_one_of_the_voice_the_run_knows_is_given_that_voice_s_speaker(session: Callable[[str], Session]) -> None:
     # The miss docs/features.md states ("Who said each word"), pinned so that a change to it fails here and the claim is
     # measured again: after FEE013's clip 1 and FEE016's clip 4, 12 then 3 gives FEE016's words, heard first, FEE013's
     # speaker. What becomes of FEE013's few words after them differs between Metal and MLX's CPU.
-    live = Live(paired)
+    live = Live(session("ami-newcomer"))
     clips = fixture_clips("two_speakers_ami.flac")
     for number in (1, 4):
         live.spoken(np.concatenate([clips[number - 1], STOP]))
@@ -727,15 +791,14 @@ def test_a_newcomer_first_in_a_clip_after_one_of_the_voice_the_run_knows_is_give
     assert whole.words[0].speaker == 0, whole.words
 
 
-@pytest.mark.outside
-def test_a_clip_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(paired: Session) -> None:
+def test_a_clip_whose_last_chunk_is_committed_by_the_last_step_of_its_silence_keeps_its_last_word(session: Callable[[str], Session]) -> None:
     # Clip 15 of the reading, "There was no answer.", runs to its last sample, and its length is the worst phase of the
     # grid: the step that commits the chunk holding its last sample commits nothing past it, so a silence one step
     # shorter leaves "answer" undecoded at the close, and it comes out in the next clip, "It was as he expected."
     first, second = fixture_clips(READER)[14:16]
     holding_last = ((len(first) - 1 + streaming.N_FFT // 2) // MEL_HOP // CHUNK + 1) * CHUNK
     assert STEP * steps(through(len(first))) == holding_last
-    live = Live(paired)
+    live = Live(session("reader-last-chunk"))
     words = [spoken_words(whole.words) for _, whole in (live.spoken(first), live.spoken(second))]
     assert (words[0][-1], words[1][0]) == ((0, "answer"), (0, "it")), words
 
@@ -757,14 +820,13 @@ KNOWN = [
 ]
 
 
-@pytest.mark.outside
-@pytest.mark.parametrize("after", SHAPES.values(), ids=SHAPES.keys())
-def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker_says_them(paired: Session, after: float) -> None:
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_turn_that_ends_in_silence_ends_on_its_last_words_and_only_its_speaker_says_them(session: Callable[[str], Session], shape: str) -> None:
     # GATING decides how a clip's last words come out. At 4, four of these end otherwise in this run: "yeah" alone,
     # "concept", "but uh", "bit better", and in engaged conversation a second speaker says "But it breaks." after the first.
-    live = Live(paired)
+    live = Live(session(f"turns-{shape}"))
     # Each fixture clip opens LEAD before its turn's first word.
-    clips = [turn(samples, LEAD, LEAD + end - start, after) for samples, (start, end, _) in zip(fixture_clips(TURNS), KNOWN, strict=True)]
+    clips = [turn(samples, LEAD, LEAD + end - start, SHAPES[shape]) for samples, (start, end, _) in zip(fixture_clips(TURNS), KNOWN, strict=True)]
     heard = [spoken_words(live.spoken(clip)[1].words) for clip in clips]
     # Its last two words, or the one of the turn that has one.
     ends = [(len({speaker for speaker, _ in words}), [word for _, word in words][-2:]) for words in heard]

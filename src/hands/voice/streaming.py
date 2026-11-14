@@ -533,13 +533,15 @@ class _Paired:
         with the session's own function, factor and threshold. Thresholding every chunk taken at once is the same as one
         by one: a chunk is a whole number of factor frames (line 104, `chunk_mel = (...) * self.factor`), so no average
         spans two chunks, and the frames a speaker is active in are those their stream heard."""
-        import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
-        from mlx_audio.stt.models.nemotron_asr.speaker_streaming import speaker_activity  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
-
         session = self.session
         push = session._push_features
 
         def pushed(mel: Any, probs: Any, *, final: bool = False) -> Any:
+            # Imported where a chunk is taken, not where this is built: mlx-audio's import costs ~1.8 s, which a `_Paired`
+            # that takes no chunk (the unit tests') need not pay.
+            import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
+            from mlx_audio.stt.models.nemotron_asr.speaker_streaming import speaker_activity  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
+
             first, pending = session._mel_offset, session._probs
             updates = push(mel, probs, final=final)
             taken = session._mel_offset - first

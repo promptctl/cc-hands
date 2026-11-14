@@ -23,6 +23,17 @@ A wait the OS cannot refuse, a `time.sleep` or a timer the loop runs out, stays 
 owns it: its `UNMOVED` lists the modules that still reach the machine's time, and a module comes off it by moving onto a
 `VirtualClock`.
 
+## The real pair, and its recordings
+
+`Stream` reads the streaming pair only through `streaming.Session`, so its logic runs in the unit layer on a recording of
+what the pair decoded (tests/recordings.py, tests/fixtures/decodes). Each such test takes the `session` fixture and runs
+twice with the same assertions: `recorded`, in `make check`, and `real`, the pair, `outside`. The two-people case adds
+to `real` the check of when each word starts, which a recording does not keep. The `real` case is what holds a recording
+to the pair: one the pair no longer decodes as fails there, and one fed other audio (checked at each close) or in other
+feeds than it was made from fails `recorded`, naming it. A recording is made one way: `pytest tests/test_streaming.py -k
+real --record-decodes` writes the recording of each run a passing `real` case made. Run it after a pin bump or an edit to the
+pair's code, and commit what it changes; the diff is what the pair now decodes differently.
+
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.
