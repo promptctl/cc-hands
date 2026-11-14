@@ -528,6 +528,11 @@ def _turned(event: Moving, was: Session) -> tuple[Turn, list[Effect]]:
             # Written before that idle: of this turn going on under the words' id or of the turn after it, which only
             # their ends tell apart (see Continued). Nothing moves.
             return turn, []
+        case (Taken(prompt=prompt), Opened()) if followed(was, prompt):
+            # [LAW:single-enforcer] `followed`, as `_opens` reads it: the record of a turn already told, read after the next
+            # turn opened, is no flush into that one. Its ids would name a turn told, and its Stop would end nothing (see
+            # `ClaudeTurns.telling` in brain/process.py).
+            return turn, []
         case (Taken(prompt=prompt), Opened() as opened):
             # A flush's id: an Escape sends a message queued behind the turn on in the same turn, under the message's own
             # id, which the interrupt record carries first; or send now takes it into the turn (see Unqueued).

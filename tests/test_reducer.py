@@ -696,6 +696,13 @@ def test_a_record_of_a_turn_hands_already_named_moves_nothing(before: Registry) 
     assert reduce(before, Taken(ONE.id, TURN, Stamp(5000), 9.0)) == (before, [])
 
 
+def test_a_record_of_a_turn_told_before_the_open_turn_is_no_flush_into_it() -> None:
+    """The transcript is read behind the hooks: the first turn's record can land after a notification's prompt opened the
+    next turn, and joining that turn's ids it would make the turn's Stop one of a turn already told."""
+    before = holding(RUNNING, Opened(NEXT), earlier=frozenset({TURN}))
+    assert reduce(before, Taken(ONE.id, TURN, Stamp(1500), 9.0)) == (before, [])
+
+
 def test_a_prompt_cancelled_while_its_hooks_ran_is_over_when_claude_code_says_idle() -> None:
     """As seen live: Escape during UserPromptSubmit puts the prompt back in the box and sets idle ~70 ms
     later, with no Stop and no record. Resent, it is a prompt of its own."""

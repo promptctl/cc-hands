@@ -19,7 +19,7 @@ from pathlib import Path
 
 import aiohttp
 import pytest
-from hands.clock import SYSTEM, SystemClock
+from hands.clock import SYSTEM, Clock, SystemClock
 from hands.sessions.pseudoterminal import on_terminal
 from loguru import logger
 
@@ -27,7 +27,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -1376,8 +1376,17 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
     fake_claude.write_text("#!/bin/sh\necho stuck on a screen\nsleep 30\n")
     pin(monkeypatch, fake_claude)
+    # The start's second is up once the screen hands' client shows has the brain's echo, not a second after the start: on
+    # a loaded machine a second can pass before the pane is drawn, and the refusal would show only tmux's status line.
+    panes: list[InTmux] = []
+
+    async def recording(clock: Clock, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
+        panes.append(await in_tmux(clock, station, argv, workspace))
+        return panes[-1]
+
+    monkeypatch.setattr("hands.brain.process.in_tmux", recording)
     with pytest.raises(Unstartable, match=r"(?s)had not turned its input on \(.*bracketed paste.*\) after 1s.*stuck on a screen"):
-        await start(SYSTEM, launch(tmp_path), lambda _entry: None)
+        await start(UntilShown(lambda: bool(panes) and "stuck on a screen" in panes[0].shown()), launch(tmp_path), lambda _entry: None)
     await until(lambda: not running(tmp_path))
 
 
@@ -1779,6 +1788,21 @@ class Sleeping(SystemClock):
 
     def sleep(self, seconds: float) -> asyncio.Future[None]:
         return asyncio.ensure_future(self._sleeping(seconds))
+
+
+class UntilShown(SystemClock):
+    """The machine's clock, held at the time it was first read until `shown`, and the machine's after: a deadline ahead of
+    that first read cannot come due before what a test waits on is on a screen, however long that takes."""
+
+    def __init__(self, shown: Callable[[], bool]) -> None:
+        self._shown = shown
+        self._held: float | None = None
+
+    def now(self) -> float:
+        now = super().now()
+        if self._held is None:
+            self._held = now
+        return now if self._shown() else self._held
 
 
 def taking(take: Callable[[float], Awaitable[None]]) -> Sleeping:

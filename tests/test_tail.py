@@ -1002,7 +1002,7 @@ async def test_a_turn_ended_unheard_is_told_as_itself_whatever_order_the_prompt_
     assert first is not None and first.turn == RIVERS
     await tails.spoken(first)
     stopped = await asyncio.wait_for(sessions.story(), 2.0)
-    assert stopped == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p1"), PromptId("p2")}))
+    assert stopped == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p2")}))
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     live = sessions.live_session(SID)
@@ -1039,7 +1039,7 @@ async def test_a_turn_taken_and_ended_before_the_tail_read_any_of_it_is_told_as_
     first = await tails.tell(SID, PromptId("p1"), None)
     assert first is not None and first.turn == RIVERS
     await tails.spoken(first)
-    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p1"), PromptId("p2")}))
+    assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p2"), "Done.", ids=frozenset({PromptId("p2")}))
     second = await tails.tell(SID, PromptId("p2"), "Done.")
     assert second is not None and second.turn == Turn(Asked(None, "Shorter."), (Said(None, "Done."),))
     assert changed == [["rivers.md"], ["shorter.md"]]
