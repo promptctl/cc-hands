@@ -481,10 +481,11 @@ async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(m
     await hands.until(lambda: "I read it." in "".join(hands.out.said()) and hands.stage.work() == Idle())
 
 
-@pytest.mark.quarantined("promptctl-testing-fxnj.3ra", until="2026-11-19")
 async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
     """The brain asks to Write, the user says no and at once says the next turn. The Write never runs, whatever Claude
-    Code still had on its screen as the next turn was typed, and the next turn is answered (promptctl-brain-q9s8.45d)."""
+    Code still had on its screen as the next turn was typed, and the next turn is answered (promptctl-brain-q9s8.45d).
+    The Write's own reply is said, or told to the brain as unheard: the next turn's cut may land before it is heard, and
+    then it is said to nobody (docs/barge-in.md S1), so which it is belongs to the runner's timing (promptctl-testing-fxnj.3ra)."""
     notes = hands.workdir / "notes.txt"
     # Tried in name order: the hello turn, whose history holds the Write's result too, ahead of the Write's end.
     mock_api.script("1-hello", {"lastUserContains": ["say hello"], "bodyContains": [TURN]}, {"type": "text", "text": "Hello."})
@@ -495,10 +496,13 @@ async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after
     await hands.until(lambda: len(held(hands)) == 1 and any("Say yes to allow it." in said for said in hands.out.said()))
     await hands.say("no")
     await hands.say("say hello")
-    await hands.until(lambda: "Hello." in "".join(hands.out.said()) and "I left it unwritten." in "".join(hands.out.said()))
+    await hands.until(lambda: "Hello." in "".join(hands.out.said()) and hands.stage.work() == Idle())
     assert not notes.exists()
     [permission] = permissions(hands.recorded)
     assert isinstance(permission.facts["decision"], Deny)
+    # The reply to the Write's end was said, or told to the brain with the next turn as words it did not hear.
+    unheard = "".join(str(turn.facts.get("barge_in_note", "")) for turn in events(hands.recorded, "brain.turn"))
+    assert "I left it unwritten." in "".join(hands.out.said()) + unheard
     # Every turn was typed at a prompt the screen showed, and sent by the brain's own chord.
     assert all(isinstance(turn.facts["looks"], int) and turn.facts["looks"] >= 1 for turn in events(hands.recorded, "brain.turn"))
 
