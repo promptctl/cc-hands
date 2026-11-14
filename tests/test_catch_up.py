@@ -7,7 +7,7 @@ from typing import cast
 
 from hands.clock import Clock
 from hands.virtualclock import VirtualClock
-from hands.core.sentences import cut
+from hands.core.summaries import cut
 from hands.core.effects import Effect, SessionGone, Summarise, Tell
 from hands.core.occurrences import AutoDenied, Cleared, SubagentStopped
 from hands.core.events import Joined, Tick

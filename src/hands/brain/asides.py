@@ -33,7 +33,7 @@ USAGE = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens
 class AsideKind(StrEnum):
     """What a side question is asked for."""
 
-    SUMMARY = "summary"  # a backlog's tickets or a session's turns, each as a sentence to be said
+    SUMMARY = "summary"  # a backlog's tickets or a session's turns, each as a summary to be said
     EXPLANATION = "explanation"  # what a session is doing, from its progress
     NAME = "name"  # a session's name, judged from a turn it finished
     LINE = "line"  # the line an old tool result goes as in the brain's context

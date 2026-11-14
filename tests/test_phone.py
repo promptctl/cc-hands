@@ -34,13 +34,13 @@ from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
 from hands.voice.phonepage import phone_app
 from hands.voice.ptt import KeyedAudio, PushToTalk
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.wakeword import Pretrained
 from conftest import events
@@ -579,7 +579,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Sentences(home.sentences)), home, recorded.append, {}, unused_gallery()))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home, recorded.append, {}, unused_gallery()))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -622,7 +622,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Sentences(tmp_path / "sentences.db")), Home(tmp_path), recorded.append, {}, unused_gallery()))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(tmp_path / "summaries.db")), Home(tmp_path), recorded.append, {}, unused_gallery()))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)

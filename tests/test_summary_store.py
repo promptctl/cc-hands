@@ -1,4 +1,4 @@
-"""The summary store: a sentence for any content-addressed thing, kept until the thing changes, served by read_backlog and read_ticket."""
+"""The summary store: a summary for any content-addressed thing, kept until the thing changes, served by read_backlog and read_ticket."""
 
 import asyncio
 import json
@@ -14,16 +14,16 @@ import pytest
 
 from hands.clock import SYSTEM
 from hands.core.events import Joined
-from hands.core.sentences import Due, Thing, answered, digest, page, reckon
+from hands.core.summaries import Due, Thing, answered, digest, page, reckon
 from hands.core.session import Membership, SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, parse_export, read_backlog
 from hands.sessions.payload import Rejected
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.voice.summarising import summarise_backlog, told
 from hands.voice.summary import SummaryFailed
-from hands.voice.sentences import Backlog, SummaryStore
+from hands.voice.summaries import Backlog, SummaryStore
 from hands.voice.tools import backlog_tools
 from conftest import new_sessions
 
@@ -58,7 +58,7 @@ def export(issues: list[dict[str, object]] = ISSUES, relations: list[dict[str, o
     return json.dumps({"version": version, "workspace_id": "w", "issues": issues, "relations": relations, "comments": comments, "labels": [], "events": [], "purges": [], "plan_reviews": []}).encode()
 
 
-# --- keys: what changes a sentence, and what does not
+# --- keys: what changes a summary, and what does not
 
 
 def tree(a: str = "Forward every request.") -> Thing:
@@ -83,7 +83,7 @@ def test_leaves_are_due_first_and_a_parent_only_once_every_part_is_said() -> Non
     leaves = {due.digest: f"said {due.id}" for due in first.due}
     second = reckon(tree(), "v1", leaves.get)
     assert [due.id for due in second.due] == ["e1"]
-    # The parent is shown each part's sentence, and keyed by them.
+    # The parent is shown each part's summary, and keyed by them.
     assert second.due[0].parts == (("e1.a", "said e1.a"), ("e1.b", "said e1.b"))
     assert second.waiting == 1
 
@@ -94,8 +94,8 @@ def test_editing_one_thing_changes_its_key_and_those_above_it_and_no_other() -> 
     assert {id for id in before if before[id] != after[id]} == {"e1.a", "e1", "root"}
 
 
-def test_an_edit_whose_new_sentence_is_the_old_one_changes_nothing_above_it() -> None:
-    # Parents are keyed by their parts' sentences, not their parts' text: a sentence that did not change is no news upward.
+def test_an_edit_whose_new_summary_is_the_old_one_changes_nothing_above_it() -> None:
+    # Parents are keyed by their parts' summaries, not their parts' text: a summary that did not change is no news upward.
     old = reckon(Thing("e1.a", "Forward every request.", ()), "v1", lambda _key: None).due[0]
     new = reckon(Thing("e1.a", "Forward every request!", ()), "v1", lambda _key: None).due[0]
     same = {old.digest: "Forwards requests.", new.digest: "Forwards requests."}
@@ -122,11 +122,11 @@ def dues(*ids: str) -> list[Due]:
 
 def test_the_page_names_each_item_and_cuts_a_long_text_in_its_middle() -> None:
     [due] = dues("t1")
-    shown = page([Due("e1", due.digest, "a" * 20 + "x" * 20 + "z" * 10, (("e1.a", "A sentence."),))], text_limit=10)
-    assert shown == '<item id="e1">\naaaaa\n[40 characters left out]\nzzzzz\n<parts>\n- e1.a: A sentence.\n</parts>\n</item>'
+    shown = page([Due("e1", due.digest, "a" * 20 + "x" * 20 + "z" * 10, (("e1.a", "A summary."),))], text_limit=10)
+    assert shown == '<item id="e1">\naaaaa\n[40 characters left out]\nzzzzz\n<parts>\n- e1.a: A summary.\n</parts>\n</item>'
 
 
-def test_a_reply_gives_each_id_its_sentence_and_says_what_it_missed_and_what_it_made_up() -> None:
+def test_a_reply_gives_each_id_its_summary_and_says_what_it_missed_and_what_it_made_up() -> None:
     batch = dues("a", "b", "c")
     answer = answered("a: First.\n\nb: Second.\nz: Not asked.\nchatter", batch)
     assert answer.said == {batch[0].digest: "First.", batch[1].digest: "Second."}
@@ -234,7 +234,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     summarise = Summariser()
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, store, summarise, records.append, batch=2)
@@ -251,11 +251,11 @@ async def test_a_pass_says_the_whole_backlog_leaves_first_and_audits_itself(proj
 
 
 async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=edited))
-    # Numbered on from the first pass, so the edited ticket's sentence is new, as a real summariser's would be.
+    # Numbered on from the first pass, so the edited ticket's summary is new, as a real summariser's would be.
     summarise = Summariser(first=100)
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, store, summarise, records.append)
@@ -265,7 +265,7 @@ async def test_editing_one_ticket_resays_only_it_and_what_sits_above_it(project:
 
 
 async def test_a_rerank_or_a_status_change_asks_the_summariser_nothing(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     moved = [{**issue, "rank": "00"} if issue["id"] == "t1" else {**issue, "status": "open"} if issue["id"] == "e1.b" else issue for issue in ISSUES]
     (project / "export.json").write_bytes(export(issues=moved))
@@ -275,14 +275,14 @@ async def test_a_rerank_or_a_status_change_asks_the_summariser_nothing(project: 
 
 
 async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
 
     async def forgets_t1(page: str) -> str:
         return "\n".join([*(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1"), "t9: Not asked."])
 
     records: list[Entry] = []
     await summarise_backlog(SYSTEM, project, store, forgets_t1, records.append)
-    # The epic is said; the backlog, keyed by t1's sentence too, cannot be.
+    # The epic is said; the backlog, keyed by t1's summary too, cannot be.
     assert set(store.reckon(parse_export(export()).thing()).said) == {"e1.a", "e1.b", "e1"}
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["unsaid"]) == ("ok", 3, 2)
@@ -293,9 +293,9 @@ async def test_what_the_summariser_leaves_out_stays_unsaid_and_the_pass_says_so(
 
 
 async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_alone(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     records: list[Entry] = []
-    # The two tickets, the loose ticket, and the epic: four work items; the backlog's own sentence is none of them.
+    # The two tickets, the loose ticket, and the epic: four work items; the backlog's own summary is none of them.
     await summarise_backlog(SYSTEM, project, store, Summariser(), records.append)
     await summarise_backlog(SYSTEM, project, store, Summariser(), records.append)
     edited = [ticket("e1.a", "02", "The proxy", "Forward every request, and stream the reply.") if issue["id"] == "e1.a" else issue for issue in ISSUES]
@@ -305,19 +305,19 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
     async def forgets_t1(page: str) -> str:
         return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page) if id != "t1")
 
-    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "other.db")), forgets_t1, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "other.db")), forgets_t1, records.append)
 
-    # A summariser whose sentence for an edited ticket comes back word for word: its epic is not asked again.
+    # A summariser whose summary for an edited ticket comes back word for word: its epic is not asked again.
     async def steady(page: str) -> str:
         return "\n".join(f"{id}: said {id}" for id in Summariser.asked(page))
 
     (project / "export.json").write_bytes(export())
-    steadied = SummaryStore(Sentences(tmp_path / "steady.db"))
+    steadied = SummaryStore(Summaries(tmp_path / "steady.db"))
     await summarise_backlog(SYSTEM, project, steadied, steady, records.append)
     (project / "export.json").write_bytes(export(issues=edited))
     await summarise_backlog(SYSTEM, project, steadied, steady, records.append)
 
-    # A closed ticket leaves only the backlog's own sentence due; a call for it that fails summarises nothing.
+    # A closed ticket leaves only the backlog's own summary due; a call for it that fails summarises nothing.
     async def fails(page: str) -> str:
         raise SummaryFailed("boom")
 
@@ -349,7 +349,7 @@ async def test_each_pass_counts_its_work_items_on_its_event_and_is_told_from_it_
 async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path, tmp_path: Path) -> None:
     (project / "export.json").unlink()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and record.outcome == "failed" and "exited 1" in (record.error or "")
     assert record.counts == dict.fromkeys(("things", "known", "said", "unsaid", "rounds", "calls", "failed_calls", "stray", "items", "items_said", "items_known", "items_unsaid"), 0)
@@ -357,7 +357,7 @@ async def test_a_project_lit_cannot_read_fails_its_pass_saying_why(project: Path
 
 async def test_a_project_whose_directory_was_removed_ends_its_pass_with_nothing_to_do_saying_why(tmp_path: Path) -> None:
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, tmp_path / "removed-worktree", SummaryStore(Sentences(tmp_path / "sentences.db")), Summariser(), records.append)
+    await summarise_backlog(SYSTEM, tmp_path / "removed-worktree", SummaryStore(Summaries(tmp_path / "summaries.db")), Summariser(), records.append)
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["gone"]) == ("ok", True)
 
@@ -384,7 +384,7 @@ async def test_a_project_lit_was_never_set_up_in_has_no_backlog_and_its_pass_say
     fake_lit(NEVER_INITIALIZED)
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
     [record] = records
     assert summarise.pages == []
     assert isinstance(record, WideEvent) and (record.outcome, record.facts["tracked"]) == ("ok", False)
@@ -419,7 +419,7 @@ async def test_a_summariser_that_cannot_start_is_a_failed_call_that_fails_the_pa
         raise SummaryFailed("the side question had no answer: no Claude Code to ask: claude")
 
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), no_claude, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), no_claude, records.append)
     [record] = records
     assert isinstance(record, WideEvent) and (record.outcome, record.counts["said"], record.counts["calls"], record.counts["failed_calls"]) == ("failed", 0, 1, 1)
     said = "SummaryFailed: the side question had no answer: no Claude Code to ask: claude"
@@ -431,7 +431,7 @@ async def test_a_backlog_with_nothing_left_asks_the_summariser_nothing_and_its_p
     (project / "export.json").write_bytes(export(issues=[ticket("t2", "01", "Old bug", status="closed")], relations=[]))
     summarise = Summariser()
     records: list[Entry] = []
-    await summarise_backlog(SYSTEM, project, SummaryStore(Sentences(tmp_path / "sentences.db")), summarise, records.append)
+    await summarise_backlog(SYSTEM, project, SummaryStore(Summaries(tmp_path / "summaries.db")), summarise, records.append)
     [record] = records
     assert summarise.pages == []
     # [LAW:nothing-unseen] ran and did nothing: every count written, as zero.
@@ -448,8 +448,8 @@ async def tools(project: Path, store: SummaryStore) -> dict[str, Any]:
     return {tool.name: tool.body for tool in backlog_tools(sessions, store)}
 
 
-async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_for_them(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+async def test_read_backlog_serves_titles_until_the_summaries_are_made_and_asks_for_them(project: Path, tmp_path: Path) -> None:
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     read_backlog = (await tools(project, store))["read_backlog"]
     before = dict(await read_backlog(session="s1"))
     assert "summary" not in before and before["unsummarised"] == 2
@@ -467,8 +467,8 @@ async def test_read_backlog_serves_titles_until_the_sentences_are_made_and_asks_
     assert [item["summary"] for item in after["items"]] == ["said e1 2", "said t1 1"]
 
 
-async def test_read_ticket_gives_the_sentence_and_what_is_open_under_it_and_its_own_words_only_when_asked(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+async def test_read_ticket_gives_the_summary_and_what_is_open_under_it_and_its_own_words_only_when_asked(project: Path, tmp_path: Path) -> None:
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     await summarise_backlog(SYSTEM, project, store, Summariser(), lambda _entry: None)
     read_ticket = (await tools(project, store))["read_ticket"]
     epic = dict(await read_ticket(session="s1", ticket="e1"))
@@ -483,7 +483,7 @@ async def test_read_ticket_gives_the_sentence_and_what_is_open_under_it_and_its_
 
 
 async def test_the_backlog_tools_say_what_they_could_not_read(project: Path, tmp_path: Path) -> None:
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     bodies = await tools(project, store)
     assert await bodies["read_ticket"](session="s1", ticket="nope") == {"error": "the backlog has no ticket nope"}
     assert await bodies["read_backlog"](session="s9") == {"error": "there is no session s9"}
@@ -502,7 +502,7 @@ async def test_what_the_brain_files_ranks_comments_on_and_closes_from_its_own_di
     brain.mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
     subprocess.run(["lit", "init"], cwd=repository, check=True, capture_output=True)
-    bodies = await tools(repository, SummaryStore(Sentences(tmp_path / "sentences.db")))
+    bodies = await tools(repository, SummaryStore(Summaries(tmp_path / "summaries.db")))
     empty = dict(await bodies["read_backlog"](session="s1"))
     assert empty["items"] == []
 
@@ -530,7 +530,7 @@ async def test_a_project_is_wanted_once_however_its_path_is_spelled(tmp_path: Pa
     real = tmp_path / "project"
     real.mkdir()
     (tmp_path / "link").symlink_to(real)
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     # A session's cwd through a link, and a page's resolved path: one project, one pass.
     store.want(tmp_path / "link")
     store.want(real.resolve())
@@ -541,9 +541,9 @@ async def test_a_project_is_wanted_once_however_its_path_is_spelled(tmp_path: Pa
 
 def test_the_store_keeps_what_it_was_told_across_opening_it_again(tmp_path: Path) -> None:
     key = digest("v1", "text", [])
-    Sentences(tmp_path / "sentences.db").keep({key: "Kept."})
-    reopened = Sentences(tmp_path / "sentences.db")
+    Summaries(tmp_path / "summaries.db").keep({key: "Kept."})
+    reopened = Summaries(tmp_path / "summaries.db")
     assert reopened.known(key) == "Kept."
-    # A key already said keeps its first sentence.
+    # A key already said keeps its first summary.
     reopened.keep({key: "Rewritten."})
     assert reopened.known(key) == "Kept."

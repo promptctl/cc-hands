@@ -15,7 +15,7 @@ from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Worki
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
 from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptId, Question, SessionId
-from hands.core.sentences import bounded
+from hands.core.summaries import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
 from hands.voice.utterance import Utterance, Utterances

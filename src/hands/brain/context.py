@@ -17,8 +17,8 @@ from loguru import logger
 from hands.brain.asides import AsideFailed, TimeLimit
 from hands.clock import Clock
 from hands.core.context import Result, aged, key, line, question, results
-from hands.core.sentences import Digest
 from hands.core.session import SessionId
+from hands.core.summaries import Digest
 from hands.core.wire import (
     COMPACTION_OPENING,
     Change,
@@ -44,7 +44,7 @@ from hands.sessions.wide import annotate, begun, count, unit
 
 # Turns a result goes whole before it goes as a line, and how many turns' results go at once.
 EVERY = 5
-# How long the sentence an old result goes as is waited on, from its turn, however long it waited for it: one reply,
+# How long the summary an old result goes as is waited on, from its turn, however long it waited for it: one reply,
 # with thinking. Nothing waits on a line but the batch it is for.
 LINE_TIME = TimeLimit(120.0)
 
@@ -89,10 +89,10 @@ class Keeper:
         self._every = every
         self._record = record
         # [LAW:one-source-of-truth] what each old result goes as, decided once, when its batch is reached: its line, or
-        # None when no sentence had been said of it by then. Never revisited, so the history stays byte-identical
+        # None when no summary had been said of it by then. Never revisited, so the history stays byte-identical
         # between batches whatever the store learns later.
         self._decided: dict[str, str | None] = {}
-        # Results heard on a main turn that the store has no sentence for, asked about once their turn ends.
+        # Results heard on a main turn that the store has no summary for, asked about once their turn ends.
         self._unsaid: dict[str, Result] = {}
         # Every call whose result has been heard, so each is looked up in the store once.
         self._heard: set[str] = set()
@@ -131,14 +131,14 @@ class Keeper:
                 pass
 
     async def keep_asking(self) -> None:
-        """Asks for a sentence for each unsaid result as its turn ends, one at a time, for as long as the brain runs."""
+        """Asks for a summary for each unsaid result as its turn ends, one at a time, for as long as the brain runs."""
         while True:
             result = await self._asking.get()
             try:
                 said = await self._ask(question(result))
             except AsideFailed as error:
                 # [LAW:no-silent-failure] the result goes whole once its batch is reached, and this says why.
-                logger.error(f"no sentence for {result.tool} call {result.call}: {error}")
+                logger.error(f"no summary for {result.tool} call {result.call}: {error}")
                 continue
             # One line, however the model broke it.
             self._store.keep({key(result): " ".join(said.split())})
@@ -152,7 +152,7 @@ class Keeper:
         fresh = [result for result in old if result.call not in self._decided]
         if fresh:
             # [LAW:nothing-unseen] a batch reached is one unit of work, its lookups in the store included: the calls whose
-            # results go as a line from now on, and those that go whole because no sentence had been said of them by then.
+            # results go as a line from now on, and those that go whole because no summary had been said of them by then.
             with unit("context.stubbing", self._record, begun(self._clock), ("stubbed", "whole")):
                 for result in fresh:
                     said = self._store.known(key(result))

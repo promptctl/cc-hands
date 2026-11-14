@@ -42,10 +42,10 @@ from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.conversation import UserWords
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.refocus import Refocus
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.child import Ran
 from hands.sessions.tmux import KEYS, ran_at
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from test_stage import Received, Spoken
 
@@ -249,7 +249,7 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
     config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
     out = Spoken()
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     try:
         async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:

@@ -10,7 +10,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from hands.core.sentences import Digest, cut, digest
+from hands.core.summaries import Digest, cut, digest
 from hands.core.wire import tool_answers, tool_calls, turns
 
 # The summariser's version in every result's key: a change to how a result is asked about is a new key for each.
@@ -55,12 +55,12 @@ def aged(body: object, every: int) -> tuple[Result, ...]:
 
 
 def key(result: Result) -> Digest:
-    """What a result's sentence is kept under: what was called, with what, and what came back."""
+    """What a result's summary is kept under: what was called, with what, and what came back."""
     return digest(VERSION, json.dumps([result.tool, result.input, result.text], sort_keys=True), ())
 
 
 def question(result: Result) -> str:
-    """What a side question forked from the brain asks about a result: the call, what came back, and the one sentence wanted of it."""
+    """What a side question forked from the brain asks about a result: the call, what came back, and the one-line summary wanted of it."""
     given = json.dumps(result.input, sort_keys=True)
     quoted = given if len(given) <= QUOTED else given[:QUOTED] + "…"
     shown = cut(result.text, SHOWN)
@@ -85,7 +85,7 @@ def question(result: Result) -> str:
         "\n"
         "A [N characters left out] line marks a cut for length; say nothing about it.\n"
         "\n"
-        "Your reply is stored verbatim, so send only the sentence: no lead-in, no quotes around it, no markdown, "
+        "Your reply is stored verbatim, so send only the summary: no lead-in, no quotes around it, no markdown, "
         "no second sentence."
     )
 

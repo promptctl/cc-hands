@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal, get_args
 
 from hands.clock import Clock
-from hands.core.sentences import Thing
+from hands.core.summaries import Thing
 from hands.sessions.child import run
 from hands.sessions.payload import Payload, Rejected
 
@@ -145,7 +145,7 @@ class Ticket:
 
     @property
     def text(self) -> str:
-        """What the ticket says, and so what its sentence is made of and keyed by."""
+        """What the ticket says, and so what its summary is made of and keyed by."""
         return f"{self.title}\n\n{self.description}"
 
 

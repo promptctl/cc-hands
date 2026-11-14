@@ -82,9 +82,9 @@ class Home:
         return self.root / "focus"
 
     @property
-    def sentences(self) -> Path:
-        """The summary store: a sentence for each content-addressed thing, written by the daemon alone."""
-        return self.root / "sentences.db"
+    def summaries(self) -> Path:
+        """The summary store: a summary for each content-addressed thing, written by the daemon alone."""
+        return self.root / "summaries.db"
 
     @property
     def memberships(self) -> Path:

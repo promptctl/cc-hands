@@ -1493,12 +1493,12 @@ makes carries the same listing, composed as the request leaves, as a last text b
 the block holding Claude Code's cache marker (`hands.voice.briefing.tail`). The cached
 prefix is exactly what Claude Code sent, and its history never keeps a stale listing. The
 brain's history is kept small on the way out the same way (`hands.brain.context`): every
-tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
-the cached prefix changes once a batch, with the sentence asked once the result's turn
+tool result more than K turns old goes as `<tool>: <summary>`, a batch every K turns so
+the cached prefix changes once a batch, with the summary asked once the result's turn
 ends, as a side question that shows the result, forked from the brain's newest main turn
 (`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
 is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
-that go whole because no sentence had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
+that go whole because no summary had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
 session in `conversation` in its config directory, and the next one resumes it while Claude Code still has its
 transcript, so a restart, an upgrade, or a change of model goes on from what was said, its length kept by that same
@@ -1636,24 +1636,24 @@ one file.
 ## The summary store
 
 A project's backlog is too large to read raw into a spoken conversation: 132 open links
-tickets are ~145K tokens through `lit show`, and one sentence each is ~3K. So
-`read_backlog` and `read_ticket` serve a sentence per ticket from the summary store, and
+tickets are ~145K tokens through `lit show`, and one summary each is ~3K. So
+`read_backlog` and `read_ticket` serve a summary per ticket from the summary store, and
 the ticket's own words only when asked (`full`). The backlog is read fresh from
-`lit export` at every call (`hands.sessions.backlog`); the store holds only sentences.
+`lit export` at every call (`hands.sessions.backlog`); the store holds only summaries.
 
-A sentence is keyed by a digest of what it was made from (`hands.core.sentences`): the
-summariser's instruction, the thing's own text, and the sentence of each thing under it.
+A summary is keyed by a digest of what it was made from (`hands.core.summaries`): the
+summariser's instruction, the thing's own text, and the summary of each thing under it.
 The tree is the backlog over its unfinished tickets with no unfinished parent (epics, loose
 tickets, and follow-ups filed under a closed ticket), each over its unfinished children. Editing one ticket changes its key and its ancestors' and no other,
-and stops rising at the first sentence that comes back unchanged; a rerank or a status
+and stops rising at the first summary that comes back unchanged; a rerank or a status
 change changes no key; an edit to the instruction changes every backlog key (a turn's key
 is its identity, below). The rows live in
-`<home>/sentences.db`, one table, never updated.
+`<home>/summaries.db`, one table, never updated.
 
-Sentences are made off the voice path by one task (`hands.voice.summarising`). A
+Summaries are made off the voice path by one task (`hands.voice.summarising`). A
 backlog is wanted at start for every live session's project and again at every read;
 the task asks the summariser for what is due, twenty things to a call, leaves before the
-parents keyed by their sentences. Each pass is one `summary.backlog` event: how many
+parents keyed by their summaries. Each pass is one `summary.backlog` event: how many
 things the backlog has, how many were known, said, and still unsaid at its end, its rounds,
 calls, failed calls, and stray reply lines, and the things a reply left out (`left_out`) and
 what each failed call raised (`errors`), and, once lit has answered, whether it has a workspace there (`tracked`). A
@@ -1661,13 +1661,13 @@ directory lit has none in — `lit init` never ran, or it is in no git repositor
 backlog: its pass is ok, `tracked` false and every count zero, and `read_backlog` answers an
 empty backlog with `tracked` false. A pass fails with lit's error when the export could not
 be read, and with the last failed call's error when one failed, either kind of pass. A tool
-never waits on it: a thing with no sentence yet is served by its title and counted in
-`unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
+never waits on it: a thing with no summary yet is served by its title and counted in
+`unsummarised`. Measured 2026-09-29 on this repo: 52 summaries in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.
 
 A session is served the same way. `read_session` splits the whole transcript into turns,
-one per request (`hands.core.turn.turns`), and hands over the newest forty with a sentence
-for each finished turn, or its request while the sentence is unsaid; `before` pages back,
+one per request (`hands.core.turn.turns`), and hands over the newest forty with a summary
+for each finished turn, or its request while the summary is unsaid; `before` pages back,
 and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
 instruction. The turns are wanted at each read and said by the same task, one `summary.turns` event per pass, which
@@ -2163,12 +2163,12 @@ were typed. A request without the key or with no words is refused, and its event
 
 **The backlog page is a project's lit backlog, ordered by dragging** (`hands.voice.backlogpage`).
 It is served beside the conversation page, at `/backlog?project=<directory>`, under the same key.
-Every read is `sighted` (`hands.voice.sentences`), the one read of a backlog the `read_backlog`
-tool makes too: `lit export` run fresh, each ticket's sentence from the summary store, and, while
+Every read is `sighted` (`hands.voice.summaries`), the one read of a backlog the `read_backlog`
+tool makes too: `lit export` run fresh, each ticket's summary from the summary store, and, while
 any ticket is unsaid, the project asked for to be said in the background, once however its path is
 spelled. Every keyed route of the pages beside the phone's checks the key in one place
 (`hands.voice.keyed`). The page draws the unfinished roots in rank order,
-each over its unfinished children, with the sentence where one is said and never the description.
+each over its unfinished children, with the summary where one is said and never the description.
 lit ranks a ticket only among those inside the same parent (`Backlog.inside`: a listed or an
 archived parent; one deleted frames nothing), and a rank across parents is not refused by lit: it
 ranks the parent instead and exits 0. So a drop is parsed against a fresh read by `Backlog.move`,
@@ -2182,7 +2182,7 @@ answer carries, one request at a time in the order they were made. A drag holds 
 is dropped, so a read asked for meanwhile never redraws the rows it is placed among, and no drag
 begins while a request is under way. Anything that ends the pointer's stream without a release, a
 cancel, the capture lost, or the window losing focus, ends the drag dropping nothing. Each read is one `backlog.read` event, with how many tickets it drew and how many of
-them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
+them had a summary, counted from what the page is given; each drop one `backlog.ranked`, with the
 ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 
 Each epic is drawn shut, with how many open tickets it holds, until it is tapped (or, focused, Enter or Space); which

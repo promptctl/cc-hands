@@ -30,7 +30,7 @@ from hands.voice.gallerypage import Gallery, gallery_routes
 from hands.voice.phone import Asked, CallDeclined, CallRefused, Offer, Phone, call_ended
 from hands.voice.brainpage import Watched, brain_routes
 from hands.voice.phoneaddress import PHONE_HOST, PHONE_PORT, Tailnet, Untailed, carries_key, own_certificate, phone_key, tailnet
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 
 # How often a page served under the tailnet's name asks Tailscale for its certificate again: Tailscale renews one a
 # month before its 90 days are out, so a day is far inside the time a renewed one has before the old one ends.
@@ -84,7 +84,7 @@ async def serve_phone(clock: Clock, phone: Phone, brain: Watched, typed: Callabl
     """Serve the page and take its calls on every address this machine has, until cancelled; under the tailnet's name,
     with the certificate Tailscale renews, asked for again every RENEW_SECONDS. The page reads and stops `brain`. The
     conversation page is served beside it, under the same key, handing `typed` what is typed into it, and the backlog
-    page, its sentences read from `store` and its writes run in `environment`, the one hands was started in. The gallery
+    page, its summaries read from `store` and its writes run in `environment`, the one hands was started in. The gallery
     page is served there too, its voices, level, modality, and model set through `gallery`.
 
     [LAW:nothing-unseen] serving it is one unit of work, `phone.served`: the port, and the tailnet name it is served

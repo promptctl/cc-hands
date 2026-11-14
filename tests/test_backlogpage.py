@@ -1,4 +1,4 @@
-"""The backlog page: every open ticket under its epic with hands' sentence for it, a drop that is a `lit rank`, and a
+"""The backlog page: every open ticket under its epic with hands' summary for it, a drop that is a `lit rank`, and a
 level that moves a ticket into its topic's epic for it."""
 
 import asyncio
@@ -22,10 +22,10 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.backlog import LEVELS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
-from hands.voice.sentences import Sighted, SummaryStore, sighted
+from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import events
 
 KEY = "the-phones-key"
@@ -61,7 +61,7 @@ ISSUES = [
 RELATIONS = [inside("e1", "e1.a"), inside("e1", "e1.b"), inside("e1", "e1.c"), inside("e2", "e2.a"), inside("e2", "e2.b"), inside("e2.b", "e2.b.f")]
 
 
-def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_sentence_and_never_its_description() -> None:
+def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_summary_and_never_its_description() -> None:
     backlog = parse_export(export(ISSUES, RELATIONS))
     recorded: list[Entry] = []
     with unit("backlog.read", recorded.append, begun(SYSTEM), ("tickets", "summarised")):
@@ -71,7 +71,7 @@ def test_the_page_is_every_open_ticket_under_its_epic_in_rank_order_with_hands_s
     assert [(node["id"], [child["id"] for child in node["children"]]) for node in items] == [("e2", ["e2.a"]), ("e1", ["e1.a", "e1.b"]), ("e2.b.f", [])]
     second, first, follow_up = items
     assert second["summary"] == "Second, said." and first["children"][0]["summary"] == "A, said."
-    # A ticket with no sentence has none, rather than its description in its place.
+    # A ticket with no summary has none, rather than its description in its place.
     assert first["summary"] is None and first["children"][1]["summary"] is None
     assert "The words of" not in json.dumps(page)
     assert first["children"][1]["status"] == "in_progress" and first["status"] is None
@@ -296,7 +296,7 @@ def test_a_note_the_page_sends_is_its_project_resolved_its_ticket_and_its_words_
 @pytest.fixture
 async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     app = web.Application()
     app.add_routes(backlog_routes(SYSTEM, store, KEY, recorded.append, os.environ))
     client = TestClient(TestServer(app))
@@ -394,7 +394,7 @@ async def test_a_directory_lit_has_no_workspace_in_is_drawn_as_untracked(page: P
 
 
 @real_lit
-async def test_the_read_is_lits_backlog_with_hands_sentences_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
+async def test_the_read_is_lits_backlog_with_hands_summaries_and_asks_for_the_rest(page: Page, workspace: Workspace) -> None:
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     read = await sighted(SYSTEM, page.store, workspace.root)
     assert isinstance(read, Sighted)

@@ -48,7 +48,7 @@ from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
@@ -80,9 +80,9 @@ from hands.voice.speech import relay
 from hands.voice.working import Playing, keep_playing
 from hands.voice.summary import Summariser, aside
 from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_TIMEOUT_SECONDS
-from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
-from hands.voice.summarising import SENTENCES_TIMEOUT_SECONDS, keep_summarising
-from hands.voice.sentences import SummaryStore
+from hands.voice.summary_instruction import SUMMARY_INSTRUCTION
+from hands.voice.summarising import SUMMARIES_TIMEOUT_SECONDS, keep_summarising
+from hands.voice.summaries import SummaryStore
 from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
@@ -271,7 +271,7 @@ async def run(
         # [LAW:one-source-of-truth] the address the server bound, which the hooks' DISPLAY_URL must name.
         [(display_host, display_port, *_)] = display.addresses
         run_start.heard(display=f"http://{display_host}:{display_port}{DISPLAY_PATH}")
-        store = SummaryStore(Sentences(home.sentences))
+        store = SummaryStore(Summaries(home.summaries))
         # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
         recounts = Recounts()
         # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
@@ -314,8 +314,8 @@ async def run(
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
                 voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
-                    sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
+                    summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
+                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -362,7 +362,7 @@ async def converse(
     deltas: Deltas,
     minded: Mind,
     store: SummaryStore,
-    sentences: Summariser,
+    summarise: Summariser,
     names: Names,
     recounts: Recounts,
     quiet_cues: QuietCues,
@@ -411,7 +411,7 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(clock, store, sentences, record), name="the summary store"),
+        asyncio.create_task(keep_summarising(clock, store, summarise, record), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),

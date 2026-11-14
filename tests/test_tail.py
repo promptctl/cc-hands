@@ -13,7 +13,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.events import CarriedOut, Continued, Dequeued, Interrupted, Launched, Progressed, Read, Removed, ReportedBack, Taken, Transcribed, Unqueued
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
-from hands.voice.tools import TURN_SENTENCE_BUDGET
+from hands.voice.tools import TURN_SUMMARY_BUDGET
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Event, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
@@ -1248,7 +1248,7 @@ async def test_a_shell_command_opens_one_turn_with_its_output_and_no_markup(tmp_
     transcript.write_text(lines(PROMPT, DONE, SHELL, SHELL_OUT, DONE))
     shelled = Shelled(Ref("c4"), "lit next", "hands-narration-8ip  open\nstderr: sync: 1 local change")
     assert await turn_of(transcript) == Turn(shelled, (Said(None, "Done."),))
-    assert "<" not in describe(shelled, TURN_SENTENCE_BUDGET)
+    assert "<" not in describe(shelled, TURN_SUMMARY_BUDGET)
 
 
 async def test_what_another_command_printed_is_no_part_of_a_skill_commands_turn(tmp_path: Path) -> None:

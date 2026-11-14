@@ -49,13 +49,13 @@ from hands.daemon import run
 from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.typing import Typist
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
 from hands.voice.refocus import Refocus
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
@@ -1588,7 +1588,7 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(SYSTEM, lambda _observed: None)
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
@@ -1621,7 +1621,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
 
 async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
@@ -1643,7 +1643,7 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
@@ -1659,7 +1659,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 
 async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)

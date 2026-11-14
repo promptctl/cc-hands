@@ -12,7 +12,7 @@ from typing import Literal
 
 from hands.core.attention import Amount, Attention, Level, Overlay, Route, occurrence_route
 from hands.core.progress import doing, said as done
-from hands.core.sentences import bounded
+from hands.core.summaries import bounded
 
 # How much of a detail a full telling says as written: past it, the line is cut and says so.
 DETAIL_SHOWN = 300
