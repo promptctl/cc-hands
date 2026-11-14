@@ -25,6 +25,7 @@ where the user is.
 """
 
 import asyncio
+import queue
 import threading
 from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
@@ -50,7 +51,7 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
-from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, placed
+from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -228,22 +229,32 @@ class NoInput:
 
 class NoOutput:
     """The speaker's stream when config.toml gives the speaker no device, a null object: what is written to it is dropped,
-    after the time the device would have taken to play it.
+    at the pace a device would have taken it.
 
     [LAW:dataflow-not-control-flow] the speaker writes, starts, stops, and closes its stream the same way with or
-    without a device; only this value differs. A write takes as long as the sound it carries, as a device's does, so
-    the pipeline's hearing of its own speech, which the write paces, is the same with the speaker off.
+    without a device; only this value differs. A write waits until no more than WRITE_AHEAD_SECS of what was written is
+    yet to play, as a device's playout does, so the pipeline's hearing of its own speech, which the write paces, is the
+    same with the speaker off. The wait is to a deadline, so the time a wait overshoots is not added to the next.
     """
 
-    def __init__(self, sample_rate: int, channels: int) -> None:
+    def __init__(self, clock: Clock, sample_rate: int, channels: int) -> None:
+        self._clock = clock
         self._bytes_per_second = sample_rate * channels * SAMPLE_BYTES
-        self._stopped = threading.Event()
+        self._plays_until = clock.now()
+        self._stopped = False
+        self._stop = queue.SimpleQueue[None]()
 
     def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
-        """Take `audio` as long as it takes to play; a stopped stream refuses it, as PortAudio's does, and releases a
-        write waiting out its time."""
-        if self._stopped.wait(len(audio) / self._bytes_per_second):
+        """Take `audio`; a stopped stream refuses it, as PortAudio's does, and releases a write waiting out its time."""
+        if self._stopped:
             raise OSError("the speaker stream is stopped")
+        now = self._clock.now()
+        self._plays_until = max(self._plays_until, now) + len(audio) / self._bytes_per_second
+        try:
+            self._clock.take(self._stop, max(0.0, self._plays_until - WRITE_AHEAD_SECS - now))
+        except queue.Empty:
+            return
+        raise OSError("the speaker stream is stopped")
 
     def counts(self) -> dict[str, int]:
         return dict.fromkeys(PLAYOUT_COUNTS, 0)
@@ -252,7 +263,8 @@ class NoOutput:
         pass
 
     def stop_stream(self) -> None:
-        self._stopped.set()
+        self._stopped = True
+        self._stop.put(None)
 
     def close(self) -> None:
         pass
@@ -352,13 +364,16 @@ class Speaker(LocalAudioOutputTransport):
 
         match _opening(self._choice, py_audio, "maxOutputChannels"):
             case Off():
-                return Output(NoOutput(self.sample_rate, self._params.audio_out_channels), Off(), echo)
+                return Output(NoOutput(self._clock, self.sample_rate, self._params.audio_out_channels), Off(), echo)
             case Found(index=index, name=name):
                 return Output(self._playout(py_audio, echo, index), name, echo)
             case Absent(name=name):
-                return Output(self._playout(py_audio, echo, None), Instead(name, default()), echo)
+                # Read before the stream opens, so a name that cannot be read leaves no stream open.
+                instead = Instead(name, default())
+                return Output(self._playout(py_audio, echo, None), instead, echo)
             case Auto():
-                return Output(self._playout(py_audio, echo, None), default(), echo)
+                played = default()
+                return Output(self._playout(py_audio, echo, None), played, echo)
 
     def _playout(self, py_audio: PortAudio, echo: Echo, index: int | None) -> Playout:
         return Playout(
@@ -788,9 +803,18 @@ class KeyedAudioTransport(LocalAudioTransport):
         """Whether there is no device for the microphone to open, so a press to talk hears nothing; never before setup
         opens it."""
         # [LAW:one-source-of-truth] the device the spoken warning names, read where `devices` reads it.
+        return self._heard(hears_nothing)
+
+    @property
+    def microphone_lost(self) -> bool:
+        """Whether there is no device for the microphone to open, though config.toml does not say so; never before setup
+        opens it. `deaf` is also so where config.toml turned the microphone off."""
+        return self._heard(lost_microphone)
+
+    def _heard(self, judged: Callable[[HeardOn], bool]) -> bool:
         match self._microphone.opened:
             case Input(device=heard):
-                return hears_nothing(heard)
+                return judged(heard)
             case None:
                 return False
 

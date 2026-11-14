@@ -7,6 +7,7 @@ import itertools
 import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from functools import partial
 
 import CoreAudio
 import CoreFoundation
@@ -31,20 +32,21 @@ _OUTPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAud
 
 
 def hardware() -> Hardware:
-    """The default devices, and the devices there are to hear on and to play on, by name."""
-    inputs, outputs = dict[str, int](), dict[str, int]()
+    """The default devices, and how to find a device by name. The devices are listed and named only when a side names
+    one: reading them is no part of following the defaults, and a device mid-teardown can fail the read."""
+    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), partial(_found, _INPUT_STREAMS), partial(_found, _OUTPUT_STREAMS))
+
+
+def _found(scope: object, name: str) -> int | None:
+    """The first device listed called `name` that carries sound `scope` ways, as PortAudio lists them: the one a stream is opened on."""
     for device in _devices():
         try:
-            name = _name(device)
-            if _has_streams(device, _INPUT_STREAMS):
-                # The first of two that share a name, as PortAudio lists them, is the one a stream is opened on.
-                inputs.setdefault(name, device)
-            if _has_streams(device, _OUTPUT_STREAMS):
-                outputs.setdefault(name, device)
+            if _name(device) == name and _has_streams(device, scope):
+                return device
         except _Gone:
             # Torn down between the listing and the reading: it is not there, and its going is a change of its own.
             continue
-    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), inputs, outputs)
+    return None
 
 
 def _device(address: object) -> int:

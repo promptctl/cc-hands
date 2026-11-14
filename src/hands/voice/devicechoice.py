@@ -5,8 +5,8 @@ given none (`Off`). A named device that is missing puts its side on the default 
 is a function of the choice and the hardware alone (`placed`), which the follower compares as the hardware moves.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -43,14 +43,23 @@ class DefaultDevices:
     output: int
 
 
+# CoreAudio's id for the device with a name, among those that can be heard on or played on, if there is one. A device
+# that goes and comes back has a new id.
+Find = Callable[[str], int | None]
+
+
+def _none_found(name: str) -> int | None:
+    return None
+
+
 @dataclass(frozen=True)
 class Hardware:
-    """What CoreAudio says is there: the defaults, and the ids of the devices that can be heard on and played on, by
-    the names they go by. A device that goes and comes back has a new id."""
+    """What CoreAudio says is there: the defaults, and the way to find a device by name, which is asked only for a side
+    that names one: a side on the default has no use for the list of devices."""
 
     defaults: DefaultDevices
-    inputs: Mapping[str, int] = field(default_factory=dict[str, int])
-    outputs: Mapping[str, int] = field(default_factory=dict[str, int])
+    inputs: Find = _none_found
+    outputs: Find = _none_found
 
 
 @dataclass(frozen=True)
@@ -89,11 +98,15 @@ def placed(choices: Choices, hardware: Hardware) -> Placement:
     return Placement(_place(choices.input, hardware.defaults.input, hardware.inputs), _place(choices.output, hardware.defaults.output, hardware.outputs))
 
 
-def _place(choice: Choice, default: int, present: Mapping[str, int]) -> Place:
+def _place(choice: Choice, default: int, find: Find) -> Place:
     match choice:
-        case Named(name=name) if name in present:
-            return OnNamed(name, present[name])
-        case Auto() | Named():
+        case Named(name=name):
+            match find(name):
+                case None:
+                    return OnDefault(default)
+                case device:
+                    return OnNamed(name, device)
+        case Auto():
             return OnDefault(default)
         case Off():
             return Closed()
@@ -120,10 +133,15 @@ PlayedOn = str | Instead | Off
 HeardOn = str | Instead | Missing | Off | None
 
 
-def hears_nothing(heard: HeardOn) -> bool:
-    """Whether a microphone on `heard` has no device to open, so a press to talk hears nothing."""
+def lost_microphone(heard: HeardOn) -> bool:
+    """Whether a microphone on `heard` has no device to open, though config.toml does not say so: a fault."""
     match heard:
-        case None | Missing() | Off():
+        case None | Missing():
             return True
-        case str() | Instead():
+        case str() | Instead() | Off():
             return False
+
+
+def hears_nothing(heard: HeardOn) -> bool:
+    """Whether a microphone on `heard` has no device to open, so a press to talk hears nothing, whoever chose it."""
+    return lost_microphone(heard) or isinstance(heard, Off)

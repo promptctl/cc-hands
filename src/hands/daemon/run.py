@@ -384,7 +384,8 @@ async def converse(
     def beat() -> None:
         # A turn opened with no microphone hears nothing, so it is not listening.
         deaf = voice.audio.deaf
-        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if deaf else ()), *degraded()))
+        # [LAW:no-silent-failure] a microphone config.toml turned off is the user's choice, not a degradation.
+        heart.beat(pipeline.state, _wall(clock, voice.audio.output().sounded_at), sessions.live_count(), listening=voice.key.gate.turn_open and not deaf, degraded=(*((heartbeat.NO_MICROPHONE,) if voice.audio.microphone_lost else ()), *degraded()))
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay

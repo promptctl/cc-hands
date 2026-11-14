@@ -515,7 +515,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
     devices = await transport.reopen()
 
     assert devices == Devices(input=None, output="MacBook Pro Speakers")
-    assert transport.deaf  # what the heartbeat carries to the menu bar
+    assert transport.deaf and transport.microphone_lost  # what the heartbeat carries to the menu bar
     assert "open microphone" not in log  # nothing to open: the microphone holds a stream of nothing
     assert "start new speaker" in log
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
@@ -759,12 +759,13 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     assert device.log == ["stop"]
 
 
-def test_a_write_to_no_output_takes_as_long_as_the_sound_and_is_released_and_refused_by_stopping_it() -> None:
+def test_writes_to_no_output_run_no_further_ahead_of_the_sound_than_a_device_lets_them_and_stopping_it_releases_and_refuses_one() -> None:
     """The pipeline's hearing of its own speech is paced by the write, as a device's playout paces it."""
-    nothing = NoOutput(1000, 1)
+    nothing = NoOutput(SYSTEM, 1000, 1)
     began = time.monotonic()
-    nothing.write(bytes(2 * 100), ())  # 100 ms of 16-bit mono at 1 kHz
-    assert time.monotonic() - began >= 0.1
+    nothing.write(bytes(2 * 300), ())  # 300 ms of 16-bit mono at 1 kHz, of which WRITE_AHEAD_SECS is let go ahead
+    nothing.write(bytes(2 * 300), ())
+    assert time.monotonic() - began >= 0.6 - WRITE_AHEAD_SECS
     refused: list[OSError] = []
 
     def write() -> None:
@@ -828,7 +829,7 @@ async def test_a_named_device_is_opened_whatever_the_default_and_kept_to_while_t
     transport = lost(log, choices=Choices(Named("Studio Display Microphone"), Named("Studio Display Speakers")))
     portaudio = FreshPortAudio(log, BUILT_IN + DISPLAY)
     setattr(transport, "_portaudio", lambda: portaudio)
-    there = Hardware(DefaultDevices(1, 1), {"MacBook Pro Microphone": 10, "Studio Display Microphone": 11}, {"MacBook Pro Speakers": 20, "Studio Display Speakers": 21})
+    there = Hardware(DefaultDevices(1, 1), {"MacBook Pro Microphone": 10, "Studio Display Microphone": 11}.get, {"MacBook Pro Speakers": 20, "Studio Display Speakers": 21}.get)
     setattr(transport, "_hardware", lambda: there)
 
     assert await transport.reopen() == Devices(input="Studio Display Microphone", output="Studio Display Speakers")
@@ -870,7 +871,8 @@ async def test_a_side_left_off_opens_no_device_and_the_other_opens_as_chosen(los
     assert await transport.reopen() == Devices(input=Off(), output=Off())
 
     assert portaudio.opened == []
-    assert transport.deaf
+    # Turned off by config.toml, the microphone hears nothing and is not lost: the heartbeat is not told of a fault.
+    assert transport.deaf and not transport.microphone_lost
     assert transport.opened_on == Placement(Closed(), Closed())
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
     # What hands says goes nowhere, and the speaker writes it as it writes to a device.

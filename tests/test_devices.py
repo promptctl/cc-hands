@@ -218,7 +218,7 @@ def plugged(default: int, *names: str, generation: int = 1) -> Hardware:
     def ided(listed: tuple[str, ...]) -> dict[str, int]:
         return {name: generation * 100 + index for index, name in enumerate(listed)}
 
-    return Hardware(DefaultDevices(default, default), ided(("MacBook Pro Microphone", "headset", *names)), ided(("MacBook Pro Speakers", "headset", *names)))
+    return Hardware(DefaultDevices(default, default), ided(("MacBook Pro Microphone", "headset", *names)).get, ided(("MacBook Pro Speakers", "headset", *names)).get)
 
 
 def test_auto_follows_the_defaults_and_a_named_device_keeps_to_itself_while_it_is_there() -> None:
@@ -247,6 +247,14 @@ async def test_a_named_device_that_leaves_and_comes_back_between_two_reads_is_a_
     await follower.settled()
     await follower.stop()
     assert follower.reopens == 1
+
+
+def test_the_devices_are_asked_after_only_for_a_side_that_names_one() -> None:
+    def asked(name: str) -> int | None:
+        raise AssertionError(f"{name} was looked for by a side that names no device")
+
+    unlisted = Hardware(DefaultDevices(1, 2), asked, asked)
+    assert placed(Choices(Auto(), Off()), unlisted) == Placement(OnDefault(1), Closed())
 
 
 async def test_a_side_left_off_is_wanted_nowhere_whatever_the_hardware_does() -> None:
