@@ -33,6 +33,7 @@ from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice import summarising
+from hands.voice.portaudio import Listed, Lists, default_input, default_output, listing
 
 
 if TYPE_CHECKING:
@@ -139,6 +140,34 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
     return both
 
 
+def open_portaudio() -> Lists:
+    """PortAudio, started. Imported here so that no other command loads PyAudio."""
+    import pyaudio
+
+    return cast(Lists, pyaudio.PyAudio())
+
+
+def list_devices(portaudio: Callable[[], Lists]) -> exits.Exit:
+    """Print the devices config.toml's input_device and output_device can name: those PortAudio lists that can be heard on, then those that can be played on."""
+    try:
+        py_audio = portaudio()
+    except (ImportError, OSError) as error:
+        # ImportError: PyAudio's library is not there; OSError: PortAudio is there and would not start.
+        return refused("hands", 1, f"PyAudio cannot load PortAudio ({error}), so hands cannot list the audio devices: `brew install portaudio`, with Homebrew from https://brew.sh")
+    try:
+        heard = listing(py_audio, "maxInputChannels", default_input(py_audio))
+        played = listing(py_audio, "maxOutputChannels", default_output(py_audio))
+    finally:
+        py_audio.terminate()
+    wide.annotate(inputs=len(heard), outputs=len(played))
+    print("\n".join(["To hear on:", *device_lines(heard), "To play on:", *device_lines(played)]))
+    return 0
+
+
+def device_lines(devices: Sequence[Listed]) -> list[str]:
+    return [f"  {device.name}{' (default)' if device.default else ''}" for device in devices] or ["  none"]
+
+
 def show_phone(clock: Clock, home: Home) -> exits.Exit:
     """Print every address the phone's page opens at, and the first as a QR code a phone's camera opens."""
     import segno
@@ -197,6 +226,7 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     commands.add_parser("smoke", help="take three spoken turns through the hands that is running, as a call from the phone's page, with a session started by the `claude` on PATH, and say of each part of the pipeline whether it did its share: heard, answered, spoken, typed into the session, the session's answer told back aloud; exits 0 only when every part did")
     commands.add_parser("restart", help="start the running daemon again, in the same process, on the code, prompt, and brain setup on disk now, and wait until its pipeline is running; exits 0 only when it is (the plugin's /hands:restart runs this)")
     commands.add_parser("update", help="bring the code this hands runs from up to date, its fritter, and the brain's Claude Code, then restart the running daemon onto it as `hands restart` does and say the commit it runs: from the uv tool environment, install the current master of github.com/promptctl/cc-hands; from a checkout's own .venv, pull the checkout (fast-forward only) and sync it; exits 0 only when hands runs what it updated again; a step that fails stops it, and hands is not restarted, while install-fritter finding another claude first on the caller's PATH is said and gone past (the brain's hands:update skill runs this)")
+    commands.add_parser("devices", help="print each audio device config.toml's input_device and output_device can name, those hands can hear on and those it can play on, by the name hands matches, with the system's default marked; exits 0 when it listed them, 1 when PortAudio cannot be loaded")
     commands.add_parser("phone", help="print the addresses a phone opens hands' talk page at, the tailnet's first as a QR code, each carrying the phone's key")
     filing_tickets = commands.add_parser("file-tickets", help="file a ticket, at the top of EPIC in the lit backlog of the directory it runs in, for each warning and error in the audit log no open ticket there has, grouped by cause, and comment on the ticket that has one seen again; files nothing twice, however often it runs; exits 0 only when every ticket and comment was filed")
     filing_tickets.add_argument("epic", help="the epic the tickets are filed under")
@@ -353,6 +383,8 @@ def dispatch(clock: Clock, home: Home, arguments: argparse.Namespace, record: au
             return recall_moments(clock, home, record, arguments.words, arguments.most)
         case "phone":
             return show_phone(clock, home)
+        case "devices":
+            return list_devices(open_portaudio)
         case "login":
             return login(clock, home, arguments.method, record)
         case "install-fritter":
