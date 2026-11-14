@@ -254,12 +254,12 @@ hands can type into is one the session-input epic (`hands-harness-5nb`) can reac
 
 Need 2.
 
-- **Vocabulary bias.** Each hold is transcribed with Whisper's `initial_prompt`,
+- **Vocabulary bias.** Each clip is transcribed with Whisper's `initial_prompt`,
   read as it is transcribed (`hands.voice.vocabulary`): the names of the files
   changed in the focused session's last 30 commits and its uncommitted work, its
   branch, then every running session's project and name, newest last, at most
   40 of them and the oldest dropped until the rest fit the 223 prompt tokens Whisper
-  keeps. Each hold's words and their token count are a `Primed` line in the audit log,
+  keeps. Each clip's words and their token count are a `Primed` line in the audit log,
   and what Whisper made of it, with each segment dropped as not said, a `ClipHeard` line;
   how loud the clip was before and after the echo canceller is on its `clip` event. Primed, Whisper turns
   noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
@@ -282,7 +282,7 @@ Need 8. Where the microphone is.
 
 - **Gate triggers as values of one type.** `shortcut | engaged conversation | wake word | phone button`
   as `Trigger` (`hands.voice.clips`); the desk's level says which of its triggers open turns
-  besides the held key. The `shortcut` trigger is a macOS event tap that reports real key-down and
+  besides the shortcut. The `shortcut` trigger is a macOS event tap that reports real key-down and
   key-up. Done when holding the key in another app drives a turn and releasing ends it.
 - **One desk mode, off by default.** Right Shift held alone talks at every level.
   The microphone is off between turns until a triple tap of Right Command turns on
@@ -315,52 +315,52 @@ Need 8. Where the microphone is.
 
 So that in conversation hands can tell the owner from another person, and from its own voice.
 
-- **Who said each word.** NVIDIA's Nemotron 3 Diarization hears every hold as it is spoken,
-  paired with the streaming recognizer in one session for the run, so each word a hold's
-  stream hears comes with its speaker, and a speaker keeps the same number from hold to hold;
-  each hold the key sent or dropped ends in one of the streaming listener's `hearing` events,
+- **Who said each word.** NVIDIA's Nemotron 3 Diarization hears every clip as it is spoken,
+  paired with the streaming recognizer in one session for the run, so each word a clip's
+  stream hears comes with its speaker, and a speaker keeps the same number from clip to clip;
+  each clip the key sent or dropped ends in one of the streaming listener's `hearing` events,
   with each speaker's words (`hands.voice.streaming`). Measured 2026-10-28 through that code by
-  `scripts/measure-diarization.py`, at GATING 1, a hold's speaker being whoever said most of its
-  words: 73.7 min of one LibriVox reader in 1493 holds, all 12814 words one speaker and none
-  anyone else's, 5 holds with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of
-  28 holds given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 27 of 29,
-  1 hold with no words and the miss one person's only hold given to another's speaker. On the
+  `scripts/measure-diarization.py`, at GATING 1, a clip's speaker being whoever said most of its
+  words: 73.7 min of one LibriVox reader in 1493 clips, all 12814 words one speaker and none
+  anyone else's, 5 clips with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of
+  28 clips given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 27 of 29,
+  1 clip with no words and the miss one person's only clip given to another's speaker. On the
   two-speaker AMI fixture, at GATING 4, every word's speaker matched what the transformers path
-  on the CPU decided for the same audio, 663 of 663 over five phases of the grid. In a hold a
+  on the CPU decided for the same audio, 663 of 663 over five phases of the grid. In a clip a
   newcomer shares with a voice the run knows, each is given their own speaker about 24 times in
-  25 from the first hold the run hears that voice in, where each one's holds alone were given
+  25 from the first clip the run hears that voice in, where each one's clips alone were given
   one speaker of their own. Measured 2026-10-28 on Metal by `scripts/measure-newcomers.py` on
   the session's speaker decisions, which decide whose every word is: 36 pairs of a meeting's
   people, 25 pairs of people, in AMI's sixteen test meetings, turns of at most 6 s with no other
   sound near them, anyone else's or the speaker's own past their words, one turn of each joined
-  into a hold in both orders. With the known voice heard alone in one turn 121 of 128 joined
-  holds give each their own speaker, in two 112 of 114, in five 103 of 108; in 2 of all 432 the
-  newcomer is given the known voice's speaker. Before the joined hold, one person's holds alone
+  into a clip in both orders. With the known voice heard alone in one turn 121 of 128 joined
+  clips give each their own speaker, in two 112 of 114, in five 103 of 108; in 2 of all 432 the
+  newcomer is given the known voice's speaker. Before the joined clip, one person's clips alone
   are given two speakers in 56 of the 432, more the more of them the run hears (in ES2004d
   FEE016's second, 0.9 s, is all FEE013's), and in 26 the run hears nobody in one of them. On
-  the two-speaker AMI fixture, after one hold of FEE013 and one of FEE016, a hold of FEE016's
-  then FEE013's gives most of FEE016's words to FEE013's speaker, and one more hold of FEE013
+  the two-speaker AMI fixture, after one clip of FEE013 and one of FEE016, a clip of FEE016's
+  then FEE013's gives most of FEE016's words to FEE013's speaker, and one more clip of FEE013
   first gives each her own.
   Built: tests/test_streaming.py; not verified live.
 - **hands' own voice told from a person's** (`promptctl-voice-i15t.8vg.di1`). Each speaker in
-  each hold is scored against hands' own voiceprints with 3D-Speaker's ERes2Net on the CPU, on
+  each clip is scored against hands' own voiceprints with 3D-Speaker's ERes2Net on the CPU, on
   the frames the diarizer heard them in. The prints are made once ever per voice from its Pocket
   TTS output, never from a person, and kept in the home. A speaker is `Person`, `Hands`,
   `Unsure` or `Unheard` by one table of score thresholds by how much of them was heard
   (`hands.voice.voiceprints.THRESHOLDS`), or `Unidentified` with why when there is nothing to score
   against for a voice hands speaks in or played over them. It is measured, not yet acted on: a
   `voiceprints.identified` event says who each speaker was as they reach each row and as their
-  hold ends, and the cut is on words as before. Fitted on one room and one voice
+  clip ends, and the cut is on words as before. Fitted on one room and one voice
   (`scripts/measure-voiceprints.py`, zoj's recordings): hands' echo, uncancelled, scored at least
   0.37 at 1 s, 0.64 at 1.5 s and 0.74 at 3 s, a person alone at most 0.21, a person over hands at
   most 0.66 at 1.5 s (only one line ran 3 s, at 0.36).
   Built: tests/test_voiceprints.py, tests/test_streaming.py (the real model, on recorded echo
   and a second voice over it: the echo is never a person); not verified live.
-- **Each hold, and hands' own echo, kept as labelled data.** The recorder keeps every hold
+- **Each clip, and hands' own echo, kept as labelled data.** The recorder keeps every clip
   under `clips/<run>/` in the home, as heard after the canceller and beside what hands was
   playing over it and in which voices. It also keeps each echo span, what the desk heard while
-  hands spoke with no hold open, identified as it ends. The store is kept under 2 GB, oldest runs
-  first, so the voiceprint table is refitted on held-key use. Built: tests/test_recorder.py,
+  hands spoke with no clip open, identified as it ends. The store is kept under 2 GB, oldest runs
+  first, so the voiceprint table is refitted on shortcut use. Built: tests/test_recorder.py,
   tests/test_microphone.py; not verified live.
 
 ## Endurance (`hands-memory-5qk`)
