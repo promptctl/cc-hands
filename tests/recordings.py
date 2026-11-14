@@ -68,7 +68,7 @@ class Audio:
         self._hash = hashlib.sha256()
 
     def add(self, samples: Samples) -> None:
-        self._hash.update(np.ascontiguousarray(samples, np.float32).tobytes())
+        self._hash.update(np.ascontiguousarray(samples, np.float32))
 
     def digest(self) -> str:
         return self._hash.hexdigest()
