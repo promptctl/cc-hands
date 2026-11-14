@@ -1791,8 +1791,8 @@ class Sleeping(SystemClock):
 
 
 class UntilShown(SystemClock):
-    """The machine's clock, held at the time it was first read until `shown`: a deadline `seconds` ahead of that time
-    comes due only once what a test waits on is on a screen, however long that takes."""
+    """The machine's clock, held at the time it was first read until `shown`, and the machine's after: a deadline ahead of
+    that first read cannot come due before what a test waits on is on a screen, however long that takes."""
 
     def __init__(self, shown: Callable[[], bool]) -> None:
         self._shown = shown
