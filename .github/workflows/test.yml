@@ -1,7 +1,8 @@
-# Every PR into master runs `make check-all` on the macOS a release builds on, and is refused if it is built on the line
-# master was rewound away from on 2026-10-15. The check named `test` is required twice: on the PR, then in master's
-# merge queue on the commit master will be with the PR merged. A red one cannot merge, and release.yml publishes only
-# commits on master, so this is its gate.
+# Every PR into master runs the suite as three tiers in parallel, `unit`, `pair` and `rest` (the Makefile's check, check-pair and
+# check-rest), and the check named `test` passes when they all did and the PR is not built on the line master was rewound
+# away from on 2026-10-15. `test` is the one name that says whether the suite passed: it is what a repository setting would
+# require on the PR and then in master's merge queue, on the commit master will be with the PR merged; none does yet, so a red
+# one blocks nothing GitHub enforces. release.yml publishes only commits on master.
 name: test
 
 on:
@@ -18,21 +19,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # One matrix is the one list of tiers; the Makefile's targets are what each runs, and every leg stands the machine up the same
+  # way, so the unit layer runs on one like a developer's, the weights and a Claude Code policy present and refused by its hold.
+  # The legs are cut by what they cost, not by laws:testing's layers. fail-fast stays on: a red `unit` ends the run in minutes,
+  # where waiting on the pair would take 15.
+  tiers:
+    name: ${{ matrix.tier }}
     runs-on: macos-15
-    # The suite takes ~4 minutes here; a hung test fails the check instead of holding it for GitHub's 6 hours.
-    timeout-minutes: 20
+    # A hung test fails the check instead of holding it for GitHub's 6 hours. The limit is a hung test's bound, set from the
+    # slowest runner seen (pytest's time swings nearly 2x, promptctl-testing-px1f.hel), not a budget: the suite's are its own.
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      matrix:
+        include:
+          - { tier: unit, target: check, timeout: 10 }
+          - { tier: pair, target: check-pair, timeout: 40 }
+          - { tier: rest, target: check-rest, timeout: 30 }
     steps:
       - uses: actions/checkout@v4
         with:
-          # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout, and the rewound
-          # line is refused by ancestry, which a shallow history cannot answer.
+          # hatch-vcs reads the version from the history's tags when `uv sync` installs the checkout.
           fetch-depth: 0
-      # Only this job is required on master, so the refusal is a step of it: a job or workflow of its own would go red
-      # and the PR would merge anyway. On a PR the commit is master merged with the PR, so a PR whose branch is on the
-      # line is refused too.
-      - name: Not built on the rewound line
-        run: scripts/not-rewound.sh "$GITHUB_SHA"
       - uses: ./.github/actions/setup
       # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
       # cannot fail a PR that never touched the wake word.
@@ -122,12 +129,11 @@ jobs:
           for plists in "$preferences" "$account"; do
             echo "$policy" | sudo plutil -convert xml1 -o "$plists/com.anthropic.claudecode.plist" -
           done
-      # [LAW:one-source-of-truth] the suite is the Makefile's check-all: everything, with no layer's hold. `make check`, the unit
-      # layer under its hold, is what an agent runs; this job has no minute to run it beside (a 20-minute limit, 18.7 min
-      # taken), so CI runs the layers when the suite is split into tiers.
-      - name: make check-all
+      # [LAW:one-source-of-truth] what each tier runs is the Makefile's: this leg's target, `make check` for the unit layer under its
+      # hold, `make check-pair` for the real streaming pair, `make check-rest` for every other test that needs the outside.
+      - name: make ${{ matrix.target }}
         id: check
-        run: make check-all
+        run: make ${{ matrix.target }}
       # What each test cost, into this job's log, so a cancelled or failed run keeps its numbers: `gh run view --log` reads
       # them. A log and nothing beyond it: a store that refused an upload would fail a suite that passed. continue-on-error for
       # the same reason: a report that cannot be read shows red on its own step and does not gate the suite's verdict. --no-sync:
@@ -135,4 +141,25 @@ jobs:
       - name: What each test cost
         if: always() && steps.check.outcome != 'skipped'
         continue-on-error: true
-        run: uv run --no-sync python tests/costs.py
+        run: uv run --no-sync python tests/costs.py .pytest_cache/${{ matrix.target }}-log.jsonl
+
+  # The verdict of the tiers. On ubuntu: it needs a checkout and nothing else, and a macOS runner is the scarce kind (a Free plan
+  # runs 5 at once). !cancelled(), not always(): a run a newer push cancelled is not one this job reports on.
+  test:
+    needs: tiers
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The rewound line is refused by ancestry, which a shallow history cannot answer.
+          fetch-depth: 0
+      # A step of the job the verdict is read from, as a job or workflow of its own could go red and the PR still merge. On a PR the
+      # commit is master merged with the PR, so a PR whose branch is on the line is refused too.
+      - name: Not built on the rewound line
+        run: scripts/not-rewound.sh "$GITHUB_SHA"
+      - name: Every tier passed
+        env:
+          TIERS: ${{ needs.tiers.result }}
+        run: test "$TIERS" = success || { echo "the tiers' result is $TIERS, not success" >&2; exit 1; }

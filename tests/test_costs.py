@@ -80,6 +80,14 @@ def test_a_run_that_wrote_no_log_says_so(tmp_path: Path) -> None:
     assert told.stdout == f"no report log at {REPORT_LOG}: the run wrote none\n"
 
 
+@pytest.mark.outside
+def test_a_log_given_by_path_is_the_one_read(tmp_path: Path) -> None:
+    log = tmp_path / "check-log.jsonl"
+    log.write_text(STARTED + spent("tests/test_a.py::test_quick", 1, 1, 1) + FINISHED)
+    told = subprocess.run([sys.executable, str(ROOT / "tests" / "costs.py"), str(log)], cwd=tmp_path, capture_output=True, text=True, check=True)
+    assert told.stdout == report(log.read_text())
+
+
 def test_the_suite_writes_the_log_the_report_reads() -> None:
     addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["addopts"]
     assert f"--report-log={REPORT_LOG}" in addopts

@@ -16,8 +16,8 @@ or "unknown" on one answers it here, and a test whose verdict holds on that answ
 test. The hold is what makes an unmarked test unit, and it is checked on every `make check`.
 
 Everything else is marked `outside` (a module's `pytestmark` or a test's decorator). The mark names what the test needs,
-not a layer: whether an outside test proves an adapter, a contract or the assembled system is the suite's split into tiers
-(promptctl-testing-fxnj), not this mark's.
+not a layer: whether an outside test proves an adapter, a contract or the assembled system is not this mark's to say. CI's
+tiers (below) are cut by what a run costs, not by those layers.
 
 A wait the OS cannot refuse, a `time.sleep` or a timer the loop runs out, stays in the unit layer. `tests/clockwatch.py`
 owns it: its `UNMOVED` lists the modules that still reach the machine's time, and a module comes off it by moving onto a
@@ -37,11 +37,19 @@ pair's code, and commit what it changes; the diff is what the pair now decodes d
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.
-- `make check-all`: everything, with no hold: pytest, pyright, fritter's Go tests and wake-training's suite. CI runs this.
-  Green on `make check` is not green on CI: CI does not yet run the unit layer under its hold, and `make check` does not run
-  the tests marked `outside`, fritter's or wake-training's.
+- `make check-pair`: the real pair's cases, the `outside` tests in tests/test_streaming.py, with no hold. They load the speech
+  models.
+- `make check-rest`: every other `outside` test with no hold, then fritter's Go tests and wake-training's suite.
 - `make audit`: the `outside` tests under the same hold, each expected to be refused. One that is not does not need its
   mark; run it when a test moves down.
+
+## CI's tiers
+
+`.github/workflows/test.yml` runs `make check`, `make check-pair` and `make check-rest` as the matrix `unit`, `pair` and `rest`, in
+parallel, and the check `test` passes when all three did. Together they are the whole suite: `check` takes the tests not marked
+`outside`, and the other two the ones that are, split by module. The tiers are cut by what a run costs, not by laws:testing's
+layers: the pair has one of its own because it is proven in full every run and is the longest. Green on `make check` is not green
+on CI, which also runs the `outside` tests, fritter's Go tests and wake-training's suite.
 
 ## Placing a new test
 

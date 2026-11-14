@@ -2,10 +2,13 @@
 then each test, slowest first. CI prints this into the job's log, so `gh run view <id> --log` reads any run's, cancelled or
 red ones too, and reading it starts nothing.
 
-    uv run --no-sync python tests/costs.py
+    uv run --no-sync python tests/costs.py [LOG]
+
+LOG is the report log to read, where a run was given one of its own (the Makefile's targets each write theirs).
 """
 
 import json
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,8 +64,9 @@ def report(log: str) -> str:
 
 
 if __name__ == "__main__":
+    log = Path(sys.argv[1]) if len(sys.argv) > 1 else REPORT_LOG
     # A run that ended before pytest started writes no log; the report names that rather than failing the step that reads it.
-    if REPORT_LOG.exists():
-        print(report(REPORT_LOG.read_text()), end="")
+    if log.exists():
+        print(report(log.read_text()), end="")
     else:
-        print(f"no report log at {REPORT_LOG}: the run wrote none")
+        print(f"no report log at {log}: the run wrote none")
