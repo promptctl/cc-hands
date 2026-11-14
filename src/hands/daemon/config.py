@@ -13,6 +13,10 @@ run runs starts the run again, on the file as edited.
     wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level: Hey Jarvis (the default), Hey Mycroft, Hey Rhasspy, or Alexa
     wake_word_model = "~/wake/hey_computer.onnx"      # or a model of your own, trained with openWakeWord on wake_word, said as written
 
+    [audio]
+    input_device = "MacBook Pro Microphone"   # auto (the default) follows the system's default; a device's name keeps to it; off opens none
+    output_device = "MacBook Pro Speakers"    # the same for the speaker
+
 A file left out, or a key, is the default. Secrets are not settings: the brain's login is in its own config directory. The voice is not either: the user chooses it by voice,
 and it changes while the daemon runs (hands.voice.voices). The model is a setting the user may also choose by voice:
 that choice is an edit to this file (OwnModel), taken as any edit is. `hands run --model` names one that outranks the
@@ -39,6 +43,7 @@ from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
+from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
 # How late an edit to the file is heard.
@@ -61,12 +66,14 @@ class Claude:
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
     but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
-    the wake word the desk listens for at its wake word level."""
+    the wake word the desk listens for at its wake word level. `devices` are the audio devices the desk hears and
+    speaks on."""
 
     llm: Claude = Claude()
     collector: str | None = None
     personality: str | None = None
     wake: Word = Pretrained()
+    devices: Choices = Choices()
 
 
 @dataclass(frozen=True)
@@ -234,12 +241,28 @@ def parse(text: str, model: str | None = None) -> Config:
         top = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise Rejected(f"not TOML: {error}") from error
-    _known(top, "the file", ("llm", "telemetry", "talk"))
+    _known(top, "the file", ("llm", "telemetry", "talk", "audio"))
     telemetry = _table(top, "telemetry")
     _known(telemetry, "[telemetry]", ("collector",))
     talk = _table(top, "talk")
     _known(talk, "[talk]", ("personality", "wake_word", "wake_word_model"))
-    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk))
+    audio = _table(top, "audio")
+    _known(audio, "[audio]", ("input_device", "output_device"))
+    devices = Choices(input=_device(audio, "input_device"), output=_device(audio, "output_device"))
+    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices)
+
+
+def _device(table: Mapping[str, object], key: str) -> Choice:
+    """auto, the system's default as it moves; off, no device; or any other name, the device the system calls that, matched
+    as written. Whether it is there is the transport's to find each time it opens."""
+    said = _text(table, "[audio]", key, "auto")
+    match said.casefold():
+        case "auto":
+            return Auto()
+        case "off":
+            return Off()
+        case _:
+            return Named(said)
 
 
 def _wake(table: Mapping[str, object]) -> Word:

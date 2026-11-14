@@ -4,6 +4,7 @@ import asyncio
 import itertools
 import threading
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, cast
 from collections.abc import AsyncGenerator, Callable
@@ -27,8 +28,9 @@ from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.clips import Played, Reference
-from hands.voice.coreaudio import DefaultDevices
-from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
+from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Missing, Named, Off, OnDefault, OnNamed, Placement
+from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull, default_input
+from hands.voice.system import AudioMoved, system_text
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.clips import Clip
@@ -257,13 +259,31 @@ class LostStream:
         self.log.append(f"close {self.name}")
 
 
-class FreshPortAudio:
-    """PortAudio started again: it opens streams on the defaults it lists now."""
+# The devices PortAudio lists, by the fields of its device info hands reads.
+BUILT_IN: tuple[Mapping[str, object], ...] = (
+    {"name": "MacBook Pro Microphone", "maxInputChannels": 1, "maxOutputChannels": 0},
+    {"name": "MacBook Pro Speakers", "maxInputChannels": 0, "maxOutputChannels": 2},
+)
+DISPLAY: tuple[Mapping[str, object], ...] = (
+    {"name": "Studio Display Microphone", "maxInputChannels": 1, "maxOutputChannels": 0},
+    {"name": "Studio Display Speakers", "maxInputChannels": 0, "maxOutputChannels": 2},
+)
 
-    def __init__(self, log: list[str]) -> None:
+
+class FreshPortAudio:
+    """PortAudio started again: it opens streams on the defaults it lists now, among the `listed` devices."""
+
+    def __init__(self, log: list[str], listed: tuple[Mapping[str, object], ...] = BUILT_IN) -> None:
         self.log = log
+        self.listed = listed
         self.opened: list[dict[str, object]] = []
         log.append("start portaudio")
+
+    def get_device_count(self) -> int:
+        return len(self.listed)
+
+    def get_device_info_by_index(self, device_index: int) -> object:
+        return self.listed[device_index]
 
     def open(self, **settings: object) -> LostStream:
         side = "microphone" if settings.get("input") else "speaker"
@@ -284,13 +304,14 @@ class FreshPortAudio:
         self.log.append("end portaudio")
 
 
-def lost_transport(log: list[str], events: list[Entry] | None = None) -> KeyedAudioTransport:
+def lost_transport(log: list[str], events: list[Entry] | None = None, choices: Choices = Choices()) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    defaults = iter([DefaultDevices(input=1, output=1), DefaultDevices(input=2, output=2)])
+    hardware = iter([Hardware(DefaultDevices(input=1, output=1)), Hardware(DefaultDevices(input=2, output=2))])
     cancellers = iter(Room(log, f"canceller {n}") for n in itertools.count(1))
     record: Record = (lambda _: None) if events is None else events.append
     transport = KeyedAudioTransport(SYSTEM, 
-        params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), defaults=lambda: next(defaults), echo=lambda: next(cancellers)
+        params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), hardware=lambda: next(hardware), echo=lambda: next(cancellers),
+        choices=choices,
     )
     speaker, microphone = transport.output(), transport.input()
     speaker.get_event_loop = asyncio.get_running_loop
@@ -311,8 +332,8 @@ async def lost() -> AsyncGenerator[Lost, None]:
     """`lost_transport`, each one built cleaned up as the test ends, which ends its stream's writer."""
     built: list[KeyedAudioTransport] = []
 
-    def building(log: list[str], events: list[Entry] | None = None) -> KeyedAudioTransport:
-        built.append(lost_transport(log, events))
+    def building(log: list[str], events: list[Entry] | None = None, choices: Choices = Choices()) -> KeyedAudioTransport:
+        built.append(lost_transport(log, events, choices))
         return built[-1]
 
     yield building
@@ -337,7 +358,7 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
         "stop old microphone", "close old microphone", "close old canceller", "end portaudio",
         "start portaudio", "open speaker", "open microphone", "start new speaker", "start new microphone",
     ]  # fmt: skip
-    assert transport.opened_on == DefaultDevices(input=2, output=2)  # read again, as PortAudio listed them anew
+    assert transport.opened_on == Placement(OnDefault(2), OnDefault(2))  # read again, as PortAudio listed them anew
     with pytest.raises(OSError):
         await stuck
     assert speaker.is_usable
@@ -494,14 +515,14 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
     devices = await transport.reopen()
 
     assert devices == Devices(input=None, output="MacBook Pro Speakers")
-    assert transport.deaf  # what the heartbeat carries to the menu bar
+    assert transport.deaf and transport.microphone_lost  # what the heartbeat carries to the menu bar
     assert "open microphone" not in log  # nothing to open: the microphone holds a stream of nothing
     assert "start new speaker" in log
     assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
 
     # A microphone plugged in again is opened by the next reopen, the same way as any other.
     setattr(transport, "_portaudio", lambda: FreshPortAudio(log))
-    setattr(transport, "_defaults", lambda: DefaultDevices(input=3, output=2))
+    setattr(transport, "_hardware", lambda: Hardware(DefaultDevices(input=3, output=2)))
     log.clear()
     assert (await transport.reopen()).input == "MacBook Pro Microphone"
     assert "open microphone" in log
@@ -510,7 +531,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), defaults=lambda: DefaultDevices(0, 1), echo=Room)
+    transport = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), hardware=lambda: Hardware(DefaultDevices(0, 1)), echo=Room)
     assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)
@@ -738,6 +759,30 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     assert device.log == ["stop"]
 
 
+def test_writes_to_no_output_run_no_further_ahead_of_the_sound_than_a_device_lets_them_and_stopping_it_releases_and_refuses_one() -> None:
+    """The pipeline's hearing of its own speech is paced by the write, as a device's playout paces it."""
+    nothing = NoOutput(SYSTEM, 1000, 1)
+    began = time.monotonic()
+    nothing.write(bytes(2 * 300), ())  # 300 ms of 16-bit mono at 1 kHz, of which WRITE_AHEAD_SECS is let go ahead
+    nothing.write(bytes(2 * 300), ())
+    assert time.monotonic() - began >= 0.6 - WRITE_AHEAD_SECS
+    refused: list[OSError] = []
+
+    def write() -> None:
+        try:
+            nothing.write(bytes(2 * 60_000), ())  # a minute of it
+        except OSError as error:
+            refused.append(error)
+
+    writing = threading.Thread(target=write)
+    writing.start()
+    writing.join(0.05)
+    nothing.stop_stream()
+    writing.join(1)
+    assert not writing.is_alive()
+    assert [str(error) for error in refused] == ["the speaker stream is stopped"]
+
+
 class Deafened(Room):
     def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
         raise RuntimeError("the audio processing module refused the frame")
@@ -763,3 +808,83 @@ async def test_a_playout_the_canceller_fails_ends_the_pipeline_rather_than_leavi
     await asyncio.sleep(0.01)
     assert errors == ["the speaker stopped: its playout failed: the audio processing module refused the frame"]
     assert [(type(frame), direction) for frame, direction in pushed] == [(EndWorkerFrame, FrameDirection.UPSTREAM)]
+
+
+def opened(portaudio: FreshPortAudio) -> dict[str, object]:
+    """The device index each stream `portaudio` opened was opened on, None for the default."""
+    return {"speaker" if settings.get("output") else "microphone": settings.get("output_device_index", settings.get("input_device_index")) for settings in portaudio.opened}
+
+
+async def test_a_side_on_auto_opens_on_the_default_whatever_else_is_plugged_in(lost: Lost) -> None:
+    log: list[str] = []
+    transport = lost(log)
+    portaudio = FreshPortAudio(log, BUILT_IN + DISPLAY)
+    setattr(transport, "_portaudio", lambda: portaudio)
+    assert await transport.reopen() == Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
+    assert opened(portaudio) == {"speaker": None, "microphone": None}
+
+
+async def test_a_named_device_is_opened_whatever_the_default_and_kept_to_while_the_default_moves(lost: Lost) -> None:
+    log: list[str] = []
+    transport = lost(log, choices=Choices(Named("Studio Display Microphone"), Named("Studio Display Speakers")))
+    portaudio = FreshPortAudio(log, BUILT_IN + DISPLAY)
+    setattr(transport, "_portaudio", lambda: portaudio)
+    there = Hardware(DefaultDevices(1, 1), {"MacBook Pro Microphone": 10, "Studio Display Microphone": 11}.get, {"MacBook Pro Speakers": 20, "Studio Display Speakers": 21}.get)
+    setattr(transport, "_hardware", lambda: there)
+
+    assert await transport.reopen() == Devices(input="Studio Display Microphone", output="Studio Display Speakers")
+    assert opened(portaudio) == {"speaker": 3, "microphone": 2}  # by where PortAudio lists them
+    assert transport.opened_on == Placement(OnNamed("Studio Display Microphone", 11), OnNamed("Studio Display Speakers", 21))
+    # The default moving changes nothing of where they are wanted, so the follower reopens nothing.
+    setattr(transport, "_hardware", lambda: Hardware(DefaultDevices(5, 5), there.inputs, there.outputs))
+    assert transport.wanted() == transport.opened_on
+
+
+async def test_a_named_device_that_is_missing_falls_back_to_the_default_and_says_so(lost: Lost) -> None:
+    log: list[str] = []
+    transport = lost(log, choices=Choices(Named("Studio Display Microphone"), Named("Studio Display Speakers")))
+    portaudio = FreshPortAudio(log, BUILT_IN)
+    setattr(transport, "_portaudio", lambda: portaudio)
+
+    devices = await transport.reopen()
+
+    assert devices == Devices(input=Instead("Studio Display Microphone", "MacBook Pro Microphone"), output=Instead("Studio Display Speakers", "MacBook Pro Speakers"))
+    assert opened(portaudio) == {"speaker": None, "microphone": None}
+    assert not transport.deaf
+    assert transport.opened_on == Placement(OnDefault(2), OnDefault(2))  # on the default, followed as it moves, until the display is back
+    assert system_text(AudioMoved(devices)) == "Audio moved: listening on MacBook Pro Microphone in place of the missing Studio Display Microphone, speaking on MacBook Pro Speakers in place of the missing Studio Display Speakers."
+
+    # With no default input either, the microphone is on nothing, and says which device it missed.
+    setattr(transport, "_portaudio", lambda: DeafPortAudio(log, BUILT_IN[1:]))
+    setattr(transport, "_hardware", lambda: Hardware(DefaultDevices(3, 2)))
+    assert (await transport.reopen()).input == Missing("Studio Display Microphone")
+    assert transport.deaf
+    assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_side_left_off_opens_no_device_and_the_other_opens_as_chosen(lost: Lost) -> None:
+    log: list[str] = []
+    transport = lost(log, choices=Choices(Off(), Off()))
+    portaudio = FreshPortAudio(log, BUILT_IN + DISPLAY)
+    setattr(transport, "_portaudio", lambda: portaudio)
+
+    assert await transport.reopen() == Devices(input=Off(), output=Off())
+
+    assert portaudio.opened == []
+    # Turned off by config.toml, the microphone hears nothing and is not lost: the heartbeat is not told of a fault.
+    assert transport.deaf and not transport.microphone_lost
+    assert transport.opened_on == Placement(Closed(), Closed())
+    assert isinstance(transport.input()._in_stream, NoInput)  # pyright: ignore[reportPrivateUsage]
+    # What hands says goes nowhere, and the speaker writes it as it writes to a device.
+    attached = transport.output().opened
+    assert attached is not None and isinstance(attached.stream, NoOutput)
+    attached.stream.write(LOUD, ())
+    assert attached.stream.counts() == {"pulled": 0, "unwritten": 0, "underflowed": 0}
+
+    # Only the speaker off: the microphone is on the default, and hears.
+    transport = lost(log, choices=Choices(Auto(), Off()))
+    portaudio = FreshPortAudio(log, BUILT_IN)
+    setattr(transport, "_portaudio", lambda: portaudio)
+    assert await transport.reopen() == Devices(input="MacBook Pro Microphone", output=Off())
+    assert not transport.deaf
+    assert opened(portaudio) == {"microphone": None}

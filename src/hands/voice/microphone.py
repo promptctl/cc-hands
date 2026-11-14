@@ -12,11 +12,12 @@ speaker plays is given to the echo canceller (`hands.voice.echo`), and every buf
 the microphone captures is heard through it: the microphone stays open while the
 speaker plays, and a press mid-reply keeps its first word.
 
-Both stay on whatever devices the system calls its defaults. When a device goes, a
+Each side is on the device config.toml chooses for it (`hands.voice.devicechoice`): the system's default, one
+device by name, or the default while that one is missing. When a device goes, a
 headset unplugged, PortAudio says nothing: measured 2026-09-24 against an aggregate
 device destroyed mid-stream, the microphone's callbacks simply stop and a write to
-the speaker blocks for good. So the transport is reopened whole when the defaults
-change, which macOS does the moment the default device disappears.
+the speaker blocks for good. So the transport is reopened whole when where the sides should be changes, which it does
+the moment the device under one disappears: macOS moves the defaults then, and a named device leaves the list.
 
 The phone is the other place hands can be (`hands.voice.phone`). The gate says which: the pipeline hears only that
 place's microphone, so the clip owner is handed one stream of frames, and the speaker plays to that place, so a reply goes
@@ -24,9 +25,10 @@ where the user is.
 """
 
 import asyncio
+import queue
 import threading
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from dataclasses import dataclass
@@ -48,7 +50,8 @@ from pipecat.transports.local.audio import (
 )
 
 from hands.clock import Clock
-from hands.voice.coreaudio import DefaultDevices, default_devices
+from hands.voice import coreaudio
+from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -224,12 +227,55 @@ class NoInput:
         pass
 
 
+class NoOutput:
+    """The speaker's stream when config.toml gives the speaker no device, a null object: what is written to it is dropped,
+    at the pace a device would have taken it.
+
+    [LAW:dataflow-not-control-flow] the speaker writes, starts, stops, and closes its stream the same way with or
+    without a device; only this value differs. A write waits until no more than WRITE_AHEAD_SECS of what was written is
+    yet to play, as a device's playout does, so the pipeline's hearing of its own speech, which the write paces, is the
+    same with the speaker off. The wait is to a deadline, so the time a wait overshoots is not added to the next.
+    """
+
+    def __init__(self, clock: Clock, sample_rate: int, channels: int) -> None:
+        self._clock = clock
+        self._bytes_per_second = sample_rate * channels * SAMPLE_BYTES
+        self._plays_until = clock.now()
+        self._stopped = False
+        self._stop = queue.SimpleQueue[None]()
+
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+        """Take `audio`; a stopped stream refuses it, as PortAudio's does, and releases a write waiting out its time."""
+        if self._stopped:
+            raise OSError("the speaker stream is stopped")
+        now = self._clock.now()
+        self._plays_until = max(self._plays_until, now) + len(audio) / self._bytes_per_second
+        try:
+            self._clock.take(self._stop, max(0.0, self._plays_until - WRITE_AHEAD_SECS - now))
+        except queue.Empty:
+            return
+        raise OSError("the speaker stream is stopped")
+
+    def counts(self) -> dict[str, int]:
+        return dict.fromkeys(PLAYOUT_COUNTS, 0)
+
+    def start_stream(self) -> None:
+        pass
+
+    def stop_stream(self) -> None:
+        self._stopped = True
+        self._stop.put(None)
+
+    def close(self) -> None:
+        pass
+
+
 @dataclass(frozen=True)
 class Output:
-    """A speaker stream as opened, with the name of the device it was opened on and the canceller told what it plays."""
+    """A speaker stream as opened, with the device it was opened on and the canceller told what it plays."""
 
     stream: Playback
-    device: str
+    device: PlayedOn
     echo: Echo
 
 
@@ -246,11 +292,11 @@ class Attached(Output):
 
 @dataclass(frozen=True)
 class Input:
-    """A microphone stream as opened, with the name of its device, and the canceller its every buffer is heard through;
-    no name, and a NoInput stream, when there is none."""
+    """A microphone stream as opened, with its device, and the canceller its every buffer is heard through; a NoInput
+    stream when there is no device to open."""
 
     stream: Stream
-    device: str | None
+    device: HeardOn
     echo: Echo
 
 
@@ -261,6 +307,8 @@ class PortAudio(Protocol):
     def get_format_from_width(self, width: int) -> int: ...
     def get_default_input_device_info(self) -> object: ...
     def get_default_output_device_info(self) -> object: ...
+    def get_device_count(self) -> int: ...
+    def get_device_info_by_index(self, device_index: int) -> object: ...
     def terminate(self) -> None: ...
 
 
@@ -268,10 +316,11 @@ class Speaker(LocalAudioOutputTransport):
     """The local speaker, whose stream gives the echo canceller everything the device plays, and which hands the sound
     to the phone instead while hands is there."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock, choice: Choice) -> None:
         super().__init__(py_audio, params)
         self._key = key
         self._phone = phone
+        self._choice = choice
         # The canceller the first stream is opened with; each stream after it is opened with its own.
         self._echo = echo
         self._record = record
@@ -306,15 +355,35 @@ class Speaker(LocalAudioOutputTransport):
         self.attach(py_audio, self.open_stream(py_audio, self._echo))
 
     def open_stream(self, py_audio: PortAudio, echo: Echo) -> Output:
-        """A new stream on the default output, not yet the speaker's. Blocking: PortAudio talks to the device."""
-        playout = Playout(
+        """A new stream on the output config.toml chooses, not yet the speaker's. Blocking: PortAudio talks to the device."""
+
+        def default() -> str:
+            # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream is opened on, as it
+            # opens; asked later, an instance that has since been ended answers "no device" whatever is plugged in.
+            return _name(py_audio.get_default_output_device_info())
+
+        match _opening(self._choice, py_audio, "maxOutputChannels"):
+            case Off():
+                return Output(NoOutput(self._clock, self.sample_rate, self._params.audio_out_channels), Off(), echo)
+            case Found(index=index, name=name):
+                return Output(self._playout(py_audio, echo, index), name, echo)
+            case Absent(name=name):
+                # Read before the stream opens, so a name that cannot be read leaves no stream open.
+                instead = Instead(name, default())
+                return Output(self._playout(py_audio, echo, None), instead, echo)
+            case Auto():
+                played = default()
+                return Output(self._playout(py_audio, echo, None), played, echo)
+
+    def _playout(self, py_audio: PortAudio, echo: Echo, index: int | None) -> Playout:
+        return Playout(
             lambda pull: py_audio.open(
                 format=py_audio.get_format_from_width(2),
                 channels=self._params.audio_out_channels,
                 rate=self.sample_rate,
                 frames_per_buffer=round(self.sample_rate * SPEAKER_PERIOD_SECS),
                 output=True,
-                output_device_index=self._params.output_device_index,
+                output_device_index=self._params.output_device_index if index is None else index,
                 stream_callback=pull,
             ),
             echo,
@@ -322,9 +391,6 @@ class Speaker(LocalAudioOutputTransport):
             self._params.audio_out_channels,
             self._failed,
         )
-        # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream was opened on, as it opens;
-        # asked later, an instance that has since been ended answers "no device" whatever is plugged in.
-        return Output(playout, _name(py_audio.get_default_output_device_info()), echo)
 
     def attach(self, py_audio: PortAudio, opened: Output) -> None:
         self._py_audio = cast(pyaudio.PyAudio, py_audio)
@@ -474,11 +540,12 @@ class KeyedMicrophone(LocalAudioInputTransport):
     """The local microphone, heard through the echo canceller and silent while the key is up; and the phone's, which
     the pipeline hears in its place while hands is at the phone."""
 
-    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock) -> None:
+    def __init__(self, py_audio: pyaudio.PyAudio, params: LocalAudioTransportParams, key: PushToTalk, phone: Phone, echo: Echo, record: Record, clock: Clock, choice: Choice) -> None:
         super().__init__(py_audio, params)
         self._clock = clock
         self._key = key
         self._phone = phone
+        self._choice = choice
         # The canceller the first stream is opened with; each stream after it is opened with its own.
         self._echo = echo
         self._record = record
@@ -496,14 +563,31 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self.attach(py_audio, self.open_stream(py_audio, self._echo))
 
     def open_stream(self, py_audio: PortAudio, echo: Echo) -> Input:
-        """A new stream on the default input, not yet the microphone's. Blocking: PortAudio talks to the device."""
-        match default_input(py_audio):
-            case None:
-                return Input(NoInput(), None, echo)
-            case device:
-                return Input(self._open(py_audio, echo), device, echo)
+        """A new stream on the input config.toml chooses, not yet the microphone's; a NoInput where there is no device
+        to open. Blocking: PortAudio talks to the device."""
+        match _opening(self._choice, py_audio, "maxInputChannels"):
+            case Off():
+                return Input(NoInput(), Off(), echo)
+            case Found(index=index, name=name):
+                return Input(self._open(py_audio, echo, index), name, echo)
+            case Absent(name=name):
+                return self._on_default(py_audio, echo, name)
+            case Auto():
+                return self._on_default(py_audio, echo, None)
 
-    def _open(self, py_audio: PortAudio, echo: Echo) -> Stream:
+    def _on_default(self, py_audio: PortAudio, echo: Echo, missing: str | None) -> Input:
+        """A stream on the default input, in place of the device `missing` that config.toml names, if it names one."""
+        match default_input(py_audio), missing:
+            case None, None:
+                return Input(NoInput(), None, echo)
+            case None, str(missing):
+                return Input(NoInput(), Missing(missing), echo)
+            case str(heard), None:
+                return Input(self._open(py_audio, echo, None), heard, echo)
+            case str(heard), str(missing):
+                return Input(self._open(py_audio, echo, None), Instead(missing, heard), echo)
+
+    def _open(self, py_audio: PortAudio, echo: Echo, index: int | None) -> Stream:
         return py_audio.open(
             format=py_audio.get_format_from_width(2),
             channels=self._params.audio_in_channels,
@@ -513,7 +597,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
             # back after a reopen has attached the next never touches the new one from a second thread.
             stream_callback=partial(self._captured, echo),
             input=True,
-            input_device_index=self._params.input_device_index,
+            input_device_index=self._params.input_device_index if index is None else index,
         )
 
     def attach(self, py_audio: PortAudio, opened: Input) -> None:
@@ -629,8 +713,12 @@ class KeyedMicrophone(LocalAudioInputTransport):
 class Devices:
     """The devices the transport is on, by the names the system gives them."""
 
-    input: str | None  # None when the system has no input device at all, so hands cannot hear
-    output: str
+    input: HeardOn
+    output: PlayedOn
+
+    @property
+    def deaf(self) -> bool:
+        return hears_nothing(self.input)
 
 
 class KeyedAudioTransport(LocalAudioTransport):
@@ -644,13 +732,16 @@ class KeyedAudioTransport(LocalAudioTransport):
         phone: Phone,
         record: Record,
         portaudio: Callable[[], PortAudio] = lambda: cast(PortAudio, pyaudio.PyAudio()),
-        defaults: Callable[[], DefaultDevices] = default_devices,
+        hardware: Callable[[], Hardware] = coreaudio.hardware,
         echo: Callable[[], Echo] = EchoCanceller,
+        choices: Choices = Choices(),
     ) -> None:
-        # [LAW:one-source-of-truth] which defaults the streams are on is read where PortAudio lists them, just before
-        # it does, here and at every reopen; a change after the read is one the follower sees. Read any later, it
-        # would miss an unplug during the model load between this and the pipeline's start.
-        self.opened_on = defaults()
+        # [LAW:one-source-of-truth] where the streams are is read where PortAudio lists the devices, just before it
+        # does, here and at every reopen; a change after the read is one the follower sees. Read any later, it would
+        # miss an unplug during the model load between this and the pipeline's start.
+        self._choices = choices
+        self._hardware = hardware
+        self.opened_on = self.wanted()
         # [LAW:single-enforcer] PortAudio is started by the one factory, here and at every reopen. LocalAudioTransport's
         # own init would start an instance of its own, and while two are alive, ending one lists no devices anew.
         BaseTransport.__init__(self)
@@ -662,10 +753,9 @@ class KeyedAudioTransport(LocalAudioTransport):
         # devices' room from nothing and holds none of the old one's sound.
         cancelling = echo()
         self._echo = echo
-        self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock)
-        self._microphone = KeyedMicrophone(self._pyaudio, params, key, phone, cancelling, record, clock)
+        self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock, choices.output)
+        self._microphone = KeyedMicrophone(self._pyaudio, params, key, phone, cancelling, record, clock, choices.input)
         self._portaudio = portaudio
-        self._defaults = defaults
 
     def input(self) -> KeyedMicrophone:
         return self._microphone
@@ -673,8 +763,12 @@ class KeyedAudioTransport(LocalAudioTransport):
     def output(self) -> Speaker:
         return self._speaker
 
+    def wanted(self) -> Placement:
+        """Where config.toml puts the streams on the devices there are now. Blocking: CoreAudio is asked."""
+        return placed(self._choices, self._hardware())
+
     async def reopen(self) -> Devices:
-        """Close both streams and PortAudio itself, and open them again on the system's default devices as they are now."""
+        """Close both streams and PortAudio itself, and open them again where config.toml puts them on the devices as they are now."""
         # [LAW:no-ambient-temporal-coupling] the order is the mechanism. Detached first, so a write that comes
         # meanwhile finds no stream rather than the lost one. The speaker is let go of before the microphone,
         # because stopping it is what releases a write blocked on a lost device. PortAudio is ended before it is
@@ -686,7 +780,7 @@ class KeyedAudioTransport(LocalAudioTransport):
             await self._speaker.let_go(speaker)
             await self._microphone.let_go(microphone)
             started = await off_loop(lambda: self._start_again(ending), "starting PortAudio again")
-        self.opened_on = started.defaults
+        self.opened_on = started.placement
         # [LAW:one-source-of-truth] one PortAudio handle, shared by the transport and both sides; the ended one is dropped everywhere.
         self._pyaudio = cast(pyaudio.PyAudio, started.portaudio)
         self._speaker.attach(started.portaudio, started.speaker)
@@ -706,12 +800,22 @@ class KeyedAudioTransport(LocalAudioTransport):
 
     @property
     def deaf(self) -> bool:
-        """Whether the microphone is open on no device, so a press to talk hears nothing; never before setup opens it."""
+        """Whether there is no device for the microphone to open, so a press to talk hears nothing; never before setup
+        opens it."""
         # [LAW:one-source-of-truth] the device the spoken warning names, read where `devices` reads it.
+        return self._heard(hears_nothing)
+
+    @property
+    def microphone_lost(self) -> bool:
+        """Whether there is no device for the microphone to open, though config.toml does not say so; never before setup
+        opens it. `deaf` is also so where config.toml turned the microphone off."""
+        return self._heard(lost_microphone)
+
+    def _heard(self, judged: Callable[[HeardOn], bool]) -> bool:
         match self._microphone.opened:
-            case Input(device=None):
-                return True
-            case _:
+            case Input(device=heard):
+                return judged(heard)
+            case None:
                 return False
 
     def _audio_now(self) -> PortAudio:
@@ -719,7 +823,7 @@ class KeyedAudioTransport(LocalAudioTransport):
 
     def _start_again(self, ending: PortAudio) -> "_Started":
         ending.terminate()
-        defaults = self._defaults()
+        placement = self.wanted()
         portaudio = self._portaudio()
         cancelling = self._echo()
         opened: list[Stream] = []
@@ -739,14 +843,14 @@ class KeyedAudioTransport(LocalAudioTransport):
                 stream.close()
             cancelling.close()
             raise
-        return _Started(defaults, portaudio, speaker, microphone)
+        return _Started(placement, portaudio, speaker, microphone)
 
 
 @dataclass(frozen=True)
 class _Started:
     """PortAudio started again, with both streams open and running on it, not yet the sides'."""
 
-    defaults: DefaultDevices
+    placement: Placement
     portaudio: PortAudio
     speaker: Output
     microphone: Input
@@ -782,6 +886,47 @@ def default_input(py_audio: PortAudio) -> str | None:
             raise
         return None
     return _name(info)
+
+
+@dataclass(frozen=True)
+class Found:
+    """The device config.toml names, at this index in PortAudio's list."""
+
+    index: int
+    name: str
+
+
+@dataclass(frozen=True)
+class Absent:
+    """The device config.toml names, which PortAudio lists none of."""
+
+    name: str
+
+
+def _opening(choice: Choice, py_audio: PortAudio, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> Found | Absent | Auto | Off:
+    """What opening a side on `choice` comes to on the devices `py_audio` lists."""
+    match choice:
+        case Named(name=name):
+            match device_index(py_audio, name, channels):
+                case None:
+                    return Absent(name)
+                case index:
+                    return Found(index, name)
+        case Auto() | Off():
+            return choice
+
+
+def device_index(py_audio: PortAudio, name: str, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> int | None:
+    """The index `py_audio` lists the device called `name` at, among those with `channels`; None where it lists none."""
+    for index in range(py_audio.get_device_count()):
+        # PyAudio's device info is an untyped mapping.
+        info = cast(Mapping[str, object], py_audio.get_device_info_by_index(index))
+        match info.get("name"), info.get(channels):
+            case str(listed), int(count) if listed == name and count > 0:
+                return index
+            case _:
+                pass
+    return None
 
 
 # PyAudio's words when PortAudio lists no default input, raised with no errno to tell it by.

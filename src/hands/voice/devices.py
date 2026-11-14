@@ -1,8 +1,9 @@
-"""Keeping the voice on the system's default audio devices: an unplugged headset moves it, and it says where to.
+"""Keeping the voice on the audio devices config.toml chooses: the system's defaults, which an unplugged headset moves,
+or a device by name, which leaves and comes back; each move is said aloud, with where to.
 
-[LAW:nothing-unseen] each move is one unit of work, `devices.moved`: the devices it left, the defaults that moved it, the
-devices it reopened on and the defaults it read as it did, which the next move is measured from, and how long the reopen
-took; failed with what raised where the reopen did, whether or not the follower was stopped meanwhile.
+[LAW:nothing-unseen] each move is one unit of work, `devices.moved`: the devices it left, where the sides were wanted that
+moved it, the devices it reopened on and where it read them wanted as it did, which the next move is measured from, and
+how long the reopen took; failed with what raised where the reopen did, whether or not the follower was stopped meanwhile.
 """
 
 import asyncio
@@ -12,31 +13,35 @@ from typing import Protocol
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.coreaudio import DefaultDevices, default_device_changes, default_devices
+from hands.voice.coreaudio import device_changes
+from hands.voice.devicechoice import Placement
 from hands.voice.microphone import Devices
 from hands.voice.system import AudioMoved, SystemFact
 from hands.threads import off_loop
 
 
 class Transport(Protocol):
-    """The streams a follower moves: the defaults and devices they are open on, and the reopen that moves them."""
+    """The streams a follower moves: where they were wanted as they opened and the devices they are open on, where they
+    are wanted now, and the reopen that moves them."""
 
     @property
-    def opened_on(self) -> DefaultDevices: ...
+    def opened_on(self) -> Placement: ...
     @property
     def devices(self) -> Devices: ...
+    def wanted(self) -> Placement: ...
     async def reopen(self) -> Devices: ...
 
 
 async def follow(
     clock: Clock,
     changes: asyncio.Event,
-    current: Callable[[], Awaitable[DefaultDevices]],
+    current: Callable[[], Awaitable[Placement]],
     transport: Transport,
     say: Callable[[SystemFact], Awaitable[None]],
     record: Record,
 ) -> None:
-    """Each time the defaults move off the ones the streams are open on, reopen on the new ones and say which; until cancelled."""
+    """Each time where the streams are wanted moves off where they were as they opened, reopen them there and say
+    where; until cancelled."""
 
     async def reopened() -> Devices:
         # Annotated by the reopen itself, so a move the follower was stopped during still says where it went.
@@ -45,11 +50,11 @@ async def follow(
         return devices
 
     while True:
-        defaults = await moved(changes, current, transport.opened_on)
+        wanted = await moved(changes, current, transport.opened_on)
         # [LAW:no-silent-failure] a reopen that fails raises out of here and stops the run, which reads as down, so
         # the next run opens whatever devices there are, rather than one run going on silently deaf and mute.
         with unit("devices.moved", record, begun(clock)):
-            annotate(before=transport.devices, defaults=defaults)
+            annotate(before=transport.devices, wanted=wanted)
             devices = await finished(reopened())
         await say(AudioMoved(devices))
 
@@ -75,11 +80,12 @@ async def finished[T](work: Awaitable[T]) -> T:
     return result
 
 
-async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultDevices]], opened: DefaultDevices) -> DefaultDevices:
-    """The defaults, once they are no longer the ones opened on.
+async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[Placement]], opened: Placement) -> Placement:
+    """Where the streams are wanted, once it is no longer where they were as they opened.
 
     An unplugged headset changes the input and the output within a millisecond, as two notices; the second finds
-    the defaults already what the first reopened on. A change while a reopen runs is read after it, and followed.
+    them wanted where the first reopened them. A change while a reopen runs is read after it, and followed. A change
+    that moves nothing config.toml chose, a default for a side that keeps to a device by name, reopens nothing.
     """
     while (now := await current()) == opened:
         await changes.wait()
@@ -87,13 +93,14 @@ async def moved(changes: asyncio.Event, current: Callable[[], Awaitable[DefaultD
     return now
 
 
-async def follow_default_devices(clock: Clock, started: asyncio.Event, audio: Transport, say: Callable[[SystemFact], Awaitable[None]], record: Record) -> None:
-    """Follow the system's default devices once the pipeline has started, until cancelled."""
+async def follow_devices(clock: Clock, started: asyncio.Event, audio: Transport, say: Callable[[SystemFact], Awaitable[None]], record: Record) -> None:
+    """Follow the audio devices once the pipeline has started, until cancelled."""
     # [LAW:no-ambient-temporal-coupling] the streams are Pipecat's to open and start until the pipeline has started.
-    # A change before then is still followed: the defaults are compared with those read when PortAudio listed them.
+    # A change before then is still followed: where they are wanted is compared with where they were as PortAudio
+    # listed the devices.
     await started.wait()
     loop = asyncio.get_running_loop()
     changes = asyncio.Event()
-    with default_device_changes(lambda: loop.call_soon_threadsafe(changes.set)):
+    with device_changes(lambda: loop.call_soon_threadsafe(changes.set)):
         # Read off the loop: CoreAudio answers under a lock it may be holding while it tears down a device that is gone.
-        await follow(clock, changes, lambda: off_loop(default_devices, "reading the default devices"), audio, say, record)
+        await follow(clock, changes, lambda: off_loop(audio.wanted, "reading the audio devices"), audio, say, record)
