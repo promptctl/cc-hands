@@ -175,8 +175,8 @@ def lowered(phrase: str) -> str:
 
 
 # [LAW:no-ambient-temporal-coupling] a burst is over once the session has made no new call for SETTLE seconds, or once
-# its first call has waited LONGEST, so a session that never pauses is still heard. Both are read on the reducer's own
-# clock, at its tick, which is the one owner of when gathered progress is told.
+# its first call has waited LONGEST, as in a debounce with a maximum wait, so a session that never pauses is still heard.
+# Both are read on the reducer's own clock, at its tick, which is the one owner of when gathered progress is told.
 SETTLE = 2.0
 LONGEST = 8.0
 

@@ -28,7 +28,7 @@ from hands.voice.system import (
     TurnTimedOut,
     told,
     AudioMoved,
-    BURST_SECONDS,
+    THROTTLE_SECONDS,
     ModelFailed,
     ModelFault,
     UsageLimitReached,
@@ -240,7 +240,7 @@ async def test_a_fault_that_is_still_happening_is_said_again_once_its_burst_has_
     clock = VirtualClock()
     tts, _, channel = speaking(clock)
     await channel.say(TranscriptionFailed())
-    clock.advance(BURST_SECONDS - 0.01)
+    clock.advance(THROTTLE_SECONDS - 0.01)
     await channel.say(TranscriptionFailed())
     assert said(tts) == ["Speech recognition failed for that turn."]
     clock.advance(0.01)

@@ -178,7 +178,7 @@ def _until(returns: Seconds | None) -> str:
 # Posts to the screen. True when the screen took it, so nothing is recorded as given that was not given.
 Notify = Callable[[str], Awaitable[bool]]
 
-BURST_SECONDS = 10.0
+THROTTLE_SECONDS = 10.0
 """How long a fault stays said, counted from the last time it was said and not from its last occurrence.
 
 A fault that recurs recurs in bursts: a key held down on 2026-09-22 queued hundreds of empty turns whose reports
@@ -192,7 +192,7 @@ because in the case this exists for — no microphone, a model that is down — 
 class SystemChannel:
     """Says each fact through text-to-speech alone, and posts it to the screen when speech cannot.
 
-    It says a burst once: a sentence is not said again until `BURST_SECONDS` have passed since it last was, because
+    It says a burst once: a sentence is not said again until `THROTTLE_SECONDS` have passed since it last was, because
     is the one channel that reports the daemon's own faults and a fault that recurs recurs in bursts. What a burst
     costs is the repeats: the first is said and audited, the rest inside its window are dropped — and `Announced` is written
     where the sentence was taken: handed to a working TTS, or accepted by the screen, never where it was refused.
@@ -204,13 +204,13 @@ class SystemChannel:
         notify: Notify,
         record: Record,
         clock: Clock,
-        burst: float = BURST_SECONDS,
+        throttle: float = THROTTLE_SECONDS,
     ) -> None:
         self._tts = tts
         self._notify = notify
         self._record = record
         self._clock = clock
-        self._burst = burst
+        self._throttle = throttle
         # When each sentence last reached the user, so the rest of its burst is not said again.
         self._said: dict[str, float] = {}
 
@@ -243,7 +243,7 @@ class SystemChannel:
         """
         now = self._clock.now()
         # A fault older than its window can no longer keep anything quiet, so the map holds only those inside one.
-        self._said = {said: at for said, at in self._said.items() if now - at < self._burst}
+        self._said = {said: at for said, at in self._said.items() if now - at < self._throttle}
         if fault in self._said:
             return False
         self._said[fault] = now
