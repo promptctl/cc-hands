@@ -162,7 +162,7 @@ async def test_the_desk_served_talks_by_the_key_switches_by_taps_and_tools_and_h
 
     # Right Shift typing a capital opens nothing.
     keyboard.press(Pressed(time.monotonic()), Typed())
-    # Held past the hold, so its Ripe has been told: still nothing opens.
+    # Held past SHORTCUT_SECONDS, so its Ripe has been told: still nothing opens.
     await asyncio.sleep(SHORTCUT_SECONDS * 2)
     await settled()
     assert taken[3:] == ["arm", "disarm"]

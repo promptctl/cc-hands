@@ -29,14 +29,14 @@ def command(at: float) -> list[KeyEvent]:
     ("events", "made"),
     [
         # Three presses alone, inside the second: one tap, of Right Command on its third press, and of Right Shift as
-        # its third press is let go, known then to be no hold.
+        # its third press is let go, known then not to mean talk.
         ([*shift(1.0), *shift(1.2), *shift(1.4)], ["right shift"]),
         ([*command(1.0), *command(1.2), *command(1.4)], ["right command"]),
         ([*command(1.0), *command(1.2), CommandPressed(1.4)], ["right command"]),
         ([*shift(1.0), *shift(1.2), Pressed(1.4)], []),
         # Two are nothing.
         ([*shift(1.0), *shift(1.2)], []),
-        # Releases and the hold's own timings break no count: a hold that opens a turn is the desk's to reset.
+        # Releases and the talk key's own timings break no count: a press held to a turn is the desk's to reset.
         ([*shift(1.0), Ripe(1.0), *shift(1.2), *shift(1.4)], ["right shift"]),
         # Any other key between, as a capital typed or a shortcut, starts the count again.
         ([*shift(1.0), Typed(), *shift(1.2), *shift(1.4)], []),

@@ -30,7 +30,7 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
 @pytest.mark.parametrize(
     ("events", "made"),
     [
-        # Held alone past the hold, then released: a whole turn, sent.
+        # Held alone long enough to mean talk, then released: a whole turn, sent.
         ([Pressed(1.0), Ripe(1.0), Released()], ["arm", "start", "stop"]),
         # A quick tap opens the microphone and closes it again: no turn.
         ([Pressed(1.0), Released(), Ripe(1.0)], ["arm", "disarm"]),
@@ -58,7 +58,7 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
     ],
 )
-def test_the_hold_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:
+def test_the_shortcut_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:
     assert moves(events) == made
 
 
@@ -93,12 +93,12 @@ COMMAND = 0x100000  # kCGEventFlagMaskCommand, set by either Command
         (KEY_DOWN, 8, COMMAND | talkkey.RIGHT_COMMAND_DOWN, Typed()),
     ],
 )
-def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
+def test_each_tapped_event_is_what_it_means_to_the_shortcut(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
     assert talkkey.event_of(kind, keycode, flags, 5.0) == event
 
 
 async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Clock, Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
-    """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
+    """The shortcut stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
     shortcut: Shortcut = Idle()
     async with keys.tapped(SYSTEM, heard.put_nowait, tap):

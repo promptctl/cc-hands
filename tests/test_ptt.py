@@ -85,7 +85,7 @@ def test_the_other_place_cannot_touch_a_turn_but_by_opening_one(move: Move) -> N
     assert on_the_phone.after(move, "shortcut") == on_the_phone
 
 
-def test_leaving_a_place_mid_hold_throws_the_hold_away() -> None:
+def test_leaving_a_place_mid_clip_throws_the_clip_away() -> None:
     assert Gate().after("start", "phone button").moved("desk") == Gate("up", "desk", dropped=1, opened="phone button")
     assert Gate().after("arm", "shortcut").moved("phone") == Gate("up", "phone")  # no turn open, so none thrown away
     assert Gate().moved("phone") == Gate("up", "phone")
@@ -110,7 +110,7 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
 
 
 @pytest.mark.parametrize("held", ["arming", "down"])
-def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both(held: Key) -> None:
+def test_a_turn_opened_at_one_place_while_a_clip_is_open_at_the_other_drops_both(held: Key) -> None:
     # Right Shift held at the desk, and the phone's button pressed: two hands on two keys.
     gate = Gate(held, "desk")
     assert gate.took("start", "phone") == "drop"
@@ -123,8 +123,8 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
 
 
 @pytest.mark.parametrize("ending", ["stop", "drop", "timeout"])
-def test_the_end_of_a_hold_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
-    # The phone's turn was dropped by a press at the desk, whose hold now ends: nothing is sent, nothing cued twice.
+def test_the_end_of_a_clip_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
+    # The phone's turn was dropped by a press at the desk, whose clip now ends: nothing is sent, nothing cued twice.
     dropped = Gate("up", "desk", dropped=1)
     assert dropped.took(ending, "desk") is None
     assert dropped.after(ending, "shortcut") == dropped

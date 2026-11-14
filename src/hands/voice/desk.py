@@ -194,7 +194,7 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
         case _:
             taps, tapped = counted(desk.taps, event)
             phase, acts = _keyed(desk.phase, event)
-            # [LAW:one-source-of-truth] a press held to a turn is no tap: the hold that opened it is the one judge.
+            # [LAW:one-source-of-truth] a press held to a turn is no tap: the shortcut that opened it is the one judge.
             if any(act == Made("start", "shortcut") for act in acts):
                 taps = Taps()
             if tapped is not None:
@@ -241,7 +241,7 @@ def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase
 
 def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tuple[Act, ...]]:
     """Where the desk is once what the voice had open is `left`: resting, or with Right Shift down, which a press still
-    arming arms for itself, so a hold to talk goes on to open its turn."""
+    arming arms for itself, so the shortcut goes on to open its turn."""
     match key:
         case Idle():
             return Resting(level), (left,)
@@ -342,7 +342,7 @@ def _voice_of(level: Listens) -> Trigger:
 def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong | NothingAsked], ...]:
     """What the desk moving from `was` to `now` asks to be told later: a turn the voice just opened, once it has been
     open `TURN_LIMIT_SECONDS`, and one the wake word opened, once `ASK_SECONDS` have passed with nothing asked. A turn of
-    the key's has the hold's own limit."""
+    the key's has the shortcut's own limit."""
     match now, was:
         case Woke(since=since) | Voiced(since=since), Woke(since=opened) | Voiced(since=opened) if since == opened:
             return ()

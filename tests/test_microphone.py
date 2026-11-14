@@ -154,9 +154,9 @@ async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_
     devices.key.move("start", "shortcut")
     await devices.capture(at=1.02)
     assert devices.pushed == [QUIET, CLEANED]
-    # Each frame carries what the microphone captured too, muted by the same key: a hold's level before the canceller.
+    # Each frame carries what the microphone captured too, muted by the same key: a clip's level before the canceller.
     assert devices.captured == [QUIET, LOUD]
-    # And what the speaker played over it, the canceller's reference, which no key mutes: what hands said over a hold.
+    # And what the speaker played over it, the canceller's reference, which no key mutes: what hands said over a clip.
     assert devices.played == [PLAYED, PLAYED]
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
 
@@ -603,9 +603,9 @@ async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_sto
     async with devices.microphone.echoes() as echoes:
         await devices.capture(at=1.0)  # the off level, no press
         devices.key.move("listen", "wake word")
-        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a hold
+        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a clip
         devices.key.move("start", "shortcut")
-        await devices.capture(at=1.04)  # a hold open
+        await devices.capture(at=1.04)  # a clip open
         devices.key.go("phone")
         await devices.capture(at=1.06)  # hands at the phone
         heard = [await anext(echoes) for _ in range(4)]
@@ -642,7 +642,7 @@ async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking
     await devices.speaker.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert devices.speaker.quiet.is_set()
-    # The user's turn is speech too, from its first hold's opening, whether or not it has cut hands off: quiet waits for
+    # The user's turn is speech too, from its first clip's opening, whether or not it has cut hands off: quiet waits for
     # both sides, whichever stops last.
     await devices.speaker.push_frame(TurnOpened(clip=Clip(1, "engaged conversation")))
     await devices.speaker.push_frame(BotStartedSpeakingFrame())

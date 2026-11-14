@@ -19,7 +19,7 @@ the speaker blocks for good. So the transport is reopened whole when the default
 change, which macOS does the moment the default device disappears.
 
 The phone is the other place hands can be (`hands.voice.phone`). The gate says which: the pipeline hears only that
-place's microphone, so the hold owner is handed one stream of frames, and the speaker plays to that place, so a reply goes
+place's microphone, so the clip owner is handed one stream of frames, and the speaker plays to that place, so a reply goes
 where the user is.
 """
 
@@ -85,7 +85,7 @@ class Overheard:
     """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
     speaker played over it; whether the desk is where hands is, the gate's say, the desk heard as silence where not; and
     the gate's key as it was captured, which says both the press and the level: up at the desk is the off level with no
-    press, where nothing but a held key opens a hold."""
+    press, where nothing but a held key opens a clip."""
 
     cancelled: Cancelled
     desk: bool
@@ -384,7 +384,7 @@ class Speaker(LocalAudioOutputTransport):
             case BotStoppedSpeakingFrame():
                 self._speaking.discard("hands")
             case TurnOpened():
-                # The user is speaking from their turn's first hold, before it cuts anything off.
+                # The user is speaking from their turn's first clip, before it cuts anything off.
                 self._speaking.add("user")
             case UserStoppedSpeakingFrame():
                 self._speaking.discard("user")
@@ -607,12 +607,12 @@ class KeyedMicrophone(LocalAudioInputTransport):
         loop = self.get_event_loop()
         # One read of the gate: what the frame holds and the key it says it was captured under always agree.
         gate = self._key.gate
-        # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the hold owner: while hands is at the
+        # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
         # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
         overheard = Overheard(cancelled, gate.hears("desk"), gate.key)
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
-        # [LAW:single-enforcer] the gate alone says which place's microphone reaches the hold owner; while hands is at the
+        # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the
         # phone, the desk's frames are not the pipeline's at all, so its stream is the phone's unbroken.
         if not gate.hears("desk"):
             return None, pyaudio.paContinue

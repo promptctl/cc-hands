@@ -54,7 +54,7 @@ def test_the_held_key_opens_a_turn_at_every_level(level: Level) -> None:
         # Right Command's triple tap toggles the wake word, from off and back.
         ("off", taps(1.0, command=True), "wake word", [Made("listen", "wake word"), Leveled("off", "wake word", "tap")]),
         ("wake word", taps(1.0, command=True), "off", [Made("deafen", "wake word"), Leveled("wake word", "off", "tap")]),
-        # Right Shift's toggles engaged as its third press is let go, known then to be no hold.
+        # Right Shift's toggles engaged as its third press is let go, known then not to mean talk.
         ("off", taps(1.0), "engaged", [*TAP_SHIFT, Made("disarm", "shortcut"), Made("listen", "engaged conversation"), Leveled("off", "engaged", "tap")]),
         # Either switches straight from the other, with the desk listening throughout.
         ("engaged", taps(1.0, command=True), "wake word", [Leveled("engaged", "wake word", "tap")]),
@@ -67,7 +67,7 @@ def test_a_triple_tap_sets_the_level(start: Level, events: list[Event], level: L
     assert desk.level == level and acts == made
 
 
-def test_a_hold_to_a_turn_is_no_tap() -> None:
+def test_a_press_held_to_a_turn_is_no_tap() -> None:
     desk, _ = run([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.1), Released(), Pressed(1.3), Released()])
     assert desk.level == "off"
 
@@ -99,7 +99,7 @@ def test_engaged_speech_opens_a_turn_and_a_noise_disarms() -> None:
 
 
 @pytest.mark.parametrize(("level", "opening", "left"), [("wake word", [Woken(1.0)], "stop"), ("engaged", [SpeechStarted(1.0)], "stop"), ("engaged", [SpeechStarting()], "disarm")])
-def test_a_hold_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
+def test_a_shortcut_over_what_the_voice_has_open_sends_or_disarms_it_then_talks(level: Level, opening: list[Event], left: Move) -> None:
     _, made = run([*opening, Pressed(2.0), Ripe(2.0), Released()], at(level))
     trigger = "wake word" if level == "wake word" else "engaged conversation"
     assert moves(made)[-4:] == [Made(left, trigger), Made("arm", "shortcut"), Made("start", "shortcut"), Made("stop", "shortcut")]
@@ -112,7 +112,7 @@ def test_shift_typed_over_a_voice_turn_leaves_it_open(level: Level, opening: lis
     assert moves(made)[-1] == Made("stop", trigger) and Made("arm", "shortcut") not in made and desk.level == level
 
 
-def test_a_hold_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
+def test_a_shortcut_begun_under_a_voice_turn_that_ends_opens_its_own() -> None:
     _, made = run([SpeechStarted(1.0), Pressed(2.0), SpeechStopped(), TurnEnded("verdict"), Ripe(2.0), Released()], at("engaged"))
     assert moves(made)[-4:] == [Made("stop", "engaged conversation"), *KEY_TURN]
 

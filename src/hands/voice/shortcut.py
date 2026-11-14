@@ -1,7 +1,8 @@
-"""The talk shortcut: Right Shift held by itself. A pure machine from what the keyboard did to what the turn does.
+"""The talk shortcut: Right Shift held by itself for `SHORTCUT_SECONDS`. A pure machine from what the keyboard did to what
+the turn does.
 
-Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk once it has been held
-alone for `SHORTCUT_SECONDS`; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
+Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk only once it has been held
+alone that long; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
 turn already started is dropped, never sent. Right Shift itself is never swallowed, so Shift keeps working as Shift.
 The microphone opens on the press all the same, so words said before the shortcut means talk are kept: they reach a turn
 only if the shortcut opens one, and are thrown away if it turns out to be Shift. A turn still open `TURN_LIMIT_SECONDS`
@@ -12,8 +13,7 @@ forever, and what the turn recorded is the user's all the same, so it reaches th
 from dataclasses import dataclass
 from typing import Literal
 
-# How long Right Shift is held alone before it means talk. 0.3 s opened turns while typing: a rest on Right Shift before a
-# capital, which Whisper filled with "you" or "Okay.".
+# 0.3 s opened turns while typing: a rest on Right Shift before a capital, which Whisper filled with "you" or "Okay.".
 SHORTCUT_SECONDS = 0.6
 # Ten minutes: dictation runs past two (a 120 s limit threw the user's away, promptctl-voice-je8.d20), and Whisper hears
 # ten minutes in about 17 s.

@@ -1,11 +1,11 @@
 """The start of a user turn, and the cut: the moment it cuts off what hands is saying, which the trigger that opened it decides.
 
-Every turn starts as the hold that opens it opens, so its words gather from the first hold and the floor is the user's
+Every turn starts as the clip that opens it opens, so its words gather from the first clip and the floor is the user's
 from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
-heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the hold owner pushes words for
-it, Pipecat's transcription start: the first a listener hears in a hold still open (`InterimWords`), or the hold's own words as it
+heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the clip owner pushes words for
+it, Pipecat's transcription start: the first a listener hears in a clip still open (`InterimWords`), or the clip's own words as it
 closes, where it heard none before. A turn that ends uncut has taken nothing over: nothing is cut off, so nothing has to
 be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
@@ -44,7 +44,7 @@ class _Open:
 
 
 class TriggerTurnStart(BaseUserTurnStartStrategy):
-    """Starts the user turn as its first hold opens, and cuts hands off when the trigger that opened each hold says
+    """Starts the user turn as its first clip opens, and cuts hands off when the trigger that opened each clip says
     (`hands.voice.trigger.turn_start`).
 
     [LAW:single-enforcer] the one place a turn's start and its cut are decided: the pipeline runs no other start strategy,
@@ -69,14 +69,14 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
                 await self.trigger_user_turn_started(enable_user_speaking_frames=False)
                 await self._barge_in_where(start, self._turn)
             case TurnOpened(clip=clip), _Open() as turn:
-                # A hold pressed while the hold owner is still on the last joins its turn, and cuts as its own trigger says.
+                # A clip opened while the clip owner is still on the last joins its turn, and cuts as its own trigger says.
                 await self._barge_in_where(turn_start(clip.opener), turn)
             case Words() | InterimWords(), _Open() as turn:
-                # Words, in whichever hold, heard while it was open or as it closed, are someone speaking.
+                # Words, in whichever clip, heard while it was open or as it closed, are someone speaking.
                 await self._barge_in(turn)
             case Words() | InterimWords(), None:
-                # [LAW:no-silent-failure] a turn ends only once the hold owner is done with every hold, behind each one's words.
-                raise RuntimeError("the hold owner pushed words outside any user turn")
+                # [LAW:no-silent-failure] a turn ends only once the clip owner is done with every clip, behind each one's words.
+                raise RuntimeError("the clip owner pushed words outside any user turn")
             case BargeInWritten(), _:
                 await self._call_event_handler("on_barge_in_written")  # pyright: ignore[reportUnknownMemberType]  (Pipecat's *args is untyped)
             case _:

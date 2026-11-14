@@ -1,13 +1,13 @@
 """Push-to-talk: the key is the voice activity detector and the microphone mute.
 
-Pipecat's turn machinery, and the hold owner that cuts the holds every model
+Pipecat's turn machinery, and the clip owner that cuts the clips every model
 hears, both run off the key. So the key *is* the VAD: every microphone frame
-carries the key it was captured under, and the hold owner
+carries the key it was captured under, and the clip owner
 (`hands.voice.clipowner`) says the user started or stopped speaking where those
 keys change. The key is also the mute: the microphone bytes are silence unless
 the key is pressed (applied where they are captured, in
-`hands.voice.microphone`), and a hold's audio begins at its press, so what was
-said before the hold meant talk is kept. Audio frames always flow; only their
+`hands.voice.microphone`), and a clip's audio begins at its press, so what was
+said before the key meant talk is kept. Audio frames always flow; only their
 content and their key follow the key. The turn strategies open and close the
 user turn on those frames (`hands.voice.turnstart`, `hands.voice.turnstop`),
 and its cut broadcasts the interruption that flushes queued speech on
@@ -34,7 +34,7 @@ from hands.voice.trigger import Trigger, place_of
 
 # [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
 # opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
-# so the words said before it does are kept; or down, a hold. The edges decide every move, so the gate never sees one
+# so the words said before it does are kept; or down, a clip. The edges decide every move, so the gate never sees one
 # that is not a transition.
 Key = Literal["up", "listening", "arming", "down"]
 
@@ -57,7 +57,7 @@ class KeyedAudio(InputAudioRawFrame):
     sent: int
     dropped: int
     place: Place
-    # The trigger that opened the last hold, as it opened it.
+    # The trigger that opened the last clip, as it opened it.
     opened: Trigger
 
 
@@ -71,20 +71,20 @@ class Gate:
     # [LAW:one-source-of-truth] listening between turns is the desk's: at the phone, its button alone opens the microphone.
     listens: bool = False
     # [LAW:no-ambient-temporal-coupling] how each turn ended is counted, not left in a key position: a frame is captured
-    # every 20 ms and a turn can end and the next arm between two of them, so the hold owner ends each turn as these move.
+    # every 20 ms and a turn can end and the next arm between two of them, so the clip owner ends each turn as these move.
     sent: int = 0
     dropped: int = 0
     # [LAW:no-ambient-temporal-coupling] the trigger that opened the last turn travels with the audio, as the key does, so
-    # what reads a hold's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
+    # what reads a clip's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
     opened: Trigger = "shortcut"
 
     def took(self, move: Move, at: Place) -> Move | None:
-        """What a hold at `at` did to the turn, as the gate takes it; None where it does nothing to it.
+        """What `move` at `at` did to the turn, as the gate takes it; None where it does nothing to it.
 
         [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going: a
         Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
-        at one place while a hold is open at the other is a second hand on a second key, which drops both, as a key
-        pressed while the talk key is held drops the turn; and the end of a hold the gate has already thrown away, as a
+        at one place while a clip is open at the other is a second hand on a second key, which drops both, as a key
+        pressed while the talk key is held drops the turn; and the end of a clip the gate has already thrown away, as a
         call came or went, ends nothing more. The desk's listening is taken wherever hands is.
         """
         match at == self.place, move, self.key:
@@ -102,7 +102,7 @@ class Gate:
                 return None
 
     def after(self, move: Move, by: Trigger) -> "Gate":
-        """The gate once a hold made by `by` has moved the turn."""
+        """The gate once `move`, made by `by`, has moved the turn."""
         at = place_of(by)
         rest = self._rest(at, self.listens)
         match self.took(move, at):
@@ -125,7 +125,7 @@ class Gate:
                 return replace(self, key=rest, place=at, dropped=self.dropped + (self.key == "down"))
 
     def moved(self, to: Place) -> "Gate":
-        """The gate once hands is at `to`: a hold open at the place it leaves is thrown away, not sent."""
+        """The gate once hands is at `to`: a clip open at the place it leaves is thrown away, not sent."""
         if to == self.place:
             return self
         return replace(self, key=self._rest(to, self.listens), place=to, dropped=self.dropped + (self.key == "down"))
@@ -136,19 +136,19 @@ class Gate:
         return "listening" if listens and place == "desk" else "up"
 
     def hears(self, place: Place) -> bool:
-        """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches the hold owner."""
+        """Whether the pipeline hears the microphone at `place`: only hands' own, so one stream of frames reaches the clip owner."""
         return place == self.place
 
     @property
     def turn_open(self) -> bool:
-        """The key has been held past the hold: what the microphone hears now is the user's turn."""
+        """The key has been held long enough to mean talk: what the microphone hears now is the user's turn."""
         return self.key == "down"
 
     def audible(self, audio: bytes) -> bytes:
         """The microphone bytes as the pipeline hears them: intact while the key is pressed or the desk listens, silence
         otherwise."""
         # [LAW:dataflow-not-control-flow] a frame of the same length always
-        # goes out, so the hold owner sees an unbroken stream; the key
+        # goes out, so the clip owner sees an unbroken stream; the key
         # only decides its content.
         return audio if self.key in ("listening", "arming", "down") else bytes(len(audio))
 
@@ -175,7 +175,7 @@ class PushToTalk:
         self._record = record
 
     def move(self, move: Move, by: Trigger) -> Move | None:
-        """Report what the hold made by `by` did to the turn, and get back what the gate took it as, to cue and tell: the
+        """Report what `move`, made by `by`, did to the turn, and get back what the gate took it as, to cue and tell: the
         desk's trigger and the phone's button call this."""
         taken = self._gate.took(move, place_of(by))
         self._become(self._gate.after(move, by), "turn")
@@ -192,7 +192,7 @@ class PushToTalk:
     def _become(self, gate: Gate, by: Literal["turn", "call"]) -> None:
         before, self._gate = self._gate, gate
         # [LAW:nothing-unseen] the one writer of the gate writes each move of the place as one `place.moved` event,
-        # whichever trigger made it: from where to where, what made it, and whether a hold open at the place it left was
+        # whichever trigger made it: from where to where, what made it, and whether a clip open at the place it left was
         # thrown away.
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
