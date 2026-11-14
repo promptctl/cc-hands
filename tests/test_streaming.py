@@ -7,10 +7,10 @@ import contextlib
 import itertools
 import re
 import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from collections.abc import Callable, Iterator
 from typing import Any, cast
 
 import numpy as np
@@ -18,8 +18,8 @@ import pytest
 import soundfile
 from loguru import logger
 
-from conftest import CALLED, PAIRS, model_facts
 import recordings
+from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
@@ -540,6 +540,7 @@ def real(request: pytest.FixtureRequest, pair: Any) -> Iterator[Callable[[str], 
     recorders = dict[str, recordings.Recorder]()
 
     def of(name: str) -> Session:
+        assert name not in recorders, f"the run {name!r} begun twice in one test: its first recording would be lost"
         pair.reset()
         recorders[name] = recordings.Recorder(pair)
         return recorders[name]

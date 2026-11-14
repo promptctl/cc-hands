@@ -4,7 +4,7 @@ real pair in a `real` case that passed (`pytest --record-decodes`), and read one
 
 A recording is the pair's answers by the run's position, in samples fed: what each feed that decoded something returned, and
 what each close returned, with a hash of all the audio fed up to it. It holds no samples, so a run fed other audio than it
-was made from (a changed fixture, a clip cut elsewhere) fails naming the recording, and a run fed the same audio in other
+was made from (a changed fixture, a clip cut elsewhere) fails naming the recording at its next close, and a run fed the same audio in other
 feeds than it was made from fails too: a feed ending where none did, with a decode recorded before it, would be served nothing
 it should have."""
 
