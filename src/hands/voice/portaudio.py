@@ -27,7 +27,7 @@ class Listed:
 
 
 def named(py_audio: Lists, channels: Channels) -> Iterator[tuple[int, str]]:
-    """The index and name of each device `py_audio` lists with `channels`, in its order: the one enumeration a name is matched against."""
+    """The index and name of each device `py_audio` lists with `channels`, in its order: the enumeration a stream is opened by, so the names it yields are the ones config.toml can name."""
     for index in range(py_audio.get_device_count()):
         # PyAudio's device info is an untyped mapping.
         info = cast(Mapping[str, object], py_audio.get_device_info_by_index(index))

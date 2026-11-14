@@ -542,9 +542,6 @@ async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_
     await transport.input().cleanup()  # and lets go of nothing, without complaint
 
 
-
-
-
 async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
     devices.key.move("start", "shortcut")
