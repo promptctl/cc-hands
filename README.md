@@ -197,7 +197,7 @@ personality = "Dry and wry, with a bit of wit."   # how hands comes across, in y
 wake_word = "Hey Mycroft"     # what the desk listens for at its wake word level
 
 [audio]
-input_device = "MacBook Pro Microphone"   # auto (the default) or a device's name
+input_device = "MacBook Pro Microphone"   # auto (the default), a device's name, or off
 output_device = "MacBook Pro Speakers"
 ```
 
@@ -213,7 +213,8 @@ any other phrase, train an ONNX model on it with `uv run --project wake-training
 follows the system's default device as it changes. A device's name, as macOS shows it in Sound settings, keeps hands on
 that device whatever the default is, so music can play through AirPlay or headphones while hands listens and speaks on
 the Mac's own. While a named device is missing hands uses the default, says so, and goes back to the named one when it
-returns. The phone is unaffected by either.
+returns. `off` opens no device for that side at the Mac: with the microphone off, a press of the talk key makes hands say
+so, and nothing is heard at the Mac; with the speaker off, nothing is played there. The phone is unaffected by any of it.
 
 hands plays, pauses, and skips Spotify on this Mac, sets its volume, shuffle, and repeat, and says what it is
 playing, through the AppleScript Spotify answers (`src/hands/spotify.py`); macOS asks once whether hands may control

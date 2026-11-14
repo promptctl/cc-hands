@@ -50,7 +50,7 @@ from pipecat.transports.local.audio import (
 
 from hands.clock import Clock
 from hands.voice import coreaudio
-from hands.voice.devicechoice import Auto, Choice, Choices, Hardware, Named, Placement, placed
+from hands.voice.devicechoice import Auto, Choice, Choices, Hardware, Named, Off, Placement, placed
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -226,19 +226,57 @@ class NoInput:
         pass
 
 
+class NoOutput:
+    """The speaker's stream when config.toml gives the speaker no device, a null object: what is written to it is dropped.
+
+    [LAW:dataflow-not-control-flow] the speaker writes, starts, stops, and closes its stream the same way with or
+    without a device; only this value differs.
+    """
+
+    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+        pass
+
+    def counts(self) -> dict[str, int]:
+        return dict.fromkeys(PLAYOUT_COUNTS, 0)
+
+    def start_stream(self) -> None:
+        pass
+
+    def stop_stream(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 @dataclass(frozen=True)
 class Instead:
-    """The default device, opened in place of the one config.toml names, which is missing; for a microphone, no name
-    when there is no default either."""
+    """The default device, opened in place of the one config.toml names, which is missing."""
 
     missing: str
-    device: str | None
+    device: str
 
 
-# What a side is on, by the names the system gives its devices: a device, or the default in place of one missing. A
-# microphone may be on nothing at all, None, when the system has no input device.
-PlayedOn = str | Instead
-HeardOn = str | Instead | None
+@dataclass(frozen=True)
+class Missing:
+    """The microphone config.toml names is missing, and the system has no input device to open in its place."""
+
+    missing: str
+
+
+# What a side is on, by the names the system gives its devices: a device, the default in place of one missing, or none
+# at all, which config.toml may choose (Off) and a microphone may be left with, None, where the system has no input device.
+PlayedOn = str | Instead | Off
+HeardOn = str | Instead | Missing | Off | None
+
+
+def hears_nothing(heard: HeardOn) -> bool:
+    """Whether a microphone on `heard` has no device to open, so a press to talk hears nothing."""
+    match heard:
+        case None | Missing() | Off():
+            return True
+        case str() | Instead():
+            return False
 
 
 @dataclass(frozen=True)
@@ -327,10 +365,24 @@ class Speaker(LocalAudioOutputTransport):
 
     def open_stream(self, py_audio: PortAudio, echo: Echo) -> Output:
         """A new stream on the output config.toml chooses, not yet the speaker's. Blocking: PortAudio talks to the device."""
-        # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream is opened on, as it opens;
-        # asked later, an instance that has since been ended answers "no device" whatever is plugged in.
-        index, device = _chosen(self._choice, py_audio, "maxOutputChannels", lambda: _name(py_audio.get_default_output_device_info()))
-        playout = Playout(
+
+        def default() -> str:
+            # [LAW:one-source-of-truth] the name is read from the same live PortAudio the stream is opened on, as it
+            # opens; asked later, an instance that has since been ended answers "no device" whatever is plugged in.
+            return _name(py_audio.get_default_output_device_info())
+
+        match _opening(self._choice, py_audio, "maxOutputChannels"):
+            case Off():
+                return Output(NoOutput(), Off(), echo)
+            case Found(index=index, name=name):
+                return Output(self._playout(py_audio, echo, index), name, echo)
+            case Absent(name=name):
+                return Output(self._playout(py_audio, echo, None), Instead(name, default()), echo)
+            case Auto():
+                return Output(self._playout(py_audio, echo, None), default(), echo)
+
+    def _playout(self, py_audio: PortAudio, echo: Echo, index: int | None) -> Playout:
+        return Playout(
             lambda pull: py_audio.open(
                 format=py_audio.get_format_from_width(2),
                 channels=self._params.audio_out_channels,
@@ -345,7 +397,6 @@ class Speaker(LocalAudioOutputTransport):
             self._params.audio_out_channels,
             self._failed,
         )
-        return Output(playout, device, echo)
 
     def attach(self, py_audio: PortAudio, opened: Output) -> None:
         self._py_audio = cast(pyaudio.PyAudio, py_audio)
@@ -520,12 +571,27 @@ class KeyedMicrophone(LocalAudioInputTransport):
     def open_stream(self, py_audio: PortAudio, echo: Echo) -> Input:
         """A new stream on the input config.toml chooses, not yet the microphone's; a NoInput where there is no device
         to open. Blocking: PortAudio talks to the device."""
-        index, device = _chosen(self._choice, py_audio, "maxInputChannels", lambda: default_input(py_audio))
-        match device:
-            case None | Instead(device=None):
-                return Input(NoInput(), device, echo)
-            case _:
-                return Input(self._open(py_audio, echo, index), device, echo)
+        match _opening(self._choice, py_audio, "maxInputChannels"):
+            case Off():
+                return Input(NoInput(), Off(), echo)
+            case Found(index=index, name=name):
+                return Input(self._open(py_audio, echo, index), name, echo)
+            case Absent(name=name):
+                return self._on_default(py_audio, echo, name)
+            case Auto():
+                return self._on_default(py_audio, echo, None)
+
+    def _on_default(self, py_audio: PortAudio, echo: Echo, missing: str | None) -> Input:
+        """A stream on the default input, in place of the device `missing` that config.toml names, if it names one."""
+        match default_input(py_audio), missing:
+            case None, None:
+                return Input(NoInput(), None, echo)
+            case None, str(missing):
+                return Input(NoInput(), Missing(missing), echo)
+            case str(heard), None:
+                return Input(self._open(py_audio, echo, None), heard, echo)
+            case str(heard), str(missing):
+                return Input(self._open(py_audio, echo, None), Instead(missing, heard), echo)
 
     def _open(self, py_audio: PortAudio, echo: Echo, index: int | None) -> Stream:
         return py_audio.open(
@@ -656,6 +722,10 @@ class Devices:
     input: HeardOn
     output: PlayedOn
 
+    @property
+    def deaf(self) -> bool:
+        return hears_nothing(self.input)
+
 
 class KeyedAudioTransport(LocalAudioTransport):
     """`LocalAudioTransport` with the keyed microphone and the speaker, joined by the echo canceller of the streams open."""
@@ -740,9 +810,9 @@ class KeyedAudioTransport(LocalAudioTransport):
         opens it."""
         # [LAW:one-source-of-truth] the device the spoken warning names, read where `devices` reads it.
         match self._microphone.opened:
-            case Input(device=None | Instead(device=None)):
-                return True
-            case _:
+            case Input(device=heard):
+                return hears_nothing(heard)
+            case None:
                 return False
 
     def _audio_now(self) -> PortAudio:
@@ -815,19 +885,32 @@ def default_input(py_audio: PortAudio) -> str | None:
     return _name(info)
 
 
-def _chosen[D: str | None](choice: Choice, py_audio: PortAudio, channels: Literal["maxInputChannels", "maxOutputChannels"], default: Callable[[], D]) -> tuple[int | None, D | str | Instead]:
-    """Where a side opens on the devices `py_audio` lists: the index of the device `choice` names, None for the default,
-    and the device as the side is on it."""
+@dataclass(frozen=True)
+class Found:
+    """The device config.toml names, at this index in PortAudio's list."""
+
+    index: int
+    name: str
+
+
+@dataclass(frozen=True)
+class Absent:
+    """The device config.toml names, which PortAudio lists none of."""
+
+    name: str
+
+
+def _opening(choice: Choice, py_audio: PortAudio, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> Found | Absent | Auto | Off:
+    """What opening a side on `choice` comes to on the devices `py_audio` lists."""
     match choice:
-        case Auto():
-            return None, default()
         case Named(name=name):
             match device_index(py_audio, name, channels):
                 case None:
-                    # [LAW:no-silent-failure] the default, said to be in place of the one named.
-                    return None, Instead(name, default())
+                    return Absent(name)
                 case index:
-                    return index, name
+                    return Found(index, name)
+        case Auto() | Off():
+            return choice
 
 
 def device_index(py_audio: PortAudio, name: str, channels: Literal["maxInputChannels", "maxOutputChannels"]) -> int | None:

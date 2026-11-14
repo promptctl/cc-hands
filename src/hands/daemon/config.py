@@ -14,7 +14,7 @@ run runs starts the run again, on the file as edited.
     wake_word_model = "~/wake/hey_computer.onnx"      # or a model of your own, trained with openWakeWord on wake_word, said as written
 
     [audio]
-    input_device = "MacBook Pro Microphone"   # auto (the default) follows the system's default; a device's name keeps to it
+    input_device = "MacBook Pro Microphone"   # auto (the default) follows the system's default; a device's name keeps to it; off opens none
     output_device = "MacBook Pro Speakers"    # the same for the speaker
 
 A file left out, or a key, is the default. Secrets are not settings: the brain's login is in its own config directory. The voice is not either: the user chooses it by voice,
@@ -43,7 +43,7 @@ from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
-from hands.voice.devicechoice import Auto, Choice, Choices, Named
+from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained, Word
 
 # How late an edit to the file is heard.
@@ -253,12 +253,14 @@ def parse(text: str, model: str | None = None) -> Config:
 
 
 def _device(table: Mapping[str, object], key: str) -> Choice:
-    """auto, the system's default as it moves; or any other name, the device the system calls that, matched as written.
-    Whether it is there is the transport's to find each time it opens."""
+    """auto, the system's default as it moves; off, no device; or any other name, the device the system calls that, matched
+    as written. Whether it is there is the transport's to find each time it opens."""
     said = _text(table, "[audio]", key, "auto")
     match said.casefold():
         case "auto":
             return Auto()
+        case "off":
+            return Off()
         case _:
             return Named(said)
 

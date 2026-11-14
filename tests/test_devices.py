@@ -10,7 +10,7 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from conftest import events, patiently
-from hands.voice.devicechoice import Auto, Choices, DefaultDevices, Hardware, Named, OnDefault, OnNamed, Placement, placed
+from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Named, Off, OnDefault, OnNamed, Placement, placed
 from hands.voice.devices import follow
 from hands.voice.microphone import Devices, Instead
 from hands.voice.system import AudioMoved, SystemFact, system_text
@@ -211,15 +211,20 @@ DISPLAY = Choices(Named("Studio Display Microphone"), Named("Studio Display Spea
 ON_DISPLAY = Devices(input="Studio Display Microphone", output="Studio Display Speakers")
 
 
-def plugged(default: int, *names: str) -> Hardware:
-    """The Mac's own microphone and speakers, the headset, and the devices `names`, on `default`."""
-    return Hardware(DefaultDevices(default, default), frozenset({"MacBook Pro Microphone", "headset", *names}), frozenset({"MacBook Pro Speakers", "headset", *names}))
+def plugged(default: int, *names: str, generation: int = 1) -> Hardware:
+    """The Mac's own microphone and speakers, the headset, and the devices `names`, on `default`. CoreAudio gave each
+    device its id as plugged in `generation`: one that left and came back is plugged in at a later one."""
+
+    def ided(listed: tuple[str, ...]) -> dict[str, int]:
+        return {name: generation * 100 + index for index, name in enumerate(listed)}
+
+    return Hardware(DefaultDevices(default, default), ided(("MacBook Pro Microphone", "headset", *names)), ided(("MacBook Pro Speakers", "headset", *names)))
 
 
 def test_auto_follows_the_defaults_and_a_named_device_keeps_to_itself_while_it_is_there() -> None:
     there = plugged(1, "Studio Display Microphone", "Studio Display Speakers")
     assert placed(Choices(), there) == Placement(OnDefault(1), OnDefault(1))
-    assert placed(DISPLAY, there) == Placement(OnNamed("Studio Display Microphone"), OnNamed("Studio Display Speakers"))
+    assert placed(DISPLAY, there) == Placement(OnNamed("Studio Display Microphone", 102), OnNamed("Studio Display Speakers", 103))
     # Missing, a named device puts its side on the default until it is back; a microphone is no speaker.
     assert placed(DISPLAY, plugged(3)) == Placement(OnDefault(3), OnDefault(3))
     assert placed(Choices(Auto(), Named("MacBook Pro Microphone")), there).output == OnDefault(1)
@@ -229,6 +234,27 @@ async def test_a_default_that_moves_under_named_devices_reopens_nothing() -> Non
     follower = Follower(at=placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers")))
     await follower.settled()
     follower.notice(placed(DISPLAY, plugged(2, "Studio Display Microphone", "Studio Display Speakers")))  # a headset plugged in, the new default
+    await follower.settled()
+    await follower.stop()
+    assert (follower.reopens, follower.said) == (0, [])
+
+
+async def test_a_named_device_that_leaves_and_comes_back_between_two_reads_is_a_new_device_and_reopens_its_side() -> None:
+    follower = Follower(ON_DISPLAY, at=placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers")))
+    await follower.settled()
+    # The notices of its going and its coming back were both heard before either was read: the list reads the same, the ids do not.
+    follower.notice(placed(DISPLAY, plugged(1, "Studio Display Microphone", "Studio Display Speakers", generation=2)))
+    await follower.settled()
+    await follower.stop()
+    assert follower.reopens == 1
+
+
+async def test_a_side_left_off_is_wanted_nowhere_whatever_the_hardware_does() -> None:
+    off = Choices(Off(), Off())
+    assert placed(off, plugged(1)) == placed(off, plugged(2, "headset")) == Placement(Closed(), Closed())
+    follower = Follower(at=placed(off, plugged(1)))
+    await follower.settled()
+    follower.notice(placed(off, plugged(2)))
     await follower.settled()
     await follower.stop()
     assert (follower.reopens, follower.said) == (0, [])

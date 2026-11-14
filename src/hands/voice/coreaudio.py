@@ -31,19 +31,20 @@ _OUTPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAud
 
 
 def hardware() -> Hardware:
-    """The default devices, and the names of the devices there are to hear on and to play on."""
-    inputs, outputs = set[str](), set[str]()
+    """The default devices, and the devices there are to hear on and to play on, by name."""
+    inputs, outputs = dict[str, int](), dict[str, int]()
     for device in _devices():
         try:
             name = _name(device)
             if _has_streams(device, _INPUT_STREAMS):
-                inputs.add(name)
+                # The first of two that share a name, as PortAudio lists them, is the one a stream is opened on.
+                inputs.setdefault(name, device)
             if _has_streams(device, _OUTPUT_STREAMS):
-                outputs.add(name)
+                outputs.setdefault(name, device)
         except _Gone:
             # Torn down between the listing and the reading: it is not there, and its going is a change of its own.
             continue
-    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), frozenset(inputs), frozenset(outputs))
+    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), inputs, outputs)
 
 
 def _device(address: object) -> int:
@@ -64,8 +65,12 @@ class _Gone(Exception):
     """A device CoreAudio no longer knows."""
 
 
+# What CoreAudio says of a device that is not there: no such object, or no such device.
+_GONE = (CoreAudio.kAudioHardwareBadObjectError, CoreAudio.kAudioHardwareBadDeviceError)
+
+
 def _of_device(status: int, doing: str) -> None:
-    if status == CoreAudio.kAudioHardwareBadObjectError:
+    if status in _GONE:
         raise _Gone()
     _check(status, doing)
 
@@ -75,7 +80,11 @@ def _name(device: int) -> str:
     # again, read, then released once for the reference the read gave.
     status, _size, data = CoreAudio.AudioObjectGetPropertyData(device, _NAME, 0, b"", 8, None)
     _of_device(status, "say an audio device's name")
-    named = objc.objc_object(c_void_p=struct.unpack("Q", data)[0])
+    pointer = struct.unpack("Q", data)[0]
+    # [LAW:no-silent-failure] a null CFString wraps as None, and releasing it ends the process.
+    if pointer == 0:
+        raise OSError(f"CoreAudio gave no name for audio device {device}")
+    named = objc.objc_object(c_void_p=pointer)
     try:
         return str(named)
     finally:

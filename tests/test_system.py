@@ -23,6 +23,7 @@ from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
 from hands.voice.system import (
+    MicrophoneOff,
     NoMicrophone,
     StopFailed,
     TurnTimedOut,
@@ -48,7 +49,8 @@ from hands.voice.system import (
 )
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip
-from hands.voice.microphone import Devices, Instead
+from hands.voice.devicechoice import Off
+from hands.voice.microphone import Devices, Instead, Missing
 from hands.voice.ptt import Gate
 from hands.voice.shortcut import Move
 from hands.voice.turnstop import TurnResolved, Words
@@ -70,10 +72,16 @@ STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=I
         (AudioMoved(DEAF), "No microphone: hands cannot hear you. Speaking on Mac mini Speakers."),
         (Started(after_crash=False, devices=STAND_INS), "hands is up, listening on AirPods in place of the missing MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
         (Started(after_crash=False, devices=Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "hands is up, speaking on AirPods in place of the missing MacBook Pro Speakers."),
-        (Started(after_crash=False, devices=Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers")), "hands is up, but MacBook Pro Microphone is missing and there is no other microphone, so it cannot hear you."),
+        (Started(after_crash=False, devices=Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers")), "hands is up, but MacBook Pro Microphone is missing and there is no other microphone, so it cannot hear you."),
         (AudioMoved(Devices(input="MacBook Pro Microphone", output=Instead("MacBook Pro Speakers", "AirPods"))), "Audio moved: listening on MacBook Pro Microphone, speaking on AirPods in place of the missing MacBook Pro Speakers."),
-        (AudioMoved(Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers")), "No microphone: MacBook Pro Microphone is missing, so hands cannot hear you. Speaking on Mac mini Speakers."),
+        (AudioMoved(Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers")), "No microphone: MacBook Pro Microphone is missing, so hands cannot hear you. Speaking on Mac mini Speakers."),
         (NoMicrophone(), "There is no microphone, so hands cannot hear you."),
+        (MicrophoneOff(), "The microphone is off in config.toml, so hands cannot hear you."),
+        (Started(after_crash=False, devices=Devices(input=Off(), output="Mac mini Speakers")), "hands is up, but the microphone is off in config.toml, so it cannot hear you."),
+        (Started(after_crash=False, devices=Devices(input="MacBook Pro Microphone", output=Off())), "hands is up, the speaker is off in config.toml."),
+        (AudioMoved(Devices(input=Off(), output="Mac mini Speakers")), "The microphone is off in config.toml, so hands cannot hear you. Speaking on Mac mini Speakers."),
+        (AudioMoved(Devices(input=None, output=Off())), "No microphone: hands cannot hear you. The speaker is off in config.toml."),
+        (AudioMoved(Devices(input="MacBook Pro Microphone", output=Off())), "Audio moved: listening on MacBook Pro Microphone, the speaker is off in config.toml."),
         (ModelUnreachable(), "The language model is unreachable."),
         (ModelFailed(ErrorCategory.RATE_LIMIT), "The language model failed: rate limit."),
         (StopFailed("invalid_request", "Login expired · Run /login to sign in again"), "The brain failed: Login expired · Run /login to sign in again."),
@@ -103,7 +111,10 @@ def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> Non
         ("start", BUILT_IN, ()),
         ("timeout", BUILT_IN, (TurnTimedOut(),)),
         ("timeout", DEAF, ()),
-        ("start", Devices(input=Instead("MacBook Pro Microphone", None), output="Mac mini Speakers"), (NoMicrophone(),)),
+        ("start", Devices(input=Missing("MacBook Pro Microphone"), output="Mac mini Speakers"), (NoMicrophone(),)),
+        ("start", Devices(input=Off(), output="Mac mini Speakers"), (MicrophoneOff(),)),
+        ("listen", Devices(input=Off(), output=Off()), (MicrophoneOff(),)),
+        ("timeout", Devices(input=Off(), output="Mac mini Speakers"), ()),
         ("start", STAND_INS, ()),
     ],
 )

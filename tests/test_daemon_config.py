@@ -31,7 +31,7 @@ from hands.sessions.wide import WideEvent
 from hands.core.wire import UPSTREAM
 from hands.voice import voices
 from hands.voice.wakeword import Pretrained, Trained
-from hands.voice.devicechoice import Auto, Choices, Named
+from hands.voice.devicechoice import Auto, Choices, Named, Off
 from hands.voice.backends import Account, ClaudeCodeBackend
 
 HOME = Home(Path("/Users/someone/.hands"))
@@ -71,13 +71,14 @@ def test_the_file_names_the_wake_word_one_of_openwakewords_own_or_the_users_own_
     assert config.parse('[talk]\nwake_word = " Hey   Computer "\nwake_word_model = "/wake/hey_computer.onnx"\n').wake == Trained("Hey Computer", Path("/wake/hey_computer.onnx"))
 
 
-def test_the_file_names_the_audio_devices_each_auto_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
+def test_the_file_names_the_audio_devices_each_auto_off_or_a_device_by_name(fake_claude: Path, tmp_path: Path) -> None:
     # Left out, each side follows the system's default, as auto does, however it is capitalised.
     assert config.parse("").devices == Choices(Auto(), Auto())
     assert config.parse('[audio]\ninput_device = "Auto"\noutput_device = "auto"\n').devices == Choices(Auto(), Auto())
-    # Any other text is a device's name, as the system gives it, matched as written: off is a name like any other.
-    named = config.parse('[audio]\ninput_device = " MacBook Pro Microphone "\noutput_device = "off"\n').devices
-    assert named == Choices(Named("MacBook Pro Microphone"), Named("off"))
+    # Off opens no device, however it is capitalised; any other text is a device's name, as the system gives it, matched as written.
+    assert config.parse('[audio]\ninput_device = "Off"\noutput_device = "off"\n').devices == Choices(Off(), Off())
+    named = config.parse('[audio]\ninput_device = " MacBook Pro Microphone "\noutput_device = "Off Stage Monitor"\n').devices
+    assert named == Choices(Named("MacBook Pro Microphone"), Named("Off Stage Monitor"))
     assert config.parse('[audio]\noutput_device = "MacBook Pro Speakers"\n').devices == Choices(Auto(), Named("MacBook Pro Speakers"))
     # And the voice is built on them.
     home = Home(tmp_path / ".hands")

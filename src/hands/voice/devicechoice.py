@@ -1,10 +1,12 @@
 """Which audio device each side of the desk is on, as config.toml chooses it, and where that puts it on the devices there are.
 
-[LAW:one-type-per-behavior] a side follows the system's default (`Auto`) or keeps to one device by name (`Named`). A named device that is missing puts its side on the default until it is back, so what a side
-is on is a function of the choice and the hardware alone (`placed`), which the follower compares as the hardware moves.
+[LAW:one-type-per-behavior] a side follows the system's default (`Auto`), keeps to one device by name (`Named`), or is
+given none (`Off`). A named device that is missing puts its side on the default until it is back, so what a side is on
+is a function of the choice and the hardware alone (`placed`), which the follower compares as the hardware moves.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -19,7 +21,12 @@ class Named:
     name: str
 
 
-Choice = Auto | Named
+@dataclass(frozen=True)
+class Off:
+    """No device: nothing is opened for this side at the desk."""
+
+
+Choice = Auto | Named | Off
 
 
 @dataclass(frozen=True)
@@ -38,11 +45,12 @@ class DefaultDevices:
 
 @dataclass(frozen=True)
 class Hardware:
-    """What CoreAudio says is there: the defaults, and the names of the devices that can be heard on and played on."""
+    """What CoreAudio says is there: the defaults, and the ids of the devices that can be heard on and played on, by
+    the names they go by. A device that goes and comes back has a new id."""
 
     defaults: DefaultDevices
-    inputs: frozenset[str] = frozenset()
-    outputs: frozenset[str] = frozenset()
+    inputs: Mapping[str, int] = field(default_factory=dict[str, int])
+    outputs: Mapping[str, int] = field(default_factory=dict[str, int])
 
 
 @dataclass(frozen=True)
@@ -54,10 +62,18 @@ class OnDefault:
 
 @dataclass(frozen=True)
 class OnNamed:
+    """On the device called `name`, by CoreAudio's id for it: one that left and came back is not the one a stream was opened on."""
+
     name: str
+    device: int
 
 
-Place = OnDefault | OnNamed
+@dataclass(frozen=True)
+class Closed:
+    """On no device."""
+
+
+Place = OnDefault | OnNamed | Closed
 
 
 @dataclass(frozen=True)
@@ -73,9 +89,11 @@ def placed(choices: Choices, hardware: Hardware) -> Placement:
     return Placement(_place(choices.input, hardware.defaults.input, hardware.inputs), _place(choices.output, hardware.defaults.output, hardware.outputs))
 
 
-def _place(choice: Choice, default: int, present: frozenset[str]) -> Place:
+def _place(choice: Choice, default: int, present: Mapping[str, int]) -> Place:
     match choice:
         case Named(name=name) if name in present:
-            return OnNamed(name)
+            return OnNamed(name, present[name])
         case Auto() | Named():
             return OnDefault(default)
+        case Off():
+            return Closed()
