@@ -1,4 +1,4 @@
-"""Whisper's vocabulary for a hold: the words the user is likely to say that no dictionary holds, read as the hold is
+"""Whisper's vocabulary for a clip: the words the user is likely to say that no dictionary holds, read as the clip is
 transcribed, so a focus moved a moment ago primes the next thing said [LAW:one-source-of-truth].
 
 Whisper takes text as its initial prompt, read as what was said before the audio, and spells what it hears the way
@@ -44,7 +44,7 @@ READING = 1.0
 
 
 class Lexicon:
-    """Reads Whisper's vocabulary as each hold is transcribed, and records what it read."""
+    """Reads Whisper's vocabulary as each clip is transcribed, and records what it read."""
 
     def __init__(self, sessions: Sessions, home: Home, environment: Mapping[str, str], record: Record) -> None:
         self._sessions = sessions
@@ -103,10 +103,10 @@ def _tokens(words: Sequence[str]) -> int:
     return len(_WHISPER_BPE.encode_ordinary("".join(f" {word}" for word in words)))
 
 
-# The encoding Whisper itself primes with, read as the module is imported, with Pipecat while hands starts, so no hold
+# The encoding Whisper itself primes with, read as the module is imported, with Pipecat while hands starts, so no clip
 # waits the ~50 ms reading it takes.
 _WHISPER_BPE = get_encoding("multilingual")
-# A special token's text, which MLX Whisper refuses in a prompt: a file named <|endoftext|> would fail every hold.
+# A special token's text, which MLX Whisper refuses in a prompt: a file named <|endoftext|> would fail every clip.
 _SPECIAL = re.compile("|".join(map(re.escape, _WHISPER_BPE.special_tokens_set)))
 
 

@@ -333,7 +333,7 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
 
 
 class Said:
-    """A transcriber that says, for each hold in turn, the words given, nothing, or fails."""
+    """A transcriber that says, for each clip in turn, the words given, nothing, or fails."""
 
     def __init__(self, *said: str | None | Exception) -> None:
         self.said = list(said)
@@ -347,7 +347,7 @@ class Said:
 
 
 class Told(FrameProcessor):
-    """What comes out of the hold owner for the turn: each hold's frames from its words, if any, to its resolution."""
+    """What comes out of the clip owner for the turn: each clip's frames from its words, if any, to its resolution."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
@@ -365,7 +365,7 @@ class Told(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it_heard_nothing_in() -> None:
+async def test_the_clip_owner_is_done_with_every_clip_and_says_nothing_of_one_it_heard_nothing_in() -> None:
     owner, told = ClipOwner(SYSTEM, Said(None, "what time is it", RuntimeError("model failed")), (), lambda _: None), Told()
     async with running([owner, told]) as run:
         # Three turns sent, one for each transcription.
@@ -376,7 +376,7 @@ async def test_the_hold_owner_is_done_with_every_hold_and_says_nothing_of_one_it
         async with asyncio.timeout(10):
             while len(told.clips) < 4:
                 await asyncio.sleep(0.01)
-        # Every transcription ends with the owner done with its hold, and one it heard nothing in yields nothing else: no
+        # Every transcription ends with the owner done with its clip, and one it heard nothing in yields nothing else: no
         # frame that could reach the speaker; one that failed is said aloud as an error from the owner.
         assert told.clips[:3] == [[TurnResolved], [Words, TurnResolved], [TurnResolved]]
         [failed] = run.errors

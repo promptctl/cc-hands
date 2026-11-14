@@ -146,41 +146,41 @@ let tags = 0;
 
 function say(text, bad = false) { state.textContent = text; state.classList.toggle("bad", bad); }
 
-// What the page says of the hold it shows, by the last milestone of it. Two milestones are the page's own: `held`, the button
-// down, and `sent`, the button let go with hands yet to say it took the hold. A milestone that `counts` is waited on: the
+// What the page says of the clip it shows, by the last milestone of it. Two milestones are the page's own: `held`, the button
+// down, and `sent`, the button let go with hands yet to say it took the clip. A milestone that `counts` is waited on: the
 // time since the button was let go counts beside its line.
 const OWN = {
   "held": {text: () => "Listening…"},
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
 };
 // The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. Nothing a milestone carries says which
-// hold it is of, so what places it is where it falls: a milestone that cannot come after the shown hold's last is of a hold
-// the page has let go of, and until hands says it took this hold or threw it away, nothing else told is of it.
+// clip it is of, so what places it is where it falls: a milestone that cannot come after the shown clip's last is of a clip
+// the page has let go of, and until hands says it took this clip or threw it away, nothing else told is of it.
 const TOLD = {
   "released": {after: ["sent"], text: () => "Received. Transcribing…", counts: true},
-  "discarded": {after: ["held", "sent"], text: () => "Not sent: hands threw that hold away.", bad: true},
+  "discarded": {after: ["held", "sent"], text: () => "Not sent: hands threw that clip away.", bad: true},
   "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
-  "no words": {after: ["released"], text: (hold) => `No words heard, after ${secs(hold.at - hold.released)}.`, bad: true},
-  "failed": {after: ["released", "transcript", "first LLM token"], text: (hold) => `hands failed, after ${secs(hold.at - hold.released)}.`, bad: true},
+  "no words": {after: ["released"], text: (clip) => `No words heard, after ${secs(clip.at - clip.released)}.`, bad: true},
+  "failed": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands failed, after ${secs(clip.at - clip.released)}.`, bad: true},
   "first LLM token": {after: ["released", "transcript"], text: () => "Replying…", counts: true},
   // The first sound after the button was let go, whatever hands said with it.
-  "first audio": {after: ["released", "transcript", "first LLM token"], text: (hold) => `hands spoke after ${secs(hold.at - hold.released)}${hold.heard === null ? "" : `, your words heard at ${secs(hold.heard - hold.released)}`}.`},
+  "first audio": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands spoke after ${secs(clip.at - clip.released)}${clip.heard === null ? "" : `, your words heard at ${secs(clip.heard - clip.released)}`}.`},
 };
-// The hold shown: its last milestone and when that came, when its button was let go, and when its words were heard.
-let hold = null;
-// The one timer the count runs on, while the hold shown is waited on.
+// The clip shown: its last milestone and when that came, when its button was let go, and when its words were heard.
+let clip = null;
+// The one timer the count runs on, while the clip shown is waited on.
 let ticking = null;
 
 function secs(ms) { return `${(ms / 1000).toFixed(1)} s`; }
 
-function tick() { count.textContent = secs(performance.now() - hold.released); }
+function tick() { count.textContent = secs(performance.now() - clip.released); }
 
-// Shows `next` as the hold: its line said once, and its count running while it is waited on.
+// Shows `next` as the clip: its line said once, and its count running while it is waited on.
 function show(next) {
   letGo();
-  hold = next;
-  const line = OWN[hold.milestone] ?? TOLD[hold.milestone];
-  say(line.text(hold), line.bad);
+  clip = next;
+  const line = OWN[clip.milestone] ?? TOLD[clip.milestone];
+  say(line.text(clip), line.bad);
   if (line.counts) { ticking = setInterval(tick, 100); tick(); }
 }
 
@@ -188,13 +188,13 @@ function show(next) {
 function milestone(name) {
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(TOLD, name)) { letGo(); say(`hands said "${name}", which this page does not know.`, true); return; }
-  if (hold === null || !TOLD[name].after.includes(hold.milestone)) return;
+  if (clip === null || !TOLD[name].after.includes(clip.milestone)) return;
   const at = performance.now();
-  show({...hold, milestone: name, at, heard: name === "transcript" ? at : hold.heard});
+  show({...clip, milestone: name, at, heard: name === "transcript" ? at : clip.heard});
 }
 
-// Lets go of the hold shown: no milestone told from here is of it, and its count stops.
-function letGo() { clearInterval(ticking); ticking = null; hold = null; count.textContent = ""; }
+// Lets go of the clip shown: no milestone told from here is of it, and its count stops.
+function letGo() { clearInterval(ticking); ticking = null; clip = null; count.textContent = ""; }
 
 // The sentence of hands' playing: its words, where each ends in its text, when it started, and the rate hands speaks
 // at, in characters a millisecond; null between sentences.
@@ -257,7 +257,7 @@ const LINES = {
   "bargein": () => stop(bargedIn),
 };
 
-// Everything hands tells the page, by its kind: a milestone of the hold shown, or a line of the transcript.
+// Everything hands tells the page, by its kind: a milestone of the clip shown, or a line of the transcript.
 function told(message) {
   if (message.kind === "milestone") { milestone(message.milestone); return; }
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
@@ -417,7 +417,7 @@ function down(event) {
   talk.setPointerCapture(event.pointerId);
   held = true;
   talk.classList.add("held");
-  // A new hold takes the place of the one shown: what is shown from here is this hold's.
+  // A new clip takes the place of the one shown: what is shown from here is this clip's.
   show({milestone: "held", at: null, released: null, heard: null});
   call.press();
 }
@@ -426,8 +426,8 @@ function up() {
   if (!held) return;
   held = false;
   talk.classList.remove("held");
-  // A hold hands threw away while the button was down stays said as that: nothing of it was sent to be waited on.
-  if (hold?.milestone === "held") show({...hold, milestone: "sent", released: performance.now()});
+  // A clip hands threw away while the button was down stays said as that: nothing of it was sent to be waited on.
+  if (clip?.milestone === "held") show({...clip, milestone: "sent", released: performance.now()});
   call.release();
 }
 
@@ -448,7 +448,7 @@ talk.addEventListener("pointerdown", down);
 talk.addEventListener("pointerup", up);
 talk.addEventListener("pointercancel", up);
 talk.addEventListener("contextmenu", (event) => event.preventDefault());
-// A page put away mid-hold lets go of the button; brought back, a call that dropped while it was away is made again at
+// A page put away mid-press lets go of the button; brought back, a call that dropped while it was away is made again at
 // once rather than after the wait.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { up(); return; }

@@ -309,7 +309,7 @@ async def run(
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
             async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
-                # What Whisper is primed with, read as each hold is transcribed.
+                # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
                 voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)

@@ -253,7 +253,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     playing = call.phone.play(bytes(24000 * 2 * 60))  # a minute that will never be heard
     call.page.channel.close()
     await call.until(lambda: call.key.gate.place == "desk")
-    # The hold open at the phone is thrown away, not sent.
+    # The clip open at the phone is thrown away, not sent.
     assert (call.key.gate.key, call.key.gate.dropped) == ("up", 1)
     await asyncio.wait_for(playing, 1)
     [event] = calls(call.recorded)

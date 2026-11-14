@@ -823,7 +823,7 @@ async def test_a_turn_stopped_mid_way_still_says_what_it_did(rig: Rig) -> None:
 
 async def test_words_that_waited_behind_a_turn_together_are_timed_from_the_last_of_them(rig: Rig) -> None:
     await rig.say("what is api doing?")
-    # Two holds said while the brain answers, each let go of and transcribed in its turn.
+    # Two clips said while the brain answers, each let go of and transcribed in its turn.
     for released, arrived, words in ((1000.0, 1000.4, "and auth?"), (1002.0, 1002.4, "and web?")):
         rig.at(released)
         await rig.release()
@@ -846,7 +846,7 @@ async def test_words_that_waited_behind_a_turn_together_are_timed_from_the_last_
     assert timed == {"waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 600.0}
 
 
-async def test_a_hold_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) -> None:
+async def test_a_clip_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) -> None:
     rig.at(1000.0)
     await rig.release()
     rig.at(1003.0)

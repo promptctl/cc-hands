@@ -1,16 +1,16 @@
-"""Measure hands' own diarization (hands.voice.streaming.Stream, the paired session) on public speech, fed in holds as
+"""Measure hands' own diarization (hands.voice.streaming.Stream, the paired session) on public speech, fed in clips as
 the listener feeds it.
 
     uv run scripts/measure-diarization.py DIR    # fetches what it needs into DIR once, then measures
 
-A hold's speaker is the speaker who said most of its words; a hold with no words is heard as nobody.
+A clip's speaker is the speaker who said most of its words; a clip with no words is heard as nobody.
 
-- One person for an hour: The Invisible Man, chapters 1-3, read solo for LibriVox (public domain), cut into holds at
+- One person for an hour: The Invisible Man, chapters 1-3, read solo for LibriVox (public domain), cut into clips at
   its pauses. One speaker, nothing of it given to anyone else, is the pass.
 - Two meetings of four people: AMI Meeting Corpus ES2004a and IS1009a (CC BY 4.0), test meetings, which the model was
-  not trained on, cut into holds at each speaker's own turns where nobody else speaks, per pyannote's AMI-diarization-setup
-  references. People and speakers are paired one to one, as many holds as possible on their pair (the optimal
-  assignment); a hold is right where its speaker is its own person's pair, so two people heard as one speaker count one of
+  not trained on, cut into clips at each speaker's own turns where nobody else speaks, per pyannote's AMI-diarization-setup
+  references. People and speakers are paired one to one, as many clips as possible on their pair (the optimal
+  assignment); a clip is right where its speaker is its own person's pair, so two people heard as one speaker count one of
   them wrong.
 """
 
@@ -29,7 +29,7 @@ MEETINGS = ("ES2004a", "IS1009a")
 
 
 def spoken(run: Live, samples: np.ndarray) -> Counter[int]:
-    """A hold: how many words each speaker said in it."""
+    """A clip: how many words each speaker said in it."""
     return Counter({said.speaker: len(said.text.split()) for said in run.spoken(samples)[1].words})
 
 
@@ -47,22 +47,22 @@ def pauses(audio: np.ndarray) -> list[tuple[int, int]]:
 
 def one_person(directory: Path) -> None:
     audio = np.concatenate([mono(fetched(directory, LIBRIVOX.format(n))) for n in (1, 2, 3)])
-    # A hold is speech between pauses of a quarter second or more, as a person holding the key would cut it.
-    holds: list[tuple[int, int]] = []
+    # A clip is speech between pauses of a quarter second or more, as a person holding the key would cut it.
+    clips: list[tuple[int, int]] = []
     for start, end in pauses(audio):
-        if holds and start - holds[-1][1] < RATE // 4:
-            holds[-1] = (holds[-1][0], end)
+        if clips and start - clips[-1][1] < RATE // 4:
+            clips[-1] = (clips[-1][0], end)
         else:
-            holds.append((start, end))
+            clips.append((start, end))
     run, words, wordless = Live(streaming.load(streaming.GATING)), Counter[int](), 0
-    for start, end in holds:
+    for start, end in clips:
         said = spoken(run, audio[start:end])
         words.update(said)
         wordless += not said
     first, *others = [speaker for speaker, _ in words.most_common()] or [None]
     print(
-        f"one person, {len(audio) / RATE / 60:.1f} min in {len(holds)} holds: words by speaker {dict(words.most_common())}; "
-        f"{sum(words[other] for other in others)} words given to anyone but speaker {first}; {wordless} holds with no words"
+        f"one person, {len(audio) / RATE / 60:.1f} min in {len(clips)} clips: words by speaker {dict(words.most_common())}; "
+        f"{sum(words[other] for other in others)} words given to anyone but speaker {first}; {wordless} clips with no words"
     )
 
 
@@ -81,10 +81,10 @@ def meeting(directory: Path, name: str) -> None:
     paired = dict(zip(*linear_sum_assignment(-together)))
     mapped = {who: speakers[paired[row]] if row in paired else None for row, who in enumerate(people)}
     right = [who for who, first, _ in heard if first is not None and first == mapped[who]]
-    short = [(who, first) for who, first, held in heard if held < 2]
+    short = [(who, first) for who, first, length in heard if length < 2]
     print(
-        f"{name}: {len(people)} people, {len(heard)} holds; speakers found {len(speakers)}; "
-        f"holds given their own person's speaker {len(right)}/{len(heard)}, under 2 s {sum(1 for who, first in short if first is not None and first == mapped[who])}/{len(short)}; "
+        f"{name}: {len(people)} people, {len(heard)} clips; speakers found {len(speakers)}; "
+        f"clips given their own person's speaker {len(right)}/{len(heard)}, under 2 s {sum(1 for who, first in short if first is not None and first == mapped[who])}/{len(short)}; "
         f"heard as nobody {sum(1 for _, first, _ in heard if first is None)}"
     )
     for who in people:

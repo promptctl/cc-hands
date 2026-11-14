@@ -88,7 +88,7 @@ class Unsaid:
 
 @dataclass(frozen=True)
 class Levels:
-    """How loud one hold's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
+    """How loud one clip's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
     captured it, and as Whisper heard it, with the echo canceller between the two. What the canceller took out is the
     difference; at the phone, heard through no canceller, the two are the same."""
 
@@ -108,7 +108,7 @@ class ClipHeard:
 
 @dataclass(frozen=True)
 class Primed:
-    """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
+    """The words Whisper was primed with for one clip, oldest first, the prompt tokens they come to, and how long reading
     them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
     says why the focus or its repository gave no words where either could not be read."""
 

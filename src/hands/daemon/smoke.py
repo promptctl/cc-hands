@@ -9,7 +9,7 @@ asks what the session said: the word comes back aloud only if every part did its
 could have read it.
 
 Each stage is read off what the pipeline itself leaves: the membership the session's hooks write, the audit lines the
-daemon writes as it hears a hold, types into a session, and takes a session's Stop, and the speech the call carries
+daemon writes as it hears a clip, types into a session, and takes a session's Stop, and the speech the call carries
 back, transcribed by the Whisper hands transcribes with. What hands said is judged from that speech alone, whichever
 backend said it and whether in its own words or a tool's readback: it is what the user would have heard.
 """
@@ -126,7 +126,7 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
             case "heard", {"type": "ClipHeard", "said": str(said)}:
                 return f"heard {said!r}"
             case "heard", {"type": "ClipHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
-                raise NotReached("heard", f"Whisper took no words from the hold; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
+                raise NotReached("heard", f"Whisper took no words from the clip; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
             case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
                 sending = (span, prompt)
             case "typed", {"type": "TypingFailed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:

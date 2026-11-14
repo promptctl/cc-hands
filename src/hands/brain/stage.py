@@ -457,9 +457,9 @@ class BrainStage(FrameProcessor):
         self._words: deque[tuple[str, Seconds, Seconds | None, asyncio.Task[UserAsked]]] = deque()
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
         # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
-        # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
-        # the turn's words follow the last release of the holds it took in. Kept with the trigger that opened that
-        # hold, read from the gate as it is let go of, before any later hold can open.
+        # one per clip: a clip let go of while an earlier one is still transcribed joins that clip's turn (KeyTurnStop), and
+        # the turn's words follow the last release of the clips it took in. Kept with the trigger that opened that
+        # clip, read from the gate as it is let go of, before any later clip can open.
         self._released: tuple[Seconds, Trigger] | None = None
         # [LAW:one-source-of-truth] the question the user's next words answer, read once at the cut they open with: one
         # asked while they are still being transcribed is not what they were answering. Every turn that carries words is
