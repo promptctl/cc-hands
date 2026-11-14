@@ -174,7 +174,7 @@ async def typed(clock: Clock, environment: Mapping[str, str], pane: Pane, input:
         pasted.close()
         match await ran_at(clock, tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
             case Ran(returncode=0):
-                await clock.pause(_quiet(input))
+                await clock.sleep(_quiet(input))
                 return None
             case Ran(err=err):
                 return Unanswered(f"tmux at {pane.socket} did not type into pane {pane.id}: {err.decode(errors='replace').strip()}")

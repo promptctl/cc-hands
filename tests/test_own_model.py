@@ -19,7 +19,7 @@ from hands.daemon.config import Claude, Config
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
-from hands.voice.player import Mark, Marks, Player
+from hands.voice.player import Marker, Markers, Player
 from hands.voice.tool import Tool, silent
 from hands.sessions.wide import WideEvent
 from hands.voice.tools import Called, audited, model_tools
@@ -163,9 +163,9 @@ class FakeOwn:
 @asynccontextmanager
 async def spoken(player: Player, speaker: FrameProcessor | None = None) -> AsyncGenerator[tuple[Running, Heard]]:
     """The player's lines through a speaker and output transport, each reduced to a processor that lets frames through,
-    with the marks played behind the output as the daemon stands them."""
+    with the markers played behind the output as the daemon stands them."""
     speaker, output, heard = speaker or IdentityFilter(), IdentityFilter(), Heard()
-    async with running([player.lines, speaker, output, Marks(), heard], [player.watching(speaker, output)]) as run:
+    async with running([player.lines, speaker, output, Markers(), heard], [player.watching(speaker, output)]) as run:
         yield run, heard
 
 
@@ -180,31 +180,31 @@ async def test_a_line_heard_to_its_end_is_said_so() -> None:
 
 
 class Unfinished(FrameProcessor):
-    """An output transport whose speaker never finishes what it is handed: it passes on every frame but a mark."""
+    """An output transport whose speaker never finishes what it is handed: it passes on every frame but a marker."""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
-            case Mark():
+            case Marker():
                 pass
             case _:
                 await self.push_frame(frame, direction)
 
 
-async def test_a_line_is_heard_once_the_output_passes_its_mark_on_whatever_takes_it_after() -> None:
+async def test_a_line_is_heard_once_the_output_passes_its_marker_on_whatever_takes_it_after() -> None:
     player = Player(lambda _entry: None)
-    # No Marks behind the output: a barge-in empties its queue, so what counts is the output's push, seen in order.
+    # No Markers behind the output: a barge-in empties its queue, so what counts is the output's push, seen in order.
     speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
         hearing = asyncio.create_task(player.heard("Switching."))
-        await heard.until(1, Mark)
+        await heard.until(1, Marker)
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(hearing, 2.0) is True
 
 
 async def test_a_line_cut_off_by_a_barge_in_is_said_so() -> None:
     player = Player(lambda _entry: None)
-    # The mark is never passed on, so the line is never heard to its end: only a barge-in can settle it.
+    # The marker is never passed on, so the line is never heard to its end: only a barge-in can settle it.
     speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
         hearing = asyncio.create_task(player.heard("Switching."))

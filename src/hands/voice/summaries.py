@@ -1,6 +1,6 @@
 """The summary store as the daemon holds it: what is said of a thing under its current content, and what is waiting to be said.
 
-The tools read it and never wait on it: a thing with no sentence yet is served by its title or its request, and is
+The tools read it and never wait on it: a thing with no summary yet is served by its title or its request, and is
 asked for, to be said off the voice path by `hands.voice.summarising`.
 """
 
@@ -10,23 +10,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hands.clock import Clock
-from hands.core.sentences import Digest, Due, Reckoning, Thing, reckon
 from hands.core.session import SessionId
+from hands.core.summaries import Digest, Due, Reckoning, Thing, reckon
 from hands.sessions import backlog as tracker
-from hands.sessions.sentences import Sentences
-from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
+from hands.sessions.summaries import Summaries
+from hands.voice.summary_instruction import SUMMARY_INSTRUCTION
 
 
 @dataclass(frozen=True)
 class Backlog:
-    """The backlog in a project, to be read fresh and every sentence it is missing said."""
+    """The backlog in a project, to be read fresh and every summary it is missing said."""
 
     project: Path
 
 
 @dataclass(frozen=True)
 class Turns:
-    """Finished turns of a session that have no sentence: each already keyed and rendered by the reading that found them."""
+    """Finished turns of a session that have no summary: each already keyed and rendered by the reading that found them."""
 
     session: SessionId
     due: tuple[Due, ...]
@@ -40,19 +40,19 @@ Wanted = Backlog | Turns
 class SummaryStore:
     """What is said of a thing now, and what is waiting to be said, for the tools and the summarising task to share."""
 
-    def __init__(self, sentences: Sentences) -> None:
-        self._sentences = sentences
+    def __init__(self, summaries: Summaries) -> None:
+        self._summaries = summaries
         self._wanted: asyncio.Queue[Wanted] = asyncio.Queue()
         # What is queued and not yet taken: a project, or a turn by its key.
         self._pending: set[Path | Digest] = set()
 
     def reckon(self, thing: Thing) -> Reckoning:
-        # [LAW:one-source-of-truth] the instruction is the summariser's version: a sentence written under other words
-        # has another key, so an edit to the instruction can never be served the old sentences.
-        return reckon(thing, SENTENCE_INSTRUCTION, self._sentences.known)
+        # [LAW:one-source-of-truth] the instruction is the summariser's version: a summary written under other words
+        # has another key, so an edit to the instruction can never be served the old summaries.
+        return reckon(thing, SUMMARY_INSTRUCTION, self._summaries.known)
 
     def known(self, digest: Digest) -> str | None:
-        return self._sentences.known(digest)
+        return self._summaries.known(digest)
 
     def want(self, project: Path) -> None:
         """Ask for the backlog in `project` to be said; a project already waiting is not queued twice, however its path
@@ -81,19 +81,19 @@ class SummaryStore:
         return wanted
 
     def keep(self, said: Mapping[Digest, str]) -> None:
-        self._sentences.keep(said)
+        self._summaries.keep(said)
 
 
 @dataclass(frozen=True)
 class Sighted:
-    """A backlog read fresh, and every sentence already said of it, by id."""
+    """A backlog read fresh, and every summary already said of it, by id."""
 
     backlog: tracker.Backlog
     said: Mapping[str, str]
 
 
 async def sighted(clock: Clock, store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
-    """The backlog in `project` read fresh with every sentence already said of it, or that lit has no workspace there;
+    """The backlog in `project` read fresh with every summary already said of it, or that lit has no workspace there;
     raises LitFailed when lit cannot say, and Rejected when what it said does not parse.
 
     [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what it finds unsaid is asked

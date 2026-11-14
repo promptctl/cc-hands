@@ -266,7 +266,7 @@ Beside them, hands gives it skills of hands' own, shipped with the code they ser
 `hands:restart` is how it restarts itself when you ask, or when hands is overloaded or stuck: it runs `hands restart` the same way, installing nothing, from wherever hands runs.
 It is interactive Claude Code under hands' own fritter, never `claude -p`: hands types each turn into its input
 and types nothing else into it; its hooks say when a turn was taken and when it ended.
-What hands asks in the background, its summaries and the sentence an old tool result goes as,
+What hands asks in the background, its summaries and the summary an old tool result goes as,
 is asked of a second interactive Claude Code started for each question, with `/btw` and the question as its opening
 prompt (`src/hands/brain/asides.py`), so a spoken turn never waits on one; each is a `brain.aside` wide event. It is the pipeline's LLM stage (`src/hands/brain/stage.py`): what
 it says is spoken from its requests on the wire, never from its screen; each turn's `voice.turn` wide event names the
@@ -426,7 +426,7 @@ uv run hands phone                      # the addresses a phone opens the talk p
                                         # the talk page also shows what the brain is doing, its running tool call live, and a Stop that ends the brain's turn
                                         # the same address with /conversation before the # is the conversation page: what was said and called, and a box to type to hands
                                         # with /backlog?project=<directory> before the # it is the backlog page: every open ticket of that project's lit
-                                        # backlog under its epic, shut until tapped, with hands' sentence for it; a ticket dragged among its siblings is ranked
+                                        # backlog under its epic, shut until tapped, with hands' summary for it; a ticket dragged among its siblings is ranked
                                         # there with `lit rank`; its High, Normal, and Low move it into its epic's topic's `<topic> - high/normal/low` epic
 uv run hands indicator                  # the daemon's verdict in the menu bar; `hands run` starts one
 uv run hands tmux-status                # the menu bar's title for a tmux status line, coloured by the verdict

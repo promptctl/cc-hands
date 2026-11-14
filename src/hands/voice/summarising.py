@@ -1,7 +1,7 @@
 """The one task that says what the summary store is asked for, off the voice path: backlogs and finished turns of sessions.
 
-A backlog pass reads the backlog fresh, finds what has no sentence under its current content, and asks the
-summariser for those, a batch at a time, leaves before the parents that are keyed by their sentences. A turns pass
+A backlog pass reads the backlog fresh, finds what has no summary under its current content, and asks the
+summariser for those, a batch at a time, leaves before the parents that are keyed by their summaries. A turns pass
 asks for the turns a reading of a session found unsaid. Every pass is one unit of work, and its event says what it
 found, asked, said, and failed on.
 """
@@ -14,12 +14,12 @@ from pathlib import Path
 from typing import Literal
 
 from hands.clock import Clock
-from hands.core.sentences import Due, Thing, answered, page
+from hands.core.summaries import Due, Thing, answered, page
 from hands.sessions.audit import Record
 from hands.sessions.backlog import BACKLOG, LitFailed, Untracked, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Fact, WideEvent, annotate, begun, count, fail, unit
-from hands.voice.sentences import Backlog, SummaryStore, Turns
+from hands.voice.summaries import Backlog, SummaryStore, Turns
 from hands.voice.summary import Summariser, SummaryFailed
 
 # How many things one summariser call is asked for: a few calls for a whole backlog, each reply short enough to finish.
@@ -30,7 +30,7 @@ BATCH = 20
 TEXT_LIMIT = 4000
 
 # The time a slim Claude Code takes to write BATCH lines of about thirty words each.
-SENTENCES_TIMEOUT_SECONDS = 180.0
+SUMMARIES_TIMEOUT_SECONDS = 180.0
 
 async def keep_summarising(clock: Clock, store: SummaryStore, summarise: Summariser, record: Record) -> None:
     """Say each wanted backlog and each session's wanted turns, one at a time, until cancelled."""
@@ -44,7 +44,7 @@ async def keep_summarising(clock: Clock, store: SummaryStore, summarise: Summari
 
 @dataclass
 class _Missed:
-    """What one pass's replies gave no sentence for, and what each call that failed raised."""
+    """What one pass's replies gave no summary for, and what each call that failed raised."""
 
     left_out: list[str] = field(default_factory=list[str])
     errors: list[str] = field(default_factory=list[str])
@@ -54,9 +54,9 @@ class _Missed:
 CALL_COUNTS = ("said", "calls", "failed_calls", "stray")
 # [LAW:one-source-of-truth] the name a backlog pass's event goes by, which the terminal layer tells it by.
 BACKLOG_PASS = "summary.backlog"
-# What a backlog pass counts of its work items alone, the tickets and epics, leaving out the backlog's own sentence.
+# What a backlog pass counts of its work items alone, the tickets and epics, leaving out the backlog's own summary.
 ITEM_COUNTS = ("items", "items_said", "items_known", "items_unsaid")
-# Where the backlog's own sentence stands once a pass ends.
+# Where the backlog's own summary stands once a pass ends.
 Overview = Literal["said", "known", "unsaid", "none"]
 
 
@@ -74,7 +74,7 @@ def _pass(clock: Clock, event: str, record: Record, counts: tuple[str, ...], **f
 
 
 async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, missed: _Missed, batch: int) -> list[str]:
-    """Ask the summariser for a sentence for each of `due`, a batch at a time, keep what comes back, and say which."""
+    """Ask the summariser for a summary for each of `due`, a batch at a time, keep what comes back, and say which."""
     said: list[str] = []
     for asked in itertools.batched(due, batch):
         count(calls=1)
@@ -96,7 +96,7 @@ async def _say(due: Sequence[Due], store: SummaryStore, summarise: Summariser, m
 
 
 async def summarise_turns(clock: Clock, turns: Turns, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
-    """Make a sentence for each turn asked for, as one unit of work."""
+    """Make a summary for each turn asked for, as one unit of work."""
     # [LAW:nothing-unseen] `known` is what was said since the turns were queued, `asked` what this pass asked for; a
     # pass that found everything said is one of zeros.
     with _pass(clock, "summary.turns", record, ("known", "asked"), session=turns.session) as missed:
@@ -108,12 +108,12 @@ async def summarise_turns(clock: Clock, turns: Turns, store: SummaryStore, summa
 
 
 async def summarise_backlog(clock: Clock, project: Path, store: SummaryStore, summarise: Summariser, record: Record, batch: int = BATCH) -> None:
-    """Make every sentence the backlog in `project` is missing under its current content, as one unit of work."""
-    # [LAW:nothing-unseen] `unsaid` is what is still without a sentence when the pass ends: what the summariser failed
-    # on or left out, and the parents above them. `left_out` names what a reply gave no sentence for, and `stray`
+    """Make every summary the backlog in `project` is missing under its current content, as one unit of work."""
+    # [LAW:nothing-unseen] `unsaid` is what is still without a summary when the pass ends: what the summariser failed
+    # on or left out, and the parents above them. `left_out` names what a reply gave no summary for, and `stray`
     # counts the reply lines that named nothing asked, so a model that skips items reads apart from one whose calls
     # failed. The `items` counts are the same of the work items alone, the tickets and epics, and `overview` is the
-    # backlog's own sentence: what the terminal is told of the pass.
+    # backlog's own summary: what the terminal is told of the pass.
     with _pass(clock, BACKLOG_PASS, record, ("things", "known", "unsaid", "rounds", *ITEM_COUNTS), project=project) as missed:
         try:
             backlog = await read_backlog(clock, project)
@@ -151,12 +151,12 @@ async def summarise_backlog(clock: Clock, project: Path, store: SummaryStore, su
 
 
 def _work_items(backlog: Thing) -> frozenset[str]:
-    """The ids of the tickets and epics in a backlog, at every depth: the backlog's own sentence is no work item."""
+    """The ids of the tickets and epics in a backlog, at every depth: the backlog's own summary is no work item."""
     return frozenset(id for part in backlog.parts for id in (part.id, *_work_items(part)))
 
 
 def _overview(items: frozenset[str], made: Sequence[str], said: Collection[str]) -> Overview:
-    """Where the backlog's own sentence stands after a pass: made by it, kept from before, still unsaid, or none at all,
+    """Where the backlog's own summary stands after a pass: made by it, kept from before, still unsaid, or none at all,
     for a backlog with nothing in it."""
     if not items:
         return "none"
@@ -168,7 +168,7 @@ def _overview(items: frozenset[str], made: Sequence[str], said: Collection[str])
 def told(event: WideEvent) -> str:
     """The terminal's line for a pass that finished counting a tracked backlog, the one shape whose event says where its
     overview stands, read off its event alone: the work items its replies
-    summarised, and the backlog's overview if they did; those with a sentence it did not make; and what is still unsaid.
+    summarised, and the backlog's overview if they did; those with a summary it did not make; and what is still unsaid.
     A pass that had nothing to ask says the backlog was already fully summarised."""
     project, counts, overview = event.facts["project"], event.counts, event.facts["overview"]
     if not counts["rounds"]:

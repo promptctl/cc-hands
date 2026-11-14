@@ -26,12 +26,12 @@ from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
-from hands.voice.holds import Played, Reference
+from hands.voice.clips import Played, Reference
 from hands.voice.coreaudio import DefaultDevices
 from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, Output, Playout, PortAudio, Pull, default_input
 from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
-from hands.voice.holds import Hold
+from hands.voice.clips import Clip
 from hands.voice.turnstop import TurnOpened
 from hands.voice.voices import SpeakingIn
 
@@ -151,12 +151,12 @@ class SimpleStream:
 
 async def test_the_microphone_is_heard_through_the_canceller_and_only_while_the_key_is_down(devices: Rig) -> None:
     await devices.capture(at=1.0)  # key up
-    devices.key.move("start", "held key")
+    devices.key.move("start", "shortcut")
     await devices.capture(at=1.02)
     assert devices.pushed == [QUIET, CLEANED]
-    # Each frame carries what the microphone captured too, muted by the same key: a hold's level before the canceller.
+    # Each frame carries what the microphone captured too, muted by the same key: a clip's level before the canceller.
     assert devices.captured == [QUIET, LOUD]
-    # And what the speaker played over it, the canceller's reference, which no key mutes: what hands said over a hold.
+    # And what the speaker played over it, the canceller's reference, which no key mutes: what hands said over a clip.
     assert devices.played == [PLAYED, PLAYED]
     assert devices.room.hears == [LOUD, LOUD]  # key up too: the canceller learns the room from every buffer
 
@@ -168,11 +168,11 @@ async def test_the_canceller_hears_the_desk_microphone_while_hands_is_at_the_pho
     assert devices.room.hears == [LOUD]  # and the canceller takes the speaker's sound in step all the same
 
 
-async def test_an_edge_overhears_the_desk_cleaned_whatever_the_key_says_and_only_while_it_listens(devices: Rig) -> None:
+async def test_a_trigger_overhears_the_desk_cleaned_whatever_the_key_says_and_only_while_it_listens(devices: Rig) -> None:
     async with devices.microphone.overheard() as heard:
-        await devices.capture(at=1.0)  # key up: the pipeline hears silence, the edge hears the room
+        await devices.capture(at=1.0)  # key up: the pipeline hears silence, the trigger hears the room
         devices.key.go("phone")
-        await devices.capture(at=1.02)  # hands at the phone: the room at the desk is silence to the edge
+        await devices.capture(at=1.02)  # hands at the phone: the room at the desk is silence to the trigger
         assert [await anext(heard), await anext(heard)] == [CLEANED, bytes(len(CLEANED))]
     await devices.capture(at=1.04)
     assert devices.pushed == [QUIET]
@@ -204,7 +204,7 @@ async def test_a_capture_the_canceller_fails_ends_the_pipeline_rather_than_leavi
 
 async def test_a_press_while_the_reply_plays_is_heard_at_once(devices: Rig) -> None:
     await devices.play(LOUD, at=1.0)
-    devices.key.move("start", "held key")
+    devices.key.move("start", "shortcut")
     await devices.capture(at=1.0)  # the reply still in the room, and a word over it
     assert devices.pushed == [CLEANED]
 
@@ -531,7 +531,7 @@ def test_only_portaudios_own_no_default_input_reads_as_no_microphone() -> None:
 
 async def test_a_turns_cue_is_played_at_once_and_a_word_over_it_is_heard(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]  # as setup sets it
-    devices.key.move("start", "held key")
+    devices.key.move("start", "shortcut")
     devices.clock.at = 1.0
     devices.speaker.cue(OPENED)
     await devices.capture(at=1.0)  # a word said over the cue
@@ -603,9 +603,9 @@ async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_sto
     async with devices.microphone.echoes() as echoes:
         await devices.capture(at=1.0)  # the off level, no press
         devices.key.move("listen", "wake word")
-        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a hold
-        devices.key.move("start", "held key")
-        await devices.capture(at=1.04)  # a hold open
+        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a clip
+        devices.key.move("start", "shortcut")
+        await devices.capture(at=1.04)  # a clip open
         devices.key.go("phone")
         await devices.capture(at=1.06)  # hands at the phone
         heard = [await anext(echoes) for _ in range(4)]
@@ -642,9 +642,9 @@ async def test_the_speaker_is_quiet_while_neither_hands_nor_the_user_is_speaking
     await devices.speaker.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert devices.speaker.quiet.is_set()
-    # The user's turn is speech too, from its first hold's opening, whether or not it has cut hands off: quiet waits for
+    # The user's turn is speech too, from its first clip's opening, whether or not it has cut hands off: quiet waits for
     # both sides, whichever stops last.
-    await devices.speaker.push_frame(TurnOpened(hold=Hold(1, "engaged conversation")))
+    await devices.speaker.push_frame(TurnOpened(clip=Clip(1, "engaged conversation")))
     await devices.speaker.push_frame(BotStartedSpeakingFrame())
     await devices.speaker.push_frame(BotStoppedSpeakingFrame())
     assert not devices.speaker.quiet.is_set()

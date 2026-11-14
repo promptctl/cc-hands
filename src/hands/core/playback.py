@@ -80,7 +80,7 @@ def finished(playback: Playback) -> Playback:
     return replace(playback, played=min(playback.played + 1, len(playback.reading)))
 
 
-def cut(playback: Playback) -> Playback:
+def barge_in(playback: Playback) -> Playback:
     """The user barged in: the reading stops, with what hands had yet to hand of it, and the sentence it stopped on is
     bookmarked to go back to. A reading that had played to its end is not cut off, and leaves nothing to go back to."""
     whole = (*playback.reading, *playback.coming)
@@ -96,7 +96,7 @@ class Replay:
 
 
 @dataclass(frozen=True)
-class NothingCut:
+class NothingBargedIn:
     """No reading was cut off, so there is nowhere to go back to."""
 
 
@@ -110,7 +110,7 @@ class LastOne:
     """The sentence skipped was the last of its reading, so nothing of it is left to say."""
 
 
-Played = Replay | NothingCut | NothingSaid | LastOne
+Played = Replay | NothingBargedIn | NothingSaid | LastOne
 
 
 def resume(playback: Playback) -> tuple[Playback, Played]:
@@ -135,7 +135,7 @@ def _popped(playback: Playback, stack: tuple[Bookmark, ...], past: int) -> tuple
     """The latest bookmark of `stack` taken off, the rest left as the readings cut off, and its reading from `past`
     sentences after the one it stopped on."""
     if not stack:
-        return playback, NothingCut()
+        return playback, NothingBargedIn()
     *earlier, latest = stack
     rest = latest.sentences[latest.at + past :]
     return replace(playback, stopped=None, interrupted=tuple(earlier)), Replay(rest) if rest else LastOne()

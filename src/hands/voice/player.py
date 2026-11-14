@@ -23,8 +23,8 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import Bookmark, LastOne, NothingCut, NothingSaid, Played, Playback, Replay
-from hands.sessions.audit import CutOff, Record
+from hands.core.playback import Bookmark, LastOne, NothingBargedIn, NothingSaid, Played, Playback, Replay
+from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
 
@@ -42,10 +42,10 @@ class Player:
         self._playback = Playback()
         # Stood ahead of the TTS service, the one place the lines enter the pipeline; it passes everything else on.
         self.lines = IdentityFilter()
-        # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the mark behind it: settled by the output
-        # passing the mark on, or by the next barge-in, whichever the output pushes first.
-        self._hearing: dict[asyncio.Future[bool], Mark] = {}
-        # [LAW:no-shared-mutable-globals] each `cut_off` waiting on the next barge-in to reach the output, which settles it.
+        # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the marker behind it: settled by the output
+        # passing the marker on, or by the next barge-in, whichever the output pushes first.
+        self._hearing: dict[asyncio.Future[bool], Marker] = {}
+        # [LAW:no-shared-mutable-globals] each `next_barge_in` waiting on the next barge-in to reach the output, which settles it.
         self._cutting: list[asyncio.Future[Bookmark]] = []
 
     @property
@@ -72,11 +72,11 @@ class Player:
         match frame:
             case TTSTextFrame() if frame.will_be_spoken:
                 self._playback = playback.finished(self._playback)
-            case Mark():
-                # [LAW:no-ambient-temporal-coupling] read off the output's push, in order with its barge-ins: a mark
-                # waiting in Marks' queue is one a barge-in empties out, though its line played to the end.
-                for hearing, mark in self._hearing.items():
-                    if mark is frame:
+            case Marker():
+                # [LAW:no-ambient-temporal-coupling] read off the output's push, in order with its barge-ins: a marker
+                # waiting in Markers' queue is one a barge-in empties out, though its line played to the end.
+                for hearing, marker in self._hearing.items():
+                    if marker is frame:
                         _settle(hearing, True)
             case InterruptionFrame():
                 for hearing in self._hearing:
@@ -86,13 +86,13 @@ class Player:
                 for cut in cutting:
                     if not cut.done():
                         cut.set_result(Bookmark((*was.reading, *was.coming), was.played))
-                self._playback = playback.cut(was)
+                self._playback = playback.barge_in(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
-                self._record(CutOff(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
+                self._record(BargeIn(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
             case _:
                 pass
 
-    def cut_off(self) -> asyncio.Future[Bookmark]:
+    def next_barge_in(self) -> asyncio.Future[Bookmark]:
         """The reading on the speaker when the next barge-in reaches it, and how many of its sentences had played to their
         end: all of them when it was cut off in none. Asked for before that barge-in is passed down, so it is the one."""
         cut = asyncio.get_running_loop().create_future()
@@ -117,19 +117,19 @@ class Player:
         long the line takes to say.
         """
         hearing = asyncio.get_running_loop().create_future()
-        # Settled as the output passes it on, which the observer sees (`played`); Marks only takes it out of the pipeline.
-        mark = Mark(lambda: None)
-        self._hearing[hearing] = mark
+        # Settled as the output passes it on, which the observer sees (`played`); Markers only takes it out of the pipeline.
+        marker = Marker(lambda: None)
+        self._hearing[hearing] = marker
         try:
             await self.lines.push_frame(TTSSpeakFrame(sentence, append_to_context=False))
-            await self.lines.push_frame(mark)
+            await self.lines.push_frame(marker)
             return await hearing
         finally:
             del self._hearing[hearing]
 
 
 def _settle(hearing: "asyncio.Future[bool]", played: bool) -> None:
-    # The first of a line's mark and a barge-in says how it went; the output passes a mark on only if no barge-in cut it off.
+    # The first of a line's marker and a barge-in says how it went; the output passes a marker on only if no barge-in cut it off.
     if not hearing.done():
         hearing.set_result(played)
 
@@ -139,7 +139,7 @@ def said(played: Played) -> tuple[str, ...]:
     match played:
         case Replay(sentences=sentences):
             return sentences
-        case NothingCut():
+        case NothingBargedIn():
             return ("Nothing was cut off to go back to.",)
         case NothingSaid():
             return ("I haven't said anything yet.",)
@@ -148,8 +148,8 @@ def said(played: Played) -> tuple[str, ...]:
 
 
 @dataclass
-class Mark(DataFrame):
-    """A point in what is said: `played` is called once the speaker has played everything handed it ahead of the mark, and
+class Marker(DataFrame):
+    """A point in what is said: `played` is called once the speaker has played everything handed it ahead of the marker, and
     never if a barge-in cut any of that off. The TTS service keeps a data frame behind the audio of what was handed it
     first, and the output transport passes it on only once that audio is written, or drops it with that audio on a barge-in
     (Pipecat 1.10.0)."""
@@ -157,13 +157,13 @@ class Mark(DataFrame):
     played: Callable[[], None]
 
 
-class Marks(FrameProcessor):
-    """Stood right behind the output transport: calls each mark's `played` as it arrives, and passes the rest on."""
+class Markers(FrameProcessor):
+    """Stood right behind the output transport: calls each marker's `played` as it arrives, and passes the rest on."""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame:
-            case Mark(played=played):
+            case Marker(played=played):
                 played()
             case _:
                 await self.push_frame(frame, direction)

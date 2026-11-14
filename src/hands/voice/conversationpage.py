@@ -7,7 +7,7 @@ can reach the port; what it reads and sends is not: each request carries the pho
 address's fragment as the phone's page does.
 
 [LAW:one-source-of-truth] the conversation is the log's, folded into moments as `hands recall` folds it
-(`hands.sessions.recall`); nothing here keeps a record of its own. Words typed are a hold of their own in the voice's
+(`hands.sessions.recall`); nothing here keeps a record of its own. Words typed are a clip of their own in the voice's
 pipeline (`hands.voice.turnstop.Typed`), so they reach hands as words said do, and come back here as the log's.
 """
 

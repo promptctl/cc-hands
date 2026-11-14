@@ -25,7 +25,7 @@ from pipecat.transcriptions.language import Language
 from conftest import Running, patiently, running
 from hands.sessions.audit import Entry, Replied
 from hands.voice.conversation import AssistantTurns, record_turns, turns
-from hands.voice.player import Mark, Marks
+from hands.voice.player import Marker, Markers
 from hands.voice.spoken import FenceAggregator
 
 
@@ -63,11 +63,11 @@ class Conversation:
     async def said(self, *frames: Frame) -> None:
         """Send the frames as the model's stage sends them, and wait until the last of them has been taken."""
         taken = asyncio.Event()
-        await self.pipeline.worker.queue_frames([*frames, Mark(taken.set)])
+        await self.pipeline.worker.queue_frames([*frames, Marker(taken.set)])
         await patiently(taken.is_set, self.moved)
 
     async def barge_in(self) -> None:
-        """A barge-in, which overtakes whatever is still on its way and drops a mark sent behind it."""
+        """A barge-in, which overtakes whatever is still on its way and drops a marker sent behind it."""
         await self.pipeline.worker.queue_frame(InterruptionFrame())
 
     async def replies(self, count: int) -> list[Entry]:
@@ -80,7 +80,7 @@ class Conversation:
 async def conversing() -> AsyncGenerator[Conversation]:
     user, assistant = turns(LLMUserAggregatorParams())
     speaker = Speaker()
-    async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), speaker, assistant, Marks()]) as pipeline:
+    async with running([LLMTextProcessor(text_aggregator=FenceAggregator()), speaker, assistant, Markers()]) as pipeline:
         conversation = Conversation(pipeline, assistant, speaker)
         record_turns(user, assistant, conversation.recorded.append)
         yield conversation

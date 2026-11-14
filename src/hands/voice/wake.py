@@ -4,7 +4,7 @@ and end-of-turn detection closes it, with the models engaged conversation hears 
 The word is config.toml's (`hands.daemon.config`): one of openWakeWord's own, "Hey Jarvis" unless another is named, or
 one the user trained with openWakeWord. Its model listens to the desk's microphone through the echo canceller. It hears
 what engaged conversation hears, the room with hands' own voice taken out by the echo canceller, while hands speaks as
-much as while it is quiet: the wake word said over a reply opens a turn that cuts it off. The desk listens for as long as the level is the wake word's, so the hold owner keeps
+much as while it is quiet: the wake word said over a reply opens a turn that cuts it off. The desk listens for as long as the level is the wake word's, so the clip owner keeps
 the second before each turn opens and the wake word, and anything said while the detector made sure of it, are in the turn.
 """
 

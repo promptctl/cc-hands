@@ -30,7 +30,7 @@ from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from hands.clock import Clock
-from hands.core.wire import Answered, Body, Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unkept, Unreached, Written
+from hands.core.wire import Answered, Body, Ending, Exchanged, Garbled, Reached, Synthetic, Uncopied, Unfinished, Unkept, Unreached, Written
 from hands.sessions.audit import Entry, Exported, Level, Record, Signal, jsonable, level
 from hands.sessions.heartbeat import Degradation
 from hands.sessions.wide import Fact, Outcome, WideEvent
@@ -168,7 +168,7 @@ def _reply_end(sent_at: float, reply: Ending) -> tuple[float, str | None, Mappin
     match reply:
         case Unreached(error=error, failed_at=at) | Uncopied(reason=error, lost_at=at) | Unfinished(reason=error, stopped_at=at):
             return at, error, {}
-        case Held(answered_at=at):
+        case Synthetic(answered_at=at):
             return at, None, {}
         case Reached(status=status, first_byte_at=first, last_byte_at=last, reply_bytes=size, body=body):
             facts = {"status": status, "first_byte_ms": round((first - sent_at) * 1000, 3), "reply_bytes": size, **_said(body)}
@@ -189,7 +189,7 @@ def _said(body: Body) -> Mapping[str, Fact]:
 
 
 class _Closed:
-    pass
+    """The poison pill that marks the end of a lane's queue."""
 
 
 _CLOSED = _Closed()
@@ -426,8 +426,8 @@ def _ended(event: WideEvent) -> int:
 
 def _fields(event: WideEvent) -> dict[str, object]:
     # [LAW:one-source-of-truth] the event's own fields under the names its audit line gives them, so one query reads
-    # either; counts and facts are flattened under their names, as OTLP attributes are spelled.
-    failed: dict[str, object] = {} if event.error is None else {"error": event.error, "trace": "\n".join(event.trace)}
+    # either, bar the stacktrace, which OTLP names exception.stacktrace; counts and facts are flattened under their names, as OTLP attributes are spelled.
+    failed: dict[str, object] = {} if event.error is None else {"error": event.error, "exception.stacktrace": "\n".join(event.stacktrace)}
     return {"outcome": event.outcome, **failed, **{f"counts.{name}": n for name, n in event.counts.items()}, **{f"facts.{name}": fact for name, fact in event.facts.items()}}
 
 

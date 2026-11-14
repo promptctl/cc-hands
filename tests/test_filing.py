@@ -43,7 +43,7 @@ def broke(session: str, path: str, chars: int) -> Logged:
     return Logged(
         level="error", source="hands.sessions.tap:read",
         message=f"hands could not read session {session}'s copy at {path}: not JSON at char {chars} in b'{{\"kind\":\"req",
-        where="/x/tap.py:159", trace=(),
+        where="/x/tap.py:159", stacktrace=(),
     )
 
 
@@ -52,7 +52,7 @@ def write_audit(directory: Path, clock: Clock) -> AuditLog:
     log = AuditLog(directory, clock=clock)
     log.record(broke("ee909f6e-b7ac-4256-9af5-a55e54d100d3", "/Users/someone/.claude/projects/a.jsonl", 404))
     log.record(Transcribed("send it"))
-    log.record(Logged(level="warning", source="hands.sessions.delta:_git", message="git add in /code/x did not answer in 0.1s", where="/x/delta.py:515", trace=()))
+    log.record(Logged(level="warning", source="hands.sessions.delta:_git", message="git add in /code/x did not answer in 0.1s", where="/x/delta.py:515", stacktrace=()))
     log.record(broke("652a74a6-0a46-4efc-b66e-ad035c7f6a07", "/Users/someone/.claude/projects/b.jsonl", 47))
     log.record(broke("0d8d2611-26bc-4663-94ed-87b5c47ee882", "/tmp/c.jsonl", 3))
     return log
@@ -78,7 +78,7 @@ def test_a_line_that_is_no_json_object_is_counted_unreadable_and_one_of_a_kind_h
         '{"at": "2026-10-24T12:01:00.000+00:00", "level": "error", "type": "Retired", "said": "x"}',
         '{"at": "2026-10-24T12:02:00.000+00:00", "level": "error", "type": "Exchanged", "method": "GET", "path": "/v1/x", "reply": {"type": "Bounced"}}',
         '{"at": "2026-10-24T12:03:00.000+00:00", "level": "error", "type": "WideEvent", "event": "name.judged"',
-        '{"at": "2026-10-24T12:04:00.000+00:00", "level": "error", "type": "Failure", "source": "hands.x:f", "message": "broke", "where": "/x.py:1", "trace": []}',
+        '{"at": "2026-10-24T12:04:00.000+00:00", "level": "error", "type": "Failure", "source": "hands.x:f", "message": "broke", "where": "/x.py:1", "stacktrace": []}',
     ]
     read = grouping.read(lines)
     assert [(group.origin, group.cause) for group in read.groups] == [
@@ -91,7 +91,7 @@ def test_a_line_that_is_no_json_object_is_counted_unreadable_and_one_of_a_kind_h
 
 
 # The kinds of line the log never judges a warning or an error.
-ALWAYS_INFO = {"Typing", "CopiesLost", "Transcribed", "HoldHeard", "Replied", "CutOff", "UserTurn", "Announced", "Cued", "Rolled"}
+ALWAYS_INFO = {"Typing", "CopiesLost", "Transcribed", "ClipHeard", "Replied", "BargeIn", "UserTurn", "Announced", "Cued", "Rolled"}
 
 
 def test_every_kind_of_line_the_log_can_judge_a_warning_or_an_error_says_its_cause() -> None:
@@ -154,7 +154,7 @@ def test_a_group_seen_again_is_a_comment_on_its_open_ticket_and_a_new_ticket_onc
     [copy, git] = groups_of(tmp_path)
     told = {"t1": filing.description(copy, LOGS), "t2": filing.description(git, LOGS)}
     log.record(broke("4ce425fb-670d-4936-b5c2-f9b045875d8d", "/tmp/d.jsonl", 9))
-    log.record(Logged(level="warning", source="hands.sessions.delta:_git", message="git add in /code/y did not answer in 0.2s", where="/x/delta.py:515", trace=()))
+    log.record(Logged(level="warning", source="hands.sessions.delta:_git", message="git add in /code/y did not answer in 0.2s", where="/x/delta.py:515", stacktrace=()))
     again = groups_of(tmp_path)
     held = parse_export(export(
         [issue("e", "0", None), issue("t1", "1", "in_progress", told["t1"]), issue("t2", "2", "closed", told["t2"])],
@@ -324,7 +324,7 @@ def test_a_title_is_one_line_whatever_the_cause_said() -> None:
 ])
 def test_a_ticket_names_a_logged_line_by_the_file_it_was_logged_in_and_its_group_is_known_as_before(tmp_path: Path, source: str, where: str, named: str) -> None:
     log = AuditLog(tmp_path / "audit", clock=Clock())
-    log.record(Logged(level="warning", source=source, message="no status", where=where, trace=()))
+    log.record(Logged(level="warning", source=source, message="no status", where=where, stacktrace=()))
     [group] = groups_of(tmp_path)
     assert group.named == named
     assert filing.title(group) == f"{named}: no status"
@@ -377,7 +377,7 @@ def test_a_lit_new_that_says_no_id_is_a_failure_and_not_a_ticket(tmp_path: Path,
 
 def test_a_failure_line_is_named_by_its_file_as_a_logged_line_is_and_one_whose_where_is_unreadable_keeps_its_group() -> None:
     def logged(kind: str, **where: object) -> str:
-        return json.dumps({"at": "2026-10-24T12:00:00.000+00:00", "level": "warning", "type": kind, "source": "hands.sessions.delta:_git", "message": "slow", **where, "trace": []})
+        return json.dumps({"at": "2026-10-24T12:00:00.000+00:00", "level": "warning", "type": kind, "source": "hands.sessions.delta:_git", "message": "slow", **where, "stacktrace": []})
 
     lines = [
         # A Failure line before it said where, one after, a Logged line, and Logged lines whose where says nothing.

@@ -64,7 +64,7 @@ async def test_a_child_that_runs_past_its_time_is_killed_and_reaped(started: lis
 async def test_a_child_s_time_is_up_on_the_clock_it_was_given(started: list[subprocess.Popen[bytes]], logged: list[str]) -> None:
     clock = VirtualClock()
     running = asyncio.create_task(run("sleep", "30", timeout=5, clock=clock))
-    await clock.paused(5.0)
+    await clock.sleeping(5.0)
     clock.advance(5)
     with pytest.raises(TimeoutError):
         await running

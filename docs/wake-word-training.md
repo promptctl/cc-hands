@@ -51,23 +51,24 @@ that was cut short starts over, and training and evaluation run again.
 ### Where a word's clips live, and why they pile up
 
 A word's clips and features live in a run directory named for the word plus a digest of what they are made from:
-the phrase, its near-miss phrases, the sample counts, the background and room data, and the voice generator. For
-Hey Hands that is `words/hey_hands-c24f5cb5`. Change any of those and the next run makes a fresh directory and
-generates every clip again. Change only how the model is trained (steps, width, weights) and the clips are reused.
+the phrase, its adversarial negative phrases, the sample counts, the background and room data, and the voice
+generator. For Hey Hands that is `words/hey_hands-c24f5cb5`. Change any of those and the next run makes a fresh
+directory and generates every clip again. Change only how the model is trained (steps, width, weights) and the clips
+are reused.
 
 Old run directories are never deleted for you, and each holds about 1.5–1.7 GB. Remove the ones you no longer
 need by hand.
 
-### Near misses
+### Adversarial negatives
 
 Each word is trained against its parts said alone, and against its last words after other lead-ins: "hey",
-"okay", "my", "the", "your", and "these". For Hey Hands the near misses are "hands", "hey", "my hands", "okay
-hands", "the hands", "these hands", and "your hands". They make up a quarter of the negative clips, each near
-miss as often as the others, in the held-out clips as in the training ones.
+"okay", "my", "the", "your", and "these". For Hey Hands the adversarial negatives are "hands", "hey", "my hands",
+"okay hands", "the hands", "these hands", and "your hands". They make up a quarter of the negative clips, each
+adversarial negative as often as the others, in the held-out clips as in the training ones.
 
 Without them, each model learned "…hands". The Hey Hands model woke on 246 of 300 "okay hands" clips, and Okay
 Hands woke on 277 of 300 "hey hands" clips. That matters because people say "hands" constantly when they talk about
-hands. With near misses in training, those counts fell to 10 of 300 and 26 of 300.
+hands. With adversarial negatives in training, those counts fell to 10 of 300 and 26 of 300.
 
 ## What it costs
 
@@ -94,7 +95,7 @@ existed, so how long they take to download is not measured.
 `evaluate` scores a model with openWakeWord's runtime `Model`, the one hands listens with, at hands' threshold
 of 0.5. These are the shipped models:
 
-| word | recall on 2,000 held-out clips | near-miss false accepts (2,000 clips) | false wakes in 10.7 h of speech, music, noise |
+| word | recall on 2,000 held-out clips | adversarial-negative false accepts (2,000 clips) | false wakes in 10.7 h of speech, music, noise |
 | --- | --- | --- | --- |
 | Hey Hands | 94.7% | 1.45% | 0 |
 | Okay Hands | 94.6% | 1.25% | 0 |
@@ -123,8 +124,8 @@ Two limits on these numbers:
 ## Tuning so far
 
 The recipe starts from openWakeWord's example and doubles two settings: the model width, from 32 to 64, and the
-cap on negative weight, from 1,500 to 3,000. On Hey Hands, before near misses were added, that took false wakes
-from 1.1 per hour to 0.37, for recall going from ~98% to ~97%. Doubling the training steps to 100,000 made it
+cap on negative weight, from 1,500 to 3,000. On Hey Hands, before adversarial negatives were added, that took false
+wakes from 1.1 per hour to 0.37, for recall going from ~98% to ~97%. Doubling the training steps to 100,000 made it
 worse: 1.7 per hour.
 
 Two runs of one recipe can differ by more than any of those changes. Retrained from the same clips, Hey Hands came

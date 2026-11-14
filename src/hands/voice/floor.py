@@ -1,8 +1,8 @@
 """The floor: while the user's turn is open, what hands tells of the sessions waits, and follows the turn soonest first.
 
-The floor is taken as a hold opens, when the hold owner says the user started speaking (`TurnOpened`), whether or not the turn
+The floor is taken as a clip opens, when the clip owner says the user started speaking (`TurnOpened`), whether or not the turn
 has cut hands off yet (`hands.voice.turnstart`). It is given back once the user aggregator says the turn stopped, every
-hold it took in transcribed and sent, unless a hold has opened since: that stop comes back up as a system frame, and a
+clip it took in transcribed and sent, unless a clip has opened since: that stop comes back up as a system frame, and a
 press just after it can pass the floor on its way down first, opening the next turn. What waited is
 given back into the aggregator's queue behind the frame that closed the turn, so the user's words reach the model first
 and what hands had to say follows them. A session that stops while the user talks is announced after they let go, never
@@ -24,8 +24,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from hands.clock import Clock
 from hands.core.pending import coalesce
 from hands.core.session import Session, SessionId
+from hands.voice.clips import Clip
 from hands.voice.speech import Names, Unprompted, frames, sent
-from hands.voice.holds import Hold
 from hands.voice.turnstop import TurnOpened, TurnResolved
 
 
@@ -37,10 +37,10 @@ class _Given(DataFrame):
 
 @dataclass
 class _Taken:
-    """The user has the floor: the holds it saw open that the hold owner is not done with, whether the turn is still open, and
+    """The user has the floor: the clips it saw open that the clip owner is not done with, whether the turn is still open, and
     what hands had to say meanwhile, in order, each with when it came."""
 
-    holds: set[Hold]
+    clips: set[Clip]
     open: bool = True
     held: list[tuple[Unprompted, float]] = field(default_factory=list[tuple[Unprompted, float]])
 
@@ -64,26 +64,26 @@ class Floor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         match frame, self._taken:
-            # [LAW:one-source-of-truth] a turn starts as its first hold opens, and cuts hands off only later where the
-            # voice opened it, so the floor is taken as the hold opens: the user is speaking from then.
-            case TurnOpened(hold=hold), None:
-                self._taken = _Taken({hold})
+            # [LAW:one-source-of-truth] a turn starts as its first clip opens, and cuts hands off only later where the
+            # voice opened it, so the floor is taken as the clip opens: the user is speaking from then.
+            case TurnOpened(clip=clip), None:
+                self._taken = _Taken({clip})
                 await self.push_frame(frame, direction)
-            case TurnOpened(hold=hold), _Taken() as taken:
-                taken.holds.add(hold)
+            case TurnOpened(clip=clip), _Taken() as taken:
+                taken.clips.add(clip)
                 # A press before what the last turn held was given back: it waits out this turn as well.
                 taken.open = True
                 await self.push_frame(frame, direction)
             case UserStoppedSpeakingFrame(), _Taken() as taken:
                 # [LAW:no-ambient-temporal-coupling] system frames are handled on their own task beside the data frames;
                 # the release goes through the data queue, so the one task that holds is the one that gives back.
-                # A hold that opened since is the next turn's, which keeps the floor until it stops.
-                taken.open = bool(taken.holds)
+                # A clip that opened since is the next turn's, which keeps the floor until it stops.
+                taken.open = bool(taken.clips)
                 await self.push_frame(frame, direction)
                 await self.queue_frame(_Given())
-            case TurnResolved(hold=hold), _Taken() as taken:
+            case TurnResolved(clip=clip), _Taken() as taken:
                 # On its way to the aggregator, which stops the turn only once this has reached it.
-                taken.holds.remove(hold)
+                taken.clips.remove(clip)
                 await self.push_frame(frame, direction)
             case _Given(), _Taken(open=False, held=held):
                 self._taken = None

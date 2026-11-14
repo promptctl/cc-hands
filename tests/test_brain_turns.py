@@ -529,7 +529,7 @@ async def test_a_permission_whose_read_breaks_is_no_turns_and_is_refused_said_on
     assert (dialogs(brain), turn.broken) == ((), None)
     [permission] = events(recorded, "brain.permission")
     assert (permission.outcome, permission.error, permission.facts["decision"]) == ("failed", "OSError: the transcript went", Deny(BROKEN))
-    assert permission.trace
+    assert permission.stacktrace
 
 
 async def test_a_permission_the_model_could_not_hold_is_refused_at_its_hook_and_said_once() -> None:
@@ -792,7 +792,7 @@ async def passed(clock: VirtualClock, seconds: float) -> None:
     """Once a pause of `seconds` begun now is waited on, `clock` moved to its end: the brain's look loop waits each out
     in turn, so a test spends exactly the pauses it names."""
     end = clock.at + seconds
-    await clock.paused(end)
+    await clock.sleeping(end)
     clock.advance_to(end)
 
 
@@ -1064,7 +1064,7 @@ async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_p
     # Looked at four times over, the screen still shows the dialog: a dialog would drop the paste, so nothing goes in.
     for _ in range(3):
         await passed(clock, LOOK_SECONDS)
-    await clock.paused(clock.at + LOOK_SECONDS)
+    await clock.sleeping(clock.at + LOOK_SECONDS)
     assert (keys.looked, keys.pressed) == (4, [])
     keys.shown = PROMPT_SHOWN
     clock.advance(LOOK_SECONDS)

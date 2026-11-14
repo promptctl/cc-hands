@@ -19,7 +19,7 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.audit import Cued, Played, Record
 from hands.voice.desk import Leveled
-from hands.voice.hold import TURN_LIMIT_SECONDS, Move
+from hands.voice.shortcut import TURN_LIMIT_SECONDS, Move
 
 CUE_SECONDS = 0.06
 # About -16 dBFS against replies that peak near full scale: heard over the room, never louder than the voice.
@@ -158,7 +158,7 @@ class QuietCues:
         if not self._owed.empty() or seconds <= 0:
             return self._drained()
         owed = asyncio.ensure_future(self._owed.get())
-        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.pause(seconds))}
+        waits = {owed} if math.isinf(seconds) else {owed, asyncio.ensure_future(self._clock.sleep(seconds))}
         try:
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:

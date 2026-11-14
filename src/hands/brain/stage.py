@@ -42,7 +42,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 
 from hands.brain.mcp import SERVER_NAME, CallSpans
-from hands.brain.process import NOBODY, SPOKEN_OVER, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
+from hands.brain.process import BARGED_IN, NOBODY, Asked, BrainAnswered, BrainEnded, BrainStopped, ClaudeTurn
 from hands.clock import Clock
 from hands.core.attention import Attention
 from hands.voice.narrator import set_to
@@ -61,7 +61,6 @@ from hands.core.wire import (
     BlockStopped,
     Exchanged,
     Heard,
-    Hold,
     JsonDelta,
     MainTurn,
     Observed,
@@ -69,6 +68,7 @@ from hands.core.wire import (
     Seconds,
     Send,
     Sent,
+    Synthesize,
     Tail,
     TextDelta,
     ToolAnswer,
@@ -85,9 +85,9 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, child, continuing, count, fail, here, root, unit, within
 from hands.voice.conversation import UserWords
 from hands.voice.system import system_text
-from hands.voice.player import Mark
-from hands.voice.trigger import Edge
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.player import Marker
+from hands.voice.trigger import Trigger
+from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated, brain_asks, brain_refused
 from hands.voice.utterance import Resumed, Utterance, Uttered, Uttering, uttering
 from hands.voice.tool import Result, Tool, silent, whole
@@ -112,11 +112,11 @@ class Asking(Protocol):
 
 @dataclass(frozen=True)
 class UserAsked:
-    """The user's words: whether they could see a screen, the edge that opened their turn, and what was in front on the
+    """The user's words: whether they could see a screen, the trigger that opened their turn, and what was in front on the
     Mac's as they were submitted, and how long reading it took, in milliseconds."""
 
     modality: Modality
-    opened: Edge
+    opened: Trigger
     front: InFront
     read_ms: float
 
@@ -137,10 +137,10 @@ class Unawaited:
 # Whose turn the brain answered.
 Asker = UserAsked | HandsAsked | Unawaited
 
-# What the brain is recorded as saying for a request hands held. Never spoken: a held request joins no turn.
+# What the brain is recorded as saying for a request hands answered itself. Never spoken: such a request joins no turn.
 SILENT = "(stayed silent)"
 # What the next turn tells the brain of a turn the user spoke over that then failed, beside what they did not hear of it:
-# the spoken-over note says what was heard, so this says only the failure.
+# the barge-in note says what was heard, so this says only the failure.
 FAILED_AFTER = "[hands] Your last turn then failed. Mention this only if the user asks."
 # What hands adds to the request after a stay_silent that would end a turn which acted with nothing heard after what it did.
 OWED = "[hands] You acted on the user's words this turn, so they were said to you, and the user has heard nothing since you did. Say in a sentence what you did."
@@ -189,7 +189,7 @@ def has_words(text: str) -> bool:
 
 
 # What each turn's event counts: the model's round trips on the wire, and the calls its replies made.
-COUNTS = ("round_trips", "tools", "refused", "cut_in", "silence_refused")
+COUNTS = ("round_trips", "tools", "refused", "barge_ins", "silence_refused")
 
 
 @dataclass
@@ -286,10 +286,10 @@ class _Turn:
     readbacks: list[str] = field(default_factory=list[str])
     # Where the user barged in on the turn, which is said to nobody from then on: the reading on the speaker and how much
     # of it had played, once the speaker has been cut off. None while the user has not barged in.
-    cut: asyncio.Future[Bookmark] | None = None
+    barge_in: asyncio.Future[Bookmark] | None = None
     # How many times the user cut in on the turn and stopped nothing of it: nothing it said or asked was still to be
     # heard, or what they said answers the question they heard.
-    cut_in: int = 0
+    barge_ins: int = 0
     # A reply of the turn's is under way for whatever hears it: started, and not yet ended.
     replying: bool = False
     # The permissions the turn has put to the user, oldest first, which are asked one at a time.
@@ -334,7 +334,7 @@ class _Turn:
 
     @property
     def interrupted(self) -> bool:
-        return self.cut is not None
+        return self.barge_in is not None
 
     @property
     def to_hear(self) -> bool:
@@ -343,8 +343,8 @@ class _Turn:
         return not self.withholding and (self.voicing is not None or self.reached < self.marked)
 
     def point(self, point: _Point) -> None:
-        """Puts what the brain said or asked to the user, counted until its Mark has played."""
-        # [LAW:single-enforcer] the one place a point is counted: `_speak` pushes its one Mark.
+        """Puts what the brain said or asked to the user, counted until its Marker has played."""
+        # [LAW:single-enforcer] the one place a point is counted: `_speak` pushes its one Marker.
         self.marked += 1
         self.said.put_nowait(point)
 
@@ -388,7 +388,7 @@ class _Turn:
     def unheard(self) -> bool:
         """The user asked the turn and has heard nothing of it: no word, no question, and they have not spoken in it, over
         it or not. Their words in it are answered instead."""
-        return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted and not self.cut_in
+        return isinstance(self.asker, UserAsked) and self.first_word is None and not self.asked and not self.interrupted and not self.barge_ins
 
     def owes_word(self, tools: Mapping[str, Tool]) -> bool:
         """The user is owed a word of what the turn did: they asked it and did not speak over it, it acted, and its latest
@@ -417,10 +417,10 @@ class BrainStage(FrameProcessor):
         refocus: Callable[[SessionId], Awaitable[None]],
         front: Callable[[], Awaitable[InFront]],
         modality: Callable[[], Modality],
-        opened: Callable[[], Edge],
+        opened: Callable[[], Trigger],
         record: Record,
         spans: CallSpans,
-        cut_off: Callable[[], asyncio.Future[Bookmark]],
+        next_barge_in: Callable[[], asyncio.Future[Bookmark]],
         aloud: Callable[[], Attention],
         clock: Clock,
     ) -> None:
@@ -430,7 +430,7 @@ class BrainStage(FrameProcessor):
         self._front = front
         # Whether the user can see a screen, read as their words arrive.
         self._modality = modality
-        # The edge that opened the gate's last turn.
+        # The trigger that opened the gate's last turn.
         self._opened = opened
         # Moves the focus to a session whose telling the brain takes.
         self._refocus = refocus
@@ -441,7 +441,7 @@ class BrainStage(FrameProcessor):
         self._spans = spans
         # [LAW:one-source-of-truth] what the speaker was cut off in by the barge-in it is next to reach: the player's to
         # say, which alone sees what played.
-        self._cut_off = cut_off
+        self._next_barge_in = next_barge_in
         # [LAW:one-source-of-truth] what the user set hands to say unprompted, read as the narrator reads it (`set_to`).
         self._aloud = aloud
         self._clock = clock
@@ -457,10 +457,10 @@ class BrainStage(FrameProcessor):
         self._words: deque[tuple[str, Seconds, Seconds | None, asyncio.Task[UserAsked]]] = deque()
         self._hands: deque[tuple[Narrated | Aloud, Seconds]] = deque()
         # When the user last let go of the key on words not yet handed to the brain: what their wait is timed from. One, not
-        # one per hold: a hold let go of while an earlier one is still transcribed joins that hold's turn (KeyTurnStop), and
-        # the turn's words follow the last release of the holds it took in. Kept with the edge that opened that
-        # hold, read from the gate as it is let go of, before any later hold can open.
-        self._released: tuple[Seconds, Edge] | None = None
+        # one per clip: a clip let go of while an earlier one is still transcribed joins that clip's turn (KeyTurnStop), and
+        # the turn's words follow the last release of the clips it took in. Kept with the trigger that opened that
+        # clip, read from the gate as it is let go of, before any later clip can open.
+        self._released: tuple[Seconds, Trigger] | None = None
         # [LAW:one-source-of-truth] the question the user's next words answer, read once at the cut they open with: one
         # asked while they are still being transcribed is not what they were answering. Every turn that carries words is
         # cut first (`hands.voice.turnstart`).
@@ -514,7 +514,7 @@ class BrainStage(FrameProcessor):
                         # simply the next turn. A telling is not answered in, as it is not acknowledged: what it says is
                         # the session's, and its words are all heard of it.
                         pass
-            case HoldDiscarded():
+            case ClipDiscarded():
                 await self.push_frame(frame, direction)
             case UserStartedSpeakingFrame():
                 # Broadcast by the cut alone, just ahead of its interruption (`hands.voice.turnstart.interrupting`).
@@ -584,7 +584,7 @@ class BrainStage(FrameProcessor):
                     for frame in uttering(utterances, (spoken,)):
                         await self.push_frame(frame)
 
-    async def _read_front(self, modality: Modality, opened: Edge) -> UserAsked:
+    async def _read_front(self, modality: Modality, opened: Trigger) -> UserAsked:
         began = self._clock.now()
         front = await self._front()
         return UserAsked(modality, opened, front, (self._clock.now() - began) * 1000)
@@ -703,15 +703,15 @@ class BrainStage(FrameProcessor):
             refusals = tuple(brain_refused(permission) for permission in turn.unacknowledged)
             annotate(refusals=refusals)
             await self._unsaid(refusals)
-            if turn.cut is None:
+            if turn.barge_in is None:
                 for readback in turn.readbacks:
                     # Said by hands, as each call handed it to say.
                     await self._say(TTSSpeakFrame(readback))
             else:
                 # Said to nobody: the turn's words past what the speaker played, and the readbacks. The brain judges whether
                 # to go back to any of it.
-                over = _spoken_over(await turn.cut, "".join((*spoken, *_left(said))), turn.readbacks)
-            annotate(spoken_over=over)
+                over = _barge_in_note(await turn.barge_in, "".join((*spoken, *_left(said))), turn.readbacks)
+            annotate(barge_in_note=over)
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
             self._account(turn, asker, arrived, released, taken, ended)
@@ -793,7 +793,7 @@ class BrainStage(FrameProcessor):
             transcribed_ms=None if released is None else _ms(arrived - released),
             queued_ms=_ms(taken - arrived),
         )
-        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused, cut_in=turn.cut_in, silence_refused=turn.silence_refused)
+        count(round_trips=len(turn.exchanges), tools=len(turn.tools), refused=turn.refused, barge_ins=turn.barge_ins, silence_refused=turn.silence_refused)
         self._spans.ended(turn.tools)
         for call, ran in turn.tools.items():
             # A call whose result never left ran until the turn ended without it.
@@ -821,7 +821,7 @@ class BrainStage(FrameProcessor):
         turn = turn.joined if turn.joined is not None else turn
         if turn.interrupted:
             # Nothing more of the turn is said, so they would never hear it asked.
-            asked.settle(Deny(SPOKEN_OVER))
+            asked.settle(Deny(BARGED_IN))
             return
         turn.asked.append(asked)
         turn.point(asked)
@@ -899,20 +899,20 @@ class BrainStage(FrameProcessor):
 
     async def _point(self, turn: _Turn, point: _Point) -> None:
         """Says a point of the brain's: the end of a text block, or the question it asks, while that is still open, then
-        the point's Mark, behind which a question waits for its answer."""
+        the point's Marker, behind which a question waits for its answer."""
         # Read once. One settled before its turn came to be said, by its hook's day ending, the turn's end, or an answer,
-        # asks nothing, and its Mark plays behind what is ahead of it.
+        # asks nothing, and its Marker plays behind what is ahead of it.
         question = point if isinstance(point, Asked) and point.open else None
-        # The reply so far ends first, so what TTS holds of it is said ahead of the Mark: a text block's last sentence as
+        # The reply so far ends first, so what TTS holds of it is said ahead of the Marker: a text block's last sentence as
         # the block closes, never held back for words that come after a call.
         match question:
             case Asked(permission=permission):
                 await self._aside(turn, TTSSpeakFrame(brain_asks(permission)))
             case None:
                 await self._reply(turn, False)
-        # [LAW:single-enforcer] each point's one Mark. [LAW:no-ambient-temporal-coupling] a question is answerable once
-        # the speaker has played it to its end, which the mark is told of, and never if a barge-in cut it off.
-        await self.push_frame(Mark(partial(turn.reach, point)))
+        # [LAW:single-enforcer] each point's one Marker. [LAW:no-ambient-temporal-coupling] a question is answerable once
+        # the speaker has played it to its end, which the marker is told of, and never if a barge-in cut it off.
+        await self.push_frame(Marker(partial(turn.reach, point)))
         match question:
             case Asked(permission=permission) as asked:
                 # One question at a time, so what the user answers is the question they heard last.
@@ -944,15 +944,15 @@ class BrainStage(FrameProcessor):
         if turn is None or turn.interrupted:
             return
         if not turn.to_hear or answering is not None:
-            turn.cut_in += 1
+            turn.barge_ins += 1
             return
         # Asked of the speaker before the barge-in goes down to it: it says how far it played once it gets there.
-        turn.cut = self._cut_off()
+        turn.barge_in = self._next_barge_in()
         # Cancelled before anything else runs, so no word of the turn follows the barge-in down the pipeline.
         turn.speaking.cancel()
         # None of them was heard to its end, or the user's words would have answered it: now none can be.
         for asked in turn.asked:
-            asked.settle(Deny(SPOKEN_OVER))
+            asked.settle(Deny(BARGED_IN))
         # The user is speaking: what they say is the next turn, which the brain answers knowing what was refused.
         turn.unacknowledged.clear()
 
@@ -977,7 +977,7 @@ class BrainStage(FrameProcessor):
             return Send(refusal="final", span=root(self._clock))
         now = self._clock.now()
         carried = tool_answers(sent.body)
-        # A call's result leaving is the end of its run, whether the request carrying it goes on or is held.
+        # A call's result leaving is the end of its run, whether the request carrying it goes on or is answered by hands.
         for answer in carried:
             if (ran := turn.tools.get(answer.call)) is not None and ran.answered is None:
                 ran.answered, ran.is_error = now, answer.is_error
@@ -1004,7 +1004,7 @@ class BrainStage(FrameProcessor):
             # Refused once is the turn's failure, said at once rather than after Claude Code's retries. The proxy's
             # record of the request is the turn's round trip to the model: a span inside the turn's.
             return Send((*[Tail(OWED)] * owed, Tail(self._tail())), refusal="final", span=within(self._clock, turn.span))
-        return Hold(SILENT, within(self._clock, turn.span))
+        return Synthesize(SILENT, within(self._clock, turn.span))
 
     def _of(self, running: ClaudeTurn | None) -> _Turn | None:
         """The turn of the stage's whose request this is: the one already running `running`, the turn of Claude Code's
@@ -1036,7 +1036,7 @@ class BrainStage(FrameProcessor):
         """Acknowledges the turn once its tool work has run its time, however many calls it took, if the user has heard
         nothing of it: they hear it was taken, rather than silence until its answer."""
         await turn.working.wait()
-        await self._clock.pause(ACKNOWLEDGE_SECONDS)
+        await self._clock.sleep(ACKNOWLEDGE_SECONDS)
         if turn.unheard():
             turn.aside(_Aside(next(self._acknowledgements), turn.since))
 
@@ -1212,7 +1212,7 @@ def _broken_off(spoken: str) -> str:
     return f'[hands] Your last turn was broken off. The user heard you say "{spoken}", then that it failed. Mention this only if the user asks.' if spoken else ""
 
 
-def _spoken_over(cut: Bookmark, words: str, readbacks: Sequence[str]) -> str:
+def _barge_in_note(bookmark: Bookmark, words: str, readbacks: Sequence[str]) -> str:
     """The note that tells the brain the user spoke over its last turn: the last sentence they heard, if the reading cut
     off holds one, and what they never heard, which is the rest of that reading, the turn's words the speaker was never
     handed, and the readbacks of its calls."""
@@ -1220,13 +1220,13 @@ def _spoken_over(cut: Bookmark, words: str, readbacks: Sequence[str]) -> str:
     # sentence of them it was handed is a piece of them, in order, so one still on its way to it is unheard with the rest.
     rest_of_reading: list[str] = []
     into = 0
-    for at, sentence in enumerate(cut.sentences):
+    for at, sentence in enumerate(bookmark.sentences):
         if (found := words.find(sentence.strip(), into)) >= 0:
             into = found + len(sentence.strip())
-        if at >= cut.at:
+        if at >= bookmark.at:
             rest_of_reading.append(sentence)
     unheard = " ".join(part for part in (*rest_of_reading, " ".join(words[into:].split()), *readbacks) if part)
-    last = f' They last heard "{cut.sentences[cut.at - 1]}".' if cut.at else ""
+    last = f' They last heard "{bookmark.sentences[bookmark.at - 1]}".' if bookmark.at else ""
     rest = f' They did not hear: "{unheard}".' if unheard else ""
     return f"[hands] The user spoke over you, and nothing more was said aloud.{last}{rest}"
 

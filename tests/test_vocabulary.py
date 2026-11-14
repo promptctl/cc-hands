@@ -172,7 +172,7 @@ async def test_a_git_still_running_when_the_budget_is_spent_primes_the_sessions_
     focus = session(repository)
 
     reading = asyncio.create_task(vocabulary(clock, [Listing(focus, None)], focus, {**os.environ, "PATH": str(stuck)}, clock.now()))
-    await clock.paused(READING, count=3)
+    await clock.sleeping(READING, count=3)
     clock.advance(READING)
     primed = await reading
 

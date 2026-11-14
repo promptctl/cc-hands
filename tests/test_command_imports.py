@@ -22,7 +22,7 @@ from hands.clock import SYSTEM, SystemClock
 from hands.daemon import cli
 
 class Interrupting(SystemClock):
-    def rest(self, seconds):
+    def sleep_blocking(self, seconds):
         raise KeyboardInterrupt
 
 async def untailed(_clock):

@@ -28,19 +28,19 @@ from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
-from hands.voice.mark import Mark
+from hands.voice.milestone import Milestone
 from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
-from hands.voice.transcript import Cut, Heard, Line, Saying, Spoken
+from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.core.brainwork import BrainWork, Idle, NotWorking, StopOutcome
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun
 from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
 from hands.voice.phonepage import phone_app
 from hands.voice.ptt import KeyedAudio, PushToTalk
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.wakeword import Pretrained
 from conftest import events
@@ -196,7 +196,7 @@ async def test_a_turn_holds_what_was_said_while_the_button_was_down_and_nothing_
 async def test_the_desk_cannot_end_a_turn_held_at_the_phone(call: Call) -> None:
     call.page.send("press")
     await call.until(lambda: call.key.gate.key == "down")
-    assert call.key.move("disarm", "held key") is None  # a Shift typed at the desk
+    assert call.key.move("disarm", "shortcut") is None  # a Shift typed at the desk
     assert (call.key.gate.key, call.key.gate.place) == ("down", "phone")
 
 
@@ -207,38 +207,38 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 
 
 # Every line of the transcript there is, as the page is told it.
-LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), Cut()]
+LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
 
 
-async def test_the_page_is_told_each_mark_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
-    for mark in get_args(Mark):
-        call.phone.tell(mark)
+async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
+    for milestone in get_args(Milestone):
+        call.phone.tell(milestone)
     for line in LINES:
         call.phone.tell(line)
-    await call.until(lambda: len(call.page.told) == len(get_args(Mark)) + len(LINES))
-    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "mark", "mark": mark} for mark in get_args(Mark)] + [
+    await call.until(lambda: len(call.page.told) == len(get_args(Milestone)) + len(LINES))
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)] + [
         {"kind": "heard", "text": "Is the parser fixed?"},
         {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
         {"kind": "spoken"},
         {"kind": "saying", "text": "Its tests pass.", "chars_per_sec": 12.5},
-        {"kind": "cut"},
+        {"kind": "bargein"},
     ]
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)
-    assert (left(event).told, left(event).lines) == (len(get_args(Mark)), len(LINES))
+    assert (left(event).told, left(event).lines) == (len(get_args(Milestone)), len(LINES))
 
 
-async def test_a_mark_with_no_call_up_is_told_to_nobody() -> None:
-    """A turn taken at the desk passes the same marks, and no page is waiting on it."""
+async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
+    """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
     phone.tell("released")
 
 
-def test_the_page_knows_every_mark_hands_tells_it() -> None:
-    """The page says what each mark means by name, and names one it does not know as an error on its face."""
+def test_the_page_knows_every_milestone_hands_tells_it() -> None:
+    """The page says what each milestone means by name, and names one it does not know as an error on its face."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
-    assert [mark for mark in get_args(Mark) if f'"{mark}": ' not in table] == []
+    assert [milestone for milestone in get_args(Milestone) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
@@ -253,7 +253,7 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     playing = call.phone.play(bytes(24000 * 2 * 60))  # a minute that will never be heard
     call.page.channel.close()
     await call.until(lambda: call.key.gate.place == "desk")
-    # The hold open at the phone is thrown away, not sent.
+    # The clip open at the phone is thrown away, not sent.
     assert (call.key.gate.key, call.key.gate.dropped) == ("up", 1)
     await asyncio.wait_for(playing, 1)
     [event] = calls(call.recorded)
@@ -476,7 +476,7 @@ async def test_an_offer_whose_body_cannot_be_read_is_one_failed_event_saying_wha
     assert unread.status == 500
     [event] = calls(recorded)
     assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "127.0.0.1"})
-    assert event.error is not None and event.error.startswith("UnicodeDecodeError") and event.trace
+    assert event.error is not None and event.error.startswith("UnicodeDecodeError") and event.stacktrace
 
 
 async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> None:
@@ -486,7 +486,7 @@ async def test_an_offer_hands_cannot_answer_is_one_failed_event_and_raises() -> 
         await phone.answer(Offer("not a session description", "offer", PAGE_RATE, FIRST), "192.168.7.23", begun(SYSTEM))
     [event] = calls(recorded)
     assert (event.outcome, dict(event.facts)) == ("failed", {"remote": "192.168.7.23", "asked": FIRST})
-    assert event.error is not None and event.error.startswith("ValueError") and event.trace
+    assert event.error is not None and event.error.startswith("ValueError") and event.stacktrace
 
 
 class Desk:
@@ -532,7 +532,7 @@ async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, D
 async def test_while_hands_is_at_the_phone_the_desk_is_neither_heard_nor_played_to(call: Call, a_transport: tuple[KeyedAudioTransport, Desk, list[bytes]]) -> None:
     transport, desk, pushed = a_transport
     echo = cast(Output, transport.output().opened).echo  # the canceller the desk streams were attached with
-    call.key.move("start", "held key")  # a turn opened at the desk takes hands there...
+    call.key.move("start", "shortcut")  # a turn opened at the desk takes hands there...
     assert call.key.gate.place == "desk"
     call.page.send("press")  # ...and one opened at the phone takes it back
     await call.until(lambda: call.key.gate.place == "phone")
@@ -579,7 +579,7 @@ async def _served(home: Home, net: Tailnet | Untailed, monkeypatch: pytest.Monke
     monkeypatch.setattr(phonepage, "tailnet", asked)
     recorded: list[Entry] = []
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=recorded.append)
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Sentences(home.sentences)), home, recorded.append, {}, unused_gallery()))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), nobody_types, SummaryStore(Summaries(home.summaries)), home, recorded.append, {}, unused_gallery()))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)
@@ -622,7 +622,7 @@ async def test_a_call_to_the_served_page_is_the_root_of_a_trace_of_its_own_and_t
     async def typing(text: str) -> None:
         typed.append(text)
 
-    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Sentences(tmp_path / "sentences.db")), Home(tmp_path), recorded.append, {}, unused_gallery()))
+    serving = asyncio.create_task(phonepage.serve_phone(SYSTEM, phone, IdleBrain(), typing, SummaryStore(Summaries(tmp_path / "summaries.db")), Home(tmp_path), recorded.append, {}, unused_gallery()))
     async with asyncio.timeout(5):
         while not recorded:
             await asyncio.sleep(0.01)

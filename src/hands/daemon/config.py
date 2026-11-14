@@ -104,7 +104,7 @@ async def edited(home: Home, record: Record, reachable: Callable[[Config], objec
     seen: bytes | _Unreadable | None = running.held
     weighed = seen
     while True:
-        await clock.pause(period)
+        await clock.sleep(period)
         if (now := _held(home)) != seen:
             seen = now
             continue

@@ -17,12 +17,12 @@ from hands.core.playback import (
     BOOKMARKS,
     Bookmark,
     LastOne,
-    NothingCut,
+    NothingBargedIn,
     NothingSaid,
     Playback,
     Played,
     Replay,
-    cut,
+    barge_in,
     finished,
     handed,
     queued,
@@ -30,7 +30,7 @@ from hands.core.playback import (
     resume,
     skip,
 )
-from hands.sessions.audit import CutOff, Entry
+from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
 from hands.voice.player import Player, said
 from hands.voice.tools import audited, playback_tools
@@ -48,7 +48,7 @@ def played(*happenings: Happening) -> Playback:
             case "done":
                 return finished(playback)
             case "cut":
-                return cut(playback)
+                return barge_in(playback)
             case sentence:
                 return handed(playback, sentence)
 
@@ -71,9 +71,9 @@ def played(*happenings: Happening) -> Playback:
         # The model said a word of its own before asking: what is said again is what the user cut in on, not that word.
         (("A.", "done", "cut", "Sure."), repeat, Replay(("A.",)), ()),
         # A reading played to its end was not cut off, whenever the user speaks next.
-        (("A.", "done", "cut"), resume, NothingCut(), ()),
-        ((), resume, NothingCut(), ()),
-        ((), skip, NothingCut(), ()),
+        (("A.", "done", "cut"), resume, NothingBargedIn(), ()),
+        ((), resume, NothingBargedIn(), ()),
+        ((), skip, NothingBargedIn(), ()),
         ((), repeat, NothingSaid(), ()),
         # Cut in on the answer to a side question to say "go back": it goes back past that answer, which is left, to
         # the reading cut off before it.
@@ -106,7 +106,7 @@ def test_a_sentence_handed_after_a_reading_ended_starts_a_new_one_and_one_handed
 def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to() -> None:
     playback, _ = resume(played("A.", "B.", "C.", "cut"))
     again = reduce(handed, ("A.", "B.", "C."), queued(playback, ("A.", "B.", "C.")))
-    after, said = resume(cut(finished(again)))
+    after, said = resume(barge_in(finished(again)))
     assert said == Replay(("B.", "C."))
     assert after.bookmarks == ()
 
@@ -116,12 +116,12 @@ def test_lines_said_again_while_a_reading_still_plays_go_on_from_it() -> None:
     # the words finishing count as the words, not as the first line.
     playback = finished(handed(queued(handed(Playback(), "Sure."), ("A.", "B.")), "A."))
     assert playback.reading == ("Sure.", "A.") and playback.played == 1
-    assert resume(cut(playback))[1] == Replay(("A.", "B."))
+    assert resume(barge_in(playback))[1] == Replay(("A.", "B."))
 
 
 def test_a_word_handed_before_the_lines_queued_takes_its_own_place_and_loses_none_of_them() -> None:
     # The lines were queued while the model's word was still on its way to the speaker.
-    playback = cut(handed(handed(queued(Playback(), ("A.", "B.", "C.")), "Sure."), "A."))
+    playback = barge_in(handed(handed(queued(Playback(), ("A.", "B.", "C.")), "Sure."), "A."))
     assert playback.stopped == Bookmark(("Sure.", "A.", "B.", "C."), 0)
 
 
@@ -129,12 +129,12 @@ def test_a_reading_said_again_and_cut_before_all_of_it_reached_the_speaker_is_go
     # The barge-in drops what had not yet reached the speaker; the reading knew it from the start, and keeps it.
     said_again = handed(queued(Playback(), ("A.", "B.", "C.")), "A.")
     assert said_again.reading == ("A.",)
-    assert resume(cut(said_again))[1] == Replay(("A.", "B.", "C."))
-    assert repeat(cut(said_again))[1] == Replay(("A.", "B.", "C."))
+    assert resume(barge_in(said_again))[1] == Replay(("A.", "B.", "C."))
+    assert repeat(barge_in(said_again))[1] == Replay(("A.", "B.", "C."))
 
 
 def test_the_stack_keeps_only_the_latest_readings_cut_off() -> None:
-    playback = reduce(lambda playback, n: cut(handed(playback, f"{n}.")), range(BOOKMARKS + 3), Playback())
+    playback = reduce(lambda playback, n: barge_in(handed(playback, f"{n}.")), range(BOOKMARKS + 3), Playback())
     assert len(playback.interrupted) == BOOKMARKS
     assert playback.interrupted[0] == Bookmark(("2.",), 0)
 
@@ -192,7 +192,7 @@ async def test_the_player_reads_the_speaker_off_the_pipeline_and_says_the_senten
         await heard.until(1, TTSTextFrame)
         await run.worker.queue_frame(InterruptionFrame())
         await heard.until(1, InterruptionFrame)
-        assert recorded == [CutOff("Its tests pass.", 1)]
+        assert recorded == [BargeIn("Its tests pass.", 1)]
 
         assert await player.act(resume) == ("Its tests pass.", "It pushed.")
         said = await heard.until(2, TTSSpeakFrame)
@@ -239,22 +239,22 @@ async def test_a_barge_in_on_a_quiet_speaker_is_a_line_that_cut_nothing_off() ->
     async with stood(Player(recorded.append)) as (run, heard):
         await run.worker.queue_frame(InterruptionFrame())
         await heard.until(1, InterruptionFrame)
-    assert recorded == [CutOff(None, 0)]
+    assert recorded == [BargeIn(None, 0)]
 
 
-async def test_a_cut_off_asked_for_ahead_of_a_barge_in_says_how_far_the_reading_played_when_it_reached_the_speaker() -> None:
+async def test_the_next_barge_in_asked_for_ahead_of_it_says_how_far_the_reading_played_when_it_reached_the_speaker() -> None:
     player = Player(lambda _: None)
     async with stood(player) as (run, heard):
         for frame in (spoken("The parser is fixed."), spoken("Its tests pass."), ended("The parser is fixed.")):
             await run.worker.queue_frame(frame)
         await heard.until(1, TTSTextFrame)
-        reading = player.cut_off()
+        reading = player.next_barge_in()
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(reading, 2.0) == Bookmark(("The parser is fixed.", "Its tests pass."), 1)
         # Each asked for is settled by the next barge-in alone: one played to its end cut nothing off.
         for frame in (spoken("Done."), ended("Done.")):
             await run.worker.queue_frame(frame)
         await heard.until(2, TTSTextFrame)
-        reading = player.cut_off()
+        reading = player.next_barge_in()
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(reading, 2.0) == Bookmark(("Done.",), 1)

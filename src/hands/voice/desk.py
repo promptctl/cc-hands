@@ -2,11 +2,11 @@
 
 The desk listens at one of three levels. Off, the start's, the microphone is closed between turns. Under the wake word,
 saying it opens a turn. Engaged, speech alone opens each turn. At every level Right Shift held alone opens a turn and its
-release sends it (`hands.voice.hold`). A triple tap of Right Command toggles the wake word, and one of Right Shift
+release sends it (`hands.voice.shortcut`). A triple tap of Right Command toggles the wake word, and one of Right Shift
 toggles engaged conversation (`hands.voice.taps`); either switches straight from the other, and the brain's tools choose
 a level as a tap does. A turn the voice opened is closed by end-of-turn detection (`hands.voice.engaged`).
 
-[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which edge has
+[LAW:types-are-the-program] the desk is one value whose variants carry the level, so whether it listens, which trigger has
 the turn, and whether the key is down are each said once: a key turn and a voice turn are never open together, and the
 level never says the desk is deaf while a variant says it listens.
 """
@@ -14,8 +14,8 @@ level never says the desk is deaf while a variant says it listens.
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from hands.voice.hold import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as hold_step
-from hands.voice.holds import Edge
+from hands.voice.clips import Trigger
+from hands.voice.shortcut import Arming as KeyArming, Idle, Instant, KeyEvent, Move, Talking as KeyTalking, TURN_LIMIT_SECONDS, Typing, step as shortcut_step
 from hands.voice.taps import TapKey, Taps, counted
 
 # The levels the desk listens at between turns; it is deaf under "off" alone.
@@ -132,7 +132,7 @@ class Keyed:
     """Right Shift is down, at `level`: arming, a turn of the key's open, or Shift typing."""
 
     level: Level
-    hold: KeyDown
+    shortcut: KeyDown
 
 
 Phase = Resting | Starting | Woke | Voiced | Keyed
@@ -162,10 +162,10 @@ def level_of(phase: Phase) -> Level:
 
 @dataclass(frozen=True)
 class Made:
-    """A move of the gate, and the edge that made it."""
+    """A move of the gate, and the trigger that made it."""
 
     move: Move
-    by: Edge
+    by: Trigger
 
 
 @dataclass(frozen=True)
@@ -194,8 +194,8 @@ def step(desk: Desk, event: Event) -> tuple[Desk, tuple[Act, ...]]:
         case _:
             taps, tapped = counted(desk.taps, event)
             phase, acts = _keyed(desk.phase, event)
-            # [LAW:one-source-of-truth] a press held to a turn is no tap: the hold that opened it is the one judge.
-            if any(act == Made("start", "held key") for act in acts):
+            # [LAW:one-source-of-truth] a press held to a turn is no tap: the shortcut that opened it is the one judge.
+            if any(act == Made("start", "shortcut") for act in acts):
                 taps = Taps()
             if tapped is not None:
                 phase, more = _leveled(phase, toggled(level_of(phase), tapped), "tap")
@@ -215,38 +215,38 @@ def _keyed(phase: Phase, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
         case Starting() | Woke() | Voiced():
             return _over_voice(phase, event)
         case Resting():
-            hold, moves = hold_step(Idle(), event)
-        case Keyed(hold=down):
-            hold, moves = hold_step(down, event)
-    made = tuple(Made(move, "held key") for move in moves)
-    match hold:
+            shortcut, moves = shortcut_step(Idle(), event)
+        case Keyed(shortcut=down):
+            shortcut, moves = shortcut_step(down, event)
+    made = tuple(Made(move, "shortcut") for move in moves)
+    match shortcut:
         case Idle():
             return Resting(level), made
         case KeyArming() | KeyTalking() | Typing():
-            return Keyed(level, hold), made
+            return Keyed(level, shortcut), made
 
 
 def _over_voice(phase: Starting | Woke | Voiced, event: KeyEvent) -> tuple[Phase, tuple[Act, ...]]:
     """Right Shift under what the voice has open: nothing until it is held long enough to mean talk, so Shift typing a
     capital leaves the voice's turn as it is; held so long, it takes the desk for the key, what the voice armed disarmed
     and a turn it opened sent."""
-    hold, _ = hold_step(phase.key, event)
-    match hold:
+    shortcut, _ = shortcut_step(phase.key, event)
+    match shortcut:
         case KeyTalking():
             left = Made("disarm", "engaged conversation") if isinstance(phase, Starting) else Made("stop", _voice(phase))
-            return Keyed(level_of(phase), hold), (left, Made("arm", "held key"), Made("start", "held key"))
+            return Keyed(level_of(phase), shortcut), (left, Made("arm", "shortcut"), Made("start", "shortcut"))
         case Idle() | KeyArming() | Typing():
-            return replace(phase, key=hold), ()
+            return replace(phase, key=shortcut), ()
 
 
 def _rest(level: Level, key: VoiceKey, left: Act) -> tuple[Resting | Keyed, tuple[Act, ...]]:
     """Where the desk is once what the voice had open is `left`: resting, or with Right Shift down, which a press still
-    arming arms for itself, so a hold to talk goes on to open its turn."""
+    arming arms for itself, so the shortcut goes on to open its turn."""
     match key:
         case Idle():
             return Resting(level), (left,)
         case KeyArming():
-            return Keyed(level, key), (left, Made("arm", "held key"))
+            return Keyed(level, key), (left, Made("arm", "shortcut"))
         case Typing():
             return Keyed(level, key), (left,)
 
@@ -274,8 +274,8 @@ def _leveled(phase: Phase, now: Level, by: Chooser) -> tuple[Phase, tuple[Act, .
             rest, left = _rest(now, key, Made("stop", _voice(phase)))
             return rest, (*left, *listening, Leveled(was, now, by))
         # A turn of the key's goes on as it is, at the new level.
-        case Keyed(hold=hold):
-            return Keyed(now, hold), (*listening, Leveled(was, now, by))
+        case Keyed(shortcut=shortcut):
+            return Keyed(now, shortcut), (*listening, Leveled(was, now, by))
 
 
 def _heard(phase: Phase, heard: Heard) -> tuple[Phase, tuple[Act, ...]]:
@@ -321,8 +321,8 @@ def _in_turn(turn: Woke | Voiced, heard: SpeechStopped | TurnEnded | TurnTooLong
             return turn, ()
 
 
-def _voice(turn: Woke | Voiced) -> Edge:
-    """The edge that opened a turn the voice has open."""
+def _voice(turn: Woke | Voiced) -> Trigger:
+    """The trigger that opened a turn the voice has open."""
     match turn:
         case Woke():
             return "wake word"
@@ -330,8 +330,8 @@ def _voice(turn: Woke | Voiced) -> Edge:
             return _voice_of(level)
 
 
-def _voice_of(level: Listens) -> Edge:
-    """The edge the desk's listening at `level` is: the wake word's or engaged conversation's."""
+def _voice_of(level: Listens) -> Trigger:
+    """The trigger the desk's listening at `level` is: the wake word's or engaged conversation's."""
     match level:
         case "wake word":
             return "wake word"
@@ -342,7 +342,7 @@ def _voice_of(level: Listens) -> Edge:
 def deadline(was: Phase, now: Phase) -> tuple[tuple[Instant, TurnTooLong | NothingAsked], ...]:
     """What the desk moving from `was` to `now` asks to be told later: a turn the voice just opened, once it has been
     open `TURN_LIMIT_SECONDS`, and one the wake word opened, once `ASK_SECONDS` have passed with nothing asked. A turn of
-    the key's has the hold's own limit."""
+    the key's has the shortcut's own limit."""
     match now, was:
         case Woke(since=since) | Voiced(since=since), Woke(since=opened) | Voiced(since=opened) if since == opened:
             return ()

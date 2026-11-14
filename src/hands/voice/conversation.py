@@ -30,7 +30,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from hands.sessions.audit import Record, Replied, Transcribed
-from hands.voice.turnstart import CutWritten
+from hands.voice.turnstart import BargeInWritten
 
 
 @dataclass
@@ -44,7 +44,7 @@ class UserWords(DataFrame, UninterruptibleFrame):
 
 
 class Unkept(LLMContext):
-    """A message list that keeps nothing written to it: what both aggregators write to, so nothing grows with the turns.
+    """A message list that keeps nothing written to it, a null object: what both aggregators write to, so nothing grows with the turns.
 
     [LAW:one-source-of-truth] the brain's transcript in Claude Code is the conversation; the audit log is hands' record of it.
     Every write Pipecat makes ends in one of these three (1.10.0): `transform_messages` sets, and the image and audio
@@ -122,7 +122,7 @@ class AssistantTurns(LLMAssistantAggregator):
         match frame:
             case InterruptionFrame():
                 # Written as cut off: the user's turn that made the cut is taken in behind it (`hands.voice.turnstart`).
-                await self.push_frame(CutWritten(), FrameDirection.UPSTREAM)
+                await self.push_frame(BargeInWritten(), FrameDirection.UPSTREAM)
             case _:
                 pass
         # Whatever the frame, so whichever one closes the brain's reply writes what was said inside it: a line itself,

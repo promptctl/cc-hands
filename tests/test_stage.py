@@ -34,7 +34,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import patiently, running, settled
-from hands.brain.process import BROKEN, NOBODY, SPOKEN_OVER, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
+from hands.brain.process import BARGED_IN, BROKEN, NOBODY, STOPPED, UNANSWERED, Asked, BrainAnswered, BrainEnded, BrainStopped, Untaken, model
 from hands.virtualclock import VirtualClock
 from hands.core.brainwork import AlreadyEnded, Idle, NotWorking, Running, Stopping, Working
 from hands.core.effects import Allow, Deny
@@ -61,7 +61,6 @@ from hands.core.wire import (
     Fork,
     Garbled,
     Heard,
-    Hold,
     JsonDelta,
     Kind,
     MainTurn,
@@ -70,6 +69,7 @@ from hands.core.wire import (
     Send,
     Sent,
     StreamError,
+    Synthesize,
     Tail,
     TextDelta,
     Unknown,
@@ -83,9 +83,9 @@ from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed,
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, root
 from hands.voice.conversation import UserWords
-from hands.voice.player import Mark
-from hands.voice.trigger import Edge
-from hands.voice.turnstop import HoldDiscarded
+from hands.voice.player import Marker
+from hands.voice.trigger import Trigger
+from hands.voice.turnstop import ClipDiscarded
 from hands.voice.speech import Aloud, Narrated
 from hands.voice.utterance import Uttered, Uttering
 
@@ -100,7 +100,7 @@ TAIL = "[hands] The Claude Code sessions running now: none of note."
 APART = Span("", "", None)
 UNREAD = FrontUnread("not read in this test")
 # A user's turn as the rig records it: the screen left unread, read in no time on the rig's clock.
-ASKED = UserAsked("screen", "held key", UNREAD, 0.0)
+ASKED = UserAsked("screen", "shortcut", UNREAD, 0.0)
 
 
 def heard(words: str) -> str:
@@ -223,16 +223,16 @@ class Received(DataFrame):
 
 
 class Spoken(FrameProcessor):
-    """What leaves the stage for TTS, played at once, as the speaker and the marks behind it would play it, unless held."""
+    """What leaves the stage for TTS, played at once, as the speaker and the markers behind it would play it, unless held."""
 
     def __init__(self) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
         # How many frames have reached it: what a test's wait sees move while the stage has work it is getting through.
         self.received = 0
         self.frames: list[Frame] = []
-        # Marks not yet played, while `holding`: what is ahead of them is still being said.
+        # Markers not yet played, while `holding`: what is ahead of them is still being said.
         self.holding = False
-        self.marks: list[Mark] = []
+        self.markers: list[Marker] = []
         # How many key releases have passed the stage, the ones it was told to throw away included.
         self.releases = 0
         # How many of the user's turns have stopped past the stage.
@@ -244,7 +244,7 @@ class Spoken(FrameProcessor):
         self.cutting: list[asyncio.Future[Bookmark]] = []
         self.playing: Bookmark | None = None
 
-    def cut_off(self) -> asyncio.Future[Bookmark]:
+    def next_barge_in(self) -> asyncio.Future[Bookmark]:
         cut = asyncio.get_running_loop().create_future()
         self.cutting.append(cut)
         return cut
@@ -255,10 +255,10 @@ class Spoken(FrameProcessor):
         match frame:
             case Received(reached=reached):
                 reached()
-            case Mark(played=played) if not self.holding:
+            case Marker(played=played) if not self.holding:
                 played()
-            case Mark():
-                self.marks.append(frame)
+            case Marker():
+                self.markers.append(frame)
             case VADUserStoppedSpeakingFrame():
                 self.releases += 1
                 await self.push_frame(frame, direction)
@@ -309,8 +309,8 @@ class Rig:
     asking: asyncio.Task[None]
     # Whether the user can see a screen as their turn is submitted: the last of these.
     modalities: list[Modality]
-    # The edge that opened the gate's last turn: the last of these.
-    edges: list[Edge]
+    # The trigger that opened the gate's last turn: the last of these.
+    triggers: list[Trigger]
     # Each running call's span, as hands' MCP server finds it.
     call_spans: CallSpans
     # What the user set hands to say unprompted, the last of these, read as each turn nobody waits on starts.
@@ -420,7 +420,7 @@ class Rig:
         await self.worker.queue_frame(UserStoppedSpeakingFrame())
         await self.until(lambda: self.out.stops > stops)
 
-    async def cut_in(self, words: str) -> None:
+    async def barge_in(self, words: str) -> None:
         """The user's words, behind the cut their turn opens with, as every turn that carries words is cut, and the turn's
         stop."""
         await self.interrupt()
@@ -434,7 +434,7 @@ class Rig:
     async def elapse(self) -> None:
         """The pause before an acknowledgement, begun now, runs its time once it is waited out, and what it woke has run."""
         wakes = self.clock.now() + ACKNOWLEDGE_SECONDS
-        await self.clock.paused(wakes)
+        await self.clock.sleeping(wakes)
         self.at(wakes)
         await self.heard_out()
 
@@ -457,17 +457,17 @@ async def rig() -> AsyncGenerator[Rig, None]:
         return fronts[-1]
 
     modalities: list[Modality] = ["screen"]
-    edges: list[Edge] = ["held key"]
+    triggers: list[Trigger] = ["shortcut"]
     call_spans = CallSpans()
 
     out = Spoken()
     settings = [Attention()]
-    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: edges[-1], recorded.append, call_spans, out.cut_off, lambda: settings[-1], clock)
+    stage = BrainStage(brain, TOOLS, lambda: standing[-1], refocus, front, lambda: modalities[-1], lambda: triggers[-1], recorded.append, call_spans, out.next_barge_in, lambda: settings[-1], clock)
     async with running([stage, out]) as run:
         # As the daemon runs it: a watch beside the pipeline.
         asking = asyncio.create_task(stage.ask_each())
         try:
-            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, clock, refocused, fronts, asking, modalities, edges, call_spans, settings)
+            yield Rig(run.worker, stage, brain, out, recorded, run.errors, standing, clock, refocused, fronts, asking, modalities, triggers, call_spans, settings)
         finally:
             asking.cancel()
 
@@ -509,7 +509,7 @@ async def test_a_finished_turn_hands_narrates_reaches_the_brain_as_a_typed_turn_
     assert ((exchange,), "api opened pull request 68.", (), False, HandsAsked(), 0.0, None) in spoke(rig.recorded)
 
 
-async def test_the_brain_s_turn_telling_a_finished_turn_is_part_of_its_utterance_and_sent_between_its_marks(rig: Rig) -> None:
+async def test_the_brain_s_turn_telling_a_finished_turn_is_part_of_its_utterance_and_sent_between_its_markers(rig: Rig) -> None:
     """The utterance is open from when hands heard the turn to when it was heard: the brain's turn telling it is a part
     of it, in its trace, and what it says is led and closed by the frames the output transport reads its fate off."""
     utterance = unasked()
@@ -560,7 +560,7 @@ async def test_a_telling_the_brain_fails_fails_its_utterance_with_why(rig: Rig) 
     assert turn.error is not None and utterance.failure == turn.error
 
 
-async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_marks(rig: Rig) -> None:
+async def test_a_line_said_as_written_in_hands_lane_is_sent_between_its_markers(rig: Rig) -> None:
     await rig.worker.queue_frame(Aloud(TTSSpeakFrame("The session api is gone."), (unasked(),)))
     await rig.until(lambda: rig.out.uttering[-1:] == ["Uttered"])
     assert rig.out.uttering == ["Uttering", "The session api is gone.", "Uttered"]
@@ -679,7 +679,7 @@ async def test_a_users_turn_carries_what_was_in_front_as_it_was_submitted_and_it
     rig.stream(exchange, "The docs session.")
     rig.brain.end()
     await rig.turned()
-    assert ((exchange,), "The docs session.", (), False, UserAsked("screen", "held key", front, 0.0), 0.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "The docs session.", (), False, UserAsked("screen", "shortcut", front, 0.0), 0.0, None) in spoke(rig.recorded)
     # Read again for the next turn, not kept: the screen has changed since.
     rig.fronts.append(NoSessionInFront("Safari"))
     await rig.say("and now?")
@@ -703,7 +703,7 @@ async def test_words_that_wait_behind_a_turn_carry_what_was_in_front_as_they_arr
     rig.stream(exchange, "Writing docs.")
     rig.brain.end()
     await rig.turned(2)
-    assert ((exchange,), "Writing docs.", (), False, UserAsked("screen", "held key", spoken_at, 0.0), 2500.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "Writing docs.", (), False, UserAsked("screen", "shortcut", spoken_at, 0.0), 2500.0, None) in spoke(rig.recorded)
 
 
 async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_words_arrived(rig: Rig) -> None:
@@ -723,19 +723,19 @@ async def test_a_users_turn_carries_whether_they_could_see_a_screen_as_their_wor
     rig.stream(exchange, "Nothing.")
     rig.brain.end()
     await rig.turned(3)
-    assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "held key", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
+    assert ((exchange,), "Nothing.", (), False, UserAsked("audio-only", "shortcut", UNREAD, 0.0), 0.0, None) in spoke(rig.recorded)
 
 
-async def test_a_users_turn_carries_the_edge_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
+async def test_a_users_turn_carries_the_trigger_that_opened_it_though_another_opens_before_its_words_arrive(rig: Rig) -> None:
     await rig.release()
     # The phone's button pressed while the desk's words are still transcribed.
-    rig.edges.append("phone button")
+    rig.triggers.append("phone button")
     await rig.say("what is running?")
     exchange, _ = rig.request()
     rig.stream(exchange, "Nothing.")
     rig.brain.end()
     await rig.turned()
-    assert spoke(rig.recorded)[0][4] == UserAsked("screen", "held key", UNREAD, 0.0)
+    assert spoke(rig.recorded)[0][4] == UserAsked("screen", "shortcut", UNREAD, 0.0)
 
 
 async def test_a_turn_hands_narrates_is_not_read_against_the_screen(rig: Rig) -> None:
@@ -772,12 +772,12 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     await rig.turned()
     [turn] = turns(rig.recorded)
     events = [entry for entry in rig.recorded if isinstance(entry, WideEvent)]
-    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1, "refused": 0, "cut_in": 0, "silence_refused": 0})
+    assert (turn.outcome, turn.counts) == ("ok", {"round_trips": 2, "tools": 1, "refused": 0, "barge_ins": 0, "silence_refused": 0})
     # Two seconds from letting go to the first word: 0.4 transcribing, none waiting behind another turn, and the rest
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
     # Not spoken over: nothing went unheard.
-    assert (turn.facts["interrupted"], turn.facts["spoken_over"]) == (False, "")
+    assert (turn.facts["interrupted"], turn.facts["barge_in_note"]) == (False, "")
     [call] = [event for event in events if event is not turn]
     assert (call.event, call.duration_ms, call.outcome, call.facts) == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
     # The call's run is the child of the very span the call is emitted as, and the turn's end forgets it.
@@ -816,14 +816,14 @@ async def test_a_turn_stopped_mid_way_still_says_what_it_did(rig: Rig) -> None:
     rig.asking.cancel()
     await rig.turned()
     [turn] = turns(rig.recorded)
-    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1, "refused": 0, "cut_in": 0, "silence_refused": 0}, (exchange,))
+    assert (turn.outcome, turn.counts, turn.facts["exchanges"]) == ("cancelled", {"round_trips": 1, "tools": 1, "refused": 0, "barge_ins": 0, "silence_refused": 0}, (exchange,))
     [call] = [entry for entry in rig.recorded if isinstance(entry, WideEvent) and entry.event == "tool.call"]
     assert (call.outcome, call.parent_id) == ("cancelled", turn.span_id)
 
 
 async def test_words_that_waited_behind_a_turn_together_are_timed_from_the_last_of_them(rig: Rig) -> None:
     await rig.say("what is api doing?")
-    # Two holds said while the brain answers, each let go of and transcribed in its turn.
+    # Two clips said while the brain answers, each let go of and transcribed in its turn.
     for released, arrived, words in ((1000.0, 1000.4, "and auth?"), (1002.0, 1002.4, "and web?")):
         rig.at(released)
         await rig.release()
@@ -846,11 +846,11 @@ async def test_words_that_waited_behind_a_turn_together_are_timed_from_the_last_
     assert timed == {"waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 600.0}
 
 
-async def test_a_hold_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) -> None:
+async def test_a_clip_thrown_away_is_no_release_to_time_a_wait_from(rig: Rig) -> None:
     rig.at(1000.0)
     await rig.release()
     rig.at(1003.0)
-    await rig.release(HoldDiscarded())
+    await rig.release(ClipDiscarded())
     rig.at(1003.5)
     await rig.say("hello")
     exchange, _ = rig.request()
@@ -869,7 +869,7 @@ async def test_a_turn_the_brain_failed_is_a_failed_event_saying_why(rig: Rig) ->
     [turn] = turns(rig.recorded)
     assert (turn.outcome, turn.error) == ("failed", "the brain's turn ended in error: server_error: API Error: 529 Overloaded")
     # Nothing was said, so there is no wait to a first word: absent, not zero.
-    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0, "refused": 0, "cut_in": 0, "silence_refused": 0})
+    assert (turn.facts["waited_ms"], turn.counts) == (None, {"round_trips": 0, "tools": 0, "refused": 0, "barge_ins": 0, "silence_refused": 0})
 
 
 async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leaves(rig: Rig) -> None:
@@ -920,7 +920,7 @@ async def test_each_turn_the_brain_is_asked_that_turn_s_words_and_nothing_said_b
 
 async def test_a_turn_is_written_only_once_the_one_before_it_has_ended(rig: Rig) -> None:
     await rig.say("first")
-    await rig.cut_in("second")
+    await rig.barge_in("second")
     # The stage has taken the second turn and is waiting on the first, which the brain has not ended.
     await rig.quiet()
     assert rig.brain.asked == [heard("first")]
@@ -934,7 +934,7 @@ async def test_stay_silent_holds_the_next_request_so_nothing_follows_it(rig: Rig
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     # Held, it is still the turn's round trip, in the turn's trace beside the one before it.
     sent, held = rig.spans
     assert (held.trace_id, held.parent_id) == (sent.trace_id, sent.parent_id) and held.span_id != sent.span_id
@@ -1009,7 +1009,7 @@ async def test_a_stay_silent_after_an_act_beside_a_readback_hands_says_is_held(r
     assert isinstance(route, Send)
     rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["Amended it."])
     await rig.turned()
@@ -1027,7 +1027,7 @@ async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_sa
     rig.calls(exchange, ("t3", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t3"))
     # Once refused is enough: the model's obedience is not what ends the turn.
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: len(rig.errors) == 1)
     assert isinstance(error := rig.errors[0].exception, ModelFault) and error.fact == ModelActedUntold()
@@ -1040,7 +1040,7 @@ async def test_a_second_stay_silent_after_the_refusal_is_held_and_the_turn_is_sa
 async def test_a_stay_silent_closing_a_turn_that_acted_is_held_where_something_is_heard_after_the_act(rig: Rig) -> None:
     """Words in the closing reply are heard after every act before it."""
     _, route = await acted_then_silent(rig, ("Bash", "filed"), "Filed it.")
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.turned()
     [turn] = turns(rig.recorded)
@@ -1055,7 +1055,7 @@ async def test_a_turn_that_acted_and_closes_on_a_reply_hands_says_is_held(rig: R
     exchange, _ = rig.request(answering("Bash", "parser.py"))
     rig.calls(exchange, ("t2", "mcp__hands__amend_draft"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: fix the parser"}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: "amended for api: fix the parser" in rig.out.said())
     [turn] = turns(rig.recorded)
@@ -1071,7 +1071,7 @@ async def test_a_turn_hands_asked_may_close_on_stay_silent_after_it_read(rig: Ri
     exchange, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
     rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.turned()
     await rig.quiet()
@@ -1092,7 +1092,7 @@ async def test_a_turn_the_user_spoke_over_may_close_on_stay_silent_after_it_acte
     exchange, _ = rig.request(answering("Bash", "filed"))
     rig.calls(exchange, ("t2", "mcp__hands__stay_silent"))
     _, route = rig.request(answering("mcp__hands__stay_silent", {"silent": True}, "t2"))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     [turn, *_] = turns(rig.recorded)
@@ -1123,7 +1123,7 @@ async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs
     # Nothing of the turn was said after the barge-in.
     assert rig.out.said() == ["First, it rained. Then it snowed. "]
     [turn] = turns(rig.recorded)
-    assert (turn.facts["exchanges"], turn.facts["interrupted"], turn.facts["spoken_over"]) == ((exchange, after), True, over)
+    assert (turn.facts["exchanges"], turn.facts["interrupted"], turn.facts["barge_in_note"]) == ((exchange, after), True, over)
     rig.brain.end()
 
 
@@ -1173,7 +1173,7 @@ async def test_a_reply_that_breaks_after_the_user_spoke_over_the_turn_is_told_th
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     assert turns(rig.recorded)[0].facts["broken"] == (Broken(retry, ""),)
-    # Only the spoken-over note: no account of the broken reply as heard, which nobody heard.
+    # Only the barge-in note: no account of the broken reply as heard, which nobody heard.
     [words, over] = rig.brain.asked[1].rsplit("\n\n", 1)
     assert words == heard("and the logs?") and over.startswith('[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.".')
     rig.brain.end()
@@ -1199,7 +1199,7 @@ async def test_a_readback_a_call_hands_hands_ends_the_turn_and_is_said_by_hands_
     exchange, _ = rig.request()
     rig.calls(exchange, ("t1", "mcp__hands__amend_draft"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     await rig.until(lambda: rig.out.said() == ["amended for api: add tests too"])
     # hands-readback-ddk: said after the turn's reply has ended, where it is a turn of its own, over once it is said.
@@ -1215,7 +1215,7 @@ async def test_a_readback_of_a_turn_the_user_spoke_over_is_told_the_brain_never_
     await rig.interrupt()
     await rig.worker.queue_frame(UserWords("wait, no"))
     _, route = rig.request(answering("mcp__hands__amend_draft", {"says": "amended for api: add tests too"}))
-    assert route == Hold(SILENT, APART)
+    assert route == Synthesize(SILENT, APART)
     rig.brain.end()
     # The draft changed, and the brain, told the user never heard how, judges whether to say it.
     await rig.until(lambda: len(rig.brain.asked) == 2)
@@ -1263,7 +1263,7 @@ async def test_frames_behind_a_turn_pass_while_the_brain_is_still_on_it(rig: Rig
 
 async def test_what_the_user_said_while_a_turn_ran_is_asked_once_it_ends_through_any_number_of_presses(rig: Rig) -> None:
     await rig.say("first")
-    await rig.cut_in("second")
+    await rig.barge_in("second")
     await rig.interrupt()
     await rig.stop()
     rig.brain.end()
@@ -1294,7 +1294,7 @@ async def test_a_users_turn_that_ends_with_no_request_of_its_own_is_said_to_fail
 async def test_a_users_turn_spoken_over_before_it_heard_anything_and_with_no_request_is_not_said_to_fail(rig: Rig) -> None:
     await rig.say("first")
     # The user spoke over the turn while it had nothing to say: their words are answered by the turn that follows it.
-    await rig.cut_in("second")
+    await rig.barge_in("second")
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
     assert rig.errors == []
@@ -1626,7 +1626,7 @@ async def test_a_permission_the_brain_holds_is_asked_after_its_words_and_the_use
     await rig.until(lambda: "May I use Write on notes.txt? Say yes to allow it." in rig.out.said())
     assert rig.out.said() == ["I'll write it.", "May I use Write on notes.txt? Say yes to allow it."]
     # The user starting to answer stops what is playing, and stops nothing of the turn: it waits on their answer.
-    await rig.cut_in("Yes, go ahead.")
+    await rig.barge_in("Yes, go ahead.")
     await rig.until(lambda: not asked.open)
     assert (await asked.decided()) == Allow()
     # The turn goes on, and what it says next is heard.
@@ -1647,7 +1647,7 @@ async def test_anything_but_a_plain_yes_refuses_the_permission_and_hands_the_bra
     rig.stream(exchange, "I'll write it.")
     asked = rig.brain.permit("Edit", {"file_path": "/Users/bmf/notes.txt"})
     await rig.until(lambda: "May I use Edit on notes.txt? Say yes to allow it." in rig.out.said())
-    await rig.cut_in("No, put it in the to-do list instead.")
+    await rig.barge_in("No, put it in the to-do list instead.")
     await rig.until(lambda: not asked.open)
     match (await asked.decided()):
         case Deny(message=message):
@@ -1666,7 +1666,7 @@ async def refuse(rig: Rig, tool: str, input: dict[str, object], question: str) -
     asked = rig.brain.permit(tool, input)
     before = rig.out.said().count(question)
     await rig.until(lambda: rig.out.said().count(question) > before)
-    await rig.cut_in("no")
+    await rig.barge_in("no")
     await rig.until(lambda: not asked.open)
     after, _ = rig.request()
     return after
@@ -1777,7 +1777,7 @@ async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_a
     await rig.until(lambda: "I'll write it." in rig.out.said())
     await rig.interrupt()
     asked = rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"})
-    assert (await asked.decided()) == Deny(SPOKEN_OVER)
+    assert (await asked.decided()) == Deny(BARGED_IN)
     assert rig.out.said() == ["I'll write it."]
     rig.brain.end()
 
@@ -1785,13 +1785,13 @@ async def test_a_permission_held_after_the_user_spoke_over_its_turn_is_refused_a
 async def test_words_said_before_a_permission_is_asked_are_a_turn_of_their_own_and_never_part_of_its_answer(rig: Rig) -> None:
     await rig.say("make the notes say hello")
     # Said before the turn's first request left: it waits as the next turn.
-    await rig.cut_in("also check the logs")
+    await rig.barge_in("also check the logs")
     await rig.quiet()
     exchange, _ = rig.request()
     rig.stream(exchange, "I'll write it.")
     asked = rig.brain.permit("Write", {"file_path": "/Users/bmf/notes.txt"})
     await rig.until(lambda: "May I use Write on notes.txt? Say yes to allow it." in rig.out.said())
-    await rig.cut_in("yes")
+    await rig.barge_in("yes")
     await rig.until(lambda: not asked.open)
     assert (await asked.decided()) == Allow()
     rig.brain.end()
@@ -1833,7 +1833,7 @@ async def test_a_yes_said_before_the_question_has_played_allows_nothing_and_the_
     # Said over what is still playing: the question was never heard to its end, so nothing waits on the user's words.
     rig.out.playing = Bookmark(("I'll clear out the build directory.", question), 0)
     await rig.interrupt()
-    assert (await asked.decided()) == Deny(SPOKEN_OVER)
+    assert (await asked.decided()) == Deny(BARGED_IN)
     await rig.worker.queue_frame(UserWords("yeah"))
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
@@ -1851,10 +1851,10 @@ async def test_permissions_held_at_once_are_asked_one_at_a_time_and_each_answer_
     await rig.until(lambda: "May I use Bash to run make a? Say yes to allow it." in rig.out.said())
     await rig.quiet()
     assert "May I use Bash to run make b? Say yes to allow it." not in rig.out.said()
-    await rig.cut_in("yes")
+    await rig.barge_in("yes")
     await rig.until(lambda: "May I use Bash to run make b? Say yes to allow it." in rig.out.said())
     assert (await first.decided()) == Allow() and second.open
-    await rig.cut_in("not that one")
+    await rig.barge_in("not that one")
     await rig.until(lambda: not second.open)
     assert isinstance((await second.decided()), Deny)
     rig.brain.end()
@@ -1978,7 +1978,7 @@ async def test_words_said_while_a_call_runs_with_nothing_to_hear_stop_nothing_an
     assert acknowledgements(rig) == ["Got it. I'll come to that when this is done."]
     [turn] = turns(rig.recorded)
     # Timed from the end of the words, the release, as the turn's own wait is.
-    assert (turn.facts["interrupted"], turn.counts["cut_in"], turn.facts["asides"], turn.facts["spoken_over"]) == (False, 1, (("Got it. I'll come to that when this is done.", 1000.0),), "")
+    assert (turn.facts["interrupted"], turn.counts["barge_ins"], turn.facts["asides"], turn.facts["barge_in_note"]) == (False, 1, (("Got it. I'll come to that when this is done.", 1000.0),), "")
     # The words are the next turn, with no note: nothing was spoken over.
     assert rig.brain.asked[1] == heard("and check the tests too")
     rig.brain.end()
@@ -1988,11 +1988,11 @@ async def test_each_utterance_waiting_behind_a_turn_is_answered_and_differently(
     await rig.say("find out why the build broke")
     first, _ = rig.request()
     rig.calls(first, ("t1", "Bash"))
-    await rig.cut_in("and the tests")
+    await rig.barge_in("and the tests")
     await rig.until(lambda: len(acknowledgements(rig)) == 1)
     # Said over hands' own answer, which is no word of the brain's: no barge-in, and answered again.
     rig.out.holding = True
-    await rig.cut_in("and the lint")
+    await rig.barge_in("and the lint")
     await rig.until(lambda: len(acknowledgements(rig)) == 2)
     assert acknowledgements(rig) == ["Got it. I'll come to that when this is done.", "Heard you. That's next, once this finishes."]
     rig.brain.end()
@@ -2010,7 +2010,7 @@ async def test_words_said_while_the_brains_words_still_play_are_a_barge_in_and_u
     first, _ = rig.request()
     rig.stream(first, "Let me look at the build log.")
     rig.calls(first, ("t1", "Bash"))
-    await rig.cut_in("and the tests")
+    await rig.barge_in("and the tests")
     await rig.quiet()
     rig.brain.end()
     await rig.until(lambda: len(rig.brain.asked) == 2)
@@ -2045,7 +2045,7 @@ async def test_a_text_blocks_last_sentence_is_said_as_it_closes_and_a_cut_after_
     rig.brain.end()
     await rig.turned()
     [turn] = turns(rig.recorded)
-    assert (turn.facts["interrupted"], turn.counts["cut_in"], turn.facts["text"]) == (False, 1, "Let me look.")
+    assert (turn.facts["interrupted"], turn.counts["barge_ins"], turn.facts["text"]) == (False, 1, "Let me look.")
 
 
 async def test_words_that_arrive_while_a_text_block_streams_are_answered_after_it(rig: Rig) -> None:
@@ -2091,7 +2091,7 @@ async def test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for
     # A turn the user spoke in is answered, never acknowledged: they said nothing here, so nothing of hands' own is said.
     assert acknowledgements(rig) == []
     [turn] = turns(rig.recorded)
-    assert (turn.facts["interrupted"], turn.counts["cut_in"], turn.facts["asides"]) == (False, 1, ())
+    assert (turn.facts["interrupted"], turn.counts["barge_ins"], turn.facts["asides"]) == (False, 1, ())
     # The user waited until the first word reached hands: the time they spent speaking after it is their own.
     assert turn.facts["waited_ms"] == 3000.0
 
@@ -2101,7 +2101,7 @@ async def test_words_said_over_a_tellings_silence_are_the_next_turn_and_not_answ
     await rig.until(lambda: rig.brain.asked == ["[hands] api finished a turn."])
     first, _ = rig.request()
     rig.calls(first, ("t1", "mcp__hands__read_session"))
-    await rig.cut_in("what about web?")
+    await rig.barge_in("what about web?")
     await rig.quiet()
     second, _ = rig.request(answering("mcp__hands__read_session", {"steps": []}))
     rig.stream(second, "api opened pull request 68.")
@@ -2153,7 +2153,7 @@ async def test_a_question_asked_after_the_cut_is_not_answered_by_its_words(rig: 
     # the user heard last (docs/barge-in.md, the accepted windows).
     assert asked.open
     assert "Got it. I'll come to that when this is done." not in rig.out.said()
-    await rig.cut_in("yes")
+    await rig.barge_in("yes")
     await rig.until(lambda: not asked.open)
     assert (await asked.decided()) == Allow()
     await rig.until(lambda: "Got it. I'll come to that when this is done." in rig.out.said())
@@ -2170,7 +2170,7 @@ async def test_a_question_queued_behind_one_heard_does_not_make_its_answer_a_bar
     first = rig.brain.permit("Bash", {"command": "make a"})
     second = rig.brain.permit("Bash", {"command": "make b"})
     await rig.until(lambda: "May I use Bash to run make a? Say yes to allow it." in rig.out.said())
-    await rig.cut_in("yes")
+    await rig.barge_in("yes")
     await rig.until(lambda: not first.open)
     assert (await first.decided()) == Allow() and second.open
     rig.brain.end()

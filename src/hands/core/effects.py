@@ -102,7 +102,7 @@ class Resumed:
 @dataclass(frozen=True)
 class QueuedBehind:
     """A Stop ended its turn with words still waiting in Claude Code's queue, which it runs next with no prompt hook: the
-    turn they run as is marked while the Stop's hook holds Claude Code."""
+    turn they run as is baselined while the Stop's hook holds Claude Code."""
 
     session: SessionId
     prompt: PromptId
@@ -111,7 +111,7 @@ class QueuedBehind:
 
 @dataclass(frozen=True)
 class NoneBehind:
-    """A Stop held for the words waiting behind its turn is let go unmarked: queue records Claude Code wrote before it fired
+    """A Stop held for the words waiting behind its turn is let go unbaselined: queue records Claude Code wrote before it fired
     took them all out of its queue, into the turn or back into the input."""
 
     session: SessionId
@@ -119,15 +119,15 @@ class NoneBehind:
 
 
 @dataclass(frozen=True)
-class Unmarked:
-    """Words waited behind the last turn and no mark is taken for them: a prompt of its own opened a turn first, as a
+class Unbaselined:
+    """Words waited behind the last turn and no baseline is taken for them: a prompt of its own opened a turn first, as a
     notification left queued past a Stop does, or the session ended or started again before its Stop was decided."""
 
     session: SessionId
     waiting: int
 
 
-AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | HoldingBehind | Unsettled | Overtaken | Unfiled | Resumed | QueuedBehind | NoneBehind | Unmarked
+AuditRecord = Unregistered | AfterEnd | Unmatched | Unclosed | Holding | HoldingBehind | Unsettled | Overtaken | Unfiled | Resumed | QueuedBehind | NoneBehind | Unbaselined
 
 
 @dataclass(frozen=True)
@@ -301,7 +301,7 @@ class Compare:
 
     session: SessionId
     # Whether this is a turn hands told before, going on after another Stop hook blocked its Stop: read against where
-    # the reading of its last Stop found the repository, since no prompt marked where the part going on began.
+    # the reading of its last Stop found the repository, since no prompt baselined where the part going on began.
     again: bool
 
 

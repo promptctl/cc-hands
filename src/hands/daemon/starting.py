@@ -230,7 +230,7 @@ def invocation(home: Home, *arguments: str) -> list[str]:
     return [sys.executable, "-P", "-m", "hands.daemon", "--home", str(home.root), *arguments]
 
 
-def again(argv: list[str]) -> NoReturn:
+def execv(argv: list[str]) -> NoReturn:
     """Start the run again as `argv`, in this process: the same pid, terminal, and children, with the code on disk now.
     The start after it says it was restarted.
 
@@ -272,4 +272,4 @@ async def keep_beating(beat: Callable[[], None], period: float, clock: Clock) ->
     """Write the heartbeat now and once a period after, until cancelled."""
     while True:
         beat()
-        await clock.pause(period)
+        await clock.sleep(period)

@@ -18,7 +18,6 @@ from hands.core.spoken import counted, spoken, spoken_ref
 from hands.core.subagents import Subagent
 from hands.core.turn import (
     Budget,
-    Delegated,
     Edited,
     Happening,
     Interruption,
@@ -32,6 +31,7 @@ from hands.core.turn import (
     Reported,
     Said,
     Step,
+    SubagentDispatched,
     Tested,
     Turn,
     body,
@@ -69,7 +69,7 @@ THE_INTERRUPTION = Topic("the interruption", "interruption")
 # at the top level, and an open question and an interruption play at every length, so the type that says which steps
 # fall into sections is also the type that says they never do [LAW:types-are-the-program]. Without it, `topic_of`
 # would need an arm for a step it can never be handed.
-Sectioned = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Reported | Other
+Sectioned = Said | Edited | Ran | Tested | Looked | Planned | SubagentDispatched | Reported | Other
 
 
 def topic_of(step: Sectioned) -> Topic:
@@ -88,7 +88,7 @@ def topic_of(step: Sectioned) -> Topic:
             return WHAT_IT_READ
         case Planned():
             return THE_PLAN
-        case Delegated():
+        case SubagentDispatched():
             return THE_SUBAGENTS
         case Reported():
             # Something that arrived, not something Claude did: counted with the subagents, a report would count the

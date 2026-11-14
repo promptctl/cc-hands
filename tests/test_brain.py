@@ -49,13 +49,13 @@ from hands.daemon import run
 from hands.daemon.run import mind
 from hands.daemon.starting import CannotStart
 from hands.sessions.proxy import Wire
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.typing import Typist
 from hands.sessions import wrapper
 from hands.sessions.wrapper import MARK
 from hands.sessions.home import Home
 from hands.voice.refocus import Refocus
-from hands.voice.sentences import SummaryStore
+from hands.voice.summaries import SummaryStore
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.voice.pipeline import VoiceConfig
 from hands.voice.summary import SummaryFailed, aside
@@ -65,7 +65,7 @@ from hands.voice.tools import Called, audited
 from hands.voice import voices
 
 
-def never_cut() -> asyncio.Future[Bookmark]:
+def never_barged_in() -> asyncio.Future[Bookmark]:
     """The speaker's reading at a barge-in, which a test with no speaker never has."""
     return asyncio.get_running_loop().create_future()
 
@@ -220,7 +220,7 @@ def typings_answered(tmp: Path) -> Callable[[float], Awaitable[None]]:
     that takes and never on a clock, so a turn not taken is one it did not take. pytest's timeout keeps it from hanging."""
     begun = 0
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         nonlocal begun
         if seconds != TAKE_SECONDS:
             # A stop's wait for Claude Code to hold nothing of what it stopped, on its own bound: no typing's.
@@ -231,7 +231,7 @@ def typings_answered(tmp: Path) -> Callable[[float], Awaitable[None]]:
         while (len(path.read_text()) if path.exists() else 0) < waited:
             await asyncio.sleep(0.01)
 
-    return pause
+    return sleep
 
 
 async def until(check: Callable[[], bool]) -> None:
@@ -469,14 +469,14 @@ async def test_a_permission_the_brains_setup_asks_about_holds_its_turn_until_ans
 def _chord_read(tmp: Path) -> Callable[[float], Awaitable[None]]:
     """A take's time that is up once the stand-in has read the submit chord and done nothing with it: never on a clock."""
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         if seconds != TAKE_SECONDS:
             await asyncio.sleep(seconds)
             return
         while ["unbound"] not in typed(tmp):
             await asyncio.sleep(0.01)
 
-    return pause
+    return sleep
 
 
 async def test_a_dialog_still_drawn_after_it_was_answered_no_takes_no_key_and_the_next_turn_is_typed_once_the_prompt_shows(
@@ -525,7 +525,7 @@ async def test_a_dialog_that_takes_the_paste_answers_nothing_and_the_turn_is_unt
 ) -> None:
     # A dialog committed between hands' look at the screen and Claude Code's read of the paste.
     monkeypatch.setenv("AMBUSH", "1")
-    brain = await start(Pausing(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken, match="Do you want to create ambush.txt"):
             await asyncio.wait_for(brain.ask("hello", unasked), 10)
@@ -547,7 +547,7 @@ async def test_the_brains_keybindings_are_hands_own_written_whole_at_every_start
 
 
 async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chord_is_untaken_showing_its_words_at_the_prompt(tmp_path: Path, fake_claude: Path) -> None:
-    brain = await start(Pausing(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(_chord_read(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         # As a person's edit while the brain runs, which Claude Code reloads at once.
         (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
@@ -561,13 +561,13 @@ async def test_a_turn_typed_after_its_keybindings_were_edited_to_unbind_the_chor
 async def test_a_turn_typed_after_an_untaken_one_is_submitted_as_its_own_words_alone(tmp_path: Path, fake_claude: Path) -> None:
     read, takes = _chord_read(tmp_path), 0
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         # The first take is up once the unbound chord is read; the second, once taken, is never up.
         nonlocal takes
         takes += seconds == TAKE_SECONDS
         await (read(seconds) if takes <= 1 else asyncio.sleep(seconds))
 
-    brain = await start(Pausing(pause), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         (tmp_path / "brain" / "keybindings.json").write_text(json.dumps({"bindings": []}))
         with pytest.raises(Untaken):
@@ -743,11 +743,11 @@ async def test_a_stop_claude_code_does_not_carry_out_fails_its_turn_saying_what_
     recorded: list[Entry] = []
     stopping = asyncio.Event()
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         # A take waits as long as one does; the stop's time passes once the stand-in has read its keys.
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Pausing(pause), launch(tmp_path), recorded.append)
+    brain = await start(Sleeping(sleep), launch(tmp_path), recorded.append)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -777,10 +777,10 @@ async def test_a_stop_told_past_its_bound_still_empties_the_input_so_the_next_tu
     # turn is not typed onto the prompt the Escape put back.
     stopping, performing = asyncio.Event(), asyncio.Event()
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Pausing(pause), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("wait", unasked))
         await until(lambda: brain._turn is not None and brain._turn.taken.done())  # pyright: ignore[reportPrivateUsage]
@@ -825,7 +825,7 @@ async def test_no_stop_presses_ctrl_c_within_claude_codes_exit_window_of_the_las
     # A Ctrl-C that finds the input empty arms Claude Code's exit, which a second within 800ms takes. Each turn taken as
     # other words runs on, and the turn after it stops it before it is typed: two stops a take's wait apart, which the
     # stand-in ends as soon as it is done with each typing.
-    brain = await start(Pausing(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     timed = brain._typist = _Timed(brain._typist)  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     try:
         for _ in range(2):
@@ -884,7 +884,7 @@ async def test_a_brain_slow_to_read_its_terminal_is_typed_into_once_its_input_is
 async def test_a_turn_never_taken_fails_showing_the_screen_and_the_next_turn_is_its_own(
     tmp_path: Path, fake_claude: Path
 ) -> None:
-    brain = await start(Pausing(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken, match="did not take the turn typed into it"):
             await brain.ask("deaf", unasked)
@@ -897,7 +897,7 @@ async def test_a_turn_taken_as_other_words_is_typed_once_and_what_it_left_runnin
     tmp_path: Path, fake_claude: Path
 ) -> None:
     recorded: list[Entry] = []
-    brain = await start(Pausing(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
+    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
     try:
         # What Claude Code took is not what was typed, so the turn is never taken; typed once, as the same words would be
         # taken the same way again.
@@ -923,7 +923,7 @@ async def test_a_turn_typed_as_the_last_ones_stop_hooks_end_is_taken_once_by_the
     warned: list[str] = []
     sink = logger.add(lambda message: warned.append(message.record["message"]), level="WARNING")
     recorded: list[Entry] = []
-    brain = await start(Pausing(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
+    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), recorded.append)
     try:
         assert await asyncio.wait_for(brain.ask("first", unasked), 10) == BrainAnswered("p1", None)
         answered = await asyncio.wait_for(brain.ask("second", unasked), 10)
@@ -1041,13 +1041,13 @@ async def _fails_as_it_is_ended(_take: float) -> None:
         raise RuntimeError("no clock") from None
 
 
-@pytest.mark.parametrize(("pause", "typed"), [(_fails_at_once, "deaf"), (_fails_as_it_is_ended, "wait")])
+@pytest.mark.parametrize(("sleep", "typed"), [(_fails_at_once, "deaf"), (_fails_as_it_is_ended, "wait")])
 async def test_a_take_whose_time_fails_to_pass_fails_its_asker_says_so_once_and_is_never_called_untaken(
-    tmp_path: Path, fake_claude: Path, pause: Callable[[float], Awaitable[None]], typed: str
+    tmp_path: Path, fake_claude: Path, sleep: Callable[[float], Awaitable[None]], typed: str
 ) -> None:
-    # A pause that fails as the turn's taking ends it fails as surely as one that fails while it runs.
+    # A sleep that fails as the turn's taking ends it fails as surely as one that fails while it runs.
     recorded: list[Entry] = []
-    brain = await start(taking(pause), launch(tmp_path), recorded.append)
+    brain = await start(taking(sleep), launch(tmp_path), recorded.append)
     said, sink = failures()
     try:
         with pytest.raises(RuntimeError, match="no clock"):
@@ -1588,11 +1588,11 @@ async def test_the_summariser_under_the_brain_asks_the_turn_as_a_side_question_w
 async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, fake_claude: Path) -> None:
     recorded: list[Entry] = []
     wire = Wire(SYSTEM, lambda _observed: None)
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
-    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         assert isinstance(minded.llm, BrainStage)
         assert [watch.name for watch in minded.watches] == ["the brain", "the brain's turns", "the brain's context"]
         # The brain is behind the proxy, so it is given its usage read off the wire.
@@ -1608,7 +1608,7 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
     transcript(tmp_path / "brain", str(launched.facts["session"]))
-    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention) as minded:
+    async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
         # Its usage is heard under the session it resumed, not one begun for it.
         wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
@@ -1621,11 +1621,11 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
 
 async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     def minding(llm: ClaudeCodeBackend):
-        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_cut, Attention)
+        return mind(SYSTEM, VoiceConfig(llm=llm, voice=voices.DEFAULT, personality="Dry and wry."), [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention)
 
     launched: list[Launch] = []
 
@@ -1643,12 +1643,12 @@ async def test_the_brain_is_told_the_personality_the_run_was_configured_with(tmp
 
 async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Path) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
 
     claude = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=tmp_path / "brain", account=Account("claude.ai", "brain@example.com")), voice=voices.DEFAULT)
     with pytest.raises(CannotStart, match=f"^Claude Code {pinned.VERSION}, the brain's, is not installed at {tmp_path / 'brain'}/"):
-        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_cut, Attention):
+        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, {"PATH": str(tmp_path)}, never_barged_in, Attention):
             pass
     # The launch that failed is one event, saying why; no brain ran, so there is no run.
     [launched] = events(recorded, "brain.launch")
@@ -1659,7 +1659,7 @@ async def test_a_brain_that_cannot_start_refuses_the_run_saying_why(tmp_path: Pa
 
 async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebuild(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
-    store = SummaryStore(Sentences(tmp_path / "sentences.db"))
+    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path), recorded.append)
     missing = tmp_path / "package" / "bin" / "fritter"
     monkeypatch.setattr(wrapper, "PACKAGED", missing)
@@ -1668,7 +1668,7 @@ async def test_a_hands_built_without_its_fritter_refuses_the_run_naming_the_rebu
     # The words `hands install-fritter` refuses the same hands with.
     refused = f"hands' package carries no fritter at {missing}: install hands again, or in a checkout, `uv sync --reinstall-package hands`"
     with pytest.raises(CannotStart, match=f"^{re.escape(refused)}$"):
-        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "held key", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_cut, Attention):
+        async with mind(SYSTEM, claude, [], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", Wire(SYSTEM, lambda _observed: None), store, tmp_path / "audit", "hands", recorded.append, dict(os.environ), never_barged_in, Attention):
             pass
     [launched] = events(recorded, "brain.launch")
     assert launched.outcome == "failed" and launched.error == f"Unstartable: {refused}"
@@ -1714,7 +1714,7 @@ async def test_the_turn_typed_after_a_clear_of_what_was_left_running_is_asked_it
         held.append(asked)
         asked.settle(Allow())
 
-    brain = await start(Pausing(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(typings_answered(tmp_path)), launch(tmp_path), lambda _entry: None)
     try:
         with pytest.raises(Untaken):
             await brain.ask("garbled", unasked)
@@ -1728,10 +1728,10 @@ async def test_the_turn_typed_after_a_clear_of_what_was_left_running_is_asked_it
 async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_stop_is_never_typed_into_it(tmp_path: Path, fake_claude: Path) -> None:
     stopping = asyncio.Event()
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         await (stopping.wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Pausing(pause), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -1753,11 +1753,11 @@ async def test_a_turn_asked_while_claude_code_still_runs_what_a_stop_did_not_sto
 
 
 async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unrecorded_after_the_bound(tmp_path: Path, fake_claude: Path) -> None:
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         # The stop's bound never passes: only the brain's exit ends its wait.
         await (asyncio.Event().wait() if seconds == INTERRUPT_SECONDS else asyncio.sleep(seconds))
 
-    brain = await start(Pausing(pause), launch(tmp_path), lambda _entry: None)
+    brain = await start(Sleeping(sleep), launch(tmp_path), lambda _entry: None)
     try:
         asking = asyncio.ensure_future(brain.ask("stuck", unasked))
         await until(lambda: [line[0] for line in typed(tmp_path)] == ["prompt"])
@@ -1770,23 +1770,23 @@ async def test_a_brain_that_exits_while_a_stop_waits_ends_the_turn_gone_not_unre
         await brain.stop()
 
 
-class Pausing(SystemClock):
-    """The machine's clock, but its pauses pass as `pause` says: a test holds a bound open until what it waits on is
-    done, and lets every other pause run its real time."""
+class Sleeping(SystemClock):
+    """The machine's clock, but its sleeps pass as `sleep` says: a test holds a bound open until what it waits on is
+    done, and lets every other sleep run its real time."""
 
-    def __init__(self, pause: Callable[[float], Awaitable[None]]) -> None:
-        self._pausing = pause
+    def __init__(self, sleep: Callable[[float], Awaitable[None]]) -> None:
+        self._sleeping = sleep
 
-    def pause(self, seconds: float) -> asyncio.Future[None]:
-        return asyncio.ensure_future(self._pausing(seconds))
+    def sleep(self, seconds: float) -> asyncio.Future[None]:
+        return asyncio.ensure_future(self._sleeping(seconds))
 
 
-def taking(take: Callable[[float], Awaitable[None]]) -> Pausing:
+def taking(take: Callable[[float], Awaitable[None]]) -> Sleeping:
     """The machine's clock, but the brain's bounds, a typing's take and a stop's end, pass as `take` says: every other
-    pause, a look's or a spacing's, runs its real time."""
+    sleep, a look's or a spacing's, runs its real time."""
 
-    async def pause(seconds: float) -> None:
+    async def sleep(seconds: float) -> None:
         await (take(seconds) if seconds in (TAKE_SECONDS, INTERRUPT_SECONDS) else asyncio.sleep(seconds))
 
-    return Pausing(pause)
+    return Sleeping(sleep)
 

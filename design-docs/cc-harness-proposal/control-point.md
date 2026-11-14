@@ -328,7 +328,7 @@ investigate mid-build.
    sentence per item, layered so a parent's key is the hash of its own text and its
    children's summaries. `read_backlog`, `read_ticket`, and `read_session` tools serve summaries
    first and raw content on request. Summarisation runs off the voice path. Purpose:
-   a sentence for any content-addressed thing, kept until the thing changes. Second
+   a summary for any content-addressed thing, kept until the thing changes. Second
    consumer: narration's per-turn summaries, and lit itself if the summaries are
    written back. Numbers that size it: 132 open tickets, 145K tokens via `lit show`.
 8. **Question: can a fork be driven headless.** `/btw` runs a forked agent

@@ -6,7 +6,7 @@ Code stamps its statuses and records with, the calls scheduled on that time, and
 interface on a time a test moves. A budget's deadline and the wait that enforces it are one clock's: read off one and
 enforced on another, a test that stops time still loses to a loaded machine's real seconds.
 
-asyncio, secrets, and uuid are imported where a pause, a call, a wait, or an id needs them, never with the module: the hook
+asyncio, secrets, and uuid are imported where a sleep, a call, a wait, or an id needs them, never with the module: the hook
 shim reads only the wall clock, and it runs in Claude Code's critical path, where their imports are milliseconds every hook
 pays.
 """
@@ -45,14 +45,14 @@ class Timeout(AbstractAsyncContextManager["Timeout"], Protocol):
 
 class Clock(Protocol):
     def now(self) -> float:
-        """Monotonic seconds, on the timeline `pause` and `call_at` count."""
+        """Monotonic seconds, on the timeline `sleep` and `call_at` count."""
         ...
 
     def wall(self) -> datetime:
         """The wall clock, in UTC."""
         ...
 
-    def pause(self, seconds: float) -> Awaitable[None]:
+    def sleep(self, seconds: float) -> Awaitable[None]:
         """Ends once `seconds` have passed since it was asked for."""
         ...
 
@@ -72,7 +72,7 @@ class Clock(Protocol):
         """A fresh id, as 32 hex digits."""
         ...
 
-    def rest(self, seconds: float) -> None:
+    def sleep_blocking(self, seconds: float) -> None:
         """Blocks the calling thread until `seconds` have passed: the wait of code that runs off any event loop."""
         ...
 
@@ -95,7 +95,7 @@ def dashed(clock: Clock) -> str:
 
 
 class SystemClock:
-    """The machine's clocks, a pause on the loop's timer, and the operating system's randomness."""
+    """The machine's clocks, a sleep on the loop's timer, and the operating system's randomness."""
 
     def now(self) -> float:
         return time.monotonic()
@@ -103,7 +103,7 @@ class SystemClock:
     def wall(self) -> datetime:
         return datetime.now(UTC)
 
-    def pause(self, seconds: float) -> asyncio.Future[None]:
+    def sleep(self, seconds: float) -> asyncio.Future[None]:
         import asyncio
 
         # Armed as it is asked for, as `asyncio.wait(timeout=)` arms its own: an `asyncio.sleep` is armed only at its first
@@ -135,7 +135,7 @@ class SystemClock:
 
         return uuid.uuid4().hex
 
-    def rest(self, seconds: float) -> None:
+    def sleep_blocking(self, seconds: float) -> None:
         time.sleep(seconds)
 
     def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
@@ -151,7 +151,7 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
     import asyncio
 
     every = asyncio.ensure_future(asyncio.wait(futures))
-    timer = asyncio.ensure_future(clock.pause(timeout))
+    timer = asyncio.ensure_future(clock.sleep(timeout))
     try:
         await asyncio.wait((every, timer), return_when=asyncio.FIRST_COMPLETED)
     finally:
@@ -159,7 +159,7 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
         timer.cancel()
         # Both over before this returns, so nothing of the wait outlives it.
         await asyncio.wait((every, timer))
-    # [LAW:no-silent-failure] a pause that raised is its clock failing, never the time running out, and a wait that raised
+    # [LAW:no-silent-failure] a sleep that raised is its clock failing, never the time running out, and a wait that raised
     # (on no futures at all, as `asyncio.wait` does) is never everything done.
     for side in (every, timer):
         if not side.cancelled():
@@ -167,6 +167,6 @@ async def wait[T](clock: Clock, futures: Collection[asyncio.Future[T]], timeout:
 
 
 def _wake(woken: asyncio.Future[None]) -> None:
-    # A pause cancelled in the step its timer fires in is over already; its timer is not cancelled until the next.
+    # A sleep cancelled in the step its timer fires in is over already; its timer is not cancelled until the next.
     if not woken.cancelled():
         woken.set_result(None)

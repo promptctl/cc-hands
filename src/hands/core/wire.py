@@ -871,7 +871,7 @@ class Send:
 
 
 @dataclass(frozen=True)
-class Hold:
+class Synthesize:
     """The request is answered by hands and never reaches the API, with `said` as the model's whole reply.
 
     Kept in the client's history as the model's own words and never spoken. Not empty: to an empty reply Claude Code
@@ -880,11 +880,11 @@ class Hold:
     """
 
     said: str
-    # The exchange's span, as Send's is: a request hands holds is still the part of the unit it was made for.
+    # The exchange's span, as Send's is: a request hands answers itself is still the part of the unit it was made for.
     span: Span
 
 
-Route = Send | Hold
+Route = Send | Synthesize
 
 
 def edited(body: object, changes: Sequence[Change]) -> Mapping[str, object]:
@@ -1037,7 +1037,7 @@ class Unreached:
 
 
 @dataclass(frozen=True)
-class Held:
+class Synthetic:
     """hands answered the request itself and the API never saw it: the model was not asked, and is recorded as saying `said`."""
 
     said: str
@@ -1065,7 +1065,7 @@ class Unfinished:
 
 
 # How an exchange ended.
-Ending = Reached | Unreached | Held | Uncopied | Unfinished
+Ending = Reached | Unreached | Synthetic | Uncopied | Unfinished
 
 
 @dataclass(frozen=True)

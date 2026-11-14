@@ -185,7 +185,7 @@ def _ends(end: Finished | Unread | SessionGone, progress: Working, before: bool)
 
 def _folded(pending: Sequence[Coalesced]) -> list[Coalesced]:
     """Each session's finished turns as one Finished, and its progress as one Working, where the first of them stood:
-    three Stops heard during one held key are one telling whose headline covers them all, and every telling in it keeps
+    three Stops heard during one press of the shortcut are one telling whose headline covers them all, and every telling in it keeps
     the parts it was cut from; ten edits are one sentence.
 
     A fold covers what came between the other things the session's story tells: a turn that could not be read stands

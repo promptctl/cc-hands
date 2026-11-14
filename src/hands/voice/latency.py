@@ -28,13 +28,13 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from hands.clock import Clock
-from hands.voice.mark import Mark
-from hands.voice.turnstop import HoldDiscarded, Words
+from hands.voice.milestone import Milestone
+from hands.voice.turnstop import ClipDiscarded, Words
 
-# The first arrival of each of these frame types in an open window is a mark. `first audio` is not among them:
+# The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
 # once per processor boundary it crosses.
-_MILESTONES: dict[type[Frame], Mark] = {
+_MILESTONES: dict[type[Frame], Milestone] = {
     Words: "transcript",
     LLMTextFrame: "first LLM token",
 }
@@ -51,17 +51,17 @@ class Window:
     """
 
     released: float
-    marks: dict[Mark, float] = field(default_factory=lambda: dict[Mark, float]())
+    milestones: dict[Milestone, float] = field(default_factory=lambda: dict[Milestone, float]())
 
 
 @dataclass
 class Turn:
-    """The user's turn being taken in, since the last one ended: whether any hold of it had words, whether a stage
+    """The user's turn being taken in, since the last one ended: whether any clip of it had words, whether a stage
     failed while it was taken in, whether it took over from hands (`hands.voice.turnstart`), the window its last release
     opened, and the window its first release found open.
 
-    A turn is Pipecat's and takes in every hold pressed before the hold owner was done with the one before (see
-    hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one hold: a hold
+    A turn is Pipecat's and takes in every clip opened before the clip owner was done with the one before (see
+    hands.voice.turnstop), so whether anything is sent to the model is a fact of the turn and of no one clip: a clip
     with nothing said in it, or one Whisper failed on, released beside one whose words are in, is still answered.
     """
 
@@ -76,9 +76,9 @@ class Turn:
 
 
 class LatencyObserver(BaseObserver):
-    """Log each milestone's distance from the key release, per turn, and tell `told` each mark of a turn as it lands."""
+    """Log each milestone's distance from the key release, per turn, and tell `told` each milestone of a turn as it lands."""
 
-    def __init__(self, clock: Clock, told: Callable[[Mark], None]) -> None:
+    def __init__(self, clock: Clock, told: Callable[[Milestone], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._clock = clock
@@ -92,32 +92,32 @@ class LatencyObserver(BaseObserver):
         # the speaker going from silent to sounding is the first audio, and the user falling silent is the
         # release [LAW:one-source-of-truth].
         self._speaking = False
-        self._holding = False
+        self._clip_open = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
         now = self._clock.now()
         frame = data.frame
         if isinstance(frame, VADUserStartedSpeakingFrame):
-            self._holding = True
+            self._clip_open = True
             return
-        if isinstance(frame, HoldDiscarded):
-            # A hold thrown away is no release: nothing of it is sent, so there is no reply to time from it.
-            if self._holding:
+        if isinstance(frame, ClipDiscarded):
+            # A clip thrown away is no release: nothing of it is sent, so there is no reply to time from it.
+            if self._clip_open:
                 self._told("discarded")
-            self._holding = False
+            self._clip_open = False
             return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
-            if self._holding:
+            if self._clip_open:
                 # The release is what the window's numbers are measured from, so it is also what opens the
                 # window — and what opens it is the user falling silent, not each push of the frame saying so.
-                # Opened on the frame, the second push would throw away the marks the first push's window had
+                # Opened on the frame, the second push would throw away the milestones the first push's window had
                 # taken and restart the measurement from a later zero, logging a milestone twice and timing it
                 # from a moment the user was already done speaking at.
                 if self._turn.released is None:
                     self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
                 self._told("released")
-            self._holding = False
+            self._clip_open = False
             return
         if isinstance(frame, BotStartedSpeakingFrame):
             if not self._speaking:
@@ -126,10 +126,10 @@ class LatencyObserver(BaseObserver):
             return
         if isinstance(frame, BotStoppedSpeakingFrame):
             self._speaking = False
-            if self._turn.found is not None and "first audio" in self._turn.found.marks:
+            if self._turn.found is not None and "first audio" in self._turn.found.milestones:
                 # So is a window the turn found open, which the turn gives back if it takes nothing over.
                 self._turn.found = None
-            if self._window is not None and "first audio" in self._window.marks:
+            if self._window is not None and "first audio" in self._window.milestones:
                 # The window closes when the audio it was waiting for has finished, so the next utterance with
                 # no user behind it is recognised as one. Left open, the first turn of a session stays open for
                 # the rest of it: every later narration finds `first audio` already marked and is logged
@@ -163,7 +163,7 @@ class LatencyObserver(BaseObserver):
                         # No release is waiting on anything, so the error is of nothing a user asked for.
                         pass
                     case window if window is self._turn.released:
-                        # The turn is still being taken in, so nothing has been asked of the model for it: a hold
+                        # The turn is still being taken in, so nothing has been asked of the model for it: a clip
                         # Whisper failed on ends the wait only if the turn ends with no words from any other.
                         self._turn.failed = True
                     case window:
@@ -174,23 +174,23 @@ class LatencyObserver(BaseObserver):
             return
         if isinstance(frame, Words):
             self._turn.said = True
-        mark = _MILESTONES.get(type(frame))
-        if mark is not None and self._window is not None:
-            self._take(self._window, mark, now)
+        milestone = _MILESTONES.get(type(frame))
+        if milestone is not None and self._window is not None:
+            self._take(self._window, milestone, now)
 
-    def _take(self, window: Window, mark: Mark, at: float) -> None:
-        """Log `mark`'s distance from the release, and tell it, the first time it lands in this window.
+    def _take(self, window: Window, milestone: Milestone, at: float) -> None:
+        """Log `milestone`'s distance from the release, and tell it, the first time it lands in this window.
 
-        Demanding a `Window` rather than an optional one is the whole of the rule a mark is subject to: a milestone
+        Demanding a `Window` rather than an optional one is the whole of the rule a milestone is subject to: a milestone
         belongs to a turn once that turn has a release, so a caller holding no window has nothing to take and no
         distance to report [LAW:parse-dont-validate]. A transcript that arrived before the release did not answer
         it, and attributing one to the other would report a number measuring nothing.
         """
-        if mark in window.marks:
+        if milestone in window.milestones:
             return
-        window.marks[mark] = at
-        logger.info(f"latency: {mark} {(at - window.released) * 1000:.0f} ms after key release")
-        self._told(mark)
+        window.milestones[milestone] = at
+        logger.info(f"latency: {milestone} {(at - window.released) * 1000:.0f} ms after key release")
+        self._told(milestone)
 
     def _first_audio(self, at: float) -> None:
         """Say when the speaker went from silent to sounding: its distance from a release, or that none asked for it.

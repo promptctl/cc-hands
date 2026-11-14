@@ -101,7 +101,7 @@ because every call is silence the user waits through. An id stays good; what the
 # Say what is true now, not what you remember
 
 What a session did lives in the session, not in this conversation. When the user asks what a session has been doing, \
-call read_session, even if you read it earlier: it has moved on since. It gives a sentence for each turn; call \
+call read_session, even if you read it earlier: it has moved on since. It gives a summary for each turn; call \
 read_turn for the steps of one turn only when the user wants more of it, or asks what the session is doing in the \
 turn it is on. When they ask only what a session just did, or how its last turn went, call tell_turn and tell it as \
 it says to: it is the telling hands gives of a turn as it finishes. When they want more of a turn hands told them, \

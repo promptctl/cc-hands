@@ -25,7 +25,7 @@ from hands.core.status import Report, Stamp
 from hands.core.session import Membership, Opened, PromptId, RequestId, SessionId
 from hands.sessions.audit import Entry, Record
 from hands.clock import SYSTEM, Clock
-from hands.sessions.delta import HELD, MARKING, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Capture, Deltas, Mark, Standing, Unread
+from hands.sessions.delta import BASELINING, HELD, MOST_COMMITS, MOST_LINES, PATIENCE, SPARE, Asked, Baseline, Capture, Deltas, Standing, Unread
 from conftest import RealWall, new_sessions, patient
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import WideEvent
@@ -71,7 +71,7 @@ def repo(tmp_path: Path) -> Path:
 
 
 async def turn(root: Path, work: object = None, record: list[Entry] | None = None) -> Delta:
-    """One turn: mark where the repository is, let `work` happen, then read what changed, writing its audit line to `record`."""
+    """One turn: take the baseline of where the repository is, let `work` happen, then read what changed, writing its audit line to `record`."""
     deltas = patient(Deltas, (record if record is not None else []).append)
     await deltas.snapshot(SID, root)
     if callable(work):
@@ -125,7 +125,7 @@ async def test_a_commit_the_turn_made_is_named_and_the_work_in_it_is_still_the_t
 
 
 async def test_work_already_in_the_tree_before_the_turn_is_not_the_turn_s(tmp_path: Path) -> None:
-    """The mark holds the working tree as it stood, so what was already changed is not reported as done now."""
+    """The baseline holds the working tree as it stood, so what was already changed is not reported as done now."""
     root = repo(tmp_path)
     (root / "a.py").write_text("x = 1\nleft over from before\n")
     delta = await turn(root)
@@ -183,7 +183,7 @@ def forge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str) -> Path:
 
 def answering(tmp_path: Path, answer: str) -> None:
     """What the forge answers from now on: set inside a turn, as `gh pr create` opens a pull request inside one, so its
-    stamp falls between the turn's mark and its end on any machine, however slow."""
+    stamp falls between the turn's baseline and its end on any machine, however slow."""
     (tmp_path / "answer").write_text(answer)
 
 
@@ -217,7 +217,7 @@ async def test_a_fetch_moves_the_same_ref_and_is_not_heard_as_a_push(tmp_path: P
     assert delta.changes == ()
 
 
-async def test_a_branch_the_turn_made_is_read_from_the_branches_the_mark_did_not_hold(tmp_path: Path) -> None:
+async def test_a_branch_the_turn_made_is_read_from_the_branches_the_baseline_did_not_hold(tmp_path: Path) -> None:
     """`checkout -b` inside a compound command is the one Claude Code nearly never records."""
     root = repo(tmp_path)
     delta = await turn(root, lambda: git(root, "checkout", "-q", "-b", "feature/narration"))
@@ -389,7 +389,7 @@ async def test_a_slow_forge_costs_the_turn_its_pull_request_and_never_its_commit
     await deltas.compare(SID, again=False)
     # The forge's budget is the narrator's patience less SPARE, spent here while gh is still being waited on.
     asked = PATIENCE - SPARE
-    await clock.paused(asked)
+    await clock.sleeping(asked)
     clock.advance(asked)
     delta = await deltas.taken(SID)
     assert [commit.subject for commit in delta.commits] == ["tidy"]
@@ -466,11 +466,11 @@ async def test_each_reading_is_one_audit_line_with_what_it_found_and_what_the_fo
     assert read.facts["changes"] == (Branched("fix", "created branch"), Pushed("fix"), PullRequested(7, "https://x/7", "created"))
 
 
-async def test_a_turn_outside_a_repository_is_one_unmarked_reading_that_counts_nothing_and_asks_no_forge(tmp_path: Path) -> None:
+async def test_a_turn_outside_a_repository_is_one_unbaselined_reading_that_counts_nothing_and_asks_no_forge(tmp_path: Path) -> None:
     record: list[Entry] = []
     await turn(tmp_path, None, record)
     [read] = readings(record)
-    assert (read.outcome, read.facts["reading"], read.counts) == ("ok", "unmarked", {"commits": 0, "files": 0, "git_unanswered": 0})
+    assert (read.outcome, read.facts["reading"], read.counts) == ("ok", "unbaselined", {"commits": 0, "files": 0, "git_unanswered": 0})
     assert "forge" not in read.facts and "index" not in read.facts
 
 
@@ -478,13 +478,13 @@ async def test_a_reading_says_which_index_its_snapshot_started_from_and_counts_z
     root = repo(tmp_path)
     record: list[Entry] = []
     await turn(root, None, record)
-    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     [read] = readings(record)
-    assert (mark.outcome, mark.facts) == ("ok", {"session": SID, "index": "copied", "marked": True, "captures_seconds": 0.0})
+    assert (baseline.outcome, baseline.facts) == ("ok", {"session": SID, "index": "copied", "baselined": True, "captures_seconds": 0.0})
     assert (read.outcome, read.counts) == ("ok", {"commits": 0, "files": 0, "git_unanswered": 0})
     assert read.facts == {"session": SID, "reading": "read", "index": "copied", "changes": (), "forge": "unasked", "forge_seconds": 0.0}
     # Two units of work, neither opened inside the other: two traces.
-    assert mark.trace_id != read.trace_id
+    assert baseline.trace_id != read.trace_id
 
 
 async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_and_says_why(tmp_path: Path) -> None:
@@ -493,10 +493,10 @@ async def test_a_repository_with_no_index_yet_is_snapshotted_from_an_empty_one_a
     (root / "a.py").write_text("x = 1\n")
     record: list[Entry] = []
     await turn(root, lambda: (root / "b.py").write_text("y = 2\n"), record)
-    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+    [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
     [read] = readings(record)
-    assert mark.facts["index"] == read.facts["index"] == "empty"
-    assert "No such file" in str(mark.facts["index_error"])
+    assert baseline.facts["index"] == read.facts["index"] == "empty"
+    assert "No such file" in str(baseline.facts["index_error"])
     assert read.counts == {"commits": 0, "files": 1, "git_unanswered": 0}
 
 
@@ -523,7 +523,7 @@ async def test_a_directory_that_is_not_there_is_told_by_its_steps_alone(tmp_path
     assert not await turn(tmp_path / "never-existed")
 
 
-async def test_a_turn_stopping_with_no_mark_before_it_reads_nothing(tmp_path: Path) -> None:
+async def test_a_turn_stopping_with_no_baseline_before_it_reads_nothing(tmp_path: Path) -> None:
     """The daemon started in the middle of a turn: there is no beginning to compare against, so there is no delta."""
     deltas = patient(Deltas, lambda _entry: None)
     await deltas.compare(SID, again=False)
@@ -574,7 +574,7 @@ async def test_a_new_turn_reads_against_its_own_beginning_and_not_the_one_before
 
 
 async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_first_stop(tmp_path: Path) -> None:
-    """Another Stop hook blocked the first Stop and Claude went on, with no prompt to mark from: the second part is read
+    """Another Stop hook blocked the first Stop and Claude went on, with no prompt to baseline from: the second part is read
     against where the first part's reading found the repository, so each change is told once."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
@@ -588,7 +588,7 @@ async def test_a_turn_that_stops_again_tells_only_what_it_changed_after_its_firs
     assert [file.path for file in (await deltas.taken(SID)).files] == ["b.py"]
 
 
-async def test_a_turn_no_prompt_marked_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
+async def test_a_turn_no_prompt_baselined_is_not_read_against_where_the_turn_before_ended(tmp_path: Path) -> None:
     """Between the two, the user may have edited by hand or pulled for hours: none of it is this turn's."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
@@ -628,11 +628,11 @@ async def test_a_prompt_and_a_stop_through_the_daemon_read_what_the_turn_changed
     assert "x = 99" in delta.patch
 
 
-async def test_a_mark_that_would_cost_more_than_the_hook_can_afford_is_not_taken(tmp_path: Path) -> None:
+async def test_a_baseline_that_would_cost_more_than_the_hook_can_afford_is_not_taken(tmp_path: Path) -> None:
     """A prompt's hook waits on this one, and the shim gives up after two seconds and says it cannot reach
-    the daemon — on every prompt and every stop. A repository too slow to mark has its turn told without."""
+    the daemon — on every prompt and every stop. A repository too slow to baseline has its turn told without."""
     root = repo(tmp_path)
-    deltas = patient(Deltas, lambda _entry: None, marking=0.0)
+    deltas = patient(Deltas, lambda _entry: None, baselining=0.0)
     await deltas.snapshot(SID, root)
     (root / "a.py").write_text("changed\n")
     await deltas.compare(SID, again=False)
@@ -724,7 +724,7 @@ async def test_a_turn_that_stops_with_nothing_to_read_still_takes_its_place_in_t
     before's changes."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
-    await deltas.compare(SID, again=False)  # no mark: the daemon started in the middle of this turn
+    await deltas.compare(SID, again=False)  # no baseline: the daemon started in the middle of this turn
 
     await deltas.snapshot(SID, root)
     (root / "later.py").write_text("a later turn\n")
@@ -746,8 +746,8 @@ async def test_a_reading_that_fails_outright_still_lets_the_turn_be_told(tmp_pat
     assert isinstance(story, Summarise) and story.session == SID
 
 
-async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path: Path) -> None:
-    """The same promise on the other side of the turn: a mark is taken while the user's prompt hook waits.
+async def test_a_baseline_that_fails_outright_still_lets_the_prompt_through(tmp_path: Path) -> None:
+    """The same promise on the other side of the turn: a baseline is taken while the user's prompt hook waits.
 
     Every way git itself can fail is already answered with None, but the reading needs a temporary file, and
     a TMPDIR that is full or read-only fails before git is ever run. Unguarded, that turns a best-effort read
@@ -756,7 +756,7 @@ async def test_a_mark_that_fails_outright_still_lets_the_prompt_through(tmp_path
     sessions = attached(tmp_path)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text=""))
-    # The mark is gone, the prompt is not: it went through, and the hook that said so was answered.
+    # The baseline is gone, the prompt is not: it went through, and the hook that said so was answered.
     assert [listing.session.turn for listing in sessions.live()] == [Opened(PromptId("p1"))]
 
 
@@ -789,11 +789,11 @@ async def test_a_detached_head_is_read_like_any_other(tmp_path: Path) -> None:
     assert [file.path for file in delta.files] == ["b.py"]
 
 
-async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at_all(tmp_path: Path) -> None:
+async def test_a_baseline_that_ran_out_of_time_reading_where_it_stands_is_no_baseline_at_all(tmp_path: Path) -> None:
     """Otherwise the history made before the turn is read as the history the turn made, and spoken that way.
 
     A repository with no commit yet and a repository git could not answer for both leave `rev-parse` saying
-    nothing. A mark that takes the second for the first compares against no commit at all, so every commit
+    nothing. A baseline that takes the second for the first compares against no commit at all, so every commit
     ever made in that repository is reachable from where the turn ended and not from where it began.
     """
     root = repo(tmp_path)
@@ -805,22 +805,22 @@ async def test_a_mark_that_ran_out_of_time_reading_where_it_stands_is_no_mark_at
     record: list[Entry] = []
     clock = RealWall()
     deltas = patient(Stalled, record.append, clock)
-    # A repository whose tree takes everything the mark was given, which is what a slow one really does. The deadline is
-    # the only thing separating a repository with no commit from one git could not answer for, so this spends the mark's
+    # A repository whose tree takes everything the baseline was given, which is what a slow one really does. The deadline is
+    # the only thing separating a repository with no commit from one git could not answer for, so this spends the baseline's
     # whole deadline rather than hand one command a shorter one.
     standing = deltas.hold("standing")
-    marking = asyncio.create_task(deltas.snapshot(SID, root))
+    baselining = asyncio.create_task(deltas.snapshot(SID, root))
     await standing.reached.wait()
-    clock.advance(MARKING)
+    clock.advance(BASELINING)
     standing.released.set()
-    await marking
+    await baselining
     (root / "during.py").write_text("the turn's own work\n")
     await deltas.compare(SID, again=False)
-    # No mark, so no delta: the turn is told by its steps alone, which is the one honest answer here.
+    # No baseline, so no delta: the turn is told by its steps alone, which is the one honest answer here.
     assert await deltas.taken(SID) == Delta()
-    # And the mark's event says git went unanswered, which is not the same as a directory with no repository in it.
-    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
-    assert mark.facts["marked"] is False and mark.counts["git_unanswered"] >= 1
+    # And the baseline's event says git went unanswered, which is not the same as a directory with no repository in it.
+    [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
+    assert baseline.facts["baselined"] is False and baseline.counts["git_unanswered"] >= 1
 
 
 class Unlocated(Deltas):
@@ -835,8 +835,8 @@ async def test_a_snapshot_whose_index_git_would_not_locate_says_so_and_not_that_
     record: list[Entry] = []
     deltas = patient(Unlocated, record.append)
     await deltas.snapshot(SID, root)
-    [mark] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
-    assert mark.facts["index"] == "unlocated" and "index_error" not in mark.facts
+    [baseline] = [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
+    assert baseline.facts["index"] == "unlocated" and "index_error" not in baseline.facts
 
 
 def piled(root: Path, count: int) -> None:
@@ -883,21 +883,21 @@ async def test_more_turns_than_can_be_held_lose_the_newest_deltas_and_never_the_
 class Exploding(Deltas):
     """A reading that raises, as a bug in it would."""
 
-    async def _between(self, start: Mark | Capture, capture: Capture, deadline: float, forging: float) -> NoReturn:
+    async def _between(self, start: Baseline | Capture, capture: Capture, deadline: float, forging: float) -> NoReturn:
         raise RuntimeError("a bug")
 
 
 class Unforged(Deltas):
     """A reading whose forge side raises while its tree is still being read, as a bug in it would."""
 
-    async def _moved(self, mark: Mark, ended: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+    async def _moved(self, baseline: Baseline, ended: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
         raise RuntimeError("the forge side broke")
 
 
 class Endless(Deltas):
     """A reading that never finishes on its own, so the daemon's shutdown is what ends it."""
 
-    async def _between(self, start: Mark | Capture, capture: Capture, deadline: float, forging: float) -> NoReturn:
+    async def _between(self, start: Baseline | Capture, capture: Capture, deadline: float, forging: float) -> NoReturn:
         await asyncio.Event().wait()
         raise AssertionError("never reached")
 
@@ -930,8 +930,8 @@ async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_w
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
     [read] = readings(record)
-    assert read.outcome == "failed" and "RuntimeError: the forge side broke" in read.trace
-    assert any("in _moved" in line for line in read.trace)
+    assert read.outcome == "failed" and "RuntimeError: the forge side broke" in read.stacktrace
+    assert any("in _moved" in line for line in read.stacktrace)
     # Nothing is left running to write to it.
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
@@ -939,7 +939,7 @@ async def test_a_reading_whose_one_side_raises_ends_the_other_with_it_and_says_w
 class Halted(Deltas):
     """A reading whose forge side is cancelled on its own, as the loop's shutdown cancels every task at once."""
 
-    async def _moved(self, mark: Mark, ended: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+    async def _moved(self, baseline: Baseline, ended: object, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
         raise asyncio.CancelledError
 
 
@@ -978,7 +978,7 @@ async def test_a_branch_reading_that_raises_waits_out_the_push_reading_beside_it
     await deltas.compare(SID, again=False)
     assert not await deltas.taken(SID)
     [read] = readings(record)
-    assert read.outcome == "failed" and "ValueError: a reflog line in a shape hands does not read" in read.trace
+    assert read.outcome == "failed" and "ValueError: a reflog line in a shape hands does not read" in read.stacktrace
     assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
@@ -1010,25 +1010,25 @@ async def test_a_reading_cancelled_before_it_ever_ran_leaves_no_capture_for_the_
     await deltas.snapshot(SID, root)
 
     assert waits(record)[1] == (0, 0)
-    assert marks(record)[1].facts["captures_seconds"] == 0.0
+    assert baselines(record)[1].facts["captures_seconds"] == 0.0
 
 
 class Torn(Deltas):
-    """A repository whose HEAD cannot be read in the moment the mark asks for it.
+    """A repository whose HEAD cannot be read in the moment the baseline asks for it.
 
-    A `git checkout` in the next terminal along, landing between two of the mark's own commands. There is
+    A `git checkout` in the next terminal along, landing between two of the baseline's own commands. There is
     time left on the clock, so nothing about the deadline says anything about this one way or the other.
     """
 
-    marking = True
+    baselining = True
 
     async def _tree(self, root: Path, deadline: float) -> str | None:
         tree = await super()._tree(root, deadline)
-        if self.marking:
-            self.marking = False
+        if self.baselining:
+            self.baselining = False
             # A torn write, which is what a HEAD caught mid-rewrite is. A bogus-but-well-formed sha would
             # not do: `rev-parse --verify` answers a forty-character hex string without checking anything
-            # is there. Only the mark is torn — git calls a directory with an unreadable HEAD no repository
+            # is there. Only the baseline is torn — git calls a directory with an unreadable HEAD no repository
             # at all, so tearing the reading too would end in an empty delta for that reason and not this one.
             (root / ".git" / "HEAD").write_text("a HEAD caught halfway through being rewritten\n")
         return tree
@@ -1062,14 +1062,14 @@ async def test_a_turn_that_changed_more_lines_than_can_be_kept_is_told_by_its_fi
 
 
 class Blind(Deltas):
-    """A repository whose tree can be marked but not read again, which a slow enough `git add -A` does."""
+    """A repository whose tree can be baselined but not read again, which a slow enough `git add -A` does."""
 
-    marking = True
+    baselining = True
 
     async def _tree(self, root: Path, deadline: float) -> str | None:
-        if not self.marking:
+        if not self.baselining:
             return None
-        self.marking = False
+        self.baselining = False
         return await super()._tree(root, deadline)
 
 
@@ -1125,7 +1125,7 @@ async def test_a_turn_whose_changes_could_not_be_counted_has_its_patch_left_unre
 
 async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_next_prompt_lands_first(tmp_path: Path) -> None:
     """The next prompt's hook landed before the record of p1's interrupt was read. p1 is compared there, before p2 is
-    marked, so p2 is told only what p2 changed."""
+    baselined, so p2 is told only what p2 changed."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
     sessions = new_sessions(clock=SYSTEM, changes=deltas)
@@ -1145,7 +1145,7 @@ async def test_a_turn_claude_code_said_is_over_keeps_its_own_changes_when_the_ne
 
 
 async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_changed(tmp_path: Path) -> None:
-    """hands-status-bpp.44l: no prompt of its own marks it, so p1's Stop does, while its hook holds Claude Code."""
+    """hands-status-bpp.44l: no prompt of its own baselines it, so p1's Stop does, while its hook holds Claude Code."""
     root = repo(tmp_path)
     deltas = patient(Deltas, lambda _entry: None)
     sessions = new_sessions(clock=SYSTEM, changes=deltas)
@@ -1156,7 +1156,7 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
     await sessions.apply(Prompted(SID, at=2.0, mode=None, prompt=PromptId("p1"), text="Also this."))
     (root / "first.py").write_text("turn one\n")
     await sessions.apply(Stopped(SID, "One.", mode=None, prompt=PromptId("p1"), again=False, heard=STOP_HEARD, request=STOP_REQUEST))
-    # The transcript read through the Stop's firing: the words still wait, so the turn they run as is marked.
+    # The transcript read through the Stop's firing: the words still wait, so the turn they run as is baselined.
     await sessions.apply(Read(SID, STOP_HEARD))
     await sessions.apply(Unqueued(SID, Dequeued()))
     await sessions.apply(Taken(SID, PromptId("p2"), Stamp(4), 4.0))
@@ -1171,15 +1171,15 @@ async def test_a_message_queued_behind_a_turn_is_told_only_what_its_own_turn_cha
 
 
 
-class Marking:
-    """A repository reader whose marks after the first take as long as the test says."""
+class Baselining:
+    """A repository reader whose baselines after the first take as long as the test says."""
 
     def __init__(self) -> None:
-        self.marks, self.started, self.release = 0, asyncio.Event(), asyncio.Event()
+        self.baselines, self.started, self.release = 0, asyncio.Event(), asyncio.Event()
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
-        self.marks += 1
-        if self.marks > 1:
+        self.baselines += 1
+        if self.baselines > 1:
             self.started.set()
             await self.release.wait()
 
@@ -1189,11 +1189,11 @@ class Marking:
         return Delta()
 
 
-async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words_waiting_behind_it_are_marked(tmp_path: Path) -> None:
-    """The reply on the wire tells the turn. Its Stop marks the turn the words waiting behind it run as, once the
-    transcript is read through its firing, and its hook is let go only once that mark is taken: Claude Code runs the
+async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words_waiting_behind_it_are_baselined(tmp_path: Path) -> None:
+    """The reply on the wire tells the turn. Its Stop baselines the turn the words waiting behind it run as, once the
+    transcript is read through its firing, and its hook is let go only once that baseline is taken: Claude Code runs the
     queued turn after it."""
-    repository = Marking()
+    repository = Baselining()
     sessions = new_sessions(clock=SYSTEM, changes=repository)
     await sessions.apply(Joined(Membership(SID, pid=4242, cwd=tmp_path, transcript=tmp_path / "t.jsonl"), "startup"))
     await sessions.apply(Prompted(SID, at=1.0, mode=None, prompt=PromptId("p1"), text="Do it."))
@@ -1206,7 +1206,7 @@ async def test_a_stop_whose_turn_the_wire_told_holds_claude_code_until_the_words
     sessions.hear(Read(SID, STOP_HEARD))
     await asyncio.wait_for(repository.started.wait(), 2.0)
     done, _ = await asyncio.wait({stopping}, timeout=0.2)
-    assert not done, "the Stop's hook was let go while the queued turn was still being marked"
+    assert not done, "the Stop's hook was let go while the queued turn was still being baselined"
     repository.release.set()
     await asyncio.wait_for(stopping, 2.0)
     assert await asyncio.wait_for(sessions.story(), 2.0) == Summarise(SID, PromptId("p1"), "Done.", ("Also this.",), ids=frozenset({PromptId("p1")}))
@@ -1249,7 +1249,7 @@ async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_l
     await deltas.snapshot(SID, root)
     await deltas.compare(SID, again=False)
     taking = asyncio.create_task(deltas.taken(SID))
-    await clock.paused(PATIENCE)
+    await clock.sleeping(PATIENCE)
     clock.advance(PATIENCE)
     assert not await taking
     [reading] = [task for task in asyncio.all_tasks() if task.get_name().startswith("what a turn of session")]
@@ -1259,24 +1259,24 @@ async def test_a_narrator_out_of_patience_tells_the_turn_without_its_delta_and_l
         await reading
 
 
-def marks(record: list[Entry]) -> list[WideEvent]:
-    """The event of each mark in record, in the order they ended."""
-    return [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.mark"]
+def baselines(record: list[Entry]) -> list[WideEvent]:
+    """The event of each baseline in record, in the order they ended."""
+    return [entry for entry in record if isinstance(entry, WideEvent) and entry.event == "delta.baseline"]
 
 
 def waits(record: list[Entry]) -> list[tuple[int, int]]:
-    """How many captures each mark found under way, and how many of them it overtook."""
-    return [(mark.counts["captures_waited"], mark.counts["captures_overtaken"]) for mark in marks(record)]
+    """How many captures each baseline found under way, and how many of them it overtook."""
+    return [(baseline.counts["captures_waited"], baseline.counts["captures_overtaken"]) for baseline in baselines(record)]
 
 
-def waited(mark: WideEvent) -> float:
-    """How long a mark waited on the captures under way as it began."""
-    seconds = mark.facts["captures_seconds"]
+def waited(baseline: WideEvent) -> float:
+    """How long a baseline waited on the captures under way as it began."""
+    seconds = baseline.facts["captures_seconds"]
     assert isinstance(seconds, float)
     return seconds
 
 
-Stage = Literal["mark", "standing", "tree", "moved"]
+Stage = Literal["baseline", "standing", "tree", "moved"]
 
 
 class Gate:
@@ -1298,9 +1298,9 @@ class Stalled(Deltas):
     """A repository whose next read of a stage waits at a gate the test holds, as a read waits on a loaded machine's
     scheduler. A capture is overtaken because its gate is held, never because a deadline was made short."""
 
-    def __init__(self, record: Record, inherited: Mapping[str, str], marking: float, patience: float, clock: Clock) -> None:
-        super().__init__(record, inherited, marking=marking, patience=patience, clock=clock)
-        self._gates: dict[Stage, deque[Gate]] = {"mark": deque(), "standing": deque(), "tree": deque(), "moved": deque()}
+    def __init__(self, record: Record, inherited: Mapping[str, str], baselining: float, patience: float, clock: Clock) -> None:
+        super().__init__(record, inherited, baselining=baselining, patience=patience, clock=clock)
+        self._gates: dict[Stage, deque[Gate]] = {"baseline": deque(), "standing": deque(), "tree": deque(), "moved": deque()}
 
     def hold(self, stage: Stage) -> Gate:
         """The next read of `stage`, held at a gate the test opens."""
@@ -1318,8 +1318,8 @@ class Stalled(Deltas):
         finally:
             gate.over.set()
 
-    async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
-        return await self._through("mark", partial(super()._mark, cwd, deadline))
+    async def _baseline(self, cwd: Path, deadline: float) -> Baseline | None:
+        return await self._through("baseline", partial(super()._baseline, cwd, deadline))
 
     async def _standing(self, root: Path, at: datetime, deadline: float) -> Standing | None:
         return await self._through("standing", partial(super()._standing, root, at, deadline))
@@ -1327,45 +1327,45 @@ class Stalled(Deltas):
     async def _tree(self, root: Path, deadline: float) -> str | None:
         return await self._through("tree", partial(super()._tree, root, deadline))
 
-    async def _moved(self, mark: Mark, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
-        return await self._through("moved", partial(super()._moved, mark, ended, deadline, forging))
+    async def _moved(self, baseline: Baseline, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+        return await self._through("moved", partial(super()._moved, baseline, ended, deadline, forging))
 
 
 # How long a start waits on the captures it lets go, on its clock: far inside its deadline.
 WAITED = 0.25
 
 
-async def marked_releasing(deltas: Stalled, clock: RealWall, root: Path, *held: Gate) -> None:
-    """The next turn's start, begun with the captures behind `held` under way and letting them go once it is marking: it
+async def baselined_releasing(deltas: Stalled, clock: RealWall, root: Path, *held: Gate) -> None:
+    """The next turn's start, begun with the captures behind `held` under way and letting them go once it is baselining: it
     waits on each, and each is in WAITED after it began, long before the start's deadline."""
-    marking = deltas.hold("mark")
+    baselining = deltas.hold("baseline")
     snapshot = asyncio.create_task(deltas.snapshot(SID, root))
-    await marking.reached.wait()
+    await baselining.reached.wait()
     clock.advance(WAITED)
-    for gate in (*held, marking):
+    for gate in (*held, baselining):
         gate.released.set()
     await snapshot
 
 
 async def overtaking(deltas: Stalled, clock: RealWall, root: Path, *finishing: Gate) -> None:
-    """The next turn's start, begun with a capture held under way: its own mark comes in, the reads behind `finishing` are
+    """The next turn's start, begun with a capture held under way: its own baseline comes in, the reads behind `finishing` are
     let go and are over, then everything the start was given passes, so the capture still held is overtaken."""
-    marking = deltas.hold("mark")
-    marking.released.set()
-    deadline = clock.now() + MARKING
+    baselining = deltas.hold("baseline")
+    baselining.released.set()
+    deadline = clock.now() + BASELINING
     snapshot = asyncio.create_task(deltas.snapshot(SID, root))
-    await marking.over.wait()
+    await baselining.over.wait()
     for gate in finishing:
         gate.released.set()
         await gate.over.wait()
-    # The start's own wait on the capture still held is the one pause left at its deadline once its mark is in.
-    await clock.paused(deadline)
+    # The start's own wait on the capture still held is the one pause left at its deadline once its baseline is in.
+    await clock.sleeping(deadline)
     clock.advance(deadline - clock.now())
     await snapshot
 
 
 async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_turn_is_told_only_its_own_files(tmp_path: Path) -> None:
-    """The turn before's end is still being read when the next prompt's hook arrives: the mark waits beside it, and the
+    """The turn before's end is still being read when the next prompt's hook arrives: the baseline waits beside it, and the
     hook lets Claude Code go on only once it is in, so nothing the next turn writes is read as the turn before's."""
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1376,14 +1376,14 @@ async def test_the_next_prompt_waits_on_the_end_of_the_turn_before_it_so_each_tu
     ending = deltas.hold("standing")
     await deltas.compare(SID, again=False)
     await ending.reached.wait()
-    await marked_releasing(deltas, clock, root, ending)
+    await baselined_releasing(deltas, clock, root, ending)
     (root / "second.py").write_text("turn two\n")
     await deltas.compare(SID, again=False)
 
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
     assert [file.path for file in (await deltas.taken(SID)).files] == ["second.py"]
     assert waits(record) == [(0, 0), (1, 0)]
-    assert waited(marks(record)[-1]) == WAITED
+    assert waited(baselines(record)[-1]) == WAITED
 
 
 async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and_the_turn_keeps_its_commit(tmp_path: Path) -> None:
@@ -1408,14 +1408,14 @@ async def test_a_tree_still_being_read_when_the_next_turn_begins_is_not_told_and
     assert ([commit.subject for commit in told.commits], told.files, told.patch) == (["turn one's commit"], (), "")
     [read] = readings(record)
     assert read.facts["reading"] == "tree overtaken"
-    assert marks(record)[-1].facts["marked"] is True
+    assert baselines(record)[-1].facts["baselined"] is True
     assert waits(record) == [(0, 0), (1, 1)]
-    assert waited(marks(record)[-1]) == MARKING
+    assert waited(baselines(record)[-1]) == BASELINING
 
 
 async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_part_before_it(tmp_path: Path) -> None:
-    """The first Stop has no words waiting behind it, so no mark follows its capture. Another Stop hook blocks it, and the
-    part going on stops with words queued: the mark of the turn they run as waits on both parts' captures, each running
+    """The first Stop has no words waiting behind it, so no baseline follows its capture. Another Stop hook blocks it, and the
+    part going on stops with words queued: the baseline of the turn they run as waits on both parts' captures, each running
     its own git."""
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1429,7 +1429,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
     going_on = deltas.hold("standing")
     await deltas.compare(SID, again=True)
     await going_on.reached.wait()
-    await marked_releasing(deltas, clock, root, first, going_on)
+    await baselined_releasing(deltas, clock, root, first, going_on)
 
     assert waits(record) == [(0, 0), (2, 0)]
     assert [file.path for file in (await deltas.taken(SID)).files] == ["first.py"]
@@ -1439,7 +1439,7 @@ async def test_a_turn_that_went_on_after_a_blocked_stop_is_waited_on_with_the_pa
 
 async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_on(tmp_path: Path) -> None:
     """A `!` command runs as a turn no hook opens after p1's Stop, and p2's prompt lands on it: it is compared, then p2 is
-    marked. It has no mark to read against, so nothing of it is read, and p2's mark waits on p1's capture alone."""
+    baselined. It has no baseline to read against, so nothing of it is read, and p2's baseline waits on p1's capture alone."""
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()
@@ -1450,23 +1450,23 @@ async def test_a_turn_no_hook_opened_has_no_capture_for_the_next_prompt_to_wait_
     await deltas.compare(SID, again=False)
     await ending.reached.wait()
     await deltas.compare(SID, again=False)
-    await marked_releasing(deltas, clock, root, ending)
+    await baselined_releasing(deltas, clock, root, ending)
 
     assert waits(record) == [(0, 0), (1, 0)]
     assert await deltas.taken(SID) and not await deltas.taken(SID)
-    [unhooked] = [read for read in readings(record) if read.facts["reading"] == "unmarked"]
-    assert unhooked.facts == {"session": SID, "reading": "unmarked"}
+    [unhooked] = [read for read in readings(record) if read.facts["reading"] == "unbaselined"]
+    assert unhooked.facts == {"session": SID, "reading": "unbaselined"}
 
 
 async def test_a_turn_a_daemon_started_in_the_middle_of_has_no_capture_for_the_turn_behind_it_to_wait_on(tmp_path: Path) -> None:
-    """Its Stop, with words waiting behind it: it is compared, then the turn the words run as is marked."""
+    """Its Stop, with words waiting behind it: it is compared, then the turn the words run as is baselined."""
     root = repo(tmp_path)
     record: list[Entry] = []
     deltas = patient(Deltas, record.append)
     await deltas.compare(SID, again=False)
     await deltas.snapshot(SID, root)
 
-    assert [read.facts["reading"] for read in readings(record)] == ["unmarked"]
+    assert [read.facts["reading"] for read in readings(record)] == ["unbaselined"]
     assert waits(record) == [(0, 0)]
 
 
@@ -1478,7 +1478,7 @@ async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_aga
         await deltas.snapshot(SID, root)
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
         await deltas.compare(SID, again=False)
-    # The last of them was dropped, and words wait behind it: the turn they run as is marked.
+    # The last of them was dropped, and words wait behind it: the turn they run as is baselined.
     await deltas.snapshot(SID, root)
     assert waits(record)[-1] == (0, 0)
 
@@ -1488,10 +1488,10 @@ async def test_a_dropped_reading_has_no_capture_and_no_part_going_on_is_read_aga
     await deltas.compare(SID, again=True)
     told = [await deltas.taken(SID) for _ in range(HELD + 1)]
     assert told[-2:] == [Delta(), Delta()]
-    assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unmarked"]
+    assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unbaselined"]
 
 
-async def test_a_dropped_turn_spends_its_mark_so_a_turn_after_it_no_prompt_marked_reads_nothing(tmp_path: Path) -> None:
+async def test_a_dropped_turn_spends_its_baseline_so_a_turn_after_it_no_prompt_baselined_reads_nothing(tmp_path: Path) -> None:
     root = repo(tmp_path)
     record: list[Entry] = []
     deltas = patient(Deltas, record.append)
@@ -1500,15 +1500,15 @@ async def test_a_dropped_turn_spends_its_mark_so_a_turn_after_it_no_prompt_marke
         (root / f"turn{n}.py").write_text(f"turn {n}\n")
         await deltas.compare(SID, again=False)
     await deltas.taken(SID)
-    (root / "by-hand.py").write_text("no prompt marked this\n")
+    (root / "by-hand.py").write_text("no prompt baselined this\n")
     await deltas.compare(SID, again=False)
 
     told = [await deltas.taken(SID) for _ in range(HELD + 1)]
     assert told[-1] == Delta()
-    assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unmarked"]
+    assert sorted(str(read.facts["reading"]) for read in readings(record)) == ["dropped"] + ["read"] * HELD + ["unbaselined"]
 
 
-async def test_a_turn_no_prompt_marked_takes_its_own_place_between_the_turns_beside_it(tmp_path: Path) -> None:
+async def test_a_turn_no_prompt_baselined_takes_its_own_place_between_the_turns_beside_it(tmp_path: Path) -> None:
     """A telling takes the oldest place in the order, and that is all that pairs it with its turn: the turn with nothing
     to read takes one too, or it is handed the next turn's files."""
     root = repo(tmp_path)
@@ -1545,7 +1545,7 @@ async def test_dropped_turns_are_told_without_a_delta_and_the_turn_after_them_wi
 
 async def test_a_daemon_no_narrator_takes_from_holds_no_more_places_however_many_turns_stop(tmp_path: Path) -> None:
     """A daemon whose voice never loaded has no narrator, so no turn is ever taken: turns outside a repository, each
-    unmarked, take no more room for it than one does."""
+    unbaselined, take no more room for it than one does."""
     deltas = patient(Deltas, lambda _entry: None)
     before = unread_places()
     for _ in range(100):
@@ -1641,8 +1641,8 @@ async def test_a_capture_that_raised_is_waited_on_by_no_turn_after_it(tmp_path: 
 
 
 async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_against_nothing_and_says_so(tmp_path: Path) -> None:
-    """Words wait behind the first Stop, so the turn they run as is marked, and the first part's tree is still being read
-    when that mark returns. Another Stop hook blocks the Stop and the turn goes on: the end it would go on from was read
+    """Words wait behind the first Stop, so the turn they run as is baselined, and the first part's tree is still being read
+    when that baseline returns. Another Stop hook blocks the Stop and the turn goes on: the end it would go on from was read
     inside the next turn, so the part going on has no start, and its event says that and nothing of the first part's."""
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1667,7 +1667,7 @@ async def test_a_part_going_on_from_an_end_the_next_turn_overtook_is_read_agains
 
 async def test_a_part_going_on_that_began_reading_before_the_next_turn_overtook_its_start_is_read_against_nothing(tmp_path: Path) -> None:
     """The first part's tree is still being read when another Stop hook blocks its Stop and the part going on stops, and
-    that part's reading is already waiting on the first's capture as its start when the next turn's mark overtakes it.
+    that part's reading is already waiting on the first's capture as its start when the next turn's baseline overtakes it.
     The start was read inside the next turn, so the part going on is told nothing of it, never the next turn's files."""
     root = repo(tmp_path)
     record: list[Entry] = []
@@ -1714,7 +1714,7 @@ async def test_a_capture_the_next_turn_overtook_is_not_waited_on_again(tmp_path:
 
 async def test_a_part_going_on_after_a_blocked_stop_captures_its_end_while_the_part_before_is_still_being_read(tmp_path: Path) -> None:
     """The first part's capture is overtaken, and still held when the part going on stops with words still waiting: that
-    part's capture runs its own git at once, and the next mark waits on it alone and is answered with the first still held."""
+    part's capture runs its own git at once, and the next baseline waits on it alone and is answered with the first still held."""
     root = repo(tmp_path)
     record: list[Entry] = []
     clock = RealWall()

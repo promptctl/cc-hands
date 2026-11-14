@@ -1,4 +1,4 @@
-"""The brain's context kept from the proxy: old results as a line, in batches, from sentences asked for as side questions that show the results."""
+"""The brain's context kept from the proxy: old results as a line, in batches, from summaries asked for as side questions that show the results."""
 
 import asyncio
 import re
@@ -11,7 +11,7 @@ from hands.brain.context import VOICE_COMPACTION, Keeper, Kept
 from hands.brain.asides import AsideFailed, Unanswered
 from hands.virtualclock import VirtualClock
 from hands.core.context import QUOTED, SHOWN, Result, aged, boundary, key, line, question
-from hands.core.sentences import Digest
+from hands.core.summaries import Digest
 from hands.core.session import SessionId
 from hands.core.wire import (
     COMPACTION_INSTRUCTIONS,
@@ -22,7 +22,6 @@ from hands.core.wire import (
     CountTokens,
     Exchanged,
     Fork,
-    Hold,
     Kind,
     MainTurn,
     Message,
@@ -34,6 +33,7 @@ from hands.core.wire import (
     Steer,
     Written,
     Stub,
+    Synthesize,
     Tail,
     Text,
     classify,
@@ -88,7 +88,7 @@ def test_every_result_from_before_the_boundary_is_aged_a_short_one_too() -> None
 
 
 def edited_by_rule(body: dict[str, object], every: int) -> list[object]:
-    """The history as the proxy sends it when every aged result has a sentence."""
+    """The history as the proxy sends it when every aged result has a summary."""
     stubs = tuple(Stub(result.call, line(result, f"file {result.turn} holds its digit")) for result in aged(body, every))
     return cast(list[object], edited(body, stubs)["messages"])
 
@@ -120,7 +120,7 @@ def test_a_question_shows_the_call_and_its_result_a_long_one_by_its_ends_and_the
 
 
 class Asked:
-    """What answers the keeper's side questions: a sentence for the read each one shows."""
+    """What answers the keeper's side questions: a summary for the read each one shows."""
 
     def __init__(self) -> None:
         self.files: list[str] = []
@@ -221,7 +221,7 @@ async def test_each_result_is_asked_about_once_after_its_turn_ends_and_goes_as_i
     assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call1", "call2"), "whole": ()}, {"stubbed": 3, "whole": 0})]
 
 
-async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_good_and_says_so(rig: Rig) -> None:
+async def test_a_result_with_no_summary_when_its_batch_comes_goes_whole_for_good_and_says_so(rig: Rig) -> None:
     rig.asked.failing.add("/1")
     errors: list[str] = []
     from loguru import logger
@@ -239,7 +239,7 @@ async def test_a_result_with_no_sentence_when_its_batch_comes_goes_whole_for_goo
         logger.remove(sink)
     assert isinstance(route, Send) and [change.call for change in route.changes if isinstance(change, Stub)] == ["call0", "call2"]
     assert stubbings(rig.recorded) == [({"stubbed": ("call0", "call2"), "whole": ("call1",)}, {"stubbed": 2, "whole": 1})]
-    assert [error for error in errors if "call1" in error] == ["no sentence for Read call call1: no answer in 120s"]
+    assert [error for error in errors if "call1" in error] == ["no summary for Read call call1: no answer in 120s"]
 
 
 async def test_forks_and_compaction_share_the_stubs_and_only_main_turns_move_the_batch(rig: Rig) -> None:
@@ -275,10 +275,10 @@ async def test_another_sessions_requests_and_count_tokens_go_unchanged(rig: Rig)
 async def test_a_held_request_goes_held_whatever_the_keeper_would_change() -> None:
     class Holding(Stage):
         def route(self, sent: Sent) -> Route:
-            return Hold("(stayed silent)", SPAN)
+            return Synthesize("(stayed silent)", SPAN)
 
     keeper = Keeper(VirtualClock(), BRAIN, Asked().ask, Store(), 3, lambda _entry: None)
-    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Hold("(stayed silent)", SPAN)
+    assert Kept(Holding(), keeper, NoAsides()).route(sent(history(6))) == Synthesize("(stayed silent)", SPAN)
 
 
 async def test_the_stages_send_goes_on_whole_with_the_keepers_changes_first() -> None:

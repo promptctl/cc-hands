@@ -106,7 +106,7 @@ UNREAD = "hands could not read this permission request, so it is refused."
 BROKEN = "hands failed while it settled this permission request, so it is refused."
 UNVOICED = "Nobody sees this dialog: ask the user in your reply instead, and they will answer in their next turn."
 UNANSWERED = "No answer came from the user in the day its hook is held, so it did not run. Tell them aloud that it did not run and what that leaves undone."
-SPOKEN_OVER = "The user spoke over this turn before they could be asked, so it did not run."
+BARGED_IN = "The user spoke over this turn before they could be asked, so it did not run."
 STOPPED = "hands stopped this turn, so it did not run."
 LET_GO = "Claude Code went on past this dialog before anyone answered it, so it is refused."
 DECLINED: Mapping[str, object] = {"hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}}
@@ -432,7 +432,7 @@ class InTmux:
         await asyncio.shield(self._client.exit)
         # The client lets go as the session ends, which may be before the pane's shell has written fritter's status.
         while not (self._workspace / "status").exists() and (shell := self.shell) is not None and _alive(shell):
-            await self._clock.pause(0.02)
+            await self._clock.sleep(0.02)
         try:
             return int((self._workspace / "status").read_text())
         except (FileNotFoundError, ValueError):
@@ -1255,7 +1255,7 @@ class Brain:
         # reads it: a dialog drops the paste or holds it unsent, and SUBMIT resolves to the prompt's submit or to nothing.
         # [LAW:no-ambient-temporal-coupling] one take, from the first look at the screen until Claude Code says it took the
         # turn or ended it.
-        pausing = asyncio.ensure_future(self._clock.pause(turn.take))
+        sleeping = asyncio.ensure_future(self._clock.sleep(turn.take))
         try:
             # [LAW:single-enforcer] words in the input, whatever left them there (a turn not taken, a person at the pane, an
             # earlier run), are deleted before the paste, so none joins the turn. The look only reads; what is typed, the
@@ -1265,12 +1265,12 @@ class Brain:
             while True:
                 looking = asyncio.ensure_future(self._at_prompt())
                 try:
-                    await asyncio.wait({looking, pausing}, return_when=asyncio.FIRST_COMPLETED)
+                    await asyncio.wait({looking, sleeping}, return_when=asyncio.FIRST_COMPLETED)
                 finally:
                     looking.cancel()
                     await asyncio.wait({looking})
                 # A take that ran out as the prompt showed types nothing: the turn would be Claude Code's with nobody waiting.
-                if looking.cancelled() or pausing.done():
+                if looking.cancelled() or sleeping.done():
                     # [LAW:no-silent-failure] what the screen showed instead is the reason, read with the input still held.
                     raise Untaken(f"the brain's screen showed no empty prompt to type the turn at in {turn.take:g}s; if it is on one of Claude Code's first screens, `hands login` answers them; it showed:\n{await self._shown()}")
                 box = looking.result()
@@ -1281,10 +1281,10 @@ class Brain:
             # thread, as a turn nobody waits on.
             turn.pasted = True
             await self._type(lambda typist: typist.type(turn.typed, SUBMIT))
-            await asyncio.wait({turn.taken, turn.answered, pausing}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({turn.taken, turn.answered, sleeping}, return_when=asyncio.FIRST_COMPLETED)
             # [LAW:no-silent-failure] a pause that failed is its error, never the time running out.
-            if pausing.done():
-                pausing.result()
+            if sleeping.done():
+                sleeping.result()
             if not (turn.taken.done() or turn.answered.done()):
                 # The screen is read before the take is judged again: Claude Code may take the turn as it is read.
                 shown = await self._shown()
@@ -1294,12 +1294,12 @@ class Brain:
                     # empty prompt, a dialog drawn as the turn was pasted, which dropped it.
                     self._over(turn, Untaken(f"the brain did not take the turn typed into it in {turn.take:g}s; it showed:\n{shown}"))
         finally:
-            pausing.cancel()
-            await asyncio.wait({pausing})
+            sleeping.cancel()
+            await asyncio.wait({sleeping})
             # [LAW:no-silent-failure] a pause that failed, however the take ended, says so, and is not taken for the time
             # running out.
-            if not pausing.cancelled():
-                pausing.result()
+            if not sleeping.cancelled():
+                sleeping.result()
 
     async def _emptied(self, box: Box) -> None:
         """Deletes the words of the input `box` shows, a row a pass, wherever the cursor stands: Ctrl-E and Ctrl-U empty
@@ -1324,10 +1324,10 @@ class Brain:
             while True:
                 looks += 1
                 if (first := typable(await self._claude.screen())) is not None:
-                    await self._clock.pause(SETTLE_SECONDS)
+                    await self._clock.sleep(SETTLE_SECONDS)
                     if typable(await self._claude.screen()) == first:
                         return first
-                await self._clock.pause(LOOK_SECONDS)
+                await self._clock.sleep(LOOK_SECONDS)
         finally:
             # [LAW:nothing-unseen] how long the turn waited for the prompt, and how many reads that took, found or not: a
             # turn typed at once reads 1.
@@ -1346,14 +1346,14 @@ class Brain:
 
         [LAW:no-silent-failure] a pause that failed, however the wait ended, says so, and is not taken for the time
         running out; a wait that was itself cancelled stays cancelled, as asyncio's every canceller counts on."""
-        pausing = asyncio.ensure_future(self._clock.pause(seconds))
+        sleeping = asyncio.ensure_future(self._clock.sleep(seconds))
         try:
-            await asyncio.wait({*ending, pausing}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({*ending, sleeping}, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            pausing.cancel()
-            await asyncio.wait({pausing})
-        if not pausing.cancelled():
-            pausing.result()
+            sleeping.cancel()
+            await asyncio.wait({sleeping})
+        if not sleeping.cancelled():
+            sleeping.result()
 
     async def _clear(self, turn: _Turn | None) -> None:
         """Stops whatever Claude Code runs and empties its input, with the input held, for `turn`, and returns once the
@@ -1382,7 +1382,7 @@ class Brain:
             # was typed between; so no two are pressed that close, counted from when each went and with room for Claude
             # Code to read the first late. The spacing is waited out while Claude Code acts on the Escape.
             spacing = max(self._cleared + EXIT_SECONDS - self._clock.now(), 0.0)
-            await self._clock.pause(spacing)
+            await self._clock.sleep(spacing)
             annotate(spaced=round(spacing, 3))
             # Taken once Claude Code holds nothing of what it ran: every turn it ran told, and nothing of it waiting in its
             # queue. The Escape alone stops it, in up to half a second on CI (promptctl-testing-px1f.6i5).
@@ -1943,7 +1943,7 @@ async def _typist(clock: Clock, running: InTmux, sockets: Path, session: Session
                 return typist, wrapper
             except Untyped as error:
                 waiting = f"the brain had not turned its input on ({error})"
-        await clock.pause(0.05)
+        await clock.sleep(0.05)
     # What fritter's terminal showed says why: a fritter that could not be run at all fails there, in the shell it was run by.
     if running.exit.done():
         raise Unstartable(f"{exited(running.exit.result())} while {waiting}; it showed:\n{running.shown()}")

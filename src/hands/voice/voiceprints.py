@@ -1,15 +1,15 @@
-"""Voiceprints: who a speaker in a hold is, told by their voice against hands' own, on 3D-Speaker's ERes2Net speaker
+"""Voiceprints: who a speaker in a clip is, told by their voice against hands' own, on 3D-Speaker's ERes2Net speaker
 embedding run by sherpa-onnx on the CPU; nothing here loads Pipecat.
 
 A voiceprint is the model's embedding of a stretch of speech, scaled to unit length, so two compare by their cosine
 similarity. hands' own voiceprint is made by hands, from its own TTS output in each voice it speaks in
 (`Voiceprints`), never from a person's voice and never by an enrolment the user performs. The diarizer
-(`hands.voice.streaming`) splits a hold into speakers; its numbers are not identities, since one number can be two
-voices and overlapped speech gets both, so each speaker in each hold is scored here, from that hold's audio alone.
+(`hands.voice.streaming`) splits a clip into speakers; its numbers are not identities, since one number can be two
+voices and overlapped speech gets both, so each speaker in each clip is scored here, from that clip's audio alone.
 
 Measured on zoj's recordings (promptctl-voice-i15t.99s.zoj, re-measured by scripts/measure-voiceprints.py): hands' echo
 through the room scores 0.79 to 0.93 over long windows, another voice -0.04 to 0.16, and the two overlap below about a
-second of speech, so how much of a speaker was heard decides what their score can say (`FLOORS`).
+second of speech, so how much of a speaker was heard decides what their score can say (`THRESHOLDS`).
 
 Who each speaker is is measured beside the cut and decides nothing yet. It is worked out on a lane of its own, after the
 words it is about have gone out, so no hearing's words ever wait on a voiceprint.
@@ -29,7 +29,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
-from hands.voice.holds import RATE, Hold, Samples
+from hands.voice.clips import RATE, Clip, Samples
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
 MODEL = "csukuangfj/speaker-embedding-models"
@@ -105,12 +105,12 @@ class Unidentified:
     why: str
 
 
-# Who a speaker of a hold is, by their voiceprint against hands' own.
+# Who a speaker of a clip is, by their voiceprint against hands' own.
 type Who = Person | Hands | Unsure | Unheard | Unidentified
 
 
 @dataclass(frozen=True)
-class Floor:
+class Threshold:
     """From `seconds` of a speaker's voice on, a score under `score` is not hands: under what hands' own echo scored at
     that length."""
 
@@ -124,10 +124,10 @@ class Floor:
 # at most 0.19 and hands' echo at least 0.37; from 1.5 s, people over hands at most 0.66 but mostly far under, and the
 # echo at least 0.64; from 3 s the echo at least 0.74, and the one line of a person over hands that long 0.36. Under a
 # second nothing is decided: at 0.8 s the echo scored as low as 0.19, a person alone as high as 0.21. One room, one
-# voice: hands records each hold it hears (`hands.voice.recorder`), and each identification says the window it scored,
+# voice: hands records each clip it hears (`hands.voice.recorder`), and each identification says the window it scored,
 # so the table is refitted on real use (promptctl-voice-i15t.8vg.xvr).
-FLOORS = (Floor(1.0, 0.25), Floor(1.5, 0.55), Floor(3.0, 0.70))
-ALONE, PERSON, HANDS = FLOORS
+THRESHOLDS = (Threshold(1.0, 0.25), Threshold(1.5, 0.55), Threshold(3.0, 0.70))
+ALONE, PERSON, HANDS = THRESHOLDS
 
 # The most of a speaker's voice, their latest, a score is taken on: the table's longest row, past which nothing was
 # measured, and the bound on what scoring costs, about 18 ms for each second scored.
@@ -136,14 +136,14 @@ WINDOW = HANDS.seconds
 
 def reached(seconds: float) -> int:
     """How many rows of the table `seconds` of a speaker has reached: a speaker is scored as they reach each."""
-    return sum(row.seconds <= seconds for row in FLOORS)
+    return sum(row.seconds <= seconds for row in THRESHOLDS)
 
 
 def decided(scored: float, seconds: float, window: Window) -> Who:
     """Who a speaker is whose latest voice, `window` of it, scored `scored` against hands', `seconds` of them heard in
     all. [LAW:dataflow-not-control-flow] one row of the table decides, the longest the speaker has reached."""
-    floor = next(row for row in reversed(FLOORS) if row.seconds <= seconds)
-    match scored < floor.score, seconds >= HANDS.seconds:
+    threshold = next(row for row in reversed(THRESHOLDS) if row.seconds <= seconds)
+    match scored < threshold.score, seconds >= HANDS.seconds:
         case True, _:
             return Person(scored, seconds, window)
         case False, True:
@@ -154,8 +154,8 @@ def decided(scored: float, seconds: float, window: Window) -> Who:
 
 @dataclass(frozen=True)
 class Voiced:
-    """One speaker in a hold, as the stream heard them: their number in the run, the latest WINDOW of their voice in
-    the hold, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
+    """One speaker in a clip, as the stream heard them: their number in the run, the latest WINDOW of their voice in
+    the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
     and every voice of hands' TTS played over any of them."""
 
     speaker: int
@@ -167,7 +167,7 @@ class Voiced:
 
 @dataclass(frozen=True)
 class Speaker:
-    """One speaker in a hold, identified: their number in the run, and who they are."""
+    """One speaker in a clip, identified: their number in the run, and who they are."""
 
     number: int
     who: Who
@@ -186,10 +186,10 @@ def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced) -> Who:
 
 class Identifier(Protocol):
     """What identifies the speakers the stream hears: each as they reach a row of the table, and every one at the end
-    of their hold."""
+    of their clip."""
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None: ...
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
 
 
 # What hands says to make its own voiceprint in a voice: about twelve seconds of the kind of thing it says, never played.
@@ -244,7 +244,7 @@ class Voiceprints:
     in (`hands.voice.voices.Voices.hear`).
 
     [LAW:no-shared-mutable-globals] the model, the prints, the voices hands speaks in, and who was a person in each
-    hold are the lane's alone, read and written only by the work given to it, in order.
+    clip are the lane's alone, read and written only by the work given to it, in order.
     [LAW:no-silent-failure] a model that does not load, or a voiceprint that cannot be made or kept, fails its own
     unit with why, and every speaker it leaves nothing to score against is Unidentified with that why.
     """
@@ -263,8 +263,8 @@ class Voiceprints:
         self._enrolling: set[str] = set()
         # The voice before the last change, and the one now: at most two, the last the one hands speaks in.
         self._speaking: tuple[str, ...] = ()
-        # [LAW:one-source-of-truth] each speaker found a person in each hold, which they stay for it, by the hold's
-        # number: a hold's last identification, at its end, may come after the next hold's first.
+        # [LAW:one-source-of-truth] each speaker found a person in each clip, which they stay for it, by the clip's
+        # number: a clip's last identification, at its end, may come after the next clip's first.
         self._people: dict[int, dict[int, Person]] = {}
         # The model is loaded as the lane's first work, given it by the first voice hands speaks in: the voice's build.
         self._load: Callable[[], Embed] | None = load
@@ -367,25 +367,25 @@ class Voiceprints:
             case samples, embed:
                 return embed(samples)
 
-    def identify(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
         `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
         began = begun(self._clock)
-        self._lane.give(lambda: self._identified(hold, voiced, began))
+        self._lane.give(lambda: self._identified(clip, voiced, began))
 
-    def ended(self, hold: Hold, voiced: tuple[Voiced, ...]) -> None:
-        """Who each speaker in `hold` is, at its end: its last identification, after which no speaker of it is
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
+        """Who each speaker in `clip` is, at its end: its last identification, after which no speaker of it is
         remembered."""
         began = begun(self._clock)
 
         def last() -> None:
-            self._identified(hold, voiced, began)
-            self._people.pop(hold.number, None)
+            self._identified(clip, voiced, began)
+            self._people.pop(clip.number, None)
 
         self._lane.give(last)
 
     def spanned(self, span: int, voiced: Voiced) -> None:
-        """Who the one voice of echo span `span` is (`hands.voice.recorder`), hands' echo heard with no hold open,
+        """Who the one voice of echo span `span` is (`hands.voice.recorder`), hands' echo heard with no clip open,
         worked out on the lane and told as a `voiceprints.identified` unit of the span's. Returns at once."""
         began = begun(self._clock)
 
@@ -399,19 +399,19 @@ class Voiceprints:
 
         self._lane.give(identified)
 
-    def _identified(self, hold: Hold, voiced: tuple[Voiced, ...], began: Begun) -> None:
+    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], began: Begun) -> None:
         if not voiced:
             return
         try:
-            speakers = tuple(Speaker(each.speaker, self._who(hold, each)) for each in voiced)
+            speakers = tuple(Speaker(each.speaker, self._who(clip, each)) for each in voiced)
         except Exception as error:
-            ended("voiceprints.identified", self._record, began, error, hold=hold.number)
+            ended("voiceprints.identified", self._record, began, error, clip=clip.number)
             return
-        ended("voiceprints.identified", self._record, began, None, hold=hold.number, speakers=speakers)
+        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers)
 
-    def _who(self, hold: Hold, voiced: Voiced) -> Who:
-        """[LAW:single-enforcer] once a person in a hold, a speaker is one for the rest of it."""
-        people = self._people.setdefault(hold.number, {})
+    def _who(self, clip: Clip, voiced: Voiced) -> Who:
+        """[LAW:single-enforcer] once a person in a clip, a speaker is one for the rest of it."""
+        people = self._people.setdefault(clip.number, {})
         match people.get(voiced.speaker):
             case Person() as known:
                 return known

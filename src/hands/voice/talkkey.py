@@ -16,7 +16,7 @@ import Quartz
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.hold import CommandPressed, CommandReleased, Instant, KeyEvent, Pressed, Released, Typed
+from hands.voice.shortcut import CommandPressed, CommandReleased, Instant, KeyEvent, Pressed, Released, Typed
 
 # kVK_RightShift. Its presses and releases arrive as flag changes, not key downs, as every modifier's do.
 RIGHT_SHIFT = 60

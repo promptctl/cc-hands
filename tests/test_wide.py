@@ -42,7 +42,7 @@ def test_a_unit_that_raises_is_a_failed_event_saying_what_it_raised_and_the_erro
     [event] = emitted
     assert (event.outcome, event.error, event.facts) == ("failed", "RuntimeError: git is on fire", {"step": "reading"})
     # As a Logged line does: what was raised, and the frames it came up through.
-    assert event.trace[0] == "RuntimeError: git is on fire" and any("in test_a_unit_that_raises" in line for line in event.trace)
+    assert event.stacktrace[0] == "RuntimeError: git is on fire" and any("in test_a_unit_that_raises" in line for line in event.stacktrace)
 
 
 async def test_a_unit_cancelled_mid_run_is_a_cancelled_event_and_not_a_failure() -> None:
@@ -124,7 +124,7 @@ def test_a_unit_that_says_it_failed_ends_failed_with_why_and_runs_to_its_end() -
         fail("the forge refused")
         annotate(after="still ran")
     [event] = emitted
-    assert (event.outcome, event.error, event.trace, event.facts) == ("failed", "the forge refused", (), {"after": "still ran"})
+    assert (event.outcome, event.error, event.stacktrace, event.facts) == ("failed", "the forge refused", (), {"after": "still ran"})
 
 
 def test_a_part_timed_elsewhere_is_its_own_event_under_the_unit_in_its_trace() -> None:

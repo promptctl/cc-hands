@@ -129,7 +129,7 @@ async def test_a_task_failed_and_a_teardown_that_raises_are_both_raised_and_both
     assert ran(launched.recorded) == [("failed", ("the namer", "escaped"), "failed")]
     [event] = events(launched.recorded, "hands.run")
     assert event.error == "ExceptionGroup: OSError: the disk is gone; ConnectionError: the device went away (2 sub-exceptions)"
-    assert "OSError: the disk is gone" in event.trace and "ConnectionError: the device went away" in event.trace
+    assert "OSError: the disk is gone" in event.stacktrace and "ConnectionError: the device went away" in event.stacktrace
 
 
 async def test_a_run_that_fails_before_it_was_ready_fails_its_start_too(tmp_path: Path) -> None:

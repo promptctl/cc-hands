@@ -11,14 +11,14 @@ from hands.clock import Scheduled, Timeout
 
 
 class VirtualClock:
-    """Time that passes only when a test moves it, on a wall clock that starts at `epoch` and moves with it: `pause` and
+    """Time that passes only when a test moves it, on a wall clock that starts at `epoch` and moves with it: `sleep` and
     `call_at` come due as `advance` reaches them, and ids and randomness come from `seed`."""
 
     def __init__(self, epoch: datetime = datetime(2026, 1, 1, tzinfo=UTC), seed: int = 0) -> None:
         self.at = 0.0
         self._epoch = epoch
         self._random = random.Random(seed)
-        self._pauses: list[tuple[float, asyncio.Future[None]]] = []
+        self._sleeps: list[tuple[float, asyncio.Future[None]]] = []
         self._watched: list[tuple[Callable[[], bool], asyncio.Future[None]]] = []
         self._calls: list[_Call] = []
         self._begun: list[float] = []
@@ -29,14 +29,14 @@ class VirtualClock:
     def wall(self) -> datetime:
         return self._epoch + timedelta(seconds=self.at)
 
-    def pause(self, seconds: float) -> asyncio.Future[None]:
+    def sleep(self, seconds: float) -> asyncio.Future[None]:
         woken = asyncio.get_running_loop().create_future()
-        self._pauses.append((self.at + seconds, woken))
+        self._sleeps.append((self.at + seconds, woken))
         self._begun.append(seconds)
-        # A pause ends by waking or by its waiter's cancel, and a watch for fewer pauses waiting reads the ending.
+        # A sleep ends by waking or by its waiter's cancel, and a watch for fewer sleeps waiting reads the ending.
         woken.add_done_callback(lambda _: self._seen())
         self._seen()
-        # A pause already due wakes at once, as `asyncio.sleep(0)` does.
+        # A sleep already due wakes at once, as `asyncio.sleep(0)` does.
         self._wake()
         return woken
 
@@ -56,11 +56,11 @@ class VirtualClock:
     def uuid(self) -> str:
         return uuid.UUID(int=self._random.getrandbits(128), version=4).hex
 
-    def rest(self, seconds: float) -> None:
-        # Off any loop, nothing waits on this clock's pauses to be woken: the time moves, and no real second passes. A
-        # pause or call a loop waits on would come due unwoken, so a clock shared that way is refused, not run.
+    def sleep_blocking(self, seconds: float) -> None:
+        # Off any loop, nothing waits on this clock's sleeps to be woken: the time moves, and no real second passes. A
+        # sleep or call a loop waits on would come due unwoken, so a clock shared that way is refused, not run.
         if self.waking or any(call.live for call in self._calls):
-            raise RuntimeError("rest moves a clock a loop is waiting on; that loop's test moves it with advance")
+            raise RuntimeError("sleep_blocking moves a clock a loop is waiting on; that loop's test moves it with advance")
         self._move(self.at + seconds)
 
     def take[T](self, source: queue.Queue[T] | queue.SimpleQueue[T], seconds: float) -> T:
@@ -78,27 +78,27 @@ class VirtualClock:
 
     def _move(self, when: float) -> None:
         # Monotonic, as the time it stands in for: a rewind would stamp what follows before what came first, and a NaN
-        # would leave every pause and call never due.
+        # would leave every sleep and call never due.
         if not when >= self.at:
             raise ValueError(f"a clock moves only forward; {when} is not on or after {self.at}")
         self.at = when
 
-    async def paused(self, until: float, count: int = 1) -> None:
-        """Once `count` pauses that wake at `until` are waiting on this clock, however long the unit takes to come to them:
+    async def sleeping(self, until: float, count: int = 1) -> None:
+        """Once `count` sleeps that wake at `until` are waiting on this clock, however long the unit takes to come to them:
         a test moves the clock only once the deadline it spends is being waited out [LAW:no-ambient-temporal-coupling],
         and a unit that never comes to it is ended by the suite's timeout."""
         await self._watch(lambda: self.waking.count(until) >= count)
 
     async def down_to(self, until: float, count: int, of: int) -> None:
-        """Once `of` pauses that wake at `until` have been waiting on this clock together and only `count` of them still
+        """Once `of` sleeps that wake at `until` have been waiting on this clock together and only `count` of them still
         are: the others ended first, as a git that fails ends its own wait. The `of` is awaited before the `count`, so a
-        count the pauses have not yet come to is not read as the others having ended [LAW:no-ambient-temporal-coupling]."""
-        await self.paused(until, of)
+        count the sleeps have not yet come to is not read as the others having ended [LAW:no-ambient-temporal-coupling]."""
+        await self.sleeping(until, of)
         await self._watch(lambda: self.waking.count(until) == count)
 
     async def scheduled(self, until: float, count: int = 1) -> None:
         """Once `count` calls that come due at `until`, as a timeout's deadline does, are scheduled on this clock: as
-        `paused`, for what `call_at` waits out."""
+        `sleeping`, for what `call_at` waits out."""
         await self._watch(lambda: [call.when for call in self._calls if call.live].count(until) >= count)
 
     async def _watch(self, ready: Callable[[], bool]) -> None:
@@ -109,20 +109,20 @@ class VirtualClock:
 
     @property
     def begun(self) -> tuple[float, ...]:
-        """How long each pause ever begun on this clock was to last, done or not: what a test reads to say one never
+        """How long each sleep ever begun on this clock was to last, done or not: what a test reads to say one never
         began."""
         return tuple(self._begun)
 
     @property
     def waking(self) -> tuple[float, ...]:
-        """When each pause still waiting wakes, on this clock."""
-        return tuple(until for until, woken in self._pauses if not woken.done())
+        """When each sleep still waiting wakes, on this clock."""
+        return tuple(until for until, woken in self._sleeps if not woken.done())
 
     def _wake(self) -> None:
-        for until, woken in self._pauses:
+        for until, woken in self._sleeps:
             if until <= self.at and not woken.done():
                 woken.set_result(None)
-        self._pauses = [(until, woken) for until, woken in self._pauses if not woken.done()]
+        self._sleeps = [(until, woken) for until, woken in self._sleeps if not woken.done()]
         if not any(call.when <= self.at for call in self._calls):
             return
         # Read before a due call is taken off, so a clock moved off the loop raises with every call still scheduled.

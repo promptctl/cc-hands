@@ -35,7 +35,7 @@ from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
 from hands.sessions.processes import process_starts
-from hands.sessions.terminals import Terminal, Terminals, Undescribed, attended, terminal_processes
+from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.voice import backends
 
 
@@ -391,7 +391,7 @@ def unrecorded(home: Home, path: str, members: Collection[int]) -> Unrecorded | 
             except OSError as error:
                 return Unfindable(f"cannot tell which Claude Code config this check runs under: {error}")
             try:
-                return unjoined(home, executable, config, terminal_processes(), members, attended)
+                return unjoined(home, executable, config, terminal_processes(), members, interactive)
             except OSError as error:
                 return Unfindable(f"cannot look at this user's processes at a terminal: {error}")
 
@@ -425,7 +425,7 @@ def config_dir(environment: Mapping[str, str], cwd: Path) -> Path:
 
 
 def unjoined(
-    home: Home, claude: Path, config: Path, terminals: Terminals, members: Collection[int], attended: Callable[[Terminal], bool | Undescribed]
+    home: Home, claude: Path, config: Path, terminals: Terminals, members: Collection[int], interactive: Callable[[Terminal], bool | Undescribed]
 ) -> Unrecorded:
     """The sessions at a terminal under `config` that no running membership names: started before the plugin, and not
     reloaded since.
@@ -435,7 +435,7 @@ def unjoined(
     `claude -p`, a subcommand, or a claude piped into, is none. One whose parent runs claude is that run's own helper. The
     hook records that same process, so it is matched by pid. One under another config, as the brain is, has other
     plugins, and is no session of the plugin this check looks at; one under the same directory by another path, through
-    a link, is, since `config` and each process's are both as `config_dir` reads them. `attended` says whether a process
+    a link, is, since `config` and each process's are both as `config_dir` reads them. `interactive` says whether a process
     reads and writes its terminal; it is asked only of a run of claude, the one process it matters for. A process the
     kernel would not describe may be a session, unless it is one hands knows or a run's own helper.
     """
@@ -451,7 +451,7 @@ def unjoined(
         for process in terminals.found
         if runs_claude(process.pid) and not runs_claude(process.parent) and config_dir(process.environment, process.cwd) == config and process.pid not in members
     ]
-    told = [(process, attended(process)) for process in runs]
+    told = [(process, interactive(process)) for process in runs]
     described = [(process, reads) for process, reads in told if isinstance(reads, bool)]
     # [LAW:one-source-of-truth] a session is what the shim would run as one, by the shim's own test.
     ran: list[tuple[Terminal, wrapper.Run]] = [(process, wrapper.run(process.arguments, reads)) for process, reads in described]

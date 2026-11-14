@@ -4,7 +4,7 @@ import pytest
 
 from conftest import events
 from hands.virtualclock import VirtualClock
-from hands.voice.hold import Move
+from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
 from hands.voice.tools import modality_tool
@@ -20,27 +20,27 @@ def test_starts_up_and_silent() -> None:
 
 
 def test_a_started_turn_is_heard() -> None:
-    gate = Gate().after("start", "held key")
+    gate = Gate().after("start", "shortcut")
     assert gate.audible(LOUD) == LOUD
 
 
 @pytest.mark.parametrize("ended", ["stop", "drop", "timeout"])
 def test_an_ended_turn_is_silence_of_the_same_length(ended: Move) -> None:
-    gate = Gate().after("start", "held key").after(ended, "held key")
+    gate = Gate().after("start", "shortcut").after(ended, "shortcut")
     assert gate.audible(LOUD) == QUIET
 
 
 def test_a_press_is_heard_before_it_means_talk_and_silence_once_it_is_shift() -> None:
-    assert Gate().after("arm", "held key").audible(LOUD) == LOUD
-    assert Gate().after("arm", "held key").after("disarm", "held key").audible(LOUD) == QUIET
+    assert Gate().after("arm", "shortcut").audible(LOUD) == LOUD
+    assert Gate().after("arm", "shortcut").after("disarm", "shortcut").audible(LOUD) == QUIET
 
 
 def test_every_turn_is_counted_sent_or_thrown_away_and_the_key_rests_after_either() -> None:
-    assert Gate().after("start", "held key").after("stop", "held key") == Gate("up", "desk", sent=1)
-    assert Gate().after("start", "held key").after("drop", "held key") == Gate("up", "desk", dropped=1)
-    assert Gate().after("start", "held key").after("timeout", "held key") == Gate("up", "desk", sent=1)  # sent, as it stood
+    assert Gate().after("start", "shortcut").after("stop", "shortcut") == Gate("up", "desk", sent=1)
+    assert Gate().after("start", "shortcut").after("drop", "shortcut") == Gate("up", "desk", dropped=1)
+    assert Gate().after("start", "shortcut").after("timeout", "shortcut") == Gate("up", "desk", sent=1)  # sent, as it stood
     # A turn ended and the next opened before a frame is captured: the count says the first was sent.
-    assert Gate().after("start", "held key").after("stop", "held key").after("arm", "held key").after("start", "held key") == Gate("down", "desk", sent=1)
+    assert Gate().after("start", "shortcut").after("stop", "shortcut").after("arm", "shortcut").after("start", "shortcut") == Gate("down", "desk", sent=1)
 
 
 def test_an_engaged_desk_is_heard_between_turns_and_each_turn_ends_back_to_listening() -> None:
@@ -82,12 +82,12 @@ def test_a_turn_opened_at_the_other_place_moves_the_gate_there() -> None:
 def test_the_other_place_cannot_touch_a_turn_but_by_opening_one(move: Move) -> None:
     # A Shift typed at the desk while the user talks on the phone.
     on_the_phone = Gate().after("start", "phone button")
-    assert on_the_phone.after(move, "held key") == on_the_phone
+    assert on_the_phone.after(move, "shortcut") == on_the_phone
 
 
-def test_leaving_a_place_mid_hold_throws_the_hold_away() -> None:
+def test_leaving_a_place_mid_clip_throws_the_clip_away() -> None:
     assert Gate().after("start", "phone button").moved("desk") == Gate("up", "desk", dropped=1, opened="phone button")
-    assert Gate().after("arm", "held key").moved("phone") == Gate("up", "phone")  # no turn open, so none thrown away
+    assert Gate().after("arm", "shortcut").moved("phone") == Gate("up", "phone")  # no turn open, so none thrown away
     assert Gate().moved("phone") == Gate("up", "phone")
     assert Gate("down", "phone").moved("phone") == Gate("down", "phone")
 
@@ -95,13 +95,13 @@ def test_leaving_a_place_mid_hold_throws_the_hold_away() -> None:
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     recorded: list[Entry] = []
     key = PushToTalk(VirtualClock(), recorded.append)
-    key.move("arm", "held key")
-    key.move("start", "held key")
+    key.move("arm", "shortcut")
+    key.move("start", "shortcut")
     key.go("phone")  # a call arrives while the user talks at the desk
     key.move("start", "phone button")
     key.move("stop", "phone button")
-    key.move("start", "held key")
-    key.move("stop", "held key")
+    key.move("start", "shortcut")
+    key.move("stop", "shortcut")
     assert [move.facts for move in events(recorded, "place.moved")] == [
         {"before": "desk", "after": "phone", "by": "call", "dropped": True},
         {"before": "phone", "after": "desk", "by": "turn", "dropped": False},
@@ -110,7 +110,7 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
 
 
 @pytest.mark.parametrize("held", ["arming", "down"])
-def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both(held: Key) -> None:
+def test_a_turn_opened_at_one_place_while_a_clip_is_open_at_the_other_drops_both(held: Key) -> None:
     # Right Shift held at the desk, and the phone's button pressed: two hands on two keys.
     gate = Gate(held, "desk")
     assert gate.took("start", "phone") == "drop"
@@ -118,16 +118,16 @@ def test_a_turn_opened_at_one_place_while_a_hold_is_open_at_the_other_drops_both
     recorded: list[Entry] = []
     key = PushToTalk(VirtualClock(), recorded.append)
     key.move("start", "phone button")
-    assert key.move("start", "held key") == "drop"
+    assert key.move("start", "shortcut") == "drop"
     assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "dropped": True}
 
 
 @pytest.mark.parametrize("ending", ["stop", "drop", "timeout"])
-def test_the_end_of_a_hold_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
-    # The phone's turn was dropped by a press at the desk, whose hold now ends: nothing is sent, nothing cued twice.
+def test_the_end_of_a_clip_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
+    # The phone's turn was dropped by a press at the desk, whose clip now ends: nothing is sent, nothing cued twice.
     dropped = Gate("up", "desk", dropped=1)
     assert dropped.took(ending, "desk") is None
-    assert dropped.after(ending, "held key") == dropped
+    assert dropped.after(ending, "shortcut") == dropped
     assert dropped.took("arm", "desk") == "arm"
 
 
@@ -142,31 +142,31 @@ def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:
     assert key.modality == "screen"
     key.go("phone")  # a call arrives
     assert key.modality == "audio-only"
-    key.move("start", "held key")  # a turn opened at the desk while the call is up
+    key.move("start", "shortcut")  # a turn opened at the desk while the call is up
     assert key.modality == "screen"
 
 
-def test_a_turn_is_known_by_the_edge_that_opened_it_until_another_opens() -> None:
+def test_a_turn_is_known_by_the_trigger_that_opened_it_until_another_opens() -> None:
     key = PushToTalk(VirtualClock(), lambda _: None)
     key.go("phone")  # a call arrives: it opens no turn
-    assert key.opened == "held key"
+    assert key.opened == "shortcut"
     key.move("start", "phone button")
     key.move("stop", "phone button")
     assert key.opened == "phone button"
     key.go("desk")
-    key.move("arm", "held key")  # a press still arming opens nothing
-    key.move("disarm", "held key")
+    key.move("arm", "shortcut")  # a press still arming opens nothing
+    key.move("disarm", "shortcut")
     assert key.opened == "phone button"
-    key.move("start", "held key")
-    assert key.opened == "held key"
+    key.move("start", "shortcut")
+    assert key.opened == "shortcut"
 
 
 def test_a_switch_by_voice_holds_until_hands_moves_between_the_desk_and_the_phone() -> None:
     key = PushToTalk(VirtualClock(), lambda _: None)
     key.switch("audio-only")
     # Turns at the place it was switched at keep it.
-    key.move("start", "held key")
-    key.move("stop", "held key")
+    key.move("start", "shortcut")
+    key.move("stop", "shortcut")
     assert key.modality == "audio-only"
     key.go("phone")
     key.switch("screen")

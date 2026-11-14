@@ -1,7 +1,7 @@
-"""Whisper on MLX, in hands' own process: the segments a hold's WAV is heard as, each with Whisper's two scores for
+"""Whisper on MLX, in hands' own process: the segments a clip's WAV is heard as, each with Whisper's two scores for
 dropping it; nothing here loads Pipecat.
 
-The voice transcribes every hold through it, and `hands smoke` judges what hands said aloud with it, so what the smoke
+The voice transcribes every clip through it, and `hands smoke` judges what hands said aloud with it, so what the smoke
 test hears is what the voice would have heard. LowTalker serves the same large-v3-turbo weights from the Neural Engine,
 and hands measured it slower: key release to transcript 613 to 724 ms through LowTalker against 298 to 329 ms here, over
 the same six spoken turns, by upload and by its Realtime socket alike (hands-dictation-2bs.kpm, 2026-10-04).
@@ -13,9 +13,9 @@ import mlx_whisper
 import numpy as np
 
 from hands.sessions.audit import Unsaid
-from hands.voice.holds import LANGUAGE, RATE, decoded
+from hands.voice.clips import LANGUAGE, RATE, decoded
 
-# The model every hold is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
+# The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
 MODEL = "mlx-community/whisper-large-v3-turbo"
 
 # A second of silence: what the model is loaded by.
@@ -28,7 +28,7 @@ def load() -> None:
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
     fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched, loading takes
     0.5 s and the first run after it 1.3 s against 0.3 s for every later one. The model is kept for the process, keyed
-    on its name, so silence transcribed here through the call every hold makes leaves every hold finding it loaded and
+    on its name, so silence transcribed here through the call every clip makes leaves every clip finding it loaded and
     run [LAW:no-ambient-temporal-coupling].
     """
     _transcribe(_SILENCE, None)
@@ -43,11 +43,11 @@ def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
 
 
 def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
-    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every hold run.
+    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every clip run.
 
-    Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long hold fell
+    Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long clip fell
     into a loop ("$.h. $.h. ...") that carried from window to window, and the compression filter dropped every segment
-    after it, the back half of a 600 s hold of spoken prose; decoded on their own, 180 s and 600 s lost none
+    after it, the back half of a 600 s clip of spoken prose; decoded on their own, 180 s and 600 s lost none
     (promptctl-voice-je8.d20). MLX Whisper then primes only the first window with `prompt`.
     """
     transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)

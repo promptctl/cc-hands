@@ -11,7 +11,7 @@ from functools import partial
 
 from hands.clock import Clock
 from hands.voice import talkkey
-from hands.voice.hold import KeyEvent, asked
+from hands.voice.shortcut import KeyEvent, asked
 
 QUIT = "q"
 
@@ -25,7 +25,7 @@ async def tapped(clock: Clock, into: Callable[[KeyEvent], None], tap: Callable[[
     def arrived(event: KeyEvent) -> None:
         into(event)
         # [LAW:no-ambient-temporal-coupling] what each event asks to be told later is told at its instant on the clock the
-        # press was stamped on; the hold is the one owner of what that means, and ignores the
+        # press was stamped on; the shortcut is the one owner of what that means, and ignores the
         # ones a release has made stale.
         for at, later in asked(event):
             clock.call_at(at, partial(into, later))

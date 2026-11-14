@@ -1,6 +1,6 @@
 """What a turn changed in the repository a session works in, read from git without disturbing it.
 
-Every command here reads: nothing moves a ref, stages anything, or touches the working tree. The one mark it
+Every command here reads: nothing moves a ref, stages anything, or touches the working tree. The one baseline it
 leaves is in the object database, where writing a tree costs one unreferenced object per content git has not
 stored already, and git's own housekeeping collects them. Content is what git names an object by, so a file
 that does not change costs its size once however many turns read it: measured at 1.6 MB the first time two
@@ -33,11 +33,11 @@ from hands.clock import Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
 
-# What a mark may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
-# and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a mark that
-# costs more than the hook can afford is worse than no mark at all, and the half second is the rest of the
+# What a baseline may spend, all its git commands together. It is taken while a prompt's hook waits on the daemon,
+# and the shim gives up after POST_TIMEOUT_SECONDS and prints that it cannot reach the daemon — so a baseline that
+# costs more than the hook can afford is worse than no baseline at all, and the half second is the rest of the
 # round trip [LAW:carrying-cost]. A repository too slow for this has its turn told by its steps alone.
-MARKING = POST_TIMEOUT_SECONDS - 0.5
+BASELINING = POST_TIMEOUT_SECONDS - 0.5
 
 # What reading a delta may spend. Nothing holds a hook open for this: it runs on its own once the turn has
 # stopped, and the only thing waiting is a narrator about to spend seconds on a model.
@@ -88,28 +88,28 @@ class Refs:
 
 
 @dataclass(frozen=True)
-class Mark:
+class Baseline:
     """Where a repository stood: the commit it was on, and a tree of everything in it git would keep."""
 
     root: Path
-    # None only where a repository has no commit to be on, never where git could not say. A mark that cannot
-    # tell those two apart has every commit in the repository read as the work of one turn: see _mark.
+    # None only where a repository has no commit to be on, never where git could not say. A baseline that cannot
+    # tell those two apart has every commit in the repository read as the work of one turn: see _baseline.
     head: str | None
     tree: str
     # Every local branch and remote-tracking ref, and the commit each names. None where git would not list them,
     # never empty for it: read as a repository with no branches, every branch it has is one the turn made.
     refs: Refs | None
-    # When the mark was taken, on the wall clock a forge stamps a pull request with.
+    # When the baseline was taken, on the wall clock a forge stamps a pull request with.
     at: datetime
 
 
 @dataclass(frozen=True)
 class Standing:
-    """Where a repository stands: the commit it is on and its refs, and when that was read. A mark is this and a tree."""
+    """Where a repository stands: the commit it is on and its refs, and when that was read. A baseline is this and a tree."""
 
     # None only where the repository has no commit to be on: a HEAD git could not read is no Standing at all.
     head: str | None
-    # None where git would not list them, as in Mark.
+    # None where git would not list them, as in Baseline.
     refs: Refs | None
     # When the read of it began, on the wall clock a forge stamps a pull request with.
     at: datetime
@@ -121,26 +121,26 @@ class Standing:
 # a shape hands does not read.
 Forge = Literal["unasked", "absent", "answered", "unanswered", "refused"]
 
-# Why a reading has no mark to read against: none was taken (no repository, one that could not be read, or a turn no prompt
-# marked), or the start it was to be read against is a capture the next turn's start overtook.
-Unmarked = Literal["unmarked", "start overtaken"]
+# Why a reading has no baseline to read against: none was taken (no repository, one that could not be read, or a turn no prompt
+# baselined), or the start it was to be read against is a capture the next turn's start overtook.
+Unbaselined = Literal["unbaselined", "start overtaken"]
 
 # The stage a capture had not finished when the next turn's start returned: where the repository stands, or its tree.
 Overtaken = Literal["end overtaken", "tree overtaken"]
 
-# How a turn's reading went: no mark to read against, too many readings already waiting to be told, read, or read only
+# How a turn's reading went: no baseline to read against, too many readings already waiting to be told, read, or read only
 # as far as the next turn's start let it be. One fact per reading, and each value means one thing.
-Reading = Literal[Unmarked, "dropped", "read", Overtaken]
+Reading = Literal[Unbaselined, "dropped", "read", Overtaken]
 
 # Which index a snapshot started from: the repository's own; none, because the copy failed, as it does before a first
 # commit; or none, because git would not say where the index is.
 Index = Literal["copied", "empty", "unlocated"]
 
-# [LAW:nothing-unseen] the git commands that did not answer, on the mark's event and the reading's alike: a git that timed
+# [LAW:nothing-unseen] the git commands that did not answer, on the baseline's event and the reading's alike: a git that timed
 # out or would not start leaves the same empty answer as a repository with nothing in it, and this tells them apart.
 _GIT_COUNTS = ("git_unanswered",)
-# The counts a mark's event always carries: the captures under way when it began, and those of them it overtook.
-_MARK_COUNTS = ("captures_waited", "captures_overtaken", *_GIT_COUNTS)
+# The counts a baseline's event always carries: the captures under way when it began, and those of them it overtook.
+_BASELINE_COUNTS = ("captures_waited", "captures_overtaken", *_GIT_COUNTS)
 # The counts a reading's event always carries, 0 where it found none or never got as far as looking.
 _READ_COUNTS = ("commits", "files", *_GIT_COUNTS)
 
@@ -165,7 +165,7 @@ class Held:
 
 @dataclass(frozen=True)
 class Unread:
-    """The places in the order of `turns` turns in a row whose readings were dropped or had no mark to read against: their
+    """The places in the order of `turns` turns in a row whose readings were dropped or had no baseline to read against: their
     tellings take no delta. One place for the run of them, so the order holds at most one run more than the readings in
     it, however many turns stop with no narrator to take them."""
 
@@ -183,7 +183,7 @@ class Capture:
 
     def __init__(self, root: Path) -> None:
         loop = asyncio.get_running_loop()
-        # The repository the chain's first mark found, passed on from the start the reading is read against: known as soon
+        # The repository the chain's first baseline found, passed on from the start the reading is read against: known as soon
         # as that start is, never only once its end is, so no capture waits on another to begin.
         self.root = root
         self.standing: asyncio.Future[Standing | None] = loop.create_future()
@@ -206,17 +206,17 @@ class Capture:
         """The next turn began with this capture under way: the stage it had not finished was read inside that turn."""
         self._overtaken = "tree overtaken" if self.standing.done() else "end overtaken"
 
-    async def start(self) -> Mark | Unmarked:
-        """The mark this capture's end makes, once it is over: where the part going on after a blocked Stop starts from."""
+    async def start(self) -> Baseline | Unbaselined:
+        """The baseline this capture's end makes, once it is over: where the part going on after a blocked Stop starts from."""
         # Over before whether it was overtaken is read: a start overtakes only a capture still under way, so once the tree
         # is in the record is final, and one read before it could miss an overtaking made while it waited.
         standing, tree = await self.standing, await self.tree
         match (self._overtaken, standing, tree):
             case (None, Standing() as standing, str() as tree):
-                return Mark(self.root, standing.head, tree, standing.refs, standing.at)
+                return Baseline(self.root, standing.head, tree, standing.refs, standing.at)
             case (None, _, _):
-                # A stage git could not read: no start, as a mark with no tree or no HEAD is none.
-                return "unmarked"
+                # A stage git could not read: no start, as a baseline with no tree or no HEAD is none.
+                return "unbaselined"
             case _:
                 return "start overtaken"
 
@@ -250,25 +250,25 @@ class Deltas:
         record: Record,
         inherited: Mapping[str, str],
         clock: Clock,
-        marking: float = MARKING,
+        baselining: float = BASELINING,
         reading: float = READING,
         patience: float = PATIENCE,
     ) -> None:
         self._record = record
         # The daemon's environment, which git and gh are found and run in: its PATH, and whatever the user set their own variables to.
         self._inherited = inherited
-        self._marking = marking
+        self._baselining = baselining
         self._reading = reading
         self._patience = patience
         # [LAW:effects-at-boundaries] the one clock every budget here is read off and waited out on, git's and gh's too.
         self._clock = clock
-        # The mark each session's last snapshot took, None where it took none, until a reading spends it. The registry
-        # performs a session's Snapshot before any Compare decided after it, so a compare finds the mark already in
+        # The baseline each session's last snapshot took, None where it took none, until a reading spends it. The registry
+        # performs a session's Snapshot before any Compare decided after it, so a compare finds the baseline already in
         # [LAW:no-ambient-temporal-coupling]. Bounded by the sessions the registry itself keeps, which holds every session it has heard of.
-        self._marks: dict[SessionId, Mark | None] = {}
+        self._baselines: dict[SessionId, Baseline | None] = {}
         # The capture of each session's last reading: the start of a turn going on after another Stop hook blocked its Stop,
-        # which no prompt marked. Kept apart from _marks, so no other turn is read against it, and spent by the next reading.
-        # Bounded as _marks is.
+        # which no prompt baselined. Kept apart from _baselines, so no other turn is read against it, and spent by the next reading.
+        # Bounded as _baselines is.
         self._reached: dict[SessionId, Capture] = {}
         # One place per turn that stopped, oldest first, so a session that stops twice while the narrator is busy has each
         # turn told with its own delta rather than the newer one told as both.
@@ -279,38 +279,38 @@ class Deltas:
         self._running: set[asyncio.Task[None]] = set()
 
     async def snapshot(self, session: SessionId, cwd: Path) -> None:
-        """Mark where the repository stands, before the turn has had the chance to change anything in it.
+        """Take the baseline of where the repository stands, before the turn has had the chance to change anything in it.
 
-        Awaited while the prompt's hook waits, which is what makes it a mark of the turn's beginning rather
+        Awaited while the prompt's hook waits, which is what makes it a baseline of the turn's beginning rather
         than of some moment inside it — and why all of it together is given less than that hook can afford.
 
         A capture under way is the end of a turn before this one still being read, and this turn is about to begin
-        changing the repository it reads. So the mark waits beside every capture under way, under its one deadline,
+        changing the repository it reads. So the baseline waits beside every capture under way, under its one deadline,
         never after them; whatever stage of one is not in by then is read after this turn began, and is recorded as
         overtaken, never to be told as the turn before's [LAW:no-ambient-temporal-coupling].
         """
-        deadline = self._clock.now() + self._marking
-        # A start not spent is no start of this turn's: spent here as this turn begins, whatever becomes of its mark.
-        self._marks.pop(session, None)
+        deadline = self._clock.now() + self._baselining
+        # A start not spent is no start of this turn's: spent here as this turn begins, whatever becomes of its baseline.
+        self._baselines.pop(session, None)
         capturing = self._capturing.setdefault(session, set())
         under_way = [capture for capture in capturing if not capture.tree.done()]
-        with unit("delta.mark", self._record, begun(self._clock), _MARK_COUNTS):
+        with unit("delta.baseline", self._record, begun(self._clock), _BASELINE_COUNTS):
             annotate(session=session)
             count(captures_waited=len(under_way))
             try:
-                mark, waited = await settled(self._mark(cwd, deadline), self._waited(under_way, deadline))
+                baseline, waited = await settled(self._baseline(cwd, deadline), self._waited(under_way, deadline))
             finally:
-                # However the mark ended, a hook that gave up included: the turn has begun either way, so nothing still
+                # However the baseline ended, a hook that gave up included: the turn has begun either way, so nothing still
                 # being read can be ordered before it, and nothing waits on such a capture again.
                 overtaken = [capture for capture in under_way if not capture.tree.done()]
                 for capture in overtaken:
                     capture.overtake()
                     capturing.discard(capture)
                 count(captures_overtaken=len(overtaken))
-            # Not marked: not a repository, or one that cannot be read, so the turn is told by its steps, which is most of it.
-            # [LAW:nothing-unseen] how long the hook waited on the turns before it, apart from what the mark itself cost.
-            annotate(marked=mark is not None, captures_seconds=waited)
-            self._marks[session] = mark
+            # Not baselined: not a repository, or one that cannot be read, so the turn is told by its steps, which is most of it.
+            # [LAW:nothing-unseen] how long the hook waited on the turns before it, apart from what the baseline itself cost.
+            annotate(baselined=baseline is not None, captures_seconds=waited)
+            self._baselines[session] = baseline
 
     async def compare(self, session: SessionId, again: bool) -> None:
         """Take the turn's place in the order and start reading what it changed. Waits for none of it.
@@ -326,9 +326,9 @@ class Deltas:
         """
         held = self._readings.setdefault(session, deque())
         # [LAW:one-source-of-truth] spent on every path, before anything else is decided, so no start outlives the turn it
-        # belonged to: a dropped turn's mark is not the start of a turn after it that no prompt marked.
+        # belonged to: a dropped turn's baseline is not the start of a turn after it that no prompt baselined.
         reached = self._reached.pop(session, None)
-        start = reached if again else self._marks.pop(session, None)
+        start = reached if again else self._baselines.pop(session, None)
         # [LAW:no-ambient-temporal-coupling] a telling takes the oldest place in the order, and its place is the only thing
         # pairing it with its turn, so every turn that stops takes exactly one, read or not. The bound counts the readings
         # held, finished or not, since each holds a patch until its telling takes it; a place with no reading holds none.
@@ -336,8 +336,8 @@ class Deltas:
             self._unread(session, held, "dropped")
             return
         if start is None:
-            # A turn nothing marked, which a daemon started mid-turn has, or a part going on after a reading with no capture.
-            self._unread(session, held, "unmarked")
+            # A turn nothing baselined, which a daemon started mid-turn has, or a part going on after a reading with no capture.
+            self._unread(session, held, "unbaselined")
             return
         capture = Capture(start.root)
         capturing = self._capturing.setdefault(session, set())
@@ -382,7 +382,7 @@ class Deltas:
                 logger.info(f"what a turn of session {session} changed is still being read, so the turn is told without it")
                 return Delta()
 
-    def _unread(self, session: SessionId, held: deque[Held | Unread], reading: Literal["dropped", "unmarked"]) -> None:
+    def _unread(self, session: SessionId, held: deque[Held | Unread], reading: Literal["dropped", "unbaselined"]) -> None:
         """A turn's place in the order with no reading in it, and the event of the reading it did not have."""
         match held[-1] if held else None:
             case Unread(turns=turns):
@@ -392,7 +392,7 @@ class Deltas:
         with self._event(session):
             self._told(reading)
 
-    async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Mark | Capture, capture: Capture) -> None:
+    async def _read(self, session: SessionId, pending: asyncio.Future[Delta], start: Baseline | Capture, capture: Capture) -> None:
         """[LAW:no-silent-failure] whatever happens here, whoever is waiting is answered rather than left."""
         began = self._clock.now()
         delta = Delta()
@@ -440,7 +440,7 @@ class Deltas:
             # A capture that raised or was cancelled mid-read, which the reading's other parts are waiting on.
             capture.ended()
 
-    async def _mark(self, cwd: Path, deadline: float) -> Mark | None:
+    async def _baseline(self, cwd: Path, deadline: float) -> Baseline | None:
         at = self._clock.wall()
         root = await self._git(cwd, "rev-parse", "--show-toplevel", deadline=deadline)
         if not root:
@@ -449,7 +449,7 @@ class Deltas:
         if tree is None:
             return None
         standing = await self._standing(Path(root), at, deadline)
-        return None if standing is None else Mark(Path(root), standing.head, tree, standing.refs, standing.at)
+        return None if standing is None else Baseline(Path(root), standing.head, tree, standing.refs, standing.at)
 
     async def _standing(self, root: Path, at: datetime, deadline: float) -> Standing | None:
         """Where the repository stands, its HEAD and its refs read side by side, as of `at`, when the read of it began: None
@@ -474,7 +474,7 @@ class Deltas:
         """
         return await self._git(root, "symbolic-ref", "--quiet", "HEAD", deadline=deadline) is not None
 
-    async def _between(self, start: Mark | Capture, capture: Capture, deadline: float, forging: float) -> tuple[Reading, Delta, Asked]:
+    async def _between(self, start: Baseline | Capture, capture: Capture, deadline: float, forging: float) -> tuple[Reading, Delta, Asked]:
         """What changed from the start to where the capture found the repository, told as far as the next turn's start let
         it be, and what the forge was asked.
 
@@ -484,14 +484,14 @@ class Deltas:
         them, and they run beside the tree; only the diff waits for it.
         """
         # The part going on after a blocked Stop starts from the end of the part before, once that capture is over.
-        mark = start if isinstance(start, Mark) else await start.start()
-        if not isinstance(mark, Mark):
-            return mark, Delta(), UNASKED
+        baseline = start if isinstance(start, Baseline) else await start.start()
+        if not isinstance(baseline, Baseline):
+            return baseline, Delta(), UNASKED
         ended = await capture.standing
         # The forge beside the tree and not after it: it is a network away where git is a disk away, and the narrator gives
         # up on the whole reading at once, so a forge read after the tree spends the commit's time on a pull request.
         commits, (files, patch), (changes, asked) = await settled(
-            self._commits(mark, ended, deadline), self._worked(mark, capture.tree, deadline), self._moved(mark, ended, deadline, forging)
+            self._commits(baseline, ended, deadline), self._worked(baseline, capture.tree, deadline), self._moved(baseline, ended, deadline, forging)
         )
         # Read once every part is in, when the capture is over and no start can overtake it any more.
         match capture.overtaken:
@@ -503,19 +503,19 @@ class Deltas:
             case "end overtaken":
                 return "end overtaken", Delta(), asked
 
-    async def _worked(self, mark: Mark, captured: Awaitable[str | None], deadline: float) -> tuple[tuple[Changed, ...], str]:
-        """The files the turn left different and the patch between, from the mark's tree to the one the capture read."""
+    async def _worked(self, baseline: Baseline, captured: Awaitable[str | None], deadline: float) -> tuple[tuple[Changed, ...], str]:
+        """The files the turn left different and the patch between, from the baseline's tree to the one the capture read."""
         tree = await captured
-        if tree is None or tree == mark.tree:
+        if tree is None or tree == baseline.tree:
             # Unreadable, or the working tree came back to where it started — which a commit and nothing else does.
             return (), ""
-        numstat = await self._git(mark.root, "diff", "--numstat", mark.tree, tree, deadline=deadline)
+        numstat = await self._git(baseline.root, "diff", "--numstat", baseline.tree, tree, deadline=deadline)
         if numstat is None:
             # [LAW:no-silent-failure] git not answering is not git saying nothing changed. Counted as the
             # second, the numbers that decide whether the patch can be kept are all zero and the bound they
             # are here to enforce is not enforced at all — on the diff most likely to have been what stopped
             # the counting. What the turn committed is known either way, so that much is still told.
-            logger.info(f"what a turn changed in {mark.root} could not be counted, so its patch is not read")
+            logger.info(f"what a turn changed in {baseline.root} could not be counted, so its patch is not read")
             return (), ""
         files = _files(numstat)
         counted = sum((file.added or 0) + (file.removed or 0) for file in files)
@@ -524,20 +524,20 @@ class Deltas:
             # file inside the repository would have all of it here at once. The counts cost one line a file and
             # are already in hand, so they are what says no — and what is left, the files and their counts, is
             # all of a diff that size that would have survived the summariser's budget anyway.
-            logger.info(f"a turn changed {counted} lines in {mark.root}, too many to keep the patch of, so its files are told instead")
+            logger.info(f"a turn changed {counted} lines in {baseline.root}, too many to keep the patch of, so its files are told instead")
             return files, ""
-        patch = await self._git(mark.root, "diff", mark.tree, tree, deadline=deadline)
+        patch = await self._git(baseline.root, "diff", baseline.tree, tree, deadline=deadline)
         return files, "" if patch is None else patch[:MOST]
 
-    async def _commits(self, mark: Mark, ended: Standing | None, deadline: float) -> tuple[Commit, ...]:
+    async def _commits(self, baseline: Baseline, ended: Standing | None, deadline: float) -> tuple[Commit, ...]:
         head = None if ended is None else ended.head
-        if head is None or head == mark.head:
+        if head is None or head == baseline.head:
             # Where the turn ended is unknown, has no commit, or is where it began.
             return ()
         # What is reachable from where the turn ended and not from where it began, which is what the turn
         # added however it got there — a merge, a rebase, or an amend that rewrote the commit before it.
         listed = await self._git(
-            mark.root, "log", f"--max-count={MOST_COMMITS}", "--format=%h%x1f%s", f"{mark.head}..{head}" if mark.head else head, deadline=deadline
+            baseline.root, "log", f"--max-count={MOST_COMMITS}", "--format=%h%x1f%s", f"{baseline.head}..{head}" if baseline.head else head, deadline=deadline
         )
         return () if not listed else tuple(Commit(*line.split("\x1f", 1)) for line in listed.splitlines() if "\x1f" in line)
 
@@ -557,7 +557,7 @@ class Deltas:
             next((name.removeprefix("refs/heads/") for name, _, _, head in lines if head == "*"), None),
         )
 
-    async def _moved(self, mark: Mark, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
+    async def _moved(self, baseline: Baseline, ended: Standing | None, deadline: float, forging: float) -> tuple[tuple[Pushed | Branched | PullRequested, ...], Asked]:
         """Whether the turn made the branch this worktree was on where it ended, whether it pushed it, and the pull requests
         opened from it.
 
@@ -565,31 +565,31 @@ class Deltas:
         and their logs, so a branch made or pushed anywhere else is another session's work — and the branch checked
         out here is checked out nowhere else. Each is read from git's own log of how the ref moved and when, so a
         branch checked out or renamed is not one the turn made, and a push the turn followed with a pull is still a push.
-        Where the turn ended bounds each, as the mark bounds where it began: what the next turn does after is not this turn's.
+        Where the turn ended bounds each, as the baseline bounds where it began: what the next turn does after is not this turn's.
         """
-        if mark.refs is None or ended is None or ended.refs is None:
+        if baseline.refs is None or ended is None or ended.refs is None:
             return (), UNASKED
         refs, branch = ended.refs, ended.refs.branch
         if branch is None:
             # A detached HEAD is on no branch for the turn to have made or pushed, and an unborn one on none that is there yet.
             return (), UNASKED
-        since = int(mark.at.timestamp())
+        since = int(baseline.at.timestamp())
         # `refs/remotes/<remote>/<branch>`, and a branch may hold slashes where a remote does not.
         tracking = [name for name in refs.named if name.startswith("refs/remotes/") and name.split("/", 3)[3:] == [branch]]
         # A ref the turn left where it found it was pushed nothing, whatever its log says.
-        moved = [name for name in tracking if mark.refs.named.get(name) != refs.named[name]]
+        moved = [name for name in tracking if baseline.refs.named.get(name) != refs.named[name]]
         made, *pushes = await settled(
-            self._made(mark.root, mark.refs.named, branch, tracking, since, deadline),
-            *(self._pushed(mark.root, name, mark.refs.named.get(name), refs.named[name], deadline) for name in moved),
+            self._made(baseline.root, baseline.refs.named, branch, tracking, since, deadline),
+            *(self._pushed(baseline.root, name, baseline.refs.named.get(name), refs.named[name], deadline) for name in moved),
         )
         pushed = any(pushes)
         # [LAW:carrying-cost] no pull request is opened from a remote's default branch, and most pushes are to it: asking
         # the forge after each would spend a request a turn on an answer that is always no.
-        opened, asked = await self._opened(mark, branch, ended.at, min(deadline, forging)) if pushed and branch not in refs.defaults else ((), UNASKED)
+        opened, asked = await self._opened(baseline, branch, ended.at, min(deadline, forging)) if pushed and branch not in refs.defaults else ((), UNASKED)
         return (*([Branched(branch, "created branch")] if made else []), *([Pushed(branch)] if pushed else []), *opened), asked
 
     async def _made(self, root: Path, known: Mapping[str, str], branch: str, tracking: list[str], since: int, deadline: float) -> bool:
-        """Whether git logged `branch` created since the mark, and from anything but the remote branch of its own name,
+        """Whether git logged `branch` created since the baseline, and from anything but the remote branch of its own name,
         which is a checkout of a branch that already was. A rename carries the log of the branch it renamed with it."""
         if f"refs/heads/{branch}" in known:
             return False
@@ -601,11 +601,11 @@ class Deltas:
         return when >= since and source != said and source.removeprefix("refs/remotes/") not in {name.removeprefix("refs/remotes/") for name in tracking}
 
     async def _pushed(self, root: Path, name: str, was: str | None, left: str, deadline: float) -> bool:
-        """Whether git logged a push to the remote-tracking ref `name` between naming `was`, where the mark found it, and
+        """Whether git logged a push to the remote-tracking ref `name` between naming `was`, where the baseline found it, and
         naming `left`, where the turn left it.
 
-        Walked back from the entry that left the ref where the turn left it to the one that left it where the mark found
-        it, and not by time: git logs to the second, and a push in the second before the mark is not the turn's, nor is
+        Walked back from the entry that left the ref where the turn left it to the one that left it where the baseline found
+        it, and not by time: git logs to the second, and a push in the second before the baseline is not the turn's, nor is
         a push the next turn made after this one ended. A fetch moves the same ref and logs `fetch`, and a push the turn
         followed with a pull is still in the walk.
         """
@@ -619,8 +619,8 @@ class Deltas:
                 return True
         return False
 
-    async def _opened(self, mark: Mark, branch: str, until: datetime, deadline: float) -> tuple[tuple[PullRequested, ...], Asked]:
-        """The pull requests the forge says this user opened from `branch` between the mark and `until`, when the turn's end
+    async def _opened(self, baseline: Baseline, branch: str, until: datetime, deadline: float) -> tuple[tuple[PullRequested, ...], Asked]:
+        """The pull requests the forge says this user opened from `branch` between the baseline and `until`, when the turn's end
         was captured. Nothing on this machine records one.
 
         This user's alone: a fork's pull request from a branch of the same name is someone else's. A forge that is slow
@@ -636,7 +636,7 @@ class Deltas:
             return (), Asked("unanswered", 0.0)
         try:
             ran = await run(
-                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=mark.root,
+                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=baseline.root,
                 env=self._inherited, clock=self._clock,
             )
         except TimeoutError:
@@ -644,11 +644,11 @@ class Deltas:
         took = round(self._clock.now() - began, 3)
         if ran.returncode != 0:
             # Not a GitHub remote, not signed in, no default repository: gh says which.
-            logger.info(f"gh would not list the pull requests of {branch} in {mark.root}: {ran.err.decode(errors='replace').strip()}")
+            logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: {ran.err.decode(errors='replace').strip()}")
             return (), Asked("refused", took)
-        # The forge stamps to the second, so a pull request opened in the second the mark was taken is still since it; and
+        # The forge stamps to the second, so a pull request opened in the second the baseline was taken is still since it; and
         # on its own clock, so one opened as the turn ended is still before its end on a forge's clock SKEW ahead.
-        since = mark.at.replace(microsecond=0)
+        since = baseline.at.replace(microsecond=0)
         until += SKEW
         try:
             listed: object = json.loads(ran.out)
@@ -749,7 +749,7 @@ def _request(entry: object, since: datetime, until: datetime) -> PullRequested |
 
 
 def _instant(stamp: str) -> datetime | None:
-    """A time the forge wrote, where it says which zone it is in: one that does not cannot be set against the mark."""
+    """A time the forge wrote, where it says which zone it is in: one that does not cannot be set against the baseline."""
     try:
         instant = datetime.fromisoformat(stamp)
     except ValueError:

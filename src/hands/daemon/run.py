@@ -48,7 +48,7 @@ from hands.sessions.reader import READ_SECONDS, Reader
 from hands.sessions.tail import Tails
 from hands.sessions.delta import Deltas
 from hands.sessions.registry import Sessions
-from hands.sessions.sentences import Sentences
+from hands.sessions.summaries import Summaries
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.names import Names
 from hands.sessions.server import serve_display, serve_hooks
@@ -58,8 +58,8 @@ from hands.core.attention import Attention
 from hands.sessions.attention import attention
 from hands.voice.devices import follow_default_devices
 from hands.voice.cues import RECEIVED, WORKING, QuietCues, cues
-from hands.voice.hold import Move
-from hands.voice.holds import Edge
+from hands.voice.shortcut import Move
+from hands.voice.clips import Trigger
 from hands.voice.atdesk import serve_desk
 from hands.voice.wakeword import Trained, Word
 from hands.voice.keys import drive_quit, tapped
@@ -80,9 +80,9 @@ from hands.voice.speech import relay
 from hands.voice.working import Playing, keep_playing
 from hands.voice.summary import Summariser, aside
 from hands.voice.progress_instruction import EXPLAIN_INSTRUCTION, EXPLAIN_TIMEOUT_SECONDS
-from hands.voice.sentence_instruction import SENTENCE_INSTRUCTION
-from hands.voice.summarising import SENTENCES_TIMEOUT_SECONDS, keep_summarising
-from hands.voice.sentences import SummaryStore
+from hands.voice.summary_instruction import SUMMARY_INSTRUCTION
+from hands.voice.summarising import SUMMARIES_TIMEOUT_SECONDS, keep_summarising
+from hands.voice.summaries import SummaryStore
 from hands.voice.briefing import as_sent
 from hands.voice.conversation import cue_receipt, record_turns
 from hands.voice.system import SystemChannel, listen, told
@@ -179,8 +179,8 @@ async def front_now(sessions: Sessions, environment: Mapping[str, str]) -> InFro
 
 @asynccontextmanager
 async def mind(
-    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Edge], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
-    log: Path, hands: str, record: Record, environment: Mapping[str, str], cut_off: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
+    clock: Clock, config: VoiceConfig, tools: Sequence[Tool], brain_tools: Sequence[Tool], tail: Callable[[], str], front: Callable[[], Awaitable[InFront]], modality: Callable[[], Modality], opened: Callable[[], Trigger], refocus: Refocus, proxy_url: str, wire: Wire, store: Store,
+    log: Path, hands: str, record: Record, environment: Mapping[str, str], next_barge_in: Callable[[], asyncio.Future[Bookmark]], aloud: Callable[[], Attention],
 ) -> AsyncGenerator[Mind]:
     """The model for the whole conversation: the brain's process, the MCP server it reaches hands through, the stage that
     speaks for it from the wire, the keeper of its context, and what answers hands' side questions. The brain is given
@@ -203,7 +203,7 @@ async def mind(
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
         asides = Asides(clock, proxy_url, Newest(brain.session), record)
         try:
-            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, cut_off, aloud, clock)
+            stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
             keeper = Keeper(clock, brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
@@ -271,14 +271,14 @@ async def run(
         # [LAW:one-source-of-truth] the address the server bound, which the hooks' DISPLAY_URL must name.
         [(display_host, display_port, *_)] = display.addresses
         run_start.heard(display=f"http://{display_host}:{display_port}{DISPLAY_PATH}")
-        store = SummaryStore(Sentences(home.sentences))
+        store = SummaryStore(Summaries(home.summaries))
         # [LAW:one-source-of-truth] one holder of each session's last turn: the narrator fills it, tell_turn reads it.
         recounts = Recounts()
         # [LAW:one-source-of-truth] one holder of where playback is: the pipeline's taps move it, the playback tools read it.
         player = Player(record)
         # [LAW:single-enforcer] one mover of the focus to a session just told of, for the model's stage and tell_turn alike.
         refocus = Refocus(sessions, home, record)
-        # [LAW:one-source-of-truth] one owner of where the user is: the voice's edges move it, set_modality switches it,
+        # [LAW:one-source-of-truth] one owner of where the user is: the voice's triggers move it, set_modality switches it,
         # and the brain's stage reads it.
         key = PushToTalk(clock, record)
         # [LAW:one-source-of-truth] one owner of the level the desk listens at: the desk's driver sets it, from a triple
@@ -308,14 +308,14 @@ async def run(
                 audited(clock, cued(close_session_tool(home, record, sessions), lambda: quiet_cues.owe(WORKING)), record),
             ]
             # [LAW:no-ambient-temporal-coupling] the model is up before the voice is built around its stage.
-            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.cut_off, lambda: attention(home)) as minded:
-                # What Whisper is primed with, read as each hold is transcribed.
+            async with mind(clock, config, tools, brain_tools, lambda: as_sent(sessions, home), lambda: front_now(sessions, environment), lambda: key.modality, lambda: key.opened, refocus, proxy.url, wire, store, home.audit, shlex.join(invocation(home)), record, environment, player.next_barge_in, lambda: attention(home)) as minded:
+                # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
-                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.holds, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
+                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
-                    sentences = minded.summariser(AsideKind.SUMMARY, SENTENCE_INSTRUCTION, SENTENCES_TIMEOUT_SECONDS)
-                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, sentences, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
+                    summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
+                    await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
     return Ended(None if voice is None else _wall(clock, voice.audio.output().sounded_at), sessions.live_count())
 
 
@@ -362,7 +362,7 @@ async def converse(
     deltas: Deltas,
     minded: Mind,
     store: SummaryStore,
-    sentences: Summariser,
+    summarise: Summariser,
     names: Names,
     recounts: Recounts,
     quiet_cues: QuietCues,
@@ -411,7 +411,7 @@ async def converse(
             name="the progress player",
         ),
         asyncio.create_task(narrate(sessions, utterances, tails, voice.worker.queue_frame, lambda: attention(home), overlays, recounts, changes=deltas), name="the session narrator"),
-        asyncio.create_task(keep_summarising(clock, store, sentences, record), name="the summary store"),
+        asyncio.create_task(keep_summarising(clock, store, summarise, record), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),

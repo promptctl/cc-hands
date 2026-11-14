@@ -23,7 +23,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice.desk import Level, Leveled, Made
 from hands.voice.engaged import drive
 from hands.voice.trigger import Choice
-from hands.voice.hold import KeyEvent, Move
+from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.engaged import loaded as ears_loaded
 from hands.voice.wake import EMBEDDING, MELSPECTROGRAM, SAMPLE_RATE, THRESHOLD, WakeWord, fetched, listening, loaded
 from hands.voice.wakeword import PRETRAINED, Pretrained, Trained

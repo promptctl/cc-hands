@@ -1,8 +1,8 @@
 """A page's read that waits for what the page shows to change before it answers: the conversation page's
 (`hands.voice.conversationpage`) and the brain on the phone's page (`hands.voice.brainpage`) alike.
 
-[LAW:one-type-per-behavior] each page marks what it shows, and says with each read the mark it was last given; the one
-loop here waits on any mark.
+[LAW:one-type-per-behavior] each page versions what it shows, and says with each read the version it was last given; the one
+loop here waits on any version.
 """
 
 from collections.abc import Awaitable, Callable
@@ -16,19 +16,19 @@ WAIT_SECONDS = 25.0
 POLL_SECONDS = 0.25
 
 
-async def waited[M: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[M, T]]], seen: M | None) -> tuple[M, T]:
-    """What `look` finds once its mark is not `seen`, or as it is once WAIT_SECONDS have passed; a page that has seen
+async def waited[V: Fact, T](clock: Clock, look: Callable[[], Awaitable[tuple[V, T]]], seen: V | None) -> tuple[V, T]:
+    """What `look` finds once its version is not `seen`, or as it is once WAIT_SECONDS have passed; a page that has seen
     nothing (None) is answered at once. The event of the unit open here says what the page had seen, how long it waited
     and how many looks it took, and whether what it found had changed.
     """
     began = clock.now()
-    mark, found = await look()
+    version, found = await look()
     looks = 1
     # [LAW:no-ambient-temporal-coupling] the page says what it has seen, so a change made between its reads is never
     # missed: it is answered at once with whatever has changed since.
-    while mark == seen and clock.now() - began < WAIT_SECONDS:
-        await clock.pause(POLL_SECONDS)
-        mark, found = await look()
+    while version == seen and clock.now() - began < WAIT_SECONDS:
+        await clock.sleep(POLL_SECONDS)
+        version, found = await look()
         looks += 1
-    annotate(seen=seen, waited_ms=round((clock.now() - began) * 1000, 1), looks=looks, changed=mark != seen)
-    return mark, found
+    annotate(seen=seen, waited_ms=round((clock.now() - began) * 1000, 1), looks=looks, changed=version != seen)
+    return version, found

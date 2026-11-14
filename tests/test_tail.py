@@ -13,7 +13,7 @@ from hands.virtualclock import VirtualClock
 from hands.core.events import CarriedOut, Continued, Dequeued, Interrupted, Launched, Progressed, Read, Removed, ReportedBack, Taken, Transcribed, Unqueued
 from hands.core.session import Membership, PromptId, RequestId, SessionId
 from hands.core.turn import AgentId, Asked, Commanded, Continuing, Interruption, Notified, Looked, Other, Ran, Ref, Said, Shelled, Turn, describe
-from hands.voice.tools import TURN_SENTENCE_BUDGET
+from hands.voice.tools import TURN_SUMMARY_BUDGET
 from hands.core.effects import Summarise
 from hands.core.events import Attached, Event, Joined, Prompted, StatusReported, Stopped
 from hands.core import status
@@ -1248,7 +1248,7 @@ async def test_a_shell_command_opens_one_turn_with_its_output_and_no_markup(tmp_
     transcript.write_text(lines(PROMPT, DONE, SHELL, SHELL_OUT, DONE))
     shelled = Shelled(Ref("c4"), "lit next", "hands-narration-8ip  open\nstderr: sync: 1 local change")
     assert await turn_of(transcript) == Turn(shelled, (Said(None, "Done."),))
-    assert "<" not in describe(shelled, TURN_SENTENCE_BUDGET)
+    assert "<" not in describe(shelled, TURN_SUMMARY_BUDGET)
 
 
 async def test_what_another_command_printed_is_no_part_of_a_skill_commands_turn(tmp_path: Path) -> None:
@@ -1310,7 +1310,7 @@ async def test_what_a_command_printed_that_joins_no_turn_is_said(tmp_path: Path)
 
 # A subagent started in the background and its report, as Claude Code writes them: the launch is the call's result, the
 # report a notification, at the prompt as a user record and mid-turn as an attachment.
-DELEGATE = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t7","name":"Agent","input":{"description":"Draft tickets","prompt":"Draft them.","run_in_background":true}}]}}'
+DISPATCH = '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t7","name":"Agent","input":{"description":"Draft tickets","prompt":"Draft them.","run_in_background":true}}]}}'
 LAUNCHED = (
     '{"type":"user","promptId":"p1","timestamp":"1970-01-01T00:00:01.200Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t7","content":"Async agent launched successfully."}]},'
     '"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a587b79fd8308e5bc","description":"Draft tickets"}}'
@@ -1325,14 +1325,14 @@ async def test_a_subagent_started_in_the_background_in_a_turn_before_the_one_the
     """Read from its start, the turns before the one it ends in are history, but a subagent one of them started may still
     work, and only its report says it does not: its launch is heard whatever turn it was read into."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, NEXT_ASKED, DONE))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, NEXT_ASKED, DONE))
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200)), Taken(SID, PromptId("p2"), None, 7.0), Continued(SID, was=PromptId("p1"), now=PromptId("p2"))]
 
 
 @pytest.mark.parametrize("reported", [REPORTED_AT_PROMPT, REPORTED_MID_TURN])
 async def test_a_background_tasks_notification_is_heard_as_its_report_back_at_the_prompt_or_mid_turn(tmp_path: Path, reported: str) -> None:
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE))
     tails = await following(transcript)
     with transcript.open("a") as more:
         more.write(lines(reported))
@@ -1349,7 +1349,7 @@ async def test_a_transcript_read_from_its_start_whose_last_turn_ended_opens_no_t
     """hands-session-mgmt-a7t.byl: the turn that launched a subagent in the background is over though the session reads
     busy, and only the launch is heard of it."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, *ending))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, *ending))
     said: list[str] = []
     sink = logger.add(lambda message: said.append(message.record["message"]), level="INFO", filter="hands.sessions.tail")
     try:
@@ -1428,7 +1428,7 @@ async def test_a_session_attached_while_its_background_subagent_works_is_delegat
     """hands-session-mgmt-a7t.byl: attached after the launching turn's Stop, as a restarted daemon is, the session is at its
     prompt with a subagent out; the report opens its own turn, and its Stop tells that turn alone."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
     sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))
@@ -1487,7 +1487,7 @@ async def test_a_file_read_from_its_start_whose_last_turn_is_a_command_that_prin
     """hands-session-mgmt-a7t.9tp, from PR #265's review: attached after a command ran while a subagent works, the command's
     turn is over, so nothing of it opens one."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION, MODEL, printed))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION, MODEL, printed))
     assert heard(await Tails(Registry([member(transcript)])).catch_up()) == [Launched(SID, AGENT, Stamp(1200))]
 
 
@@ -1568,7 +1568,7 @@ async def test_a_command_run_while_a_subagent_works_in_the_background_returns_th
     """hands-session-mgmt-a7t.9tp: Claude Code sets no idle while the subagent works, so before this the command's turn
     stayed open until the subagent reported back, and the session read as working."""
     transcript = tmp_path / "t.jsonl"
-    transcript.write_text(lines(ASKED, DELEGATE, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
+    transcript.write_text(lines(ASKED, DISPATCH, LAUNCHED, DONE, STOP_SUMMARY, TURN_DURATION))
     sessions = new_sessions(clock=VirtualClock())
     await sessions.apply(Attached(member(transcript)))
     await sessions.apply(said_busy(3.0))

@@ -1,4 +1,4 @@
-"""The backlog page: every open ticket of a project's lit backlog, under the epic it is in, each with hands' sentence
+"""The backlog page: every open ticket of a project's lit backlog, under the epic it is in, each with hands' summary
 for it, dragged to set the order the work is pulled in, and each put at a level: moved into its topic's high, normal,
 or low epic.
 
@@ -29,7 +29,7 @@ from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewE
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.sentences import Sighted, SummaryStore, sighted
+from hands.voice.summaries import Sighted, SummaryStore, sighted
 
 
 def parse_project(query: str | None) -> Path:
@@ -102,7 +102,7 @@ def parse_note(body: bytes) -> tuple[Path, str, str]:
 
 @dataclass(frozen=True)
 class Node:
-    """A ticket as the page draws it: its sentence where one is said, never its description; the frame lit ranks it in,
+    """A ticket as the page draws it: its summary where one is said, never its description; the frame lit ranks it in,
     which a drop stays inside; where it stands among its topic's levels, None where it has none; and the
     unfinished tickets under it."""
 
@@ -161,7 +161,7 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
     ticket into its topic's epic for it, and a note left on a ticket as a lit comment.
 
     [LAW:nothing-unseen] each read is one `backlog.read` event, how many open tickets it showed and how many of them had a
-    sentence; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
+    summary; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
     and what it showed after; each level one `backlog.leveled`, which ticket at which level, the epic it went into,
     whether lit made that epic, ranked it, moved the ticket, and ranked it last there; each note one `backlog.noted`,
     which ticket, how long, and whether lit kept it; each refused or failed says why.

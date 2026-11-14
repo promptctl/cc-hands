@@ -15,14 +15,14 @@ from hands.daemon import cli
 from hands.sessions import audit
 from hands.sessions.home import Home
 from hands.voice import keys, talkkey
-from hands.voice.hold import CommandPressed, CommandReleased, Hold, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Typed, step
+from hands.voice.shortcut import CommandPressed, CommandReleased, Idle, KeyEvent, Move, Overlong, Pressed, Released, Ripe, Shortcut, Typed, step
 
 
 def moves(events: Sequence[KeyEvent]) -> list[Move]:
-    hold: Hold = Idle()
+    shortcut: Shortcut = Idle()
     made: list[Move] = []
     for event in events:
-        hold, now = step(hold, event)
+        shortcut, now = step(shortcut, event)
         made.extend(now)
     return made
 
@@ -30,7 +30,7 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
 @pytest.mark.parametrize(
     ("events", "made"),
     [
-        # Held alone past the hold, then released: a whole turn, sent.
+        # Held alone long enough to mean talk, then released: a whole turn, sent.
         ([Pressed(1.0), Ripe(1.0), Released()], ["arm", "start", "stop"]),
         # A quick tap opens the microphone and closes it again: no turn.
         ([Pressed(1.0), Released(), Ripe(1.0)], ["arm", "disarm"]),
@@ -58,7 +58,7 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
     ],
 )
-def test_the_hold_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:
+def test_the_shortcut_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:
     assert moves(events) == made
 
 
@@ -93,17 +93,17 @@ COMMAND = 0x100000  # kCGEventFlagMaskCommand, set by either Command
         (KEY_DOWN, 8, COMMAND | talkkey.RIGHT_COMMAND_DOWN, Typed()),
     ],
 )
-def test_each_tapped_event_is_what_it_means_to_the_hold(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
+def test_each_tapped_event_is_what_it_means_to_the_shortcut(kind: int, keycode: int, flags: int, event: KeyEvent) -> None:
     assert talkkey.event_of(kind, keycode, flags, 5.0) == event
 
 
 async def held(on_move: Callable[[Move], Awaitable[None]], tap: Callable[[Clock, Callable[[KeyEvent], None]], Callable[[], None]]) -> None:
-    """The hold stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
+    """The shortcut stepped over what the talk key's tap hands on, each press's Ripe and Overlong among it, as the desk steps it."""
     heard: asyncio.Queue[KeyEvent] = asyncio.Queue()
-    hold: Hold = Idle()
+    shortcut: Shortcut = Idle()
     async with keys.tapped(SYSTEM, heard.put_nowait, tap):
         while True:
-            hold, moves = step(hold, await heard.get())
+            shortcut, moves = step(shortcut, await heard.get())
             for move in moves:
                 await on_move(move)
 
@@ -116,7 +116,7 @@ async def test_the_talk_key_opens_a_turn_once_held_and_sends_it_on_release(monke
         taps.append(heard)
         return lambda: stopped.append(None)
 
-    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.shortcut.SHORTCUT_SECONDS", 0.05)
     made: list[Move] = []
     started = asyncio.Event()
 
@@ -147,8 +147,8 @@ async def test_a_turn_held_past_the_limit_is_sent_without_a_release(monkeypatch:
         taps.append(heard)
         return lambda: None
 
-    monkeypatch.setattr("hands.voice.hold.HOLD_SECONDS", 0.05)
-    monkeypatch.setattr("hands.voice.hold.TURN_LIMIT_SECONDS", 0.1)
+    monkeypatch.setattr("hands.voice.shortcut.SHORTCUT_SECONDS", 0.05)
+    monkeypatch.setattr("hands.voice.shortcut.TURN_LIMIT_SECONDS", 0.1)
     made: list[Move] = []
 
     async def on_move(move: Move) -> None:
@@ -274,7 +274,7 @@ def test_a_restart_execd_in_the_running_daemons_process_keeps_its_home(tmp_path:
     lock = Home(tmp_path).lock
     counted = f"import os\ntarget = os.stat({str(lock)!r})\nopen_on = 0\nfor name in os.listdir('/dev/fd'):\n    try:\n        found = os.fstat(int(name))\n    except OSError:\n        continue\n    open_on += (found.st_dev, found.st_ino) == (target.st_dev, target.st_ino)\nprint(open_on, flush=True)\n"
     restarted = holds(tmp_path, "again") + counted + "import sys; sys.stdin.read()"
-    holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import again\nagain([sys.executable, '-c', {restarted!r}])")
+    holder = holding(tmp_path, f"import sys\nfrom hands.daemon.starting import execv\nexecv([sys.executable, '-c', {restarted!r}])")
     try:
         assert holder.stdout is not None and holder.stdout.readline() == "again\n"
         assert holder.stdout.readline() == "1\n"

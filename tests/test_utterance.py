@@ -90,9 +90,9 @@ async def test_an_announcement_spoken_is_one_event_with_its_first_audio_timed_fr
     ("steps", "fate"),
     [
         pytest.param(("lead", "close"), "silent", id="handed on and nothing of it played"),
-        pytest.param(("lead", "audio", "barge-in", "close"), "cut", id="a barge-in over it"),
-        pytest.param(("lead", "barge-in", "close"), "cut", id="a barge-in before its first audio"),
-        pytest.param(("close",), "cut", id="a barge-in that dropped it before it reached the speaker"),
+        pytest.param(("lead", "audio", "barge-in", "close"), "barged_in", id="a barge-in over it"),
+        pytest.param(("lead", "barge-in", "close"), "barged_in", id="a barge-in before its first audio"),
+        pytest.param(("close",), "barged_in", id="a barge-in that dropped it before it reached the speaker"),
         pytest.param(("lead", "audio", "barge-in", "resume", "audio", "close"), "played", id="a barge-in the turn saying it went on through"),
         pytest.param(("barge-in", "resume", "audio", "close"), "played", id="a barge-in the turn went on through, that dropped its lead"),
     ],
@@ -110,7 +110,7 @@ async def test_audio_that_played_after_a_barge_in_cut_an_utterance_is_not_its_fi
     lead, _, close = said(utterance)
     await rig.played([lead, InterruptionFrame(), AUDIO, close])
     event = await rig.event()
-    assert event.facts["fate"] == "cut" and "first_audio_ms" not in event.facts
+    assert event.facts["fate"] == "barged_in" and "first_audio_ms" not in event.facts
 
 
 async def test_audio_that_played_before_an_utterance_was_led_on_is_not_its_first(rig: Rig) -> None:
@@ -236,7 +236,7 @@ async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_
         keeping.cancel()
         await asyncio.gather(keeping, return_exceptions=True)
     [event] = recorded
-    assert isinstance(event, WideEvent) and event.facts["fate"] == "cut"
+    assert isinstance(event, WideEvent) and event.facts["fate"] == "barged_in"
     assert speakers.speaker.sounded < 20 * 1600
 
 

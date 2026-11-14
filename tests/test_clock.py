@@ -15,7 +15,7 @@ async def test_a_wait_ends_once_everything_it_waits_on_is_done_however_little_ti
     first, second = asyncio.get_running_loop().create_future(), asyncio.get_running_loop().create_future()
     waiting = asyncio.create_task(wait(clock, (first, second), 5.0))
     first.set_result("one")
-    await clock.paused(5.0)
+    await clock.sleeping(5.0)
     assert not waiting.done()
     second.set_result("two")
     await waiting
@@ -27,7 +27,7 @@ async def test_a_wait_whose_time_is_up_leaves_what_it_waited_on_running() -> Non
     clock = VirtualClock()
     reading = asyncio.get_running_loop().create_future()
     waiting = asyncio.create_task(wait(clock, (reading,), 5.0))
-    await clock.paused(5.0)
+    await clock.sleeping(5.0)
     clock.advance(4.9)
     assert clock.waking == (5.0,)
     clock.advance(0.1)
@@ -46,21 +46,21 @@ async def test_a_wait_on_nothing_is_a_mistake_and_not_everything_done() -> None:
         await wait(VirtualClock(), (), 5.0)
 
 
-async def test_a_pause_already_due_wakes_without_the_clock_moving() -> None:
+async def test_a_sleep_already_due_wakes_without_the_clock_moving() -> None:
     clock = VirtualClock()
-    await asyncio.wait_for(clock.pause(0.0), timeout=1.0)
+    await asyncio.wait_for(clock.sleep(0.0), timeout=1.0)
     assert clock.waking == ()
 
 
-async def test_a_system_pause_cancelled_as_its_timer_fires_is_over_with_nothing_raised() -> None:
+async def test_a_system_sleep_cancelled_as_its_timer_fires_is_over_with_nothing_raised() -> None:
     loop = asyncio.get_running_loop()
     raised: list[dict[str, object]] = []
     loop.set_exception_handler(lambda _loop, context: raised.append(context))
-    pause = SYSTEM.pause(0)
+    sleep = SYSTEM.sleep(0)
     # The timer is due this step, and the cancellation reaches its callbacks only in the next.
-    loop.call_soon(pause.cancel)
+    loop.call_soon(sleep.cancel)
     await asyncio.sleep(0.01)
-    assert pause.cancelled() and raised == []
+    assert sleep.cancelled() and raised == []
     loop.set_exception_handler(None)
 
 
@@ -110,9 +110,9 @@ async def test_a_virtual_timeout_that_came_due_refuses_a_new_deadline_as_asyncio
                 limit.reschedule(5.0)
 
 
-def test_a_rest_on_a_virtual_clock_moves_its_time() -> None:
+def test_a_blocking_sleep_on_a_virtual_clock_moves_its_time() -> None:
     clock = VirtualClock()
-    clock.rest(30.0)
+    clock.sleep_blocking(30.0)
     assert clock.now() == 30.0
 
 
@@ -136,7 +136,7 @@ def test_a_dashed_id_is_the_uuid_its_clock_minted() -> None:
     assert uuid.UUID(dashed(VirtualClock(seed=1))) == uuid.UUID(VirtualClock(seed=1).uuid())
 
 
-def test_a_rest_after_every_wait_on_the_clock_ended_moves_it() -> None:
+def test_a_blocking_sleep_after_every_wait_on_the_clock_ended_moves_it() -> None:
     clock = VirtualClock()
 
     async def waited() -> None:
@@ -144,18 +144,18 @@ def test_a_rest_after_every_wait_on_the_clock_ended_moves_it() -> None:
             pass
 
     asyncio.run(waited())
-    clock.rest(1)
+    clock.sleep_blocking(1)
     assert clock.now() == 1
 
 
-def test_a_rest_while_a_loop_waits_on_the_clock_is_refused() -> None:
+def test_a_blocking_sleep_while_a_loop_waits_on_the_clock_is_refused() -> None:
     clock = VirtualClock()
 
     async def waiting() -> None:
-        paused = clock.pause(5)
+        sleeping = clock.sleep(5)
         with pytest.raises(RuntimeError):
-            clock.rest(1)
-        paused.cancel()
+            clock.sleep_blocking(1)
+        sleeping.cancel()
 
     asyncio.run(waiting())
 
@@ -168,29 +168,29 @@ def test_a_virtual_clock_moves_only_forward() -> None:
     assert clock.now() == 2.0
 
 
-async def test_a_deadline_is_waited_on_as_many_times_as_it_is_scheduled_and_never_stands_in_for_a_pause() -> None:
+async def test_a_deadline_is_waited_on_as_many_times_as_it_is_scheduled_and_never_stands_in_for_a_sleep() -> None:
     clock = VirtualClock()
-    paused = asyncio.create_task(clock.paused(3.0))
+    sleeping = asyncio.create_task(clock.sleeping(3.0))
     scheduled = asyncio.create_task(clock.scheduled(3.0, count=2))
     clock.call_at(3.0, lambda: None)
     await asyncio.sleep(0)
-    assert not scheduled.done() and not paused.done()
+    assert not scheduled.done() and not sleeping.done()
     clock.call_at(3.0, lambda: None)
     await scheduled
-    assert not paused.done()
-    clock.pause(3.0)
-    await paused
+    assert not sleeping.done()
+    clock.sleep(3.0)
+    await sleeping
     assert clock.begun == (3.0,)
 
 
-async def test_a_clock_is_down_to_a_count_once_the_pauses_that_began_together_have_ended_to_it_however_they_ended() -> None:
+async def test_a_clock_is_down_to_a_count_once_the_sleeps_that_began_together_have_ended_to_it_however_they_ended() -> None:
     clock = VirtualClock()
     down = asyncio.create_task(clock.down_to(3.0, count=1, of=3))
     # Two waiting is below the three it waits to see begin: it is not yet the others having ended.
-    first, second = clock.pause(3.0), clock.pause(3.0)
+    first, second = clock.sleep(3.0), clock.sleep(3.0)
     await _turns(3)
     assert not down.done()
-    third = clock.pause(3.0)
+    third = clock.sleep(3.0)
     await _turns(3)
     assert not down.done()
     first.cancel()
@@ -209,10 +209,10 @@ async def _turns(count: int) -> None:
         await asyncio.sleep(0)
 
 
-def test_a_virtual_clock_rests_only_forward_and_never_onto_nan() -> None:
+def test_a_blocking_sleep_on_a_virtual_clock_moves_it_only_forward_and_never_onto_nan() -> None:
     clock = VirtualClock()
     with pytest.raises(ValueError, match="only forward"):
-        clock.rest(-1.0)
+        clock.sleep_blocking(-1.0)
     with pytest.raises(ValueError, match="only forward"):
         clock.advance(float("nan"))
     assert clock.now() == 0.0

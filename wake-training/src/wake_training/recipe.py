@@ -15,18 +15,18 @@ from wake_training.word import Word
 SAMPLES = 20_000
 VALIDATION_SAMPLES = 2_000
 STEPS = 50_000
-# How many of the negative clips are said as the word's near misses: a quarter, the rest being the trainer's own
+# How many of the negative clips are said as the word's adversarial negatives: a quarter, the rest being the trainer's own
 # adversarial phrases. The trainer says the phrases it is given in turn, from the first, and takes as many as it wants
-# clips: its held-out set, a tenth the size, is the list's first tenth. So the near misses are dealt in rounds, each
+# clips: its held-out set, a tenth the size, is the list's first tenth. So the adversarial negatives are dealt in rounds, each
 # round every one of them, and every share of the list holds them all in equal parts.
-NEAR_MISSES = SAMPLES // 4
+ADVERSARIAL_NEGATIVES = SAMPLES // 4
 
 
 def clips(word: Word, corpus: Corpus) -> dict[str, object]:
     """What the trainer makes `word`'s clips and features from, as its config's keys."""
     return {
         "target_phrase": [word.spoken],
-        "custom_negative_phrases": list(islice(cycle(word.near_misses), NEAR_MISSES)),
+        "custom_negative_phrases": list(islice(cycle(word.adversarial_negatives), ADVERSARIAL_NEGATIVES)),
         "n_samples": SAMPLES,
         "n_samples_val": VALIDATION_SAMPLES,
         "rir_paths": [str(corpus.at(IMPULSES))],

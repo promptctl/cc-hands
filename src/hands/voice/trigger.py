@@ -9,15 +9,15 @@ from dataclasses import dataclass
 
 from hands.core.place import Place
 from hands.sessions.audit import TurnStart
+from hands.voice.clips import Opener, Trigger
 from hands.voice.desk import Level, Leveled
-from hands.voice.holds import Edge, Opener
 from hands.voice.wakeword import Word
 
 
-def place_of(edge: Edge) -> Place:
-    """Where the user is when `edge` moves the gate."""
-    match edge:
-        case "held key" | "engaged conversation" | "wake word":
+def place_of(trigger: Trigger) -> Place:
+    """Where the user is when `trigger` moves the gate."""
+    match trigger:
+        case "shortcut" | "engaged conversation" | "wake word":
             return "desk"
         case "phone button":
             return "phone"
@@ -35,8 +35,8 @@ def turn_start(opener: Opener) -> TurnStart:
     match opener:
         case "engaged conversation":
             return "on words"
-        case "held key" | "phone button" | "wake word" | "typed":
-            return "on the hold"
+        case "shortcut" | "phone button" | "wake word" | "typed":
+            return "on the clip"
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ from hands.core.session import Membership, PromptId, SessionId
 from hands.core.steps import Call, Result, recognise
 from hands.core.narration import narration
 from hands.core.subagents import Subagent, reporting
-from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Delegated, Notified, Other, Ran, Ref, Reported, Said, Turn
+from hands.core.turn import AgentId, AgentTask, Asked, Continuing, Notified, Other, Ran, Ref, Reported, Said, SubagentDispatched, Turn
 from hands.sessions.payload import Payload
 from hands.sessions.subagents import read_subagent
 from hands.sessions.tail import Tails
@@ -228,14 +228,14 @@ def test_a_skill_run_in_a_fork_of_its_own_is_a_delegation_to_the_subagent_it_nam
     forked = {"success": True, "commandName": "code-review", "status": "forked", "background": True, "agentId": REVIEWER, "result": "Running in the background as @code-review"}
     result = Result('Skill "code-review" launched (forked execution, running in the background).', forked, False)
     step = recognise(Call(Ref("u1"), "Skill", {"skill": "code-review", "args": "medium 66"}, result))
-    assert step == Delegated(Ref("u1"), "code-review", "/code-review medium 66", None, REVIEWER)
+    assert step == SubagentDispatched(Ref("u1"), "code-review", "/code-review medium 66", None, REVIEWER)
 
 
 def test_a_skill_run_in_a_fork_in_the_foreground_reports_its_result_without_claude_codes_heading() -> None:
     forked = {"success": True, "commandName": "code-review", "status": "forked", "agentId": REVIEWER, "result": "One finding."}
     result = Result('Skill "code-review" completed (forked execution).\n\nResult:\nOne finding.', forked, False)
     step = recognise(Call(Ref("u1"), "Skill", {"skill": "code-review", "args": "medium 66"}, result))
-    assert step == Delegated(Ref("u1"), "code-review", "/code-review medium 66", "One finding.", REVIEWER)
+    assert step == SubagentDispatched(Ref("u1"), "code-review", "/code-review medium 66", "One finding.", REVIEWER)
 
 
 def test_a_skill_loaded_into_the_session_is_no_delegation() -> None:

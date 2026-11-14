@@ -7,7 +7,7 @@ same fold as a session's [LAW:one-source-of-truth] and joined to the parent's tu
 
 from dataclasses import dataclass
 
-from hands.core.turn import AgentId, AgentTask, Answering, Delegated, Notified, Reported, Step, Turn
+from hands.core.turn import AgentId, AgentTask, Answering, Notified, Reported, Step, SubagentDispatched, Turn
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,6 @@ def reporting(turn: Turn) -> tuple[AgentTask, ...]:
     """
     opening = turn.opening
     notified = (opening.agent,) if isinstance(opening, Notified) and opening.agent is not None and isinstance(turn.standing, Answering) else ()
-    returned = tuple(AgentTask(step.id, step.description) for step in turn.steps if isinstance(step, Delegated) and step.id is not None and step.report is not None)
+    returned = tuple(AgentTask(step.id, step.description) for step in turn.steps if isinstance(step, SubagentDispatched) and step.id is not None and step.report is not None)
     reported = tuple(step.agent for step in turn.steps if isinstance(step, Reported) and step.agent is not None)
     return tuple({task.id: task for task in (*notified, *returned, *reported)}.values())

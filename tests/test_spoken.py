@@ -365,7 +365,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         floor=Floor(lambda id: id, dict, clock),
         prompt=unprimed,
         prints=stood_in(clock, tmp_path / "voiceprints"),
-        holds=tmp_path / "holds",
+        clips=tmp_path / "clips",
         record=lambda _: None,
     )
     filters = given["text_filters"]

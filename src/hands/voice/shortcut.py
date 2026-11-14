@@ -1,10 +1,11 @@
-"""The talk key: Right Shift held by itself. A pure machine from what the keyboard did to what the turn does.
+"""The talk shortcut: Right Shift held by itself for `SHORTCUT_SECONDS`. A pure machine from what the keyboard did to what
+the turn does.
 
-Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk once it has been held
-alone for `HOLD_SECONDS`; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
+Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk only once it has been held
+alone that long; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
 turn already started is dropped, never sent. Right Shift itself is never swallowed, so Shift keeps working as Shift.
-The microphone opens on the press all the same, so words said before the hold means talk are kept: they reach a turn
-only if the hold opens one, and are thrown away if it turns out to be Shift. A turn still open `TURN_LIMIT_SECONDS`
+The microphone opens on the press all the same, so words said before the shortcut means talk are kept: they reach a turn
+only if the shortcut opens one, and are thrown away if it turns out to be Shift. A turn still open `TURN_LIMIT_SECONDS`
 after its press is sent as it stands: a key stuck down, or a release macOS never reported, would otherwise record the room
 forever, and what the turn recorded is the user's all the same, so it reaches the brain rather than being thrown away.
 """
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 # 0.3 s opened turns while typing: a rest on Right Shift before a capital, which Whisper filled with "you" or "Okay.".
-HOLD_SECONDS = 0.6
+SHORTCUT_SECONDS = 0.6
 # Ten minutes: dictation runs past two (a 120 s limit threw the user's away, promptctl-voice-je8.d20), and Whisper hears
 # ten minutes in about 17 s.
 TURN_LIMIT_SECONDS = 600.0
@@ -40,7 +41,7 @@ class Typed:
 
 @dataclass(frozen=True)
 class Ripe:
-    """`HOLD_SECONDS` have passed since the press made at `pressed_at`, whatever happened in between."""
+    """`SHORTCUT_SECONDS` have passed since the press made at `pressed_at`, whatever happened in between."""
 
     pressed_at: Instant
 
@@ -54,14 +55,14 @@ class Overlong:
 
 @dataclass(frozen=True)
 class CommandPressed:
-    """Right Command went down by itself: to the hold, a modifier like any other; counted, a tap (`hands.voice.taps`)."""
+    """Right Command went down by itself: to the shortcut, a modifier like any other; counted, a tap (`hands.voice.taps`)."""
 
     at: Instant
 
 
 @dataclass(frozen=True)
 class CommandReleased:
-    """Right Command went up: nothing to the hold, which its press has already made Shift, and no break in a tap's count."""
+    """Right Command went up: nothing to the shortcut, which its press has already made Shift, and no break in a tap's count."""
 
 
 KeyEvent = Pressed | Released | Typed | Ripe | Overlong | CommandPressed | CommandReleased
@@ -91,28 +92,28 @@ class Typing:
     """Right Shift is down as Shift: its release ends nothing."""
 
 
-Hold = Idle | Arming | Talking | Typing
+Shortcut = Idle | Arming | Talking | Typing
 
 # What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
 # opens it, closes it and sends it, closes it and throws it away, or closes it and sends it for being open too long. The
-# hold makes only those; the desk (`hands.voice.desk`) also has the microphone listen between turns, and stop.
+# shortcut makes only those; the desk (`hands.voice.desk`) also has the microphone listen between turns, and stop.
 TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "timeout"]
 Move = TurnMove | Literal["listen", "deafen"]
 
 
 def asked(event: KeyEvent) -> tuple[tuple[Instant, Ripe | Overlong], ...]:
-    """What `event` asks to be told later, and at what instant: a press, once it has been held `HOLD_SECONDS` and once
+    """What `event` asks to be told later, and at what instant: a press, once it has been held `SHORTCUT_SECONDS` and once
     `TURN_LIMIT_SECONDS`, counted from the press itself."""
     match event:
         case Pressed(at=at):
-            return (at + HOLD_SECONDS, Ripe(at)), (at + TURN_LIMIT_SECONDS, Overlong(at))
+            return (at + SHORTCUT_SECONDS, Ripe(at)), (at + TURN_LIMIT_SECONDS, Overlong(at))
         case _:
             return ()
 
 
-def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
-    """The hold after `event`, and what it does: most keystrokes do nothing."""
-    match hold, event:
+def step(shortcut: Shortcut, event: KeyEvent) -> tuple[Shortcut, tuple[Move, ...]]:
+    """The shortcut after `event`, and what it does: most keystrokes do nothing."""
+    match shortcut, event:
         # A press is a fresh start whatever came before: one that finds the key already down proves a release went by
         # unseen, and a turn still open is sent, as that release would have sent it.
         case Talking(), Pressed(at=at):
@@ -137,4 +138,4 @@ def step(hold: Hold, event: KeyEvent) -> tuple[Hold, tuple[Move, ...]]:
         case Typing(), Released():
             return Idle(), ()
         case _:
-            return hold, ()
+            return shortcut, ()

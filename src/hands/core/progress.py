@@ -104,7 +104,7 @@ def _fetched(_tool: str, input: Mapping[str, object]) -> Doing:
     return Doing(LOOKING_UP, None if host is None else f"read a page on {host[1]}")
 
 
-def _delegated(_tool: str, input: Mapping[str, object]) -> Doing:
+def _dispatched(_tool: str, input: Mapping[str, object]) -> Doing:
     description = _text(input, "description")
     return Doing(DELEGATING, None if description is None else f"start a subagent to {lowered(description)}")
 
@@ -134,8 +134,8 @@ _SAID: Mapping[str, Callable[[str, Mapping[str, object]], Doing | None]] = {
     "Glob": _searched,
     "WebSearch": _looked_up,
     "WebFetch": _fetched,
-    "Task": _delegated,
-    "Agent": _delegated,
+    "Task": _dispatched,
+    "Agent": _dispatched,
     "TodoWrite": _planned,
     "TaskCreate": _planned,
     "TaskUpdate": _planned,
@@ -175,8 +175,8 @@ def lowered(phrase: str) -> str:
 
 
 # [LAW:no-ambient-temporal-coupling] a burst is over once the session has made no new call for SETTLE seconds, or once
-# its first call has waited LONGEST, so a session that never pauses is still heard. Both are read on the reducer's own
-# clock, at its tick, which is the one owner of when gathered progress is told.
+# its first call has waited LONGEST, as in a debounce with a maximum wait, so a session that never pauses is still heard.
+# Both are read on the reducer's own clock, at its tick, which is the one owner of when gathered progress is told.
 SETTLE = 2.0
 LONGEST = 8.0
 

@@ -9,7 +9,7 @@ asks what the session said: the word comes back aloud only if every part did its
 could have read it.
 
 Each stage is read off what the pipeline itself leaves: the membership the session's hooks write, the audit lines the
-daemon writes as it hears a hold, types into a session, and takes a session's Stop, and the speech the call carries
+daemon writes as it hears a clip, types into a session, and takes a session's Stop, and the speech the call carries
 back, transcribed by the Whisper hands transcribes with. What hands said is judged from that speech alone, whichever
 backend said it and whether in its own words or a tool's readback: it is what the user would have heard.
 """
@@ -46,7 +46,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
 from hands.sessions.wrapper import EVERY_RUN
-from hands.voice import holds, transcription
+from hands.voice import clips, transcription
 from hands.voice.phoneaddress import PHONE_PORT, phone_key
 
 # Each stage of the pipeline, in the order the turns reach it: hands running; a session started from the `claude` on
@@ -78,7 +78,7 @@ FINISH_SECONDS = 180.0
 POLL_SECONDS = 0.2
 
 # The call's audio, both ways: 16-bit mono at the rate `say` is asked for and Whisper hears at, in the page's 20 ms frames.
-RATE = holds.RATE
+RATE = clips.RATE
 FRAME_SECS = 0.02
 FRAME_BYTES = round(RATE * FRAME_SECS) * 2
 # A frame of hands' speech is voiced above this RMS; the silence it sends between utterances is all zeros.
@@ -123,10 +123,10 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
     sending: tuple[str, str] | None = None
     for line in lines:
         match stage, line:
-            case "heard", {"type": "HoldHeard", "said": str(said)}:
+            case "heard", {"type": "ClipHeard", "said": str(said)}:
                 return f"heard {said!r}"
-            case "heard", {"type": "HoldHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
-                raise NotReached("heard", f"Whisper took no words from the hold; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
+            case "heard", {"type": "ClipHeard", "said": None, "dropped": list(dropped)}:  # pyright: ignore[reportUnknownVariableType]  (counted, never read)
+                raise NotReached("heard", f"Whisper took no words from the clip; it dropped {len(dropped)} segment(s)")  # pyright: ignore[reportUnknownArgumentType]
             case "typed", {"type": "Typing", "effect": {"session": str(typed), "input": {"prompt": str(prompt)}}, "span": {"span_id": str(span)}} if typed == session:
                 sending = (span, prompt)
             case "typed", {"type": "TypingFailed", "effect": {"session": str(typed)}, "reason": str(reason)} if typed == session:
@@ -139,7 +139,7 @@ def proof(stage: Logged, lines: Sequence[Line], session: SessionId) -> str | Non
                 raise NotReached("finished", f"session {session} asked permission to use a tool, which nothing in the test answers; allow it in the user's Claude Code settings")
             case "told", {"type": "WideEvent", "event": "utterance", "outcome": "failed", "error": str(error), "facts": {"session": str(told), "heard": {"type": "Summarise"}}} if told == session:
                 raise NotReached("told", f"hands could not tell session {session}'s turn: {error}")
-            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": "cut"}} if told == session:
+            case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": "barged_in"}} if told == session:
                 raise NotReached("told", f"hands' telling of session {session}'s turn was cut off before the question was asked")
             case "told", {"type": "WideEvent", "event": "utterance", "facts": {"session": str(told), "heard": {"type": "Summarise"}, "fate": str(fate)}} if told == session:
                 return f"hands' telling of session {session}'s turn: {fate}"
@@ -216,7 +216,7 @@ class Caller:
                 case bytes():
                     # Paced by the count sent against the clock at the first, as hands paces what it sends the page.
                     sent += 1
-                    await self.clock.pause(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
+                    await self.clock.sleep(max(0.0, start + sent * FRAME_SECS - self.clock.now()))
                 case str():
                     # A press or a release goes out with the frame after it, as the page's button does.
                     pass
@@ -283,7 +283,7 @@ async def until[T](clock: Clock, stage: Stage, seconds: float, found: Callable[[
     while (seen := await found()) is None:
         if clock.now() > deadline:
             raise NotReached(stage, why())
-        await clock.pause(POLL_SECONDS)
+        await clock.sleep(POLL_SECONDS)
     return seen
 
 
@@ -453,7 +453,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
     # The request: heard, and hands answering aloud about the session.
     since = smoked.mark()
     released = await caller.say("heard", asking)
-    smoked.reached("heard", await logged("heard", since, "transcription of the hold (HoldHeard)")())
+    smoked.reached("heard", await logged("heard", since, "transcription of the clip (ClipHeard)")())
     smoked.reached("answered", await told_back("answered", released, FOLDER))
 
     # The go-ahead: the draft typed into the session, and the session's turn run to its end.

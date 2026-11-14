@@ -31,7 +31,7 @@ class Word:
         return self.phrase.lower()
 
     @property
-    def near_misses(self) -> tuple[str, ...]:
+    def adversarial_negatives(self) -> tuple[str, ...]:
         """What is said that is not the word but shares its sound: each part of it said alone ("hey", "hands"), and
         each of its endings led by another word ("okay hands", "my hands"). A word of one word has neither."""
         said = self.spoken.split()

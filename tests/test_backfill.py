@@ -9,7 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from hands.core.turn import Asked, Commanded, Delegated, Edited, Happening, Interruption, Ran, Ref, Said, Shelled
+from hands.core.turn import Asked, Commanded, Edited, Happening, Interruption, Ran, Ref, Said, Shelled, SubagentDispatched
 from hands.sessions.backfill import read_transcript
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session.jsonl"
@@ -34,7 +34,7 @@ def test_a_session_nobody_has_heard_of_yet_is_read_whole_and_everything_names_it
     """What was asked is in it, in its place: the steps alone say how a session spent an hour, never what for."""
     happenings = read()
     assert [type(happening).__name__ for happening in happenings] == [
-        "Asked", "Said", "Ran", "Ran", "Said", "Asked", "Said", "Ran", "Ran", "Edited", "Ran", "Delegated", "Said"
+        "Asked", "Said", "Ran", "Ran", "Said", "Asked", "Said", "Ran", "Ran", "Edited", "Ran", "SubagentDispatched", "Said"
     ]
     asked = [happening for happening in happenings if isinstance(happening, Asked)]
     assert asked[0].text.startswith("You know, im wondering if we should be using Pipecat")
@@ -43,15 +43,15 @@ def test_a_session_nobody_has_heard_of_yet_is_read_whole_and_everything_names_it
     assert all(happening.ref is not None for happening in happenings)
 
 
-def test_a_subagent_is_one_delegated_step_and_not_the_work_it_did() -> None:
+def test_a_subagent_is_one_dispatched_step_and_not_the_work_it_did() -> None:
     """A subagent's own records are its own transcript's, which this Claude Code writes as a separate file.
     So in the session that sent it, a subagent is the one call that sent it — here launched to run in the
     background, whose report comes back later as a notification opening a turn of its own."""
-    delegated = [step for step in read() if isinstance(step, Delegated)]
-    assert len(delegated) == 1
-    assert delegated[0].agent == "general-purpose"
-    assert delegated[0].description == "Rewrite docs for Pipecat architecture"
-    assert delegated[0].report is None
+    dispatched = [step for step in read() if isinstance(step, SubagentDispatched)]
+    assert len(dispatched) == 1
+    assert dispatched[0].agent == "general-purpose"
+    assert dispatched[0].description == "Rewrite docs for Pipecat architecture"
+    assert dispatched[0].report is None
 
 
 def test_a_call_answered_after_the_cut_is_still_one_step_that_knows_its_result() -> None:

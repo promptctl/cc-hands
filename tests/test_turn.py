@@ -6,7 +6,6 @@ from hands.core.turn import (
     Asked,
     Budget,
     Continuing,
-    Delegated,
     Edited,
     Looked,
     Notified,
@@ -16,6 +15,7 @@ from hands.core.turn import (
     Questioned,
     Ran,
     Said,
+    SubagentDispatched,
     Tested,
     Turn,
     render,
@@ -67,8 +67,8 @@ def test_a_test_run_is_its_counts_and_the_names_that_failed_rather_than_its_scro
 def test_a_look_a_task_and_a_subagent_each_read_as_what_they_are() -> None:
     assert rendered(Looked(None, "Grep", "def main", "a.py:3")) == "Claude used Grep on def main\nFound: a.py:3"
     assert rendered(Planned(None, "Rewrite the tail", "in_progress")) == "Claude's plan: Rewrite the tail is in_progress"
-    assert rendered(Delegated(None, "Explore", "Find the parser", None, None)) == "Claude gave the Explore subagent this job: Find the parser\nIt is still working."
-    assert rendered(Delegated(None, None, "Find the parser", "It is in tail.py.", None)) == (
+    assert rendered(SubagentDispatched(None, "Explore", "Find the parser", None, None)) == "Claude gave the Explore subagent this job: Find the parser\nIt is still working."
+    assert rendered(SubagentDispatched(None, None, "Find the parser", "It is in tail.py.", None)) == (
         "Claude gave a subagent this job: Find the parser\nIt reported: It is in tail.py."
     )
 

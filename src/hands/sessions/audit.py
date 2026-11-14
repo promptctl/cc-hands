@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 from hands.core.effects import Input, Type
 from hands.core.session import SessionId
 from hands.core.trace import Span
-from hands.core.wire import Ending, Exchanged, Garbled, Held, Reached, Uncopied, Unfinished, Unreached
+from hands.core.wire import Ending, Exchanged, Garbled, Reached, Synthetic, Uncopied, Unfinished, Unreached
 from hands.sessions.wide import WideEvent, chain
 
 
@@ -88,7 +88,7 @@ class Unsaid:
 
 @dataclass(frozen=True)
 class Levels:
-    """How loud one hold's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
+    """How loud one clip's audio was, as its mean power in dBFS, None where it was digital silence: as the microphone
     captured it, and as Whisper heard it, with the echo canceller between the two. What the canceller took out is the
     difference; at the phone, heard through no canceller, the two are the same."""
 
@@ -97,18 +97,18 @@ class Levels:
 
 
 @dataclass(frozen=True)
-class HoldHeard:
-    """What Whisper made of one hold: what it took as said, None where nothing was, and each segment it dropped. How loud
-    the hold was is on its `hold` event, beside it."""
+class ClipHeard:
+    """What Whisper made of one clip: what it took as said, None where nothing was, and each segment it dropped. How loud
+    the clip was is on its `clip` event, beside it."""
 
-    hold: int
+    clip: int
     said: str | None
     dropped: tuple[Unsaid, ...]
 
 
 @dataclass(frozen=True)
 class Primed:
-    """The words Whisper was primed with for one hold, oldest first, the prompt tokens they come to, and how long reading
+    """The words Whisper was primed with for one clip, oldest first, the prompt tokens they come to, and how long reading
     them took. `focus` is the session whose repository was read, None where no running session is focused; `failed`
     says why the focus or its repository gave no words where either could not be read."""
 
@@ -128,7 +128,7 @@ class Replied:
 
 
 @dataclass(frozen=True)
-class CutOff:
+class BargeIn:
     """The user barged in: the sentence that was playing, None when the speaker was quiet, and how many cut-off readings
     are now waiting to be gone back to."""
 
@@ -136,18 +136,18 @@ class CutOff:
     waiting: int
 
 
-# When a user turn cuts off what hands is saying: as the hold that opens it opens, Pipecat's VAD start; or once a listener
+# When a user turn cuts off what hands is saying: as the clip that opens it opens, Pipecat's VAD start; or once a listener
 # hears words in it while it is open (`hands.voice.streaming`), Pipecat's transcription start.
-TurnStart = Literal["on the hold", "on words"]
+TurnStart = Literal["on the clip", "on words"]
 
 
 @dataclass(frozen=True)
 class UserTurn:
-    """A user turn as it ended: when the edge that opened it had it cut off what hands was saying, and how many seconds
+    """A user turn as it ended: when the trigger that opened it had it cut off what hands was saying, and how many seconds
     after it opened it did; None where it never did, a turn the voice opened that no words were heard in."""
 
     start: TurnStart
-    cut: float | None
+    barge_in_after: float | None
 
 
 @dataclass(frozen=True)
@@ -247,7 +247,7 @@ class Logged:
     source: str
     message: str
     where: str
-    trace: tuple[str, ...]
+    stacktrace: tuple[str, ...]
 
 
 Entry = (
@@ -257,10 +257,10 @@ Entry = (
     | CopiesLost
     | Exchanged
     | Transcribed
-    | HoldHeard
+    | ClipHeard
     | Primed
     | Replied
-    | CutOff
+    | BargeIn
     | UserTurn
     | Announced
     | Cued
@@ -298,7 +298,7 @@ def level(entry: Entry) -> Level:
             return "info" if failed is None else "error"
         case (
             Typing() | Exported() | CopiesLost()
-            | Transcribed() | HoldHeard() | Replied() | CutOff() | UserTurn() | Announced() | Cued() | Rolled()
+            | Transcribed() | ClipHeard() | Replied() | BargeIn() | UserTurn() | Announced() | Cued() | Rolled()
         ):
             return "info"
         case _:
@@ -311,7 +311,7 @@ def _reply_level(reply: Ending) -> Level:
             return "error"
         case Reached(status=status):
             return "error" if status >= 400 else "info"
-        case Held():
+        case Synthetic():
             return "info"
 
 
@@ -508,7 +508,7 @@ def logged_to(record: Record, shown: "Callable[[LogRecord], bool]") -> int:
                 source=f"{logged['name']}:{logged['function']}",
                 message=f"{logged['message']}{detail}",
                 where=f"{logged['file'].path}:{logged['line']}",
-                trace=() if exception is None or exception.value is None else chain(exception.value),
+                stacktrace=() if exception is None or exception.value is None else chain(exception.value),
             )
         )
 

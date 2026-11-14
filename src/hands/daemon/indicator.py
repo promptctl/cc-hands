@@ -27,7 +27,7 @@ LISTENING = "✋ 🎙"
 
 # After a notice, how long another departure from up is shown and not posted: a daemon whose loop stalls and recovers
 # over and over leaves up each time, and a notice for each would bury the screen.
-QUIET = timedelta(seconds=60)
+COOLDOWN = timedelta(seconds=60)
 
 
 def title(verdict: Verdict, light: Light) -> str:
@@ -118,7 +118,7 @@ def show(before: Shown | None, verdict: Verdict, now: datetime) -> Shown:
             # still holds then, a departure until hands is back up, a degradation until it clears.
             left: set[News] = {after} if after not in ("up", was) else set()
             owing = frozenset[News](news for news in left | (set(degraded) - set(had)) | owed if holds(news, after, degraded))
-            quiet = posted_at is not None and now - posted_at < QUIET
+            quiet = posted_at is not None and now - posted_at < COOLDOWN
             notices = (text,) if owing and not quiet else ()
             return Shown(after, degraded, shown, text, notices, frozenset() if notices else owing, now if notices else posted_at)
 

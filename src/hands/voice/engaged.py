@@ -8,7 +8,7 @@ it judges a thought still going holds the turn open; if the silence then runs on
 turn ends there. They hear for engaged conversation and for the wake word alike, and the wake word's own model beside
 them (`hands.voice.wake`).
 
-The desk moves the gate with the held key's own moves, so the gate, the hold owner, and the cues take a turn the voice
+The desk moves the gate with the shortcut's own moves, so the gate, the clip owner, and the cues take a turn the voice
 opened as they take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was
 only a noise disarms it, and the end of the turn sends it. Listening, the desk keeps the second before each turn opens, so
 the words said while the detector made sure of them are in it.
@@ -34,14 +34,14 @@ from hands.sessions import wide
 from hands.sessions.wide import WideEvent, annotate, count, unit
 from hands.voice import loads
 from hands.threads import settles_off_loop
+from hands.voice.clips import Trigger
 from hands.voice.desk import LEVELS, Chosen, Level, Desk, Event, Heard, Keyed, Leveled, Made, SpeechStarted, SpeechStarting, SpeechStopped, TurnEnded, Woke, Woken, deadline, listens, step
-from hands.voice.hold import KeyEvent, Move
-from hands.voice.holds import Edge
+from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
 
 
 class Ears(Protocol):
-    """What the edge asks of the models that listen: Silero's detector and Smart Turn, in one."""
+    """What the trigger asks of the models that listen: Silero's detector and Smart Turn, in one."""
 
     async def detect(self, audio: bytes) -> VADState: ...
     def heard(self, audio: bytes, speech: bool) -> bool: ...
@@ -174,11 +174,11 @@ async def _let_go(loading: asyncio.Future[Models]) -> None:
     await (await loading).close()
 
 
-# [LAW:one-source-of-truth] each move the desk makes is counted on the desk's event, by the move's name and by the edge
+# [LAW:one-source-of-truth] each move the desk makes is counted on the desk's event, by the move's name and by the trigger
 # that made it, and each change of level by the level it went to.
 _COUNTED: tuple[str, ...] = (
     *(name for literal in get_args(Move) for name in get_args(literal)),
-    *(f"by_{edge.replace(' ', '_')}" for edge in get_args(Edge)),
+    *(f"by_{trigger.replace(' ', '_')}" for trigger in get_args(Trigger)),
     *(f"to_{level.replace(' ', '_')}" for level in LEVELS),
     "held_open", "ended_on_silence", "heard",
 )
@@ -240,7 +240,7 @@ async def drive(
         group.create_task(overhearing(), name="the desk's microphone, overheard")
         group.create_task(choosing(), name="the levels the tools chose")
         while True:
-            # [LAW:nothing-unseen] one event for each stint at a level, counting every move, edge, and change of level
+            # [LAW:nothing-unseen] one event for each stint at a level, counting every move, trigger, and change of level
             # in it, emitted as the level changes.
             with unit("desk", emit, wide.begun(clock), _COUNTED):
                 level = desk.level

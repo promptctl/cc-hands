@@ -9,8 +9,8 @@ has gone. A newer call replaces the one before it: the page last opened is the o
 let go before it connected, or left after hands was at it, and why; its duration is how long it lasted.
 
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
-plays to it over an audio track. Over the same channel hands tells the page each mark of the turn it is waiting on
-(`hands.voice.mark`): the hold taken or thrown away, its words heard or none found, a stage failing, the reply begun,
+plays to it over an audio track. Over the same channel hands tells the page each milestone of the turn it is waiting on
+(`hands.voice.milestone`): the clip taken or thrown away, its words heard or none found, a stage failing, the reply begun,
 and the first sound, which the page shows with how long each took; and each line of the transcript
 (`hands.voice.transcript`), which the page shows when asked to. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
@@ -38,9 +38,9 @@ from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
-from hands.voice.hold import Move
-from hands.voice.mark import Mark
+from hands.voice.milestone import Milestone
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
 
 # The length of each frame sent to the phone: Opus's own 20 ms.
@@ -85,7 +85,7 @@ class CallUnreached:
 @dataclass(frozen=True)
 class CallLeft:
     """The call was up, hands at the phone from `arrived_ms` after its offer, and it ended, its page `told` that many
-    marks of its turns and that many `lines` of the transcript."""
+    milestones of its turns and that many `lines` of the transcript."""
 
     reason: PhoneGone
     arrived_ms: float
@@ -124,11 +124,11 @@ def kind(line: type[Line]) -> str:
     return line.__name__.lower()
 
 
-def wire(told: Mark | Line) -> str:
+def wire(told: Milestone | Line) -> str:
     """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
     match told:
         case str():
-            return json.dumps({"kind": "mark", "mark": told})
+            return json.dumps({"kind": "milestone", "milestone": told})
         case line:
             return json.dumps({"kind": kind(type(line)), **asdict(line)})
 
@@ -175,7 +175,7 @@ class Outbound(MediaStreamTrack):
         # late frame is followed at once by the next, so the call never drifts behind real time.
         now = self._clock.now()
         start = self._start = now if self._start is None else self._start
-        await self._clock.pause(max(0.0, start + self._sent * FRAME_SECS - now))
+        await self._clock.sleep(max(0.0, start + self._sent * FRAME_SECS - now))
         frame, done = self._pending.popleft() if self._pending else (bytes(self._samples * 2), None)
         if done is not None and not done.done():
             done.set_result(None)
@@ -238,7 +238,7 @@ class _Call:
     channel: RTCDataChannel | None = None
     watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
-    # How many marks of its turns, and lines of the transcript, the page has been told.
+    # How many milestones of its turns, and lines of the transcript, the page has been told.
     told: int = 0
     lines: int = 0
 
@@ -419,8 +419,8 @@ class Phone:
         await self._let_go(offered, "stopped")
         await self.hang_up("stopped")
 
-    def tell(self, told: Mark | Line) -> None:
-        """Tell the page a mark of the turn it is waiting on, or a line of the transcript, over the call's channel, as the
+    def tell(self, told: Milestone | Line) -> None:
+        """Tell the page a milestone of the turn it is waiting on, or a line of the transcript, over the call's channel, as the
         page sends its button. With no call up, or its channel on its way shut, there is no page to tell."""
         match self._call:
             case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:

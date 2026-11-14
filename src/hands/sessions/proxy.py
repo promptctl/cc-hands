@@ -6,8 +6,7 @@ It forwards each request upstream as it came, or with the changes its route give
 streams the reply back byte for byte, reading a copy of the same bytes into typed events as they pass. It never makes a
 request of its own; it tells each request as it forwards it, and what hands' side questions fork from the brain's comes
 back through it as the brain's own Claude Code would send it (`hands.brain.fork`). The one request it
-does not forward is one its route holds: that is answered here, with the words the route gives it, so the model is not
-asked at all.
+does not forward is one its route answers itself, with the words the route gives it, so the model is not asked at all.
 """
 
 import asyncio
@@ -33,14 +32,14 @@ from hands.core.wire import (
     Forwarded,
     Garbled,
     Heard,
-    Held,
-    Hold,
     Observed,
     Reached,
     Route,
     Seconds,
     Send,
     Sent,
+    Synthesize,
+    Synthetic,
     Unfinished,
     Unreached,
     edited,
@@ -153,12 +152,12 @@ async def serve_proxy(upstream: str, observe: Observe, route: Router, clock: Clo
         # [LAW:single-enforcer] from here until the API's answer has a head, whatever stops the exchange ends it here.
         try:
             match routed:
-                case Hold(said=said):
-                    content_type, answer = _held(clock, parsed, said)
+                case Synthesize(said=said):
+                    content_type, answer = _synthetic(clock, parsed, said)
                     # Its answer made before its ending is told: once told, nothing here can raise and tell another.
-                    held = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
-                    tell(exchanged((), Held(said, clock.wall().timestamp()), False))
-                    return held
+                    response = web.Response(status=200, body=answer, headers={"Content-Type": content_type})
+                    tell(exchanged((), Synthetic(said, clock.wall().timestamp()), False))
+                    return response
                 case Send(changes=asked, refusal=refusal, built=built):
                     onward, changes = _edited(exchange, body, parsed, asked)
             headers = _end_to_end(request.headers)
@@ -279,7 +278,7 @@ def _unfinished(error: BaseException) -> str:
             return f"{type(error).__name__}: {error}"
 
 
-def _held(clock: Clock, body: object, said: str) -> tuple[str, bytes]:
+def _synthetic(clock: Clock, body: object, said: str) -> tuple[str, bytes]:
     """A finished reply holding one text block, as a stream when the request asked for one."""
     request: Mapping[str, object] = cast(Mapping[str, object], body) if isinstance(body, Mapping) else {}
     message: dict[str, object] = {

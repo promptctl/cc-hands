@@ -6,7 +6,8 @@ one of the nine needs in [needs.md](needs.md); the work that delivers it is plan
 [features.md](features.md). The catalogue of what goes wrong, and the rule each entry
 produced, is [failure-modes.md](failure-modes.md).
 
-The design has one organizing idea: **the pure core decides, the edges act, and every
+The design has one organizing idea, functional core and imperative shell:
+**the pure core decides, the edges act, and every
 fact has one home.** State, events, and effects are typed unions. The reducer that turns
 an event into new state and a list of effects has no I/O, so every lifecycle transition
 is a unit test with no mocks. The adapters that perform the effects are thin, and there
@@ -21,8 +22,8 @@ once it is built - types into sessions, through the fritter that wrapped them.
  │  voice                                                                        │
  │  mic ─► gate ─► Whisper (MLX)       ─► LLM ─► pocket-tts ─► speakers          │
  │         ▲                        ▲  │        ▲                                │
- │   gate edges              notes, │  │ tool   │ system speech                  │
- │   terminal · held key     narrate│  │ calls  │ (straight to TTS)              │
+ │   gate triggers           notes, │  │ tool   │ system speech                  │
+ │   terminal · shortcut     narrate│  │ calls  │ (straight to TTS)              │
  │   button · phone · wake word     │  ▼        │                                │
  │  ───────────────────────────────────────────────────────────────────────────  │
  │  sessions                  ┌──────────────────┐                               │
@@ -63,7 +64,7 @@ never waits on the daemon and has no route through it. The one
 listener joined to it (the brain's stage, with the keeper of the brain's context) routes
 each request: sent with the changes hands makes to it (none, hands' tail appended to its
 newest message, old tool results as one line each, a compaction's prompt replaced), or
-held and answered by hands without reaching the API. It
+answered by hands without reaching the API. It
 parses hook input once at the socket into a `HookEvent` and rejects anything it does
 not recognise with a logged error and a non-2xx reply `[LAW:parse-dont-validate]`. It
 exposes two things upward: an async stream of events, and a small API the tools call.
@@ -377,7 +378,7 @@ Each thing a session gives hands to say unasked is one `utterance` wide event
 `noted` (the route, the delivery, or a turn or burst with nothing new kept it from being said),
 `dropped` (no longer so by the time it was to be told: out of date as the floor let it go, or
 progress of a turn that ended before its summary), `silent` (handed on and nothing of it
-played), `played`, or `cut`. Its facts are what was
+played), `played`, or `barged_in`. Its facts are what was
 heard and from which session, what decided its route, how long the floor held it (`held_ms`),
 what it was told as and how many things heard were folded into that telling, and
 `first_audio_ms`, from heard to the first audio the speaker wrote of it. The last three fates
@@ -517,13 +518,13 @@ subagent's hooks keep the `prompt_id` of the turn that started it after that tur
 Only Claude Code's status moves a session between running and at its prompt. Hooks and
 records say which turn it is and what it did: a turn is `Opened`, `Untold` once Claude
 Code's idle ends it, and `Told`. A turn opens from a prompt heard with no turn open, which
-marks it, whether or not the busy that prompt set has been read yet. What is submitted
+baselines it, whether or not the busy that prompt set has been read yet. What is submitted
 while a turn runs, a queued message or a task's notification, fires `UserPromptSubmit`
 with the running turn's `prompt_id` and leaves the status as it was, so it is in
 the turn it names. Claude Code gives a prompt an id of its own only at its prompt, so a
 prompt under another id means the open turn is over, even when the `idle` between them
 was set and set again inside one status read (93 ms apart): that turn is told,
-compared while the new prompt's hook holds Claude Code, and the new turn is marked. Any
+compared while the new prompt's hook holds Claude Code, and the new turn is baselined. Any
 other id a record carries while a turn is open is a flush's, taken seconds before Claude
 answers under it, and joins the ids the turn goes by. A `Stop` carries
 the `prompt_id` of the turn it ends, which is how that turn is found in the tail, and it
@@ -773,7 +774,7 @@ it were new.
 # One variant per kind of thing a turn does. Every step names the record it came from, except
 # where there is no record to name: one that carries no uuid, and the closing reply the Stop hook
 # hands over before Claude Code has written it.
-Step = Said | Edited | Ran | Tested | Looked | Planned | Delegated | Questioned | Other
+Step = Said | Edited | Ran | Tested | Looked | Planned | SubagentDispatched | Questioned | Other
 
 @dataclass(frozen=True)
 class Said:       ref: Ref | None; text: str                 # assistant text; never spoken as is
@@ -788,7 +789,7 @@ class Looked:     ref: Ref | None; tool: str; target: str; found: str   # Read, 
 @dataclass(frozen=True)
 class Planned:    ref: Ref | None; task: str; change: str    # TaskCreate, TaskUpdate
 @dataclass(frozen=True)
-class Delegated:  ref: Ref | None; agent: str | None; description: str; report: str | None
+class SubagentDispatched: ref: Ref | None; agent: str | None; description: str; report: str | None
 @dataclass(frozen=True)
 class Questioned: ref: Ref | None; questions: tuple[Question, ...]   # AskUserQuestion
 @dataclass(frozen=True)
@@ -888,7 +889,7 @@ recognisers cover the rest, and the length budget applies to what is spoken, aft
 summarising.
 
 **Subagents.** On the parent's transcript a subagent is one call and its report, which
-becomes `Delegated`: an `Agent` call, or a `Skill` call whose result says `forked`, as
+becomes `SubagentDispatched`: an `Agent` call, or a `Skill` call whose result says `forked`, as
 /code-review's does. Either result carries the subagent's `agentId`. Its own records are
 in `<session>/subagents/agent-<id>.jsonl`, every one with `isSidechain` true; the
 parent's transcript holds none of them. Where the subagent reports back, in a task
@@ -910,19 +911,19 @@ where it began. A turn told a second time is read from where its first reading l
 instead (see "What git says is not the model's to say"). The summariser gets the `Delta` beside the steps, because it is the
 result of all of them together and the file a `sed` changed belongs to no step at all.
 
-A mark is taken only from a session sitting at the prompt, because a turn opens there
+A baseline is taken only from a session sitting at the prompt, because a turn opens there
 and nowhere else. Claude Code sends the hook for a prompt queued while a turn runs, and
 a `Stop` the daemon never heard leaves a session working as far as the registry knows;
-marked again at either, a turn would be compared against the middle of its own work and
+baselined again at either, a turn would be compared against the middle of its own work and
 everything it changed before that second prompt would be missing from the one telling
-that names it `[LAW:no-ambient-temporal-coupling]`. A mark whose `HEAD` could not be
-read is no mark at all. `rev-parse` says nothing both for a repository with no commit
+that names it `[LAW:no-ambient-temporal-coupling]`. A baseline whose `HEAD` could not be
+read is no baseline at all. `rev-parse` says nothing both for a repository with no commit
 yet and for one it could not answer for, and silence has more causes than a clock can
 account for — a `HEAD` caught mid-rewrite by a checkout in the next terminal along, a
 ref that cannot be read, a deadline with nothing left on it. So unbornness is asked for
 rather than inferred: `symbolic-ref` answering means `HEAD` names a branch that no
 commit is on, which is what every repository looks like between `git init` and its first
-commit, and nothing else counts. Read as unborn, a mark that is really unreadable
+commit, and nothing else counts. Read as unborn, a baseline that is really unreadable
 compares against no commit, so every commit ever made in that repository is reachable
 from where the turn ended and not from where it began — and the turn is spoken as having
 made all of them `[LAW:parse-dont-validate]`.
@@ -935,7 +936,7 @@ untracked file, and the file a code generator just wrote is exactly what a turn 
 able to name; it also touches the repository's index to do its work. The index is
 copied rather than started from nothing because it carries what git already knows about
 every file: 0.105 s against 1.409 s on a repository of 20,000 files, and this is taken
-while a prompt's hook waits on it `[LAW:carrying-cost]`. The one mark left behind is one
+while a prompt's hook waits on it `[LAW:carrying-cost]`. The one baseline left behind is one
 unreferenced object per content git has not stored already, which its own housekeeping
 collects. Content is what git names an object by, so a file that does not change costs
 its size once however many turns read it: measured at 1.6 MB the first time two hundred
@@ -950,13 +951,13 @@ and waits for none of it. Both hooks are blocking ones and the shim gives up aft
 effect queued after `Compare` is the one that has the turn spoken at all, so a reading
 that is slow, that fails, or whose handler is cancelled must cost the turn its delta
 and never its telling `[LAW:no-silent-failure]`. Measured: the stop hook waits 0 ms,
-and the prompt hook 40 ms here and 145 ms on 20,000 files, against a mark's whole
-budget of `POST_TIMEOUT_SECONDS - 0.5`. A mark and a reading are both best effort and
+and the prompt hook 40 ms here and 145 ms on 20,000 files, against a baseline's whole
+budget of `POST_TIMEOUT_SECONDS - 0.5`. A baseline and a reading are both best effort and
 neither may cost the turn what it was read for, so both are performed under one guard
-rather than one guard each `[LAW:single-enforcer]`: a mark may not fail the prompt hook
+rather than one guard each `[LAW:single-enforcer]`: a baseline may not fail the prompt hook
 waiting on it, and a reading may not cost the turn the `Summarise` queued behind it.
 
-A mark is held from the moment its snapshot starts, so a reading that needs one still
+A baseline is held from the moment its snapshot starts, so a reading that needs one still
 being taken waits for it; where it could not be taken at all, the turn is told without a
 delta. Readings stay one per telling, in the order the tellings are made.
 
@@ -1087,17 +1088,17 @@ and an exchange made for no unit of work, a wrapped session's through the tap or
 `proxy.exchange` span at the root of a trace of its own, saying its session, kind and path. A turn hands stopped mid-way
 still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), how
-many times they cut in on it and stopped nothing of it (`cut_in`, counted with `round_trips`, `tools` and `refused`), and
-the note that tells the brain, after the user's next words, what of the turn they did not hear (`spoken_over`, empty
+many times they cut in on it and stopped nothing of it (`barge_ins`, counted with `round_trips`, `tools` and `refused`), and
+the note that tells the brain, after the user's next words, what of the turn they did not hear (`barge_in_note`, empty
 when nobody spoke over it). A barge-in presses no key and holds no request: the turn runs to its own end, said to nobody.
 The note quotes the last sentence the speaker played to its end, then the rest of the reading it was cut off in
-(`Player.cut_off`), the turn's words past the last of them the speaker played, a sentence still on its way to the speaker
+(`Player.next_barge_in`), the turn's words past the last of them the speaker played, a sentence still on its way to the speaker
 included, and its calls' readbacks. A turn spoken over that then fails adds only that it failed; a reply broken after the
 cut was heard by nobody.
 
 A cut is a barge-in only while something the brain said or asked is still to be heard: a text block still streaming,
-or a text block's end or a permission question whose Mark the speaker has not yet played. Each text block ends the
-reply as it closes, so its last sentence is said then, before the call after it runs, and a Mark behind it is exact.
+or a text block's end or a permission question whose Marker the speaker has not yet played. Each text block ends the
+reply as it closes, so its last sentence is said then, before the call after it runs, and a Marker behind it is exact.
 Only the text block's own stop, or the start of a block that is neither text nor thinking, ends it: a retry that opens
 with thinking goes on with the block the broken reply left streaming, still one sentence. A text block still open when
 the turn ends, in a reply broken past its retry or a brain that failed, ends with the turn, and hands' lines waiting
@@ -1339,36 +1340,36 @@ parse — two commands in five that push, and nearly every `checkout -b`. So the
 where it does leave a mark, and only for the branch the session's worktree is on, since every
 worktree and the terminal beside it share the repository's refs: that branch's own log saying it
 was created from something other than the remote branch of its name (a checkout or a rename is
-not a branch made), a remote-tracking ref of it whose log says `update by push` since the mark (a
+not a branch made), a remote-tracking ref of it whose log says `update by push` since the baseline (a
 fetch moves the same ref and logs `fetch`), and, for a pushed branch that is not the one a
-remote's HEAD follows, a pull request the forge says was opened between the mark and the turn's end, allowing the
+remote's HEAD follows, a pull request the forge says was opened between the baseline and the turn's end, allowing the
 forge's clock `SKEW` ahead of this machine's. Each is bounded by where the turn's end was captured, never by where
 the repository stands when the reading gets to it, so a push the next turn makes is not this turn's. The forge is asked
 beside the tree and must answer `SPARE` before the narrator's `PATIENCE` runs out, so a slow forge costs the
 pull request and never the commit. Both sources speak in the same `GitChange` values, so a push
-both saw is said once. Each mark is one `delta.mark` wide event and each reading one
+both saw is said once. Each baseline is one `delta.baseline` wide event and each reading one
 `delta.read`, and each says which index its snapshot started from: the repository's
 own, copied; an empty one; or none, because git would not say where the index is. Each
 also counts the git commands that did not answer, so a git that timed out reads
 differently from a repository with nothing to tell.
 
 A turn told twice has git read twice, each telling against where the one before it left off.
-No prompt marks where the part after a blocked `Stop` began, so every reading also keeps where
+No prompt baselines where the part after a blocked `Stop` began, so every reading also keeps where
 it found the repository, and `Compare(again=True)` reads against that instead of the prompt's
-mark: a commit made in the turn's second half — a heredoc commit, which no step records
+baseline: a commit made in the turn's second half — a heredoc commit, which no step records
 either — is told with the second telling, and nothing the first told is told again. A first
 reading that could not say where the repository stood leaves the second telling without a
 delta. Only a turn hands told before is read this way: one whose first `Stop` it never heard
-is read against its prompt's mark, or not at all where no prompt was heard, since the last
+is read against its prompt's baseline, or not at all where no prompt was heard, since the last
 reading is then another turn's.
 
 A turn's end is captured in the background, after its `Stop` lets Claude Code go, so the next prompt can arrive while
-the capture is still running. The next turn's mark therefore waits beside every capture under way, inside the
+the capture is still running. The next turn's baseline therefore waits beside every capture under way, inside the
 prompt hook's one budget, and the hook lets the next turn begin only once each capture is in or the budget is spent.
 A stage still unread then was read inside the next turn and is never told: a tree read late loses the turn's files
 and keeps its commits, branch, push and pull requests, and a late read of where the repository stood loses all of
 them. `delta.read` says which: `read`, `tree overtaken`, `end overtaken`, or `start overtaken` for a part after a
-blocked `Stop` whose start was a capture the next turn overtook, beside `unmarked` and `dropped`. `delta.mark` counts
+blocked `Stop` whose start was a capture the next turn overtook, beside `unbaselined` and `dropped`. `delta.baseline` counts
 the captures it waited on and those it overtook, and how long it waited. A turn with no reading still takes its
 place in the narrator's order, so each telling is paired with its own turn's delta, and turns in a row with none
 share one place, so a daemon whose voice never loaded holds no more per turn.
@@ -1492,12 +1493,12 @@ makes carries the same listing, composed as the request leaves, as a last text b
 the block holding Claude Code's cache marker (`hands.voice.briefing.tail`). The cached
 prefix is exactly what Claude Code sent, and its history never keeps a stale listing. The
 brain's history is kept small on the way out the same way (`hands.brain.context`): every
-tool result more than K turns old goes as `<tool>: <sentence>`, a batch every K turns so
-the cached prefix changes once a batch, with the sentence asked once the result's turn
+tool result more than K turns old goes as `<tool>: <summary>`, a batch every K turns so
+the cached prefix changes once a batch, with the summary asked once the result's turn
 ends, as a side question that shows the result, forked from the brain's newest main turn
 (`hands.brain.asides`), and kept in the summary store by the result's content. Each batch reached
 is one `context.stubbing` event, naming the calls that go as a line from then on (`stubbed`) and those
-that go whole because no sentence had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
+that go whole because no summary had been said of them by then (`whole`), each counted; and its compaction is asked for what a voice
 session keeps rather than what a coding session does. A restart does not start the conversation over: each brain holds its
 session in `conversation` in its config directory, and the next one resumes it while Claude Code still has its
 transcript, so a restart, an upgrade, or a change of model goes on from what was said, its length kept by that same
@@ -1557,7 +1558,7 @@ stopped with Escape, which fires no Stop, is never heard to end. The
   written 37 ms after, and an Escape'd turn's Stop can fire after it. So the turn is
   kept `Untold` and is told, once, at the first of five events: its Stop
   (told with the reply the Stop carries), its interrupt record (one naming its prompt), a turn after it
-  opening (told before that turn's mark), the session ending, or a reading of the
+  opening (told before that turn's baseline), the session ending, or a reading of the
   transcript through `UNTOLD` ms past the `idle`'s stamp, which is what tells a double
   Escape that leaves no record. That wait is on Claude Code's clock: each reading says how
   far it read (`Read`), stamped before it opened the file, so a transcript hands reads late
@@ -1635,24 +1636,24 @@ one file.
 ## The summary store
 
 A project's backlog is too large to read raw into a spoken conversation: 132 open links
-tickets are ~145K tokens through `lit show`, and one sentence each is ~3K. So
-`read_backlog` and `read_ticket` serve a sentence per ticket from the summary store, and
+tickets are ~145K tokens through `lit show`, and one summary each is ~3K. So
+`read_backlog` and `read_ticket` serve a summary per ticket from the summary store, and
 the ticket's own words only when asked (`full`). The backlog is read fresh from
-`lit export` at every call (`hands.sessions.backlog`); the store holds only sentences.
+`lit export` at every call (`hands.sessions.backlog`); the store holds only summaries.
 
-A sentence is keyed by a digest of what it was made from (`hands.core.sentences`): the
-summariser's instruction, the thing's own text, and the sentence of each thing under it.
+A summary is keyed by a digest of what it was made from (`hands.core.summaries`): the
+summariser's instruction, the thing's own text, and the summary of each thing under it.
 The tree is the backlog over its unfinished tickets with no unfinished parent (epics, loose
 tickets, and follow-ups filed under a closed ticket), each over its unfinished children. Editing one ticket changes its key and its ancestors' and no other,
-and stops rising at the first sentence that comes back unchanged; a rerank or a status
+and stops rising at the first summary that comes back unchanged; a rerank or a status
 change changes no key; an edit to the instruction changes every backlog key (a turn's key
 is its identity, below). The rows live in
-`<home>/sentences.db`, one table, never updated.
+`<home>/summaries.db`, one table, never updated.
 
-Sentences are made off the voice path by one task (`hands.voice.summarising`). A
+Summaries are made off the voice path by one task (`hands.voice.summarising`). A
 backlog is wanted at start for every live session's project and again at every read;
 the task asks the summariser for what is due, twenty things to a call, leaves before the
-parents keyed by their sentences. Each pass is one `summary.backlog` event: how many
+parents keyed by their summaries. Each pass is one `summary.backlog` event: how many
 things the backlog has, how many were known, said, and still unsaid at its end, its rounds,
 calls, failed calls, and stray reply lines, and the things a reply left out (`left_out`) and
 what each failed call raised (`errors`), and, once lit has answered, whether it has a workspace there (`tracked`). A
@@ -1660,13 +1661,13 @@ directory lit has none in — `lit init` never ran, or it is in no git repositor
 backlog: its pass is ok, `tracked` false and every count zero, and `read_backlog` answers an
 empty backlog with `tracked` false. A pass fails with lit's error when the export could not
 be read, and with the last failed call's error when one failed, either kind of pass. A tool
-never waits on it: a thing with no sentence yet is served by its title and counted in
-`unsummarised`. Measured 2026-09-29 on this repo: 52 sentences in 5 calls and 45 s cold,
+never waits on it: a thing with no summary yet is served by its title and counted in
+`unsummarised`. Measured 2026-09-29 on this repo: 52 summaries in 5 calls and 45 s cold,
 0 calls and 0.16 s warm.
 
 A session is served the same way. `read_session` splits the whole transcript into turns,
-one per request (`hands.core.turn.turns`), and hands over the newest forty with a sentence
-for each finished turn, or its request while the sentence is unsaid; `before` pages back,
+one per request (`hands.core.turn.turns`), and hands over the newest forty with a summary
+for each finished turn, or its request while the summary is unsaid; `before` pages back,
 and `read_turn` pages one turn's steps from a mark. A finished turn never changes, so its key is not its text but its identity
 (`turn_digest`): its first record's id and how many things happened in it, under no
 instruction. The turns are wanted at each read and said by the same task, one `summary.turns` event per pass, which
@@ -1708,7 +1709,7 @@ eventually decide that editing the file is faster than routing your request; the
 surface above is the whole surface `[LAW:no-mode-explosion]`.
 
 `stay_silent` is how the model declines to answer words that were not addressed to
-it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word edge,
+it, taken from Happy's `skip_turn`. Push-to-talk rarely needs it; the wake-word trigger,
 which opens the mic without a hand, does. It does not end a turn that did something, because by voice silence after
 work reads as nothing done, or as a crash. A turn the user asked and did not speak over has acted when it called a tool
 the model goes on from, such as `send_draft`, or one that is not hands' own, such as Bash. If its closing reply has no
@@ -1764,54 +1765,54 @@ turn after the brain listed it is left alone, even before its busy status is rea
 
 **The gate is the turn boundary and the mute.** Pipecat's turn strategies act on
 voice-activity frames, so the key is the VAD: every microphone frame carries the key
-it was captured under, and the hold owner (`hands.voice.holdowner`) pushes the VAD frames
-where those keys change, numbering each hold, so the turn the strategies see and the audio
+it was captured under, and the clip owner (`hands.voice.clipowner`) pushes the VAD frames
+where those keys change, numbering each clip, so the turn the strategies see and the audio
 every model hears are cut at the same frame. How a turn ended is not a key position: the gate counts the
-turns it has sent and thrown away, every frame carries both counts, and the hold owner
-ends its hold as they move. A frame is captured every 20 ms, and a turn can end and the next
+turns it has sent and thrown away, every frame carries both counts, and the clip owner
+ends its clip as they move. A frame is captured every 20 ms, and a turn can end and the next
 arm between two of them. The key is also the mute: microphone bytes become silence
 of the same length unless the key is pressed. Frames flow at full rate either way;
-only their content changes. The microphone opens on the press, and a hold's audio
-begins there, so words said before the hold means talk are kept; they are thrown
-away if the press turns out to be Shift. The hold opens the turn, so the floor is the
+only their content changes. The microphone opens on the press, and a clip's audio
+begins there, so words said before the press means talk are kept; they are thrown
+away if the press turns out to be Shift. The clip opens the turn, so the floor is the
 user's from then on, and the release ends it and is final. The turn's cut is the
 interruption that flushes queued audio, cancels the reply still streaming from the
 model and its calls in flight, and settles a line said through the player's `heard()`
 as cut off. That is barge-in.
 
-When a turn cuts is the edge's that opened its hold (`turn_start` in
-`hands.voice.trigger`, enforced by `EdgeTurnStart`), and each hold carries that edge
-from the gate, as it carries the key. A hold the user's hand opens, the held key or the
-phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
+When a turn cuts is the trigger's that opened its clip (`turn_start` in
+`hands.voice.trigger`, enforced by `TriggerTurnStart`), and each clip carries that trigger
+from the gate, as it carries the key. A clip the user's hand opens, the shortcut or the
+phone's button, cuts as it opens, Pipecat's VAD start: holding the talk key and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose and
-heard through the echo canceller while hands speaks. A hold engaged conversation opens cuts
+heard through the echo canceller while hands speaks. A clip engaged conversation opens cuts
 only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's
 Nemotron Speech Streaming paired with Nemotron 3 Diarization on MLX, one session for the run,
-fed only the holds), Pipecat's
+fed only the clips), Pipecat's
 transcription start, because under
 engaged conversation the desk's detector hears through the echo canceller, and the
-reply's own sound left over from it, or a cough or a door, opens a hold. Between 23:52
+reply's own sound left over from it, or a cough or a door, opens a clip. Between 23:52
 on 2026-10-05 and 02:53 UTC on the MacBook's speakers, 14 of 33 voice barge-ins on a
 reading held no words for Whisper. The streaming model decodes silence, hiss and clicks to
 no words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech,
 and it hears that as words. Such a turn cuts nothing, so nothing has to be
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
-had opened, while Floor holds what hands tells of the sessions from the hold's opening.
+had opened, while Floor holds what hands tells of the sessions from the clip's opening.
 A cut can land while the turn's words are still on
 their way to the model, so they are uninterruptible: an interruption stops hands, never
 the user. And the user aggregator takes none of them in until the assistant aggregator,
 at the end of the pipeline, says the reply the cut stopped is written as
-cut off (`CutWritten`), so the audit log reads that reply ahead of the words that cut it
-off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its edge had it cut, and how
-long after it opened it did, or that it never did. A turn ends once the hold owner is done with every
-hold it took in (`KeyTurnStop`): a press while the last hold is still being
-transcribed joins that turn, so no hold's words are left out of it. Nothing else ends
+cut off (`BargeInWritten`), so the audit log reads that reply ahead of the words that cut it
+off, and the brain's stage takes the cut ahead of them, however close behind the cut they come. Every turn is a `UserTurn` line on the audit: how its trigger had it cut, and how
+long after it opened it did, or that it never did. A turn ends once the clip owner is done with every
+clip it took in (`KeyTurnStop`): a press while the last clip is still being
+transcribed joins that turn, so no clip's words are left out of it. Nothing else ends
 one: Pipecat's user aggregator would end a turn itself after 5 s with no speech and no
 transcript, which a slow or queued transcription outlasts, so that timeout is set to
-never (`user_turn_stop_timeout` in `build_voice`). What bounds a turn instead is the hold
-owner: a transcription that has not returned in a minute, or in the hold's own length if
-that is longer, fails, said aloud like any other failure, and that resolves its hold
+never (`user_turn_stop_timeout` in `build_voice`). What bounds a turn instead is the clip
+owner: a transcription that has not returned in a minute, or in the clip's own length if
+that is longer, fails, said aloud like any other failure, and that resolves its clip
 (`TRANSCRIBING_SECONDS`).
 
 **The mute is decided where sound is captured, and the speaker's echo is cancelled.**
@@ -1848,64 +1849,64 @@ playing, how many it dropped unheard because the microphone had stopped taking t
 how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
-was captured, before the canceller (`KeyedAudio.captured`), and the hold owner keeps it for the
-frames a hold is made of, so each hold's `hold` event says its mean power in dBFS
+was captured, before the canceller (`KeyedAudio.captured`), and the clip owner keeps it for the
+frames a clip is made of, so each clip's `clip` event says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
 reply's echo left over reads loud captured and quiet heard, one of the room with nobody
 speaking reads quiet on both. A level is null for digital silence, and at the phone,
 heard through no canceller, the two are equal. Measured on
 2026-10-03 through this transport: about 27 dB of echo removed. A press mid-reply with
-nobody speaking left no word of the reply in 8 holds of 8, where the raw microphone made
-one in every hold. "Stop. What time is it?", said from 50 ms after the press, kept
+nobody speaking left no word of the reply in 8 clips of 8, where the raw microphone made
+one in every clip. "Stop. What time is it?", said from 50 ms after the press, kept
 "Stop." in 8 of 8. The mute this replaced held the microphone shut until the reply's
 sound had died away, and lost that first word in 8 of 8.
 
-**One owner cuts every hold, and each model is a listener on it.** The hold owner
-(`hands.voice.holdowner`) cuts and numbers each hold where the gate's counts move, and gives
-every listener (`hands.voice.holds.Listener`) the same samples of it in capture order: what
-the hold kept from before it opened, each frame while it is open, and its end. A listener's
-slow work, while the hold is open or after it closes, is a hearing the owner runs on that
+**One owner cuts every clip, and each model is a listener on it.** The clip owner
+(`hands.voice.clipowner`) cuts and numbers each clip where the gate's counts move, and gives
+every listener (`hands.voice.clips.Listener`) the same samples of it in capture order: what
+the clip kept from before it opened, each frame while it is open, and its end. A listener's
+slow work, while the clip is open or after it closes, is a hearing the owner runs on that
 listener's own lane, so a slow listener holds up only itself, under a bound of a minute
 from when the listener returned it.
-Each hearing is one `hearing` event: the listener, the hold, what it heard, and whether its
-words cut hands off, which only words heard while their hold is still open do. The
-transcriber is given each spoken hold the key sent, whole, in the order the holds ended;
-each hold, spoken or typed, is one `hold` event, from its end to its resolution: what opened
+Each hearing is one `hearing` event: the listener, the clip, what it heard, and whether its
+words cut hands off, which only words heard while their clip is still open do. The
+transcriber is given each spoken clip the key sent, whole, in the order the clips ended;
+each clip, spoken or typed, is one `clip` event, from its end to its resolution: what opened
 it, what the gate did with it, how long and loud it was, and what its transcription came to.
 
 Each live word carries the speaker who said it (`hands.voice.streaming`): NVIDIA's Nemotron 3
 Diarization, a Streaming Sortformer, paired with Nemotron Speech Streaming in mlx-audio's speaker
-streaming session, one session for the run, a listener on the hold owner. It hears exactly the
-audio the hold is transcribed from, as it is spoken. The diarizer decides who is speaking in
+streaming session, one session for the run, a listener on the clip owner. It hears exactly the
+audio the clip is transcribed from, as it is spoken. The diarizer decides who is speaking in
 each 10 ms frame, and the session masks each speaker's frames into a recognizer stream of that
 speaker's own, so a word comes out of one speaker's stream. The diarizer's arrival-order speaker
-cache carries who has been heard from hold to hold, so speaker 0 is the first voice of the run in
-every hold; a new session would number everyone from 0 again. A speaker's stream is stepped
+cache carries who has been heard from clip to clip, so speaker 0 is the first voice of the run in
+every clip; a new session would number everyone from 0 again. A speaker's stream is stepped
 only in the chunks the diarizer hears them in (`GATING`, set by `scripts/measure-gating.py` on
 AMI turns that end in silence): stepped on past them, on frames masked to zero, it ends more turns
-on words nobody said. At the hold's end the session is fed silence until the diarizer has
-committed the hold's last chunk, and every speaker's stream is closed on one chunk of silence as
-the model hears it, so a hold's last words are decoded in it and none in the next. Each
-hold the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
+on words nobody said. At the clip's end the session is fed silence until the diarizer has
+committed the clip's last chunk, and every speaker's stream is closed on one chunk of silence as
+the model hears it, so a clip's last words are decoded in it and none in the next. Each
+clip the key sent or dropped settles as one of the listener's `hearing` events: its fate, and
 each speaker's words in it. Nothing waits on it. The models load on the stream's own thread, as
-its first work (`streaming.loaded`), so the voice starts without them and holds spoken meanwhile
+its first work (`streaming.loaded`), so the voice starts without them and clips spoken meanwhile
 are heard behind them; models that fail to load, or decoding that fails, fail the end of that
-hold and every hold's after it, with why.
+clip and every clip's after it, with why.
 
-Each speaker in each hold is identified by their voice, measured beside the cut and not yet acting
+Each speaker in each clip is identified by their voice, measured beside the cut and not yet acting
 on it (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
 is active in at the threshold their stream is masked by, are read out of it as it takes each
-chunk, and the hold's samples in those frames are that speaker's voice in the hold; a frame two
+chunk, and the clip's samples in those frames are that speaker's voice in the clip; a frame two
 speakers share is in both, and counted as shared. A speaker is handed to the voiceprint lane
 (`Voiceprints`, a thread of its own) once as their heard seconds first reach each row of the
-table, and once more as the hold ends, after the hearing's words have gone out, so no words wait
+table, and once more as the clip ends, after the hearing's words have gone out, so no words wait
 on it. The lane scores their latest 3 s with 3D-Speaker's ERes2Net, run by sherpa-onnx on the
 CPU, against hands' own voiceprints, and says who each was on a `voiceprints.identified` unit:
 the score, the seconds heard, and the window scored with how much of it was shared, the input a
-refit fits on. One table of score floors by length decides: under 1 s, `Unheard`; from 1 s under
+refit fits on. One table of score thresholds by length decides: under 1 s, `Unheard`; from 1 s under
 0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
-otherwise `Unsure`. A person stays one for the rest of their hold, kept by hold number, since a
-hold's end can be identified after the next hold opens.
+otherwise `Unsure`. A person stays one for the rest of their clip, kept by clip number, since a
+clip's end can be identified after the next clip opens.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
@@ -1924,24 +1925,24 @@ The playout carries the label to the echo canceller. On the capture thread, the 
 them against every voice they may be: the model did not load, there is no print yet of the voice
 hands speaks in, or hands played a voice over them that it holds no print of.
 
-Every hold is kept on disk by one more listener, the recorder (`hands.voice.recorder`), in a
-directory of the run's own under `holds/` in the home, claimed so two runs started in the same
-second never share one. Each hold is kept as the pipeline heard it, after the canceller, with
+Every clip is kept on disk by one more listener, the recorder (`hands.voice.recorder`), in a
+directory of the run's own under `clips/` in the home, claimed so two runs started in the same
+second never share one. Each clip is kept as the pipeline heard it, after the canceller, with
 what the desk's speaker played over it. That is the canceller's own reference, kept as the
-speaker played it and put in the hold's format only as the hold is written, so the two line up
-sample for sample; the phone has none. Beside them go what opened the hold, what the gate did
+speaker played it and put in the clip's format only as the clip is written, so the two line up
+sample for sample; the phone has none. Beside them go what opened the clip, what the gate did
 with it, and every voice hands played over it.
 
 The recorder also keeps hands' echo as labelled data. A buffer counts as hands' echo when all
 three hold as it is captured: the desk is at the off level with no press (the gate's key is up,
-so only a held key could open a hold), and a frame of it carries hands' TTS. Then what the
+so only the shortcut could open a clip), and a frame of it carries hands' TTS. Then what the
 microphone overhears is nobody's but hands'. Each stretch of such buffers is an echo span,
-`echo-<span>.*` in the same directory, its `.json` saying no hold was open. It is identified as
+`echo-<span>.*` in the same directory, its `.json` saying no clip was open. It is identified as
 one voice at its end, on a `voiceprints.identified` unit carrying the span number. A press or a
 change of level ends the span. The store is kept under 2 GB by deleting whole runs, oldest first
-and never the current one (`holds.pruned`). The size is counted once as the run's directory is
-claimed and kept as a running total after that. So held-key use is the data the voiceprint
-table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A hold
+and never the current one (`clips.pruned`). The size is counted once as the run's directory is
+claimed and kept as a running total after that. So shortcut use is the data the voiceprint
+table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A clip
 that cannot be written fails its `hearing` event with why, and a span its `echo.kept` event.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
@@ -1982,21 +1983,21 @@ changes the default input, so the follower opens it like any other move. This is
 tested against a PortAudio that lists no default input. A MacBook cannot be put in
 that state, since macOS always falls back to the built-in microphone.
 
-**The gate has one owner and several edges.** `PushToTalk` holds the key position;
-whatever reads the physical world calls `PushToTalk.move`, naming itself. The edges are
-values of one type, `Edge` (`hands.voice.trigger`), not modes of the gate
+**The gate has one owner and several triggers.** `PushToTalk` holds the key position;
+whatever reads the physical world calls `PushToTalk.move`, naming itself. The triggers are
+values of one type, `Trigger` (`hands.voice.trigger`), not modes of the gate
 `[LAW:one-type-per-behavior]`; the gate keeps the one that opened the last turn, and each
 turn's `UserAsked` says it:
 
-| Edge | Down | Up |
+| Trigger | Down | Up |
 |---|---|---|
-| `held key` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.hold`) | released; another key pressed while it is held drops the turn unsent |
+| `shortcut` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.shortcut`) | released; another key pressed while it is held drops the turn unsent |
 | `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
 
-The wake-word edge opens the mic without a hand, as `engaged conversation` does, and
+The wake-word trigger opens the mic without a hand, as `engaged conversation` does, and
 hears what it hears: the room with hands' own voice taken out by the echo canceller,
 while hands speaks as much as while it is quiet, so the wake word said over a reply cuts
 it off. Each hearing records `while_speaking`, whether hands was speaking as its audio arrived; a wake on the echo's tail, after hands stops, reads as one it was not. The
@@ -2025,7 +2026,7 @@ Smart Turn, and the wake word's, is fetched and loaded as the desk starts, and o
 that cannot be fails the run with what could not be loaded.
 
 **A listening desk listens between turns.** The levels move the gate with the
-held key's own moves, plus two of their own: `listen` as the desk leaves `off` and
+shortcut's own moves, plus two of their own: `listen` as the desk leaves `off` and
 `deafen` as it returns. While the desk listens, the key rests at `listening`
 between turns rather than `up`: the microphone's bytes reach Whisper, which keeps the last
 second of them as Pipecat keeps audio nobody is speaking in, so the turn the voice opens
@@ -2050,19 +2051,19 @@ nothing, so a page that cannot reach hands never holds its speech; the newest of
 lets go of any older one not yet up, and replaces the call that is up once it
 connects. The other place cannot touch a turn that is not its own: a Shift typed at
 the desk while the user talks on the phone arms nothing. A turn opened at one place
-while a hold is open at the other drops both, as a key pressed while the talk key is
+while a clip is open at the other drops both, as a key pressed while the talk key is
 held drops the turn, and the gate cues and tells the moves as it took them. Only a
-turn opening moves hands, never a press still arming, which may be Shift: so a hold
+turn opening moves hands, never a press still arming, which may be Shift: so a clip
 at the place hands is not at keeps none of the words said before it opened a turn,
 and typing at the desk never takes a call's replies off the phone. Each move of hands
 between the places is one `place.moved` event: from where to where, whether a turn or
-a call made it, and whether a hold open at the place it left was thrown away. A move
+a call made it, and whether a clip open at the place it left was thrown away. A move
 a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk
 key's edges are cued as the key moves, whether or not anything downstream takes the
 turn. Two more cues are for silence: a high rising pair when a turn's words go
-to the brain, which a hold that heard nothing or was dropped never reaches,
+to the brain, which a clip that heard nothing or was dropped never reaches,
 and one steady tone when hands acts: at each call of one of its tools but `stay_silent`,
 and at each burst of progress that is heard, so never another session's, a muted one's,
 or any while hands is quiet. They are owed into one queue and played once nobody is
@@ -2082,18 +2083,18 @@ travels with the audio, as `KeyedAudio` makes it travel at the desk. Earbuds kee
 hands' voice out of the phone's microphone, so the phone's audio is gated by its
 button alone.
 
-The same channel carries, the other way, what became of each hold. The latency
-observer (`hands.voice.latency`) tells the phone each mark of a turn as it logs it
-(`hands.voice.mark`): `released` or `discarded`, `transcript` or `no words`,
+The same channel carries, the other way, what became of each clip. The latency
+observer (`hands.voice.latency`) tells the phone each milestone of a turn as it logs it
+(`hands.voice.milestone`): `released` or `discarded`, `transcript` or `no words`,
 `first LLM token`, `first audio`, and `failed` where a stage failed first. The page
 shows the last one under its button, with the time since the button was let go
 counting while a reply is waited on, and the time to the first sound once it
 comes. Every time shown is the page's own clock, from the button let go to the
-mark arriving, so it is the wait as felt at the phone, the network included.
+milestone arriving, so it is the wait as felt at the phone, the network included.
 
-`no words` is a fact of the turn and not of a hold: the user aggregator says the
-turn ended, and no hold it took in had words, so nothing is sent to the model. A
-silent hold released after one whose words are in is answered with the rest of its
+`no words` is a fact of the turn and not of a clip: the user aggregator says the
+turn ended, and no clip it took in had words, so nothing is sent to the model. A
+silent clip released after one whose words are in is answered with the rest of its
 turn. `failed` is a pipeline error that leaves the release unanswered: one after
 the turn was sent, which is its reply failing, or one while the turn was taken in
 where the turn then ends with no words, which is Whisper failing on it. Both end
@@ -2101,16 +2102,16 @@ the turn's latency window, so what hands says next, the failure itself included,
 is not timed as the answer. `first audio` is the first sound after the release,
 whatever hands said with it, and the page says only that hands spoke.
 
-A mark carries no hold's number, so the page places it by where it falls: each
-mark names the marks it may come after, and until hands says it took the hold
-shown or threw it away, nothing else told is of that hold. A mark of a hold the
-page has let go of is not shown. A call's `phone.call` event counts the marks its
+A milestone carries no clip's number, so the page places it by where it falls: each
+milestone names the milestones it may come after, and until hands says it took the clip
+shown or threw it away, nothing else told is of that clip. A milestone of a clip the
+page has let go of is not shown. A call's `phone.call` event counts the milestones its
 page was told.
 
 The channel also carries the transcript (`hands.voice.transcript`), which the page
 keeps under a button, hidden until asked for. Every message on it is one JSON
-object whose `kind` says which it is: a `mark`, or a line. The user's words are
-the line Whisper heard of each hold. Each of hands' sentences is told twice: as the
+object whose `kind` says which it is: a `milestone`, or a line. The user's words are
+the line Whisper heard of each clip. Each of hands' sentences is told twice: as the
 output transport writes its first audio, and as it lets the sentence's end go, or a
 barge-in cuts it off. Its text alone is no start: the first sentence of a reply is
 let go before its audio is made. pocket-tts reports no word timings, so hands
@@ -2118,7 +2119,7 @@ measures its speaking rate off each sentence played to its end and tells it with
 the next; the page sweeps the highlight through a sentence's words at that rate,
 holds on the last word until hands says the sentence is done, and strikes through
 the words a barge-in, or the call ending, cut off. The `phone.call` event counts the
-lines told beside the marks.
+lines told beside the milestones.
 
 **The phone's page shows what the brain is doing, and stops its turn** (`hands.voice.brainpage`).
 Below the Conversation link, one line says Idle, Thinking, or the call the brain runs, with how long
@@ -2133,7 +2134,7 @@ brain's one stop (`Brain.interrupt`, Escape then Ctrl-C with its input held), wh
 from. A turn stopped before any block of its reply ended is gone from the brain's history (Escape
 gives the prompt back to the input, and the Ctrl-C empties it), so what it asked is told the brain
 with its next turn. Both routes are served beside the phone's page under its key
-(`hands.voice.keyed`): `GET /brain?seen=<mark>` and `POST /brain/stop`. A read that has seen the
+(`hands.voice.keyed`): `GET /brain?seen=<version>` and `POST /brain/stop`. A read that has seen the
 work waits until it changes, by the conversation page's loop in `hands.voice.longpoll`, a look being
 a digest of what the stage holds in memory; its answer carries the Mac's clock, by which the page
 times the work. Each read is one `brain.read` event, with what the brain was doing, how many calls
@@ -2151,10 +2152,10 @@ read on from the log offset it last reached. A page's read says how many changes
 seen and waits up to 25 s for another, so it is answered once something is said, and a
 send seen to fail later, or a session named after it, is redrawn where it was. Words
 typed are queued into the voice's pipeline as `Typed`, which no interruption drops, and
-Whisper takes them as a hold of their own with the `typed` opener: opened and ended at
-once, and heard in line behind the holds of the key's still being transcribed. That is not an edge: it moves no gate and
-leaves hands where it is. A typed hold cuts hands off as it opens, as a press does,
-and joins a turn a hold of the key's has open. From there the words reach the model,
+Whisper takes them as a clip of their own with the `typed` opener: opened and ended at
+once, and heard in line behind the clips of the key's still being transcribed. That is not a trigger: it moves no gate and
+leaves hands where it is. A typed clip cuts hands off as it opens, as a press does,
+and joins a turn a clip of the key's has open. From there the words reach the model,
 and come back to the page through the log, as words said do. Each read is one
 `conversation.read` event, with what it had seen, how long it waited, and how many
 moments it gave. Each send is one `conversation.typed` event, with how many characters
@@ -2162,12 +2163,12 @@ were typed. A request without the key or with no words is refused, and its event
 
 **The backlog page is a project's lit backlog, ordered by dragging** (`hands.voice.backlogpage`).
 It is served beside the conversation page, at `/backlog?project=<directory>`, under the same key.
-Every read is `sighted` (`hands.voice.sentences`), the one read of a backlog the `read_backlog`
-tool makes too: `lit export` run fresh, each ticket's sentence from the summary store, and, while
+Every read is `sighted` (`hands.voice.summaries`), the one read of a backlog the `read_backlog`
+tool makes too: `lit export` run fresh, each ticket's summary from the summary store, and, while
 any ticket is unsaid, the project asked for to be said in the background, once however its path is
 spelled. Every keyed route of the pages beside the phone's checks the key in one place
 (`hands.voice.keyed`). The page draws the unfinished roots in rank order,
-each over its unfinished children, with the sentence where one is said and never the description.
+each over its unfinished children, with the summary where one is said and never the description.
 lit ranks a ticket only among those inside the same parent (`Backlog.inside`: a listed or an
 archived parent; one deleted frames nothing), and a rank across parents is not refused by lit: it
 ranks the parent instead and exits 0. So a drop is parsed against a fresh read by `Backlog.move`,
@@ -2181,7 +2182,7 @@ answer carries, one request at a time in the order they were made. A drag holds 
 is dropped, so a read asked for meanwhile never redraws the rows it is placed among, and no drag
 begins while a request is under way. Anything that ends the pointer's stream without a release, a
 cancel, the capture lost, or the window losing focus, ends the drag dropping nothing. Each read is one `backlog.read` event, with how many tickets it drew and how many of
-them had a sentence, counted from what the page is given; each drop one `backlog.ranked`, with the
+them had a summary, counted from what the page is given; each drop one `backlog.ranked`, with the
 ticket and where it was put, whether lit ranked anything and what it said, and why it was refused or failed.
 
 Each epic is drawn shut, with how many open tickets it holds, until it is tapped (or, focused, Enter or Space); which
@@ -2288,7 +2289,7 @@ thing that failed `[LAW:no-silent-failure]`:
    drops with only an event, is said as unreachable. A turn Whisper
    transcribed to nothing is not said (Brandon, 2026-09-27: "I do not need to hear
    it"), only logged, and so neither is a muted microphone, whose every turn comes back
-   empty. The `Whisper` subclass resolves the hold as the transcription ends, so the
+   empty. The `Whisper` subclass resolves the clip as the transcription ends, so the
    turn closes then rather than after the user turn's 5-second stop timeout. The
    channel says a burst once: a fault is not said again until ten seconds have passed
    since it last was. A fault that recurs recurs in bursts, and on 2026-09-22 a held
@@ -2569,12 +2570,12 @@ Mac, first audio 87 ms after the text arrives and about 5.6x real time. Whisper 
 large-v3-turbo on MLX, in hands' own process (`hands.voice.transcription`), loaded as the
 pipeline is built (the `whisper.loaded` event): the transcript lands about 0.3 s after the
 key's release. LowTalker (~/code/low-talker) serves the same weights from the Neural
-Engine, and took 0.6 to 0.7 s for the same holds, by upload and by its Realtime socket
-alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The words of a hold
+Engine, and took 0.6 to 0.7 s for the same clips, by upload and by its Realtime socket
+alike (2026-10-04, hands-dictation-2bs.kpm), so hands keeps its own. The words of a clip
 still open come from NVIDIA's Nemotron Speech Streaming on MLX (`hands.voice.streaming`), at
 its 160 ms streaming mode (one frame of look-ahead), paired with Nemotron 3 Diarization at its
 0.32 s preset, which decides each word's speaker before the word is decoded: on this Mac a
-hold's first words are out 0.17 to 0.4 s after they are said, and the pair hears 20 ms of a hold
+clip's first words are out 0.17 to 0.4 s after they are said, and the pair hears 20 ms of a clip
 in about 8 ms. It loads on a thread of its own (the `streaming.loaded` event), so nothing waits
 on it. Every model's load, pocket-tts's (`tts.loaded`) and a trigger's models' included, is a unit
 of work of its own (`hands.voice.loads`) that says the process's physical footprint as it ended

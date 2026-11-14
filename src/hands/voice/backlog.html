@@ -243,7 +243,7 @@ function item(ticket) {
     status.textContent = "in progress";
     title.append(status);
   }
-  // hands' sentence for the ticket; one not said yet is said to be so, and the ticket's description is never shown here.
+  // hands' summary for the ticket; one not said yet is said to be so, and the ticket's description is never shown here.
   const summary = document.createElement("div");
   summary.className = ticket.summary === null ? "summary unsaid" : "summary";
   summary.textContent = ticket.summary ?? "Not summarised yet.";

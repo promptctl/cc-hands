@@ -25,7 +25,7 @@ from hands.daemon import exits, indicator, readiness, update, watchdog
 from hands.daemon.backend import backend
 from hands.daemon.config import ANTHROPIC_MODEL, Config, OwnModel, Settings, edited, load
 from hands.daemon.restart import LOOK_SECONDS, NotBack, NotRunning, Outcome, Restarted, detach, restart, said
-from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, again, cancelled, invocation, refuse, start
+from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, Ending, Failed, Failing, SettingsEdited, Signalled, Start, Stop, cancelled, execv, invocation, refuse, start
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
@@ -116,14 +116,14 @@ def told_on_terminal(record: audit.Record) -> audit.Record:
 
     [LAW:nothing-unseen] the one layer every event of a run passes through: a failure a unit reports on its event, rather
     than logs, still reaches the terminal its run is read on, as a logged error does. A unit that failed by raising has a
-    trace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
+    stacktrace, and [LAW:one-source-of-truth] is said by what catches the exception, once, never again by each unit it passed.
     A backlog pass's line is read off its event alone, so the two can never disagree.
     """
 
     def both(entry: audit.Entry) -> None:
         record(entry)
         match entry:
-            case wide.WideEvent(outcome="failed", trace=(), event=event, error=error):
+            case wide.WideEvent(outcome="failed", stacktrace=(), event=event, error=error):
                 # A part timed elsewhere, as a tool call whose result was an error, can fail with no error to say.
                 audit.said(f"{event} failed" if error is None else f"{event} failed: {error}")
             case _:
@@ -293,7 +293,7 @@ def run_daemon(clock: Clock, home: Home, audit_log: audit.AuditLog, restarted: i
                 case ("restart", shown):
                     # [LAW:one-source-of-truth] the run after a restart is this one again, on the --model its settings hold;
                     # one argument, so an id that begins with a dash is never read as an option.
-                    again(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
+                    execv(invocation(home, "run", "--restarted", str(shown), *(() if settings.model is None else (f"--model={settings.model}",))))
 
 
 def commanded(clock: Clock, home: Home, record: audit.Record, arguments: argparse.Namespace) -> int:
@@ -803,7 +803,7 @@ def answered(outcome: Outcome, line: str) -> tuple[TextIO, exits.Exit]:
 
 def restarted(clock: Clock, home: Home) -> Outcome:
     """Ask the running daemon to start again, and wait for it to be back, or for it to be plain it will not be."""
-    outcome = restart(home, clock.wall, lambda: clock.rest(LOOK_SECONDS))
+    outcome = restart(home, clock.wall, lambda: clock.sleep_blocking(LOOK_SECONDS))
     # What the heartbeat said, and how long the restart took or was waited on.
     wide.annotate(outcome=outcome)
     return outcome
@@ -984,7 +984,7 @@ def tail_log(clock: Clock, home: Home, lines: int) -> Literal[0]:
         # line JSON, and one line to any reader.
         for line in newest:
             print(line.translate(VISIBLE), flush=True)
-        for line in audit.follow(home.audit, offset, lambda: clock.rest(LOG_POLL_SECONDS)):
+        for line in audit.follow(home.audit, offset, lambda: clock.sleep_blocking(LOG_POLL_SECONDS)):
             print(line.translate(VISIBLE), flush=True)
     except KeyboardInterrupt:
         return 0

@@ -5,7 +5,7 @@ The plugin's /hands:restart skill runs it as the installed hands' own command.
 A change to hands is never taken up live: the brain's prompt is hands' source, given to the brain when it launches; the
 brain's setup in its config directory is read by the brain's Claude Code when it launches; and a skill in the plugin is
 loaded by the session that uses it (on /reload-plugins), never by the daemon. So asking always restarts. The daemon
-stops as `q` stops it and starts again in the same process (hands.daemon.starting.again), and this waits until the
+stops as `q` stops it and starts again in the same process (hands.daemon.starting.execv), and this waits until the
 heartbeat says the new run's pipeline is running.
 """
 
@@ -131,7 +131,7 @@ def detach(clock: Clock) -> Callable[[int], bool]:
         os._exit(0)
     # [LAW:no-ambient-temporal-coupling] out of the caller's tree once its parent has exited, not after a guess at how long that takes.
     while os.getppid() == middle:
-        clock.rest(PARENT_LOOK_SECONDS)
+        clock.sleep_blocking(PARENT_LOOK_SECONDS)
     return lambda code: reply(write, code)
 
 

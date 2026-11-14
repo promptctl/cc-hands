@@ -18,7 +18,7 @@ from typing import Literal, TypedDict
 from loguru import logger
 
 from hands.clock import Clock
-from hands.voice.modelswitch import OwnModel, SpokenOver, switch_model
+from hands.voice.modelswitch import BargedIn, OwnModel, switch_model
 from hands.voice.tool import Result, Tool, tool
 from hands.brain.usage import Usage
 from hands.core.drafts import AmendDraft, DiscardDraft, DraftAmended, DraftOutcome, DraftStaged, SendDraft, StageDraft
@@ -30,7 +30,7 @@ from hands.core.status import Busy, Going, Shell, Unknown, UnknownReason, Waitin
 from hands.core.delta import Delta
 from hands.core.attention import Attention, Kind, Overlay, Spoken, Withheld
 from hands.core.drilldown import drill
-from hands.core.sentences import Due, cut, turn_digest
+from hands.core.summaries import Due, cut, turn_digest
 from hands.core.tmux import InPane, NotInTmux, Pane, PaneUnread, Unanswered
 from hands.core.spoken import counted
 from hands.core.turn import Budget, Happening, Opening, body, describe, turns
@@ -52,7 +52,7 @@ from hands.voice.trigger import Levels, described
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
 from hands.voice.player import Player
-from hands.voice.sentences import Sighted, SummaryStore, sighted
+from hands.voice.summaries import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
@@ -348,7 +348,7 @@ READBACK_BUDGET = Budget(opening=200, said=400, input=120, result=200, steps=REA
 
 # How much of a finished turn the summariser is shown to say it in one sentence: its request, and how it started and
 # ended. What is longer than the summariser is shown of one thing loses its middle, never its end.
-TURN_SENTENCE_BUDGET = Budget(opening=400, said=250, input=100, result=120, steps=16, files=0, commits=0, changes=0)
+TURN_SUMMARY_BUDGET = Budget(opening=400, said=250, input=100, result=120, steps=16, files=0, commits=0, changes=0)
 
 # How many turns one reading of a session hands over, newest last: a day of work is hundreds of turns, and what it did
 # lately is what is asked about.
@@ -356,14 +356,14 @@ TURNS_PAGE = 40
 
 
 def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
-    """read_session, read_turn: what a session has done, a sentence per finished turn first and one turn's steps on request."""
+    """read_session, read_turn: what a session has done, a summary per finished turn first and one turn's steps on request."""
 
     async def read_session(session: str, before: int = 0) -> Result:
-        """What a session has done, one turn at a time, in order: a sentence for each turn it has finished, and the request of the one it is on.
+        """What a session has done, one turn at a time, in order: a summary for each turn it has finished, and the request of the one it is on.
 
         Call this when the user asks what a session has been doing, or to catch up on one that was already
-        running before you attached. Answer from the sentences; call read_turn to hear more of one turn, or of the
-        one it is on. A finished turn with no summary yet has only what opened it (a request, or a command the user ran), and its sentence is being written.
+        running before you attached. Answer from the summaries; call read_turn to hear more of one turn, or of the
+        one it is on. A finished turn with no summary yet has only what opened it (a request, or a command the user ran), and its summary is being written.
         When `working` comes back true the session is still on its last turn. You are given its newest turns; when
         `earlier` is above zero there are that many before them, and calling again with `before` set to the first
         turn you were given reads those.
@@ -384,7 +384,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         live = sessions.live_session(member.id)
         # [LAW:one-source-of-truth] whether a session's last turn is over is the registry's to say: the file cannot tell
         # a turn that ended from one waiting on a long call. Only a session at its prompt, or gone, proves it; one whose
-        # status has not been read yet may be mid-turn, and a sentence of half a turn would be kept for good. One whose
+        # status has not been read yet may be mid-turn, and a summary of half a turn would be kept for good. One whose
         # only work is subagents in the background is at its prompt too, though Claude Code says busy.
         delegates = live is not None and delegating(live)
         over = live is None or isinstance(live.state, Idle) or delegates
@@ -393,11 +393,11 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
         for number in range(start + 1, end + 1):
             happened = reading.happenings[spans[number - 1].start : spans[number - 1].stop]
             key = turn_digest(happened) if number < len(spans) or over else None
-            sentence = None if key is None else store.known(key)
-            if key is not None and sentence is None:
-                due.append(Due(f"turn-{number}", key, body(happened, Delta(), TURN_SENTENCE_BUDGET), ()))
-            entries.append({"turn": number, **({"summary": sentence} if sentence is not None else _opened(happened[0]))})
-        # Every read is a sighting: the turns without a sentence are said in the background, never while this call waits.
+            summary = None if key is None else store.known(key)
+            if key is not None and summary is None:
+                due.append(Due(f"turn-{number}", key, body(happened, Delta(), TURN_SUMMARY_BUDGET), ()))
+            entries.append({"turn": number, **({"summary": summary} if summary is not None else _opened(happened[0]))})
+        # Every read is a sighting: the turns without a summary are said in the background, never while this call waits.
         store.want_turns(member.id, due)
         return {
             "turns": entries,
@@ -409,7 +409,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
     async def read_turn(session: str, turn: int, since: str = "") -> Result:
         """The steps of one turn of a session, in the order it took them, from the point you last read to.
 
-        Call this when the user wants more of a turn than its sentence, or wants to know what a session is doing
+        Call this when the user wants more of a turn than its summary, or wants to know what a session is doing
         in the turn it is on. When `more` comes back true there is more of the turn after what you were given:
         ask the user whether to hear it, and call again with `since` set to `more_since` if they want it. When
         `working` comes back true the session is in the middle of a call that has not come back; say what it is
@@ -468,7 +468,7 @@ def session_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
 
 
 def _opened(first: Happening) -> dict[str, object]:
-    """How a turn with no sentence is told: by what opened it, or, in a transcript that starts part way through one, by the
+    """How a turn with no summary is told: by what opened it, or, in a transcript that starts part way through one, by the
     step it was first read at, which opened nothing."""
     return {"opened" if isinstance(first, Opening) else "began": describe(first, READBACK_BUDGET)}
 
@@ -512,14 +512,14 @@ def _page(happenings: list[Happening]) -> list[Happening]:
 
 
 def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
-    """read_backlog, read_ticket: a session's project backlog, a sentence per ticket first and the ticket's own words on request."""
+    """read_backlog, read_ticket: a session's project backlog, a summary per ticket first and the ticket's own words on request."""
 
     async def read_backlog(session: str) -> Result:
-        """The backlog of the project a session works in: one sentence for the whole of it, and each epic and loose ticket in the order they are to be worked, each with its own sentence.
+        """The backlog of the project a session works in: one summary for the whole of it, and each epic and loose ticket in the order they are to be worked, each with its own summary.
 
         Call this when the user asks what is in the backlog, what is left to do, or what comes next. Answer from the
-        sentences; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
-        sentence is being written. `directory` is where this backlog was read; lit run there works its tracker.
+        summaries; call read_ticket to hear more of one. A ticket with no summary yet has only its title, and its
+        summary is being written. `directory` is where this backlog was read; lit run there works its tracker.
         `tracked` false means the project has no backlog at all, and `why` says why: lit has no workspace there, or
         the directory no longer exists.
 
@@ -541,10 +541,10 @@ def backlog_tools(sessions: Sessions, store: SummaryStore) -> list[Tool]:
                 }
 
     async def read_ticket(session: str, ticket: str, full: bool = False) -> Result:
-        """One ticket or epic from a session's project backlog: its sentence, where it sits, and what is still open under it.
+        """One ticket or epic from a session's project backlog: its summary, where it sits, and what is still open under it.
 
         Call this when the user asks about a ticket or an epic, such as how an epic is going. Set `full` only when
-        the user wants the detail the sentence leaves out: it hands over the ticket's whole description and every
+        the user wants the detail the summary leaves out: it hands over the ticket's whole description and every
         comment on it, which is long.
 
         Args:
@@ -592,7 +592,7 @@ async def _backlog(sessions: Sessions, store: SummaryStore, session: str) -> tup
 
 
 def _ticket_line(backlog: Backlog, said: Mapping[str, str], id: str) -> dict[str, object]:
-    """A ticket as the backlog tools hand it over: its sentence where one is said, its state, and for a parent, how far its children are."""
+    """A ticket as the backlog tools hand it over: its summary where one is said, its state, and for a parent, how far its children are."""
     ticket = backlog.tickets[id]
     children = backlog.children.get(id, ())
     open_children = backlog.open_children(id)
@@ -999,7 +999,7 @@ def model_tools(own: OwnModel, player: Player) -> list[Tool]:
         """
         try:
             return await switch_model(own, player, model)
-        except SpokenOver as error:
+        except BargedIn as error:
             # The brain is told to ask again; the page shows the same refusal without this instruction.
             return {"error": f"{error} Ask whether they still want it."}
         except (Rejected, OSError) as error:
