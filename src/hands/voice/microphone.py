@@ -85,7 +85,7 @@ class Overheard:
     """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
     speaker played over it; whether the desk is where hands is, the gate's say, the desk heard as silence where not; and
     the gate's key as it was captured, which says both the press and the level: up at the desk is the off level with no
-    press, where nothing but a held key opens a clip."""
+    press, where nothing but the shortcut opens a clip."""
 
     cancelled: Cancelled
     desk: bool

@@ -8,7 +8,7 @@ it judges a thought still going holds the turn open; if the silence then runs on
 turn ends there. They hear for engaged conversation and for the wake word alike, and the wake word's own model beside
 them (`hands.voice.wake`).
 
-The desk moves the gate with the held key's own moves, so the gate, the clip owner, and the cues take a turn the voice
+The desk moves the gate with the shortcut's own moves, so the gate, the clip owner, and the cues take a turn the voice
 opened as they take a held one: speech starting arms the microphone, speech confirmed opens the turn, a start that was
 only a noise disarms it, and the end of the turn sends it. Listening, the desk keeps the second before each turn opens, so
 the words said while the detector made sure of them are in it.
