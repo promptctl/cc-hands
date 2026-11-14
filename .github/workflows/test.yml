@@ -19,8 +19,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One matrix is the one list of tiers; the Makefile's targets are what each runs, and every leg stands the machine up the same
-  # way, so the unit layer runs on one like a developer's, the weights and a Claude Code policy present and refused by its hold.
+  # One matrix is the one list of tiers; the Makefile's targets are what each runs. `fetches` says whether the run fetches what
+  # the caches below keep: the unit layer fetches only the sentence tokenizer (tests/fetches.py), and a leg that fills none of a
+  # cache would save it empty on a miss, under a key the legs that do fill it then cannot save.
   # The legs are cut by what they cost, not by laws:testing's layers. fail-fast stays on: a red `unit` ends the run in minutes,
   # where waiting on the pair would take 15.
   tiers:
@@ -28,15 +29,13 @@ jobs:
     runs-on: macos-15
     # A hung test fails the check instead of holding it for GitHub's 6 hours. The limit is a hung test's bound, set from the
     # slowest runner seen (pytest's time swings nearly 2x, promptctl-testing-px1f.hel), not a budget: the suite's are its own.
-    # It runs the job's setup too: a cold cache downloads the weights first, and a job that times out saves no cache, so a
-    # limit tight on a warm run fails every cold one again.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       matrix:
         include:
-          - { tier: unit, target: check, timeout: 15 }
-          - { tier: pair, target: check-pair, timeout: 40 }
-          - { tier: rest, target: check-rest, timeout: 30 }
+          - { tier: unit, target: check, timeout: 10, fetches: false }
+          - { tier: pair, target: check-pair, timeout: 40, fetches: true }
+          - { tier: rest, target: check-rest, timeout: 30, fetches: true }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +45,7 @@ jobs:
       # The run fetches openWakeWord's models into pytest's cache before its first test; kept across runs, a download outage
       # cannot fail a PR that never touched the wake word.
       - uses: actions/cache@v4
+        if: matrix.fetches
         with:
           path: .pytest_cache/d/wake-word
           key: wake-word-${{ hashFiles('src/hands/voice/wake.py') }}
@@ -72,6 +72,7 @@ jobs:
           done
           echo "revisions=$revisions" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
+        if: matrix.fetches
         with:
           path: ~/.cache/huggingface/hub
           key: speech${{ steps.speech.outputs.revisions }}
@@ -88,10 +89,12 @@ jobs:
           echo "claude=$claude" >> "$GITHUB_OUTPUT"
           echo "mock=$mock" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
+        if: matrix.fetches
         with:
           path: .pytest_cache/d/claude-code
           key: claude-code-${{ steps.e2e.outputs.claude }}
       - uses: actions/cache@v4
+        if: matrix.fetches
         with:
           path: .pytest_cache/d/mock-anthropic
           key: mock-anthropic-${{ steps.e2e.outputs.mock }}
