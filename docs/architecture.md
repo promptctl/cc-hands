@@ -1783,7 +1783,7 @@ as cut off. That is barge-in.
 When a turn cuts is the trigger's that opened its clip (`turn_start` in
 `hands.voice.trigger`, enforced by `TriggerTurnStart`), and each clip carries that trigger
 from the gate, as it carries the key. A clip the user's hand opens, the shortcut or the
-phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
+phone's button, cuts as it opens, Pipecat's VAD start: holding the talk key and letting go with
 nothing said is how the user stops hands. So does the wake word's, said on purpose and
 heard through the echo canceller while hands speaks. A clip engaged conversation opens cuts
 only once a listener hears words in it while it is open (`hands.voice.streaming`, NVIDIA's

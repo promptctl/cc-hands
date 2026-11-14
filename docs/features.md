@@ -227,7 +227,7 @@ Need 3. How several sessions share one ear.
   before `result` before `fyi`, waits while the key is down, and a pure `coalesce`
   folds one session's pending items into one narration carrying all their record
   ids. Done by a table test on `coalesce` and a live test with two sessions
-  finishing during one held key.
+  finishing during one press of the shortcut.
 - **Transitions only.** Every announcement is keyed by the record id or request id
   that caused it and is never repeated. Done by reducer tests: the same event twice
   yields one utterance.
