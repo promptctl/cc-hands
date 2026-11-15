@@ -642,7 +642,8 @@ class BrainStage(FrameProcessor):
         # Claude Code opened itself may run on long after the user's words, which are typed at once.
         telling = self._clock.now()
         note = _notes(*[await _told(item) for item in untold])
-        # [LAW:nothing-unseen] how long the speaker took to say what the cuts cut off, which the user waits through.
+        # [LAW:nothing-unseen] how long the cuts' bookmarks took to settle, as each barge-in reached the output, which the
+        # user waits through.
         annotate(cuts=sum(isinstance(item, _Cut) for item in untold), told_ms=_ms(self._clock.now() - telling))
         # After the words, so a turn of the user's never opens with [hands], which marks a message as hands' own.
         typed = _notes(text, _seen(asker), note)
@@ -728,10 +729,13 @@ class BrainStage(FrameProcessor):
             # [LAW:no-silent-failure] said as the turn's failure whatever failed it: a brain that is gone also stops the run
             # from its own watch, but one that never took the turn, or could not be typed into, is still running.
             fail(failed)
-            # A turn the brain never took did not tell it what the user heard: the turn after it does. One it spoke in took
-            # that, and was cut where the user stopped hearing it.
+            # A turn the brain never took did not tell it what it was typed with: the turn after it does, ahead of all that
+            # happened since. One it spoke in took that, and was cut where the user stopped hearing it.
             # [LAW:one-source-of-truth] what the user heard of a turn they spoke over is the speaker's to say, not the words it was handed.
-            self._leave(asker, FAILED_AFTER if turn.interrupted else (_broken_off("".join(spoken)) if spoken else note))
+            if turn.interrupted or spoken:
+                self._leave(asker, FAILED_AFTER if turn.interrupted else _broken_off("".join(spoken)))
+            else:
+                self._untold.insert(0, note)
             await self._unsaid(unsaid)
             # [LAW:single-enforcer] a failure is spoken as the turn's words are (`_heard`): never for a turn nobody asked
             # while hands is quiet. It is the turn's event's either way.

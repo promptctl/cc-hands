@@ -1270,6 +1270,24 @@ async def test_a_cut_after_a_broken_turn_ended_is_told_after_what_that_turn_left
     rig.brain.end()
 
 
+async def test_what_a_turn_the_brain_never_took_was_typed_with_is_told_ahead_of_a_cut_made_while_it_waited(rig: Rig) -> None:
+    first = '[hands] The user cut in. They did not hear: hands saying "web finished its turn.".'
+    rig.out.playing = Bookmark((hands_says("web finished its turn."),), 0)
+    await rig.interrupt()
+    await rig.say("and web?")
+    assert rig.brain.asked[0] == f"{heard('and web?')}\n\n{first}"
+    # The brain has said nothing of the turn: a cut while it waits stops nothing of it.
+    rig.out.playing = Bookmark((hands_says("api finished its turn."),), 0)
+    await rig.interrupt()
+    await rig.stop()
+    rig.brain.fail(Untaken("the brain did not take the turn typed into it in 30s"))
+    await rig.turned()
+    await rig.say("again")
+    second = '[hands] The user cut in. They did not hear: hands saying "api finished its turn.".'
+    assert rig.brain.asked[1] == f"{heard('again')}\n\n{first}\n\n{second}"
+    rig.brain.end()
+
+
 async def test_a_cut_in_the_brains_tail_after_the_turn_ended_reaches_the_next_turn_by_its_words(rig: Rig) -> None:
     await rig.say("is it done?")
     exchange, _ = rig.request()

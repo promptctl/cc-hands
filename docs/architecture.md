@@ -1089,8 +1089,9 @@ and an exchange made for no unit of work, a wrapped session's through the tap or
 still emits its event, cancelled, with what it had done.
 The event also says what was typed into the brain (`asked`), whether the user barged in on the turn (`interrupted`), how
 many times they cut in on it and stopped nothing of it (`barge_ins`, counted with `round_trips`, `tools` and `refused`), and
-the note that tells the brain, after the user's next words, what of the turn they did not hear (`barge_in_note`, empty
-when nobody spoke over it). A barge-in presses no key and holds no request: the turn runs to its own end, said to nobody.
+how many cuts its own note tells of and how long it waited on the speaker to say what they cut off (`cuts`, `told_ms`).
+What the user did not hear of a turn they spoke over is told in the next turn's note, after their words, so it is in that
+turn's `asked`. A barge-in presses no key and holds no request: the turn runs to its own end, said to nobody.
 The note quotes the last sentence the speaker played to its end, then the rest of the reading it was cut off in
 (`Player.next_barge_in`), the turn's words past the last of them the speaker played, a sentence still on its way to the speaker
 included, and its calls' readbacks. A turn spoken over that then fails adds only that it failed; a reply broken after the
