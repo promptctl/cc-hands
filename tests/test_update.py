@@ -195,8 +195,8 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
     assert installed.said.startswith(f"this hands runs from {elsewhere}, which is neither {tmp_path / 'tools' / update.TOOL}, the uv tool environment")
 
 
-@pytest.mark.parametrize("stalled", [timedelta(0), timedelta(minutes=1)], ids=["up", "unresponsive"])
-def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize(("stalled", "verdict"), [(timedelta(0), heartbeat.Up), (heartbeat.HEARTBEAT * heartbeat.MISSED_BEATS * 2, heartbeat.Unresponsive)], ids=["up", "unresponsive"])
+def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, verdict: type, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path))
     monkeypatch.setattr(update, "run", commands)
@@ -204,6 +204,7 @@ def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(s
     # while its process runs on.
     status = status_from(Path("/checkout/.venv"))
     heartbeat.write(home.status, replace(status, written_at=status.written_at - stalled))
+    assert isinstance(heartbeat.look(home.status, datetime.now(UTC)), verdict)
 
     assert cli.main(["--home", str(home.root), "update"]) == 1
 
