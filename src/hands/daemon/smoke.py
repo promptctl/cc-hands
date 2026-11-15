@@ -41,7 +41,8 @@ from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
-from hands.sessions.membership import parse_membership
+from hands.sessions.membership import holders, parse_membership, recorded
+from hands.sessions.processes import process_starts
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
@@ -319,6 +320,13 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, smoked.clock.wall()))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, smoked.clock.wall())}; start it with `hands run`")
+    # hands names a session by its folder, so a live session already in the smoke folder is a second "smoke" session the
+    # brain may type the draft into; the run refuses before it empties that session's folder or starts its own.
+    # [LAW:single-enforcer] the sessions running are the ones the daemon's own rule says their processes hold.
+    records, _ = recorded(home)
+    for other in holders(records, process_starts({record.membership.pid for record in records})).values():
+        if other.cwd.resolve() == folder:
+            raise NotReached("joined", f"session {other.id} (pid {other.pid}) is already open in {folder}, and hands names both it and the session the test starts {FOLDER!r}, so the draft could be typed into it: close it, then run `hands smoke` again")
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL)
