@@ -108,8 +108,8 @@ class Player:
         return played
 
     async def read(self, sentences: tuple[str, ...]) -> None:
-        """Says `sentences` to the user, as written, as a reading of its own: held whole from the start like any line said
-        again, so a barge-in leaves it to go back to."""
+        """Says `sentences` to the user, as written: held whole from the start like any line said again, so a barge-in leaves
+        it to go back to. Queued behind what the speaker is still saying, it is part of that reading, as any line is."""
         await self._hand(self._playback, sentences)
 
     async def _hand(self, moved: Playback, lines: tuple[str, ...]) -> None:
@@ -166,8 +166,7 @@ def account(played: Played) -> str:
         case Replay(sentences=sentences):
             return f"{counted(len(sentences), 'sentence')} said again"
         case _:
-            [why] = said(played)
-            return why
+            return " ".join(said(played))
 
 
 @dataclass

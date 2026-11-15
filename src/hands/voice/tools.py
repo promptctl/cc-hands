@@ -51,7 +51,7 @@ from hands.voice.desk import Level
 from hands.voice.trigger import Levels, described
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
-from hands.voice.player import Player, account
+from hands.voice.player import Act, Player, account, said as replayed
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
 from hands.voice.spoken import sentences
@@ -161,10 +161,15 @@ def intermediary_tools(
 def playback_tools(player: Player) -> list[Tool]:
     """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
 
-    [LAW:nothing-unseen] each call's result is how much hands said for it and how many cut-off readings still wait, so its
-    event holds where it left playback; the sentences themselves are the audit log's, as said. The model is told how many,
-    never which: what was cut off may be a reply it did not write and was never to hold (`read_reply_aloud`).
+    [LAW:nothing-unseen] each call's event holds what hands said for it, as `said`, and its result how much and how many
+    cut-off readings still wait. The model is told how many, never which: what was cut off may be a reply it did not write
+    and was never to hold (`read_reply_aloud`).
     """
+
+    async def going_back(act: Act) -> Result:
+        played = await player.act(act)
+        annotate(said=replayed(played))
+        return {"said": account(played), "waiting": player.waiting}
 
     async def resume() -> Result:
         """Go back to what you were saying when the user cut in, and say it from where it stopped.
@@ -172,21 +177,21 @@ def playback_tools(player: Player) -> list[Tool]:
         Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
         reply: add no words of your own, and never retell what you remember saying.
         """
-        return {"said": account(await player.act(playback.resume)), "waiting": player.waiting}
+        return await going_back(playback.resume)
 
     async def skip() -> Result:
         """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
 
         Hands says the rest. Calling it is the whole reply: add no words of your own.
         """
-        return {"said": account(await player.act(playback.skip)), "waiting": player.waiting}
+        return await going_back(playback.skip)
 
     async def repeat() -> Result:
         """Say again the last thing you said, whole, exactly as it was said.
 
         Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
         """
-        return {"said": account(await player.act(playback.repeat)), "waiting": player.waiting}
+        return await going_back(playback.repeat)
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 
@@ -758,7 +763,7 @@ def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player
         words of your own before or after, and never retell it. The returned line says it was started and how many
         sentences it is. It is said as every line of yours is, so code, paths, and hashes in it are said as what they are,
         not spelled out, and the user can cut in, go back, skip, or hear it again. The session read becomes the focus, as
-        one tell_turn tells does.
+        one tell_turn tells does. A question about what was read is answered from tell_turn or expand, never from memory.
 
         Args:
             session: The session's id, from list_sessions.
@@ -774,10 +779,12 @@ def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player
         if held.unread:
             # [LAW:no-silent-failure] a reply older than the turn's last words is not what the user asked to hear.
             return {"error": f"hands could not read all of the last turn of {name}, so what it said last is not known; tell_turn says what hands could read of it"}
-        if held.reply is None:
+        # A reply the speaker would say as nothing, a rule or a bare heading, is nothing to read, as no reply is.
+        reading = () if held.reply is None else await sentences(held.reply)
+        if not reading:
             return {"error": f"the last turn of {name} said nothing, so there is nothing to read; tell_turn says what it did"}
-        reading = await sentences(held.reply)
         await player.read(reading)
+        annotate(said=reading)
         await refocus(id)
         # Counted in sentences, the positions the user moves by and resume, skip and repeat count in.
         return {"reading": f"{name}'s last reply, {counted(len(reading), 'sentence')}, is being read to the user now"}
