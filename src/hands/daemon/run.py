@@ -9,7 +9,7 @@ plugin is installed and enabled; its hooks are plugin/hooks/hooks.json.
 Every heartbeat rewrites ~/.hands/status.json, which `hands status` and the
 menu-bar indicator read. Right Shift held by itself, in any app, is the talk
 key: held for a moment it opens a turn, released it sends it, and any other key
-pressed while it is held drops the turn unsent. It needs the Input Monitoring
+or click while it is held leaves the turn open. It needs the Input Monitoring
 grant, checked before the run starts. `q` in hands' own terminal quits.
 Latency from key release to the first audio out is logged for every turn.
 """
@@ -487,7 +487,7 @@ async def converse(
     phone = asyncio.create_task(answer_the_phone_once_started(), name="the phone")
     phone.add_done_callback(stop_if_failed)
     background.append(phone)
-    logger.info("hold Right Shift to talk, release to send; a key pressed while it is held drops the turn. Triple tap Right Command for the wake word, Right Shift for engaged conversation.")
+    logger.info("hold Right Shift to talk, release to send. Triple tap Right Command for the wake word, Right Shift for engaged conversation.")
     if sys.stdin.isatty():
         quit_key = asyncio.create_task(drive_quit(lambda: stop.tell(QuitKey())), name="the terminal quit key")
         quit_key.add_done_callback(stop_if_failed)

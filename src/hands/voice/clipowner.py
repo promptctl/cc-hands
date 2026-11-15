@@ -53,7 +53,7 @@ IDENTIFIED_SECONDS = 2.0
 def _transcribing_seconds(length: float) -> float:
     """The longest a clip `length` seconds long may take to transcribe before it fails: a minute, or the clip's own length.
 
-    Ten minutes of speech (TURN_LIMIT_SECONDS) took 17 s on this Mac, so a model still running after as long as the clip
+    Ten minutes of speech took 17 s on this Mac, so a model still running after as long as the clip
     took to say is not coming back; a bound that did not grow with the clip would fail a long one whole on a busier Mac,
     which is a turn lost to its length (promptctl-voice-je8.d20)."""
     return max(TRANSCRIBING_SECONDS, length)
@@ -239,12 +239,12 @@ class ClipOwner(FrameProcessor):
             raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
         # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
         # turn can end and the next arm between two frames, with no frame captured at rest between them. A move between
-        # places drops the clip open in the same frame, which ends it over its own audio before the move clears it.
+        # places sends the clip open in the same frame, which ends it over its own audio before the move clears it.
         match self._key, frame.sent != self._sent, frame.dropped != self._dropped:
             case "down", True, _:
                 await self._end("sent")
             case "down", _, True:
-                # Thrown away, as typing, or a call came or went.
+                # Thrown away: a wake that asked nothing.
                 await self._end("dropped")
             case _:
                 pass

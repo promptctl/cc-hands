@@ -83,9 +83,9 @@ class Gate:
 
         [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going: a
         Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
-        at one place while a clip is open at the other is a second hand on a second key, which drops both, as a key
-        pressed while the talk key is held drops the turn; and the end of a clip the gate has already thrown away, as a
-        call came or went, ends nothing more. The desk's listening is taken wherever hands is.
+        at one place while a clip is open at the other sends that clip and opens the new one: both are the user's. The
+        end of a clip the gate has already sent, as a call came or went, ends nothing more. The desk's listening is taken
+        wherever hands is.
         """
         match at == self.place, move, self.key:
             case _, "listen" | "deafen", _:
@@ -94,9 +94,7 @@ class Gate:
                 return None
             case True, _, _:
                 return move
-            case False, "start", "arming" | "down":
-                return "drop"
-            case False, "start", "up" | "listening":
+            case False, "start", _:
                 return "start"
             case False, _, _:
                 return None
@@ -118,17 +116,19 @@ class Gate:
             case "disarm":
                 return replace(self, key=rest, place=at)
             case "start":
-                return replace(self, key="down", place=at, opened=by)
+                # [LAW:dataflow-not-control-flow] a clip open at the other place is sent as this one opens: the clip owner
+                # ends it as the count moves, and opens the new one in the same frame.
+                return replace(self, key="down", place=at, opened=by, sent=self.sent + (self.key == "down"))
             case "stop" | "timeout":
                 return replace(self, key=rest, place=at, sent=self.sent + 1)
             case "drop":
                 return replace(self, key=rest, place=at, dropped=self.dropped + (self.key == "down"))
 
     def moved(self, to: Place) -> "Gate":
-        """The gate once hands is at `to`: a clip open at the place it leaves is thrown away, not sent."""
+        """The gate once hands is at `to`: a clip open at the place it leaves is sent as it stands, never thrown away."""
         if to == self.place:
             return self
-        return replace(self, key=self._rest(to, self.listens), place=to, dropped=self.dropped + (self.key == "down"))
+        return replace(self, key=self._rest(to, self.listens), place=to, sent=self.sent + (self.key == "down"))
 
     @staticmethod
     def _rest(place: Place, listens: bool) -> Key:
@@ -193,11 +193,11 @@ class PushToTalk:
         before, self._gate = self._gate, gate
         # [LAW:nothing-unseen] the one writer of the gate writes each move of the place as one `place.moved` event,
         # whichever trigger made it: from where to where, what made it, and whether a clip open at the place it left was
-        # thrown away.
+        # sent.
         if gate.place != before.place:
             # [LAW:one-source-of-truth] the way the user talks sets the modality, so a move sets it in the same write.
             self._modality = modality_at(gate.place)
-            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, dropped=gate.dropped != before.dropped)
+            ended("place.moved", self._record, begun(self._clock), None, before=before.place, after=gate.place, by=by, sent=gate.sent != before.sent)
 
     @property
     def gate(self) -> Gate:

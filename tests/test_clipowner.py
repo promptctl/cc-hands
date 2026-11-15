@@ -359,15 +359,28 @@ async def test_a_listener_that_raises_as_it_is_told_fails_its_own_hearing_and_th
         assert (hearing.outcome, hearing.error, hearing.facts["listener"], hearing.facts["clip"]) == ("failed", "RuntimeError: listener broke", "broken", 1)
 
 
-async def test_a_clip_dropped_by_a_move_to_the_phone_is_measured_over_its_own_audio() -> None:
-    async with rigged(Scripted([])) as rig:
+async def test_a_clip_open_as_hands_moves_to_the_phone_is_sent_over_its_own_audio() -> None:
+    async with rigged(Scripted(["said at the desk"])) as rig:
         down = rig.gate.after("start", "shortcut")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
         await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
         await rig.until(lambda: len(rig.events("clip")) == 1)
         [clip] = rig.events("clip")
-        assert (clip.facts["fate"], clip.facts["seconds"], clip.facts["levels"]) == ("dropped", 0.04, Levels(-6.0, -6.0))
+        assert (clip.facts["fate"], clip.facts["seconds"], clip.facts["levels"]) == ("sent", 0.04, Levels(-6.0, -6.0))
+        assert ("words", "said at the desk") in rig.seen.seen
+
+
+async def test_a_turn_opened_at_the_phone_while_one_is_open_at_the_desk_sends_the_desk_one_and_opens_its_own() -> None:
+    async with rigged(Scripted(["said at the desk"])) as rig:
+        down = rig.gate.after("start", "shortcut")
+        await rig.frame(down, frame_of(16384))
+        await rig.frame(down, frame_of(16384))
+        await rig.run.worker.queue_frame(down.after("start", "phone button").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
+        await rig.until(lambda: len(rig.events("clip")) == 1 and ("opened", 2) in rig.seen.seen)
+        [clip] = rig.events("clip")
+        assert (clip.facts["fate"], clip.facts["seconds"]) == ("sent", 0.04)
+        assert ("words", "said at the desk") in rig.seen.seen
 
 
 async def test_each_clip_is_one_event_sent_dropped_typed_and_failed() -> None:

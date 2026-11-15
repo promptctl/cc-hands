@@ -2004,7 +2004,7 @@ turn's `UserAsked` says it:
 
 | Trigger | Down | Up |
 |---|---|---|
-| `shortcut` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.shortcut`) | released; another key pressed while it is held drops the turn unsent |
+| `shortcut` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.shortcut`) | released, or open five minutes; a key, click or scroll while it is held leaves the turn open |
 | `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
@@ -2064,13 +2064,14 @@ nothing, so a page that cannot reach hands never holds its speech; the newest of
 lets go of any older one not yet up, and replaces the call that is up once it
 connects. The other place cannot touch a turn that is not its own: a Shift typed at
 the desk while the user talks on the phone arms nothing. A turn opened at one place
-while a clip is open at the other drops both, as a key pressed while the talk key is
-held drops the turn, and the gate cues and tells the moves as it took them. Only a
+while a clip is open at the other sends that clip and opens the new one, and a call
+coming or going sends the clip open at the place hands leaves: no turn the user opened
+is thrown away. The gate cues and tells the moves as it took them. Only a
 turn opening moves hands, never a press still arming, which may be Shift: so a clip
 at the place hands is not at keeps none of the words said before it opened a turn,
 and typing at the desk never takes a call's replies off the phone. Each move of hands
 between the places is one `place.moved` event: from where to where, whether a turn or
-a call made it, and whether a clip open at the place it left was thrown away. A move
+a call made it, and whether a clip open at the place it left was sent. A move
 a call made is part of that call's trace.
 
 **Cues say what hands is doing while it is silent** (`hands.voice.cues`). The talk

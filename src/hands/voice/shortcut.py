@@ -2,8 +2,9 @@
 the turn does.
 
 Right Shift is also Shift, so the key cannot mean talk the moment it goes down. It means talk only once it has been held
-alone that long; a quick tap is nothing, and a key pressed while it is held is typing: no turn starts, and a
-turn already started is dropped, never sent. Right Shift itself is never swallowed, so Shift keeps working as Shift.
+alone that long; a quick tap is nothing, and a key pressed before then is typing: no turn starts. Once a turn has
+started it is the user's: a key, a click or a scroll while it is open leaves it open, and only its release, or the limit,
+ends it. Right Shift itself is never swallowed, so Shift keeps working as Shift.
 The microphone opens on the press all the same, so words said before the shortcut means talk are kept: they reach a turn
 only if the shortcut opens one, and are thrown away if it turns out to be Shift. A turn still open `TURN_LIMIT_SECONDS`
 after its press is sent as it stands: a key stuck down, or a release macOS never reported, would otherwise record the room
@@ -15,9 +16,9 @@ from typing import Literal
 
 # 0.3 s opened turns while typing: a rest on Right Shift before a capital, which Whisper filled with "you" or "Okay.".
 SHORTCUT_SECONDS = 0.6
-# Ten minutes: dictation runs past two (a 120 s limit threw the user's away, promptctl-voice-je8.d20), and Whisper hears
-# ten minutes in about 17 s.
-TURN_LIMIT_SECONDS = 600.0
+# Five minutes, as the user asked (promptctl-voice-je8.rqr): dictation runs past two (a 120 s limit threw the user's away,
+# promptctl-voice-je8.d20), and Whisper hears ten minutes in about 17 s.
+TURN_LIMIT_SECONDS = 300.0
 
 Instant = float  # seconds on the monotonic clock
 
@@ -96,7 +97,8 @@ Shortcut = Idle | Arming | Talking | Typing
 
 # What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
 # opens it, closes it and sends it, closes it and throws it away, or closes it and sends it for being open too long. The
-# shortcut makes only those; the desk (`hands.voice.desk`) also has the microphone listen between turns, and stop.
+# shortcut throws away no turn: that is the wake word's, for a wake that asked nothing. The desk (`hands.voice.desk`) also
+# has the microphone listen between turns, and stop.
 TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "timeout"]
 Move = TurnMove | Literal["listen", "deafen"]
 
@@ -129,8 +131,6 @@ def step(shortcut: Shortcut, event: KeyEvent) -> tuple[Shortcut, tuple[Move, ...
             return Typing(), ("timeout",)
         case Arming(), Typed():
             return Typing(), ("disarm",)
-        case Talking(), Typed():
-            return Typing(), ("drop",)
         case Talking(), Released():
             return Idle(), ("stop",)
         case Arming(), Released():
