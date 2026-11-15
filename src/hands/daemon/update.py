@@ -229,7 +229,7 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
         if restarts_from is not None and restarts_from.resolve() != prefix.resolve():
-            raise ending(Step.WHERE, f"the running hands runs from {restarts_from}, not from {prefix}, the environment the update brings current, so its restart would start it again on what it runs now: run hands from {prefix}")
+            raise ending(Step.WHERE, f"the running hands runs from {restarts_from}, not from {prefix}, the environment the update brings current, so the update would leave it running what it runs now: run hands from {prefix}")
         match target:
             case Tool():
                 step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)
