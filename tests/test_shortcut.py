@@ -42,8 +42,7 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         # A Ripe left over from an earlier press does not open the press after it; its own Ripe does.
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], ["arm", "disarm", "arm", "disarm"]),
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
-        # Right Command pressed while Right Shift is held makes it Shift, as any modifier does; alone, it is nothing.
-        ([Pressed(1.0), CommandPressed(1.2), Ripe(1.0), Released()], ["arm", "disarm"]),
+        # Right Command alone is nothing to the turn.
         ([CommandPressed(1.0), CommandReleased()], []),
         # Typing with Right Shift up is nothing to the turn.
         ([Typed(), Typed()], []),

@@ -98,7 +98,10 @@ def test_a_call_that_goes_sends_its_clip_and_one_that_comes_never_cuts_off_the_d
     # The page called again by itself while the user dictates at the desk: the desk's clip goes on.
     dictating = Gate().after("start", "shortcut")
     assert dictating.called("phone") == dictating
-    assert Gate().after("arm", "shortcut").called("phone") == Gate("up", "phone")
+    # So does a press still arming, whose words are kept for the turn it may open.
+    pressing = Gate().after("arm", "shortcut")
+    assert pressing.called("phone") == pressing
+    assert Gate(listens=True).after("listen", "wake word").called("phone") == Gate("up", "phone", listens=True)
 
 
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:

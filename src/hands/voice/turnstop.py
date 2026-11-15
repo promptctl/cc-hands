@@ -41,6 +41,13 @@ class TurnOpened(VADUserStartedSpeakingFrame):
     clip: Clip
 
 
+@dataclass(kw_only=True)
+class ClipSent(VADUserStoppedSpeakingFrame):
+    """The user stopped speaking, and this clip is sent to be transcribed."""
+
+    clip: Clip
+
+
 class ClipDiscarded(VADUserStoppedSpeakingFrame):
     """The user stopped speaking, and what the clip recorded is thrown away: nothing of it is transcribed or sent."""
 

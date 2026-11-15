@@ -134,10 +134,10 @@ class Gate:
     def called(self, to: Place) -> "Gate":
         """The gate once a call has come, `to` the phone, or gone, `to` the desk.
 
-        A call that comes never cuts off a clip the desk still hears: hands stays for it, and the phone's first press takes
-        it there. One that goes takes the phone's audio with it, so its clip is sent as it stands."""
+        A call that comes never cuts off a press or a clip the desk still hears: hands stays for it, and the phone's first
+        press takes it there. One that goes takes the phone's audio with it, so its clip is sent as it stands."""
         match to, self.key:
-            case "phone", "down":
+            case "phone", "arming" | "down":
                 return self
             case _:
                 return self.moved(to)

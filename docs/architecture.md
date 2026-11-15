@@ -2066,8 +2066,9 @@ connects. Only the user's hand, the talk key or the phone's button, opening a tu
 at the other place moves hands, or a call: a voice the desk hears, which can be
 anyone's or nobody's, opens turns only where hands is, and a Shift typed at the desk
 while the user talks on the phone arms nothing. A hand's move sends the clip open
-where hands was. A call that goes sends the phone's clip; one that comes while a clip
-is open at the desk leaves hands there, and the phone's first press takes it. No turn
+where hands was. A call that goes sends the phone's clip; one that comes while the
+talk key is pressed or a clip is open at the desk leaves hands there, and the phone's
+first press takes it. No turn
 the user opened is thrown away, and the gate cues and tells the moves as it took them.
 Only a turn opening moves hands, never a press still arming, which may be Shift: so a clip
 at the place hands is not at keeps none of the words said before it opened a turn,
@@ -2118,9 +2119,11 @@ the turn's latency window, so what hands says next, the failure itself included,
 is not timed as the answer. `first audio` is the first sound after the release,
 whatever hands said with it, and the page says only that hands spoke.
 
-A milestone carries no clip's number, so the page places it by where it falls: each
-milestone names the milestones it may come after, and until hands says it took the clip
-shown or threw it away, nothing else told is of that clip. A milestone of a clip the
+`released` names what opened the clip it took, so the page takes only its own
+button's: let go, or still held as a hand at the desk took hands there and sent it.
+The milestones after it carry no clip, so the page places them by where they fall:
+each names the milestones it may come after, and until hands says it took the clip
+shown, nothing else told is of that clip. A milestone of a clip the
 page has let go of is not shown. A call's `phone.call` event counts the milestones its
 page was told.
 

@@ -17,7 +17,7 @@ from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame, InputAudioRawFrame, StartFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame, InputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 
@@ -29,7 +29,7 @@ from hands.threads import tell
 from hands.voice.clips import LANGUAGE, RATE, Clip, Cleared, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import ClipDiscarded, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
 
 # What every clip is said in, as Pipecat names it.
 _LANGUAGE = Language(LANGUAGE)
@@ -228,7 +228,7 @@ class ClipOwner(FrameProcessor):
         self._clips += 1
         clip = Clip(self._clips, "typed")
         await self.push_frame(TurnOpened(clip=clip))
-        await self.push_frame(VADUserStoppedSpeakingFrame())
+        await self.push_frame(ClipSent(clip=clip))
         await self._ended.put(_Written(clip, text, begun(self._clock)))
 
     async def _captured(self, frame: InputAudioRawFrame) -> None:
@@ -317,7 +317,7 @@ class ClipOwner(FrameProcessor):
         self._tell(clip, lambda listener: listener.ended(clip, fate, sound, settle))
         match fate:
             case "sent":
-                await self.push_frame(VADUserStoppedSpeakingFrame())
+                await self.push_frame(ClipSent(clip=clip))
             case "dropped":
                 await self.push_frame(ClipDiscarded())
         await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock), identified))

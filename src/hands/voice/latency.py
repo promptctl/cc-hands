@@ -23,13 +23,12 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
-    VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
 
 from hands.clock import Clock
-from hands.voice.milestone import Milestone
-from hands.voice.turnstop import ClipDiscarded, Words
+from hands.voice.milestone import Milestone, ClipReleased, Told
+from hands.voice.turnstop import ClipDiscarded, ClipSent, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
@@ -78,7 +77,7 @@ class Turn:
 class LatencyObserver(BaseObserver):
     """Log each milestone's distance from the key release, per turn, and tell `told` each milestone of a turn as it lands."""
 
-    def __init__(self, clock: Clock, told: Callable[[Milestone], None]) -> None:
+    def __init__(self, clock: Clock, told: Callable[[Told], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._clock = clock
@@ -105,7 +104,7 @@ class LatencyObserver(BaseObserver):
             # time from it, and no phone's page waits on it, since only the desk's wake word throws a clip away.
             self._clip_open = False
             return
-        if isinstance(frame, VADUserStoppedSpeakingFrame):
+        if isinstance(frame, ClipSent):
             if self._clip_open:
                 # The release is what the window's numbers are measured from, so it is also what opens the
                 # window — and what opens it is the user falling silent, not each push of the frame saying so.
@@ -115,7 +114,7 @@ class LatencyObserver(BaseObserver):
                 if self._turn.released is None:
                     self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
-                self._told("released")
+                self._told(ClipReleased(frame.clip.opener))
             self._clip_open = False
             return
         if isinstance(frame, BotStartedSpeakingFrame):

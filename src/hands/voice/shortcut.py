@@ -128,8 +128,7 @@ def step(shortcut: Shortcut, event: KeyEvent) -> tuple[Shortcut, tuple[ShortcutM
         # The key may still be down: its release, when it comes, ends nothing.
         case Talking(since=since), Overlong(pressed_at=pressed_at) if pressed_at == since:
             return Typing(), ("timeout",)
-        # Right Command is a modifier like any other: pressed with Right Shift it is a chord, never talk.
-        case Arming(), Typed() | CommandPressed():
+        case Arming(), Typed():
             return Typing(), ("disarm",)
         case Talking(), Released():
             return Idle(), ("stop",)

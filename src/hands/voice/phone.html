@@ -153,11 +153,13 @@ const OWN = {
   "held": {text: () => "Listening…"},
   "sent": {text: () => "Sent. Waiting for hands…", counts: true},
 };
-// The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. Nothing a milestone carries says which
-// clip it is of, so what places it is where it falls: a milestone that cannot come after the shown clip's last is of a clip
-// the page has let go of, and until hands says it took this clip, nothing else told is of it.
+// The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. The release names the
+// clip it took by what opened it, so only the page's own button's is this page's: taken let go or, as hands moved to the
+// other place, still held. Nothing after it says which clip it is of, so what places it is where it falls: a milestone
+// that cannot come after the shown clip's last is of a clip the page has let go of, and until hands says it took this
+// clip, nothing else told is of it.
 const TOLD = {
-  "released": {after: ["sent"], text: () => "Received. Transcribing…", counts: true},
+  "released": {after: ["held", "sent"], text: () => "Received. Transcribing…", counts: true},
   "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
   "no words": {after: ["released"], text: (clip) => `No words heard, after ${secs(clip.at - clip.released)}.`, bad: true},
   "failed": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands failed, after ${secs(clip.at - clip.released)}.`, bad: true},
@@ -184,12 +186,13 @@ function show(next) {
 }
 
 // Every time is the page's own, from the button let go to the milestone arriving: the wait as it is felt at the phone.
-function milestone(name) {
+function milestone(name, opener) {
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(TOLD, name)) { letGo(); say(`hands said "${name}", which this page does not know.`, true); return; }
-  if (clip === null || !TOLD[name].after.includes(clip.milestone)) return;
+  if (clip === null || !TOLD[name].after.includes(clip.milestone) || (name === "released" && opener !== "phone button")) return;
   const at = performance.now();
-  show({...clip, milestone: name, at, heard: name === "transcript" ? at : clip.heard});
+  // A clip hands took while its button was down was released then, not when the button comes up.
+  show({...clip, milestone: name, at, released: clip.released ?? at, heard: name === "transcript" ? at : clip.heard});
 }
 
 // Lets go of the clip shown: no milestone told from here is of it, and its count stops.
@@ -258,7 +261,7 @@ const LINES = {
 
 // Everything hands tells the page, by its kind: a milestone of the clip shown, or a line of the transcript.
 function told(message) {
-  if (message.kind === "milestone") { milestone(message.milestone); return; }
+  if (message.kind === "milestone") { milestone(message.milestone, message.opener); return; }
   // [LAW:no-silent-failure] the page and hands disagree about what hands tells: said on its face, not guessed at.
   if (!Object.hasOwn(LINES, message.kind)) { say(`hands told a "${message.kind}", which this page does not know.`, true); return; }
   LINES[message.kind](message);
