@@ -93,7 +93,7 @@ STAND_INS = Devices(input=Instead("MacBook Pro Microphone", "AirPods"), output=I
         (ModelActedUntold(), "The language model did not say how that went."),
         (UsageLimitReached(None), "The language model's usage limit is reached."),
         (TranscriptionFailed(), "Speech recognition failed for that turn."),
-        (TurnTimedOut(), "That turn ran 10 minutes, so hands sent it and stopped recording."),
+        (TurnTimedOut(), "That turn ran 5 minutes, so hands sent it and stopped recording."),
     ],
 )
 def test_each_fact_is_said_from_its_template(fact: SystemFact, said: str) -> None:

@@ -36,8 +36,9 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         ([Pressed(1.0), Released(), Ripe(1.0)], ["arm", "disarm"]),
         # A capital typed with Right Shift never starts a turn, however long the key is then held.
         ([Pressed(1.0), Typed(), Ripe(1.0), Released()], ["arm", "disarm"]),
-        # A key pressed during a started turn drops it, and the release after sends nothing.
-        ([Pressed(1.0), Ripe(1.0), Typed(), Released()], ["arm", "start", "drop"]),
+        # A key, a click or a scroll during a started turn leaves it open: its release sends it, or the limit does.
+        ([Pressed(1.0), Ripe(1.0), Typed(), Typed(), Released()], ["arm", "start", "stop"]),
+        ([Pressed(1.0), Ripe(1.0), Typed(), Overlong(1.0), Released()], ["arm", "start", "timeout"]),
         # A Ripe left over from an earlier press does not open the press after it; its own Ripe does.
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Released()], ["arm", "disarm", "arm", "disarm"]),
         ([Pressed(1.0), Released(), Pressed(1.1), Ripe(1.0), Ripe(1.1), Released()], ["arm", "disarm", "arm", "start", "stop"]),
@@ -54,8 +55,8 @@ def moves(events: Sequence[KeyEvent]) -> list[Move]:
         # The limit counts only for the press it was scheduled for, and a turn already sent has nothing left to send.
         ([Pressed(1.0), Released(), Pressed(2.0), Ripe(2.0), Overlong(1.0), Released()], ["arm", "disarm", "arm", "start", "stop"]),
         ([Pressed(1.0), Ripe(1.0), Released(), Overlong(1.0)], ["arm", "start", "stop"]),
-        # After a dropped turn the key works again from the next press.
-        ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "drop", "arm", "start", "stop"]),
+        # After a turn typed through, the key works again from the next press.
+        ([Pressed(1.0), Ripe(1.0), Typed(), Released(), Pressed(2.0), Ripe(2.0), Released()], ["arm", "start", "stop", "arm", "start", "stop"]),
     ],
 )
 def test_the_shortcut_moves_the_turn(events: list[KeyEvent], made: list[Move]) -> None:

@@ -359,15 +359,15 @@ async def test_a_listener_that_raises_as_it_is_told_fails_its_own_hearing_and_th
         assert (hearing.outcome, hearing.error, hearing.facts["listener"], hearing.facts["clip"]) == ("failed", "RuntimeError: listener broke", "broken", 1)
 
 
-async def test_a_clip_dropped_by_a_move_to_the_phone_is_measured_over_its_own_audio() -> None:
-    async with rigged(Scripted([])) as rig:
+async def test_a_clip_sent_by_a_move_to_the_phone_is_measured_over_its_own_audio() -> None:
+    async with rigged(Scripted([None])) as rig:
         down = rig.gate.after("start", "shortcut")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
         await rig.run.worker.queue_frame(down.moved("phone").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))
         await rig.until(lambda: len(rig.events("clip")) == 1)
         [clip] = rig.events("clip")
-        assert (clip.facts["fate"], clip.facts["seconds"], clip.facts["levels"]) == ("dropped", 0.04, Levels(-6.0, -6.0))
+        assert (clip.facts["fate"], clip.facts["seconds"], clip.facts["levels"]) == ("sent", 0.04, Levels(-6.0, -6.0))
 
 
 async def test_each_clip_is_one_event_sent_dropped_typed_and_failed() -> None:

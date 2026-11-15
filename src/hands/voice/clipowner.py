@@ -3,7 +3,7 @@ the same samples of it, in the order they were captured; it passes on what the m
 
 The gate's key and counts travel with every frame (`hands.voice.ptt.KeyedAudio`), so a clip begins and ends where the
 frames say the key moved, in capture order, and nothing else says so. As a clip opens, the owner says the user started
-speaking (`TurnOpened`); as it ends, that they stopped, sent or thrown away (`ClipDiscarded`). Words the user typed are a
+speaking (`TurnOpened`); as it ends, that they stopped, sent (`ClipSent`) or thrown away (`ClipDiscarded`). Words the user typed are a
 clip of their own, numbered with the key's and taken as they came. Each listener (`hands.voice.clips.Listener`) hears
 every clip of the key's as it is spoken; the transcriber is given each clip the key sent, whole, once it ends, and its
 words, or why it had none, go on in the order the clips ended, followed by the clip's `TurnResolved`.
@@ -17,7 +17,7 @@ from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame, InputAudioRawFrame, StartFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import CancelFrame, EndFrame, ErrorFrame, Frame, InputAudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 
@@ -29,7 +29,7 @@ from hands.threads import tell
 from hands.voice.clips import LANGUAGE, RATE, Clip, Cleared, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import ClipDiscarded, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
 
 # What every clip is said in, as Pipecat names it.
 _LANGUAGE = Language(LANGUAGE)
@@ -53,7 +53,7 @@ IDENTIFIED_SECONDS = 2.0
 def _transcribing_seconds(length: float) -> float:
     """The longest a clip `length` seconds long may take to transcribe before it fails: a minute, or the clip's own length.
 
-    Ten minutes of speech (TURN_LIMIT_SECONDS) took 17 s on this Mac, so a model still running after as long as the clip
+    Ten minutes of speech took 17 s on this Mac, so a model still running after as long as the clip
     took to say is not coming back; a bound that did not grow with the clip would fail a long one whole on a busier Mac,
     which is a turn lost to its length (promptctl-voice-je8.d20)."""
     return max(TRANSCRIBING_SECONDS, length)
@@ -228,7 +228,7 @@ class ClipOwner(FrameProcessor):
         self._clips += 1
         clip = Clip(self._clips, "typed")
         await self.push_frame(TurnOpened(clip=clip))
-        await self.push_frame(VADUserStoppedSpeakingFrame())
+        await self.push_frame(ClipSent(clip=clip))
         await self._ended.put(_Written(clip, text, begun(self._clock)))
 
     async def _captured(self, frame: InputAudioRawFrame) -> None:
@@ -239,12 +239,12 @@ class ClipOwner(FrameProcessor):
             raise ValueError(f"a frame came as {frame.num_channels} channel(s) at {frame.sample_rate} Hz; every clip is mono at {RATE} Hz")
         # [LAW:no-ambient-temporal-coupling] a turn ends as the gate's counts move, not as its key is next seen at rest: a
         # turn can end and the next arm between two frames, with no frame captured at rest between them. A move between
-        # places drops the clip open in the same frame, which ends it over its own audio before the move clears it.
+        # places sends the clip open in the same frame, which ends it over its own audio before the move clears it.
         match self._key, frame.sent != self._sent, frame.dropped != self._dropped:
             case "down", True, _:
                 await self._end("sent")
             case "down", _, True:
-                # Thrown away, as typing, or a call came or went.
+                # Thrown away: a wake that asked nothing.
                 await self._end("dropped")
             case _:
                 pass
@@ -260,7 +260,7 @@ class ClipOwner(FrameProcessor):
             case "up" | "listening" | "arming", "down":
                 self._clips += 1
                 self._latest = Clip(self._clips, frame.opened)
-                await self.push_frame(TurnOpened(clip=self._latest))
+                await self.push_frame(KeyOpened(clip=self._latest, turn=frame.turn))
                 # What the press heard while arming, or the second the desk heard while listening, is the clip's start.
                 before, cleared = self._recording.sound, self._clearing(self._latest)
                 self._tell(self._latest, lambda listener: listener.opened(self._latest, before, cleared))
@@ -317,7 +317,7 @@ class ClipOwner(FrameProcessor):
         self._tell(clip, lambda listener: listener.ended(clip, fate, sound, settle))
         match fate:
             case "sent":
-                await self.push_frame(VADUserStoppedSpeakingFrame())
+                await self.push_frame(ClipSent(clip=clip))
             case "dropped":
                 await self.push_frame(ClipDiscarded())
         await self._ended.put(_Spoken(clip, fate, sound, begun(self._clock), identified))

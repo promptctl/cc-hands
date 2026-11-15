@@ -148,7 +148,7 @@ def build_voice(
         params=params,
         # The phone is told each milestone of every turn, as the latency log is, and each line of the transcript, and passes
         # them to the page of the call that is up.
-        observers=[LatencyObserver(clock, phone.tell), TranscriptObserver(stt, output, phone.tell), player.watching(tts, output), Audible(clock, output)],
+        observers=[LatencyObserver(clock, stt, phone.tell), TranscriptObserver(stt, output, phone.tell), player.watching(tts, output), Audible(clock, output)],
         idle_timeout_secs=None,
     )
     return Voice(

@@ -36,7 +36,21 @@ class Typed(DataFrame, UninterruptibleFrame):
 
 @dataclass(kw_only=True)
 class TurnOpened(VADUserStartedSpeakingFrame):
-    """The user started speaking: the key went down, opening this clip."""
+    """The user started speaking: the key went down, or words were typed, opening this clip."""
+
+    clip: Clip
+
+
+@dataclass(kw_only=True)
+class KeyOpened(TurnOpened):
+    """The key went down, opening this clip as the gate's `turn` (`hands.voice.ptt.Gate.turn`)."""
+
+    turn: int
+
+
+@dataclass(kw_only=True)
+class ClipSent(VADUserStoppedSpeakingFrame):
+    """The user stopped speaking, and this clip is sent to be transcribed."""
 
     clip: Clip
 

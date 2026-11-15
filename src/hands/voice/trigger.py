@@ -23,6 +23,16 @@ def place_of(trigger: Trigger) -> Place:
             return "phone"
 
 
+def by_hand(trigger: Trigger) -> bool:
+    """Whether `trigger` is the user's hand on a key or a button, which only the user moves, rather than a voice the desk
+    heard, which can be anyone's or nobody's."""
+    match trigger:
+        case "shortcut" | "phone button":
+            return True
+        case "engaged conversation" | "wake word":
+            return False
+
+
 def turn_start(opener: Opener) -> TurnStart:
     """When a turn `opener` opens cuts off what hands is saying.
 
@@ -33,10 +43,10 @@ def turn_start(opener: Opener) -> TurnStart:
     as deliberate as a press, and are words already.
     """
     match opener:
-        case "engaged conversation" | "wake word":
-            return "on a person"
-        case "shortcut" | "phone button" | "typed":
+        case "typed":
             return "on the clip"
+        case trigger:
+            return "on the clip" if by_hand(trigger) else "on a person"
 
 
 @dataclass(frozen=True)
