@@ -844,9 +844,10 @@ def restarted(clock: Clock, home: Home) -> Outcome:
 def updated(clock: Clock, home: Home) -> exits.Exit:
     """`hands update`: bring the code hands runs from up to date, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
     prefix = Path(sys.prefix)
-    # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on.
+    # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on; one that
+    # has stopped beating still runs, and still starts again there.
     match heartbeat.look(home.status, clock.wall()):
-        case heartbeat.Up(status=heartbeat.Status(runs_from=restarts_from)):
+        case heartbeat.Up(status=heartbeat.Status(runs_from=restarts_from)) | heartbeat.Unresponsive(status=heartbeat.Status(runs_from=restarts_from)):
             pass
         case _:
             restarts_from = None

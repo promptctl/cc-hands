@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
@@ -194,12 +195,15 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
     assert installed.said.startswith(f"this hands runs from {elsewhere}, which is neither {tmp_path / 'tools' / update.TOOL}, the uv tool environment")
 
 
-def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("stalled", [timedelta(0), timedelta(minutes=1)], ids=["up", "unresponsive"])
+def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path))
     monkeypatch.setattr(update, "run", commands)
-    # A daemon started by a checkout's `uv run hands run`, as its heartbeat says.
-    heartbeat.write(home.status, status_from(Path("/checkout/.venv")))
+    # A daemon started by a checkout's `uv run hands run`, as its heartbeat says: beating, or stopped beating long since
+    # while its process runs on.
+    status = status_from(Path("/checkout/.venv"))
+    heartbeat.write(home.status, replace(status, written_at=status.written_at - stalled))
 
     assert cli.main(["--home", str(home.root), "update"]) == 1
 
