@@ -95,12 +95,12 @@ class Typing:
 
 Shortcut = Idle | Arming | Talking | Typing
 
-# What an edge does: opens the microphone on a press, closes it on a press that was Shift after all, and to the turn:
-# opens it, closes it and sends it, closes it and throws it away, or closes it and sends it for being open too long. The
-# shortcut throws away no turn: that is the wake word's, for a wake that asked nothing. The desk (`hands.voice.desk`) also
-# has the microphone listen between turns, and stop.
-TurnMove = Literal["arm", "disarm", "start", "stop", "drop", "timeout"]
-Move = TurnMove | Literal["listen", "deafen"]
+# What an edge of the shortcut does: opens the microphone on a press, closes it on a press that was Shift after all, and to
+# the turn: opens it, closes it and sends it, or closes it and sends it for being open too long. It throws away no turn.
+ShortcutMove = Literal["arm", "disarm", "start", "stop", "timeout"]
+# Every move of the gate: the shortcut's, the wake word's throwing away of a wake that asked nothing, and the desk's
+# (`hands.voice.desk`) having the microphone listen between turns, and stop.
+Move = ShortcutMove | Literal["drop", "listen", "deafen"]
 
 
 def asked(event: KeyEvent) -> tuple[tuple[Instant, Ripe | Overlong], ...]:
@@ -113,7 +113,7 @@ def asked(event: KeyEvent) -> tuple[tuple[Instant, Ripe | Overlong], ...]:
             return ()
 
 
-def step(shortcut: Shortcut, event: KeyEvent) -> tuple[Shortcut, tuple[Move, ...]]:
+def step(shortcut: Shortcut, event: KeyEvent) -> tuple[Shortcut, tuple[ShortcutMove, ...]]:
     """The shortcut after `event`, and what it does: most keystrokes do nothing."""
     match shortcut, event:
         # A press is a fresh start whatever came before: one that finds the key already down proves a release went by

@@ -371,9 +371,9 @@ async def test_a_clip_open_as_hands_moves_to_the_phone_is_sent_over_its_own_audi
         assert ("words", "said at the desk") in rig.seen.seen
 
 
-async def test_a_turn_opened_at_the_phone_while_one_is_open_at_the_desk_sends_the_desk_one_and_opens_its_own() -> None:
+async def test_a_turn_opened_at_the_phone_while_the_voice_has_one_open_at_the_desk_sends_the_desk_one_and_opens_its_own() -> None:
     async with rigged(Scripted(["said at the desk"])) as rig:
-        down = rig.gate.after("start", "shortcut")
+        down = rig.gate.after("start", "engaged conversation")
         await rig.frame(down, frame_of(16384))
         await rig.frame(down, frame_of(16384))
         await rig.run.worker.queue_frame(down.after("start", "phone button").framed(frame_of(0), frame_of(0), None, 16000, 1, "phone"))

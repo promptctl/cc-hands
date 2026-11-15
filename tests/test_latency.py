@@ -64,9 +64,9 @@ async def test_an_answered_turn_is_told_milestone_by_milestone_each_once_however
     assert milestones == ["released", "transcript", "first LLM token", "first audio"]
 
 
-async def test_a_clip_thrown_away_is_told_as_discarded_once_and_never_as_released() -> None:
+async def test_a_clip_thrown_away_is_told_as_nothing_and_never_as_released() -> None:
     discarded = ClipDiscarded()
-    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == ["discarded"]
+    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == []
 
 
 async def test_a_turn_with_no_words_in_it_is_told_and_what_hands_says_next_is_no_answer_to_it() -> None:
@@ -124,7 +124,7 @@ async def test_another_clip_done_with_says_nothing_of_the_clip_still_being_trans
         resolved(1),
         UserStoppedSpeakingFrame(),
     )
-    assert milestones == ["released", "discarded", "transcript"]
+    assert milestones == ["released", "transcript"]
 
 
 async def test_a_clip_with_no_words_in_a_turn_that_has_some_is_still_answered_and_timed_from_its_release() -> None:
@@ -161,7 +161,7 @@ async def test_a_press_thrown_away_after_a_turn_was_sent_says_nothing_of_the_rep
         UserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
     )
-    assert milestones == ["released", "transcript", "discarded", "first audio"]
+    assert milestones == ["released", "transcript", "first audio"]
     assert "after key release" in lines[-1]
 
 

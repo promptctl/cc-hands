@@ -30,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import begun, ended
 from hands.voice.clips import Played
 from hands.voice.shortcut import Move
-from hands.voice.trigger import Trigger, place_of
+from hands.voice.trigger import Trigger, by_hand, place_of
 
 # [LAW:types-are-the-program] the key is up; listening, the desk heard between turns at the wake word or engaged, so a turn the voice
 # opens keeps the words said before the detector was sure of them; arming, pressed but not yet meaning talk, which hears
@@ -78,23 +78,26 @@ class Gate:
     # what reads a clip's opening reads the trigger that opened it, whichever is in use by the time its words arrive.
     opened: Trigger = "shortcut"
 
-    def took(self, move: Move, at: Place) -> Move | None:
-        """What `move` at `at` did to the turn, as the gate takes it; None where it does nothing to it.
+    def took(self, move: Move, by: Trigger) -> Move | None:
+        """What `move`, made by `by`, did to the turn, as the gate takes it; None where it does nothing to it.
 
         [LAW:one-source-of-truth] the place is moved only by a turn opening there, or by the phone coming and going: a
-        Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs. A turn opened
-        at one place while a clip is open at the other sends that clip and opens the new one: both are the user's. The
-        end of a clip the gate has already sent, as a call came or went, ends nothing more. The desk's listening is taken
-        wherever hands is.
+        Shift typed at the desk while the user talks on the phone arms nothing and ends nothing of theirs, and a voice the
+        desk hears never ends a clip open at the phone. A hand that opens a turn at one place while a clip the voice opened
+        is open at the other sends that clip and opens its own: both are the user's, and the hand is the user's for
+        certain. A clip a hand holds open is ended only by that hand, the limit, or its call going. The end of a clip the
+        gate has already sent ends nothing more. The desk's listening is taken wherever hands is.
         """
-        match at == self.place, move, self.key:
+        match place_of(by) == self.place, move, self.key:
             case _, "listen" | "deafen", _:
                 return move
             case True, "stop" | "drop" | "timeout", "up" | "listening" | "arming":
                 return None
             case True, _, _:
                 return move
-            case False, "start", _:
+            case False, "start", "up" | "listening" | "arming":
+                return "start"
+            case False, "start", "down" if by_hand(by) and not by_hand(self.opened):
                 return "start"
             case False, _, _:
                 return None
@@ -103,7 +106,7 @@ class Gate:
         """The gate once `move`, made by `by`, has moved the turn."""
         at = place_of(by)
         rest = self._rest(at, self.listens)
-        match self.took(move, at):
+        match self.took(move, by):
             case None:
                 return self
             case "listen" | "deafen" as listening:
@@ -116,9 +119,10 @@ class Gate:
             case "disarm":
                 return replace(self, key=rest, place=at)
             case "start":
-                # [LAW:dataflow-not-control-flow] a clip open at the other place is sent as this one opens: the clip owner
-                # ends it as the count moves, and opens the new one in the same frame.
-                return replace(self, key="down", place=at, opened=by, sent=self.sent + (self.key == "down"))
+                # [LAW:dataflow-not-control-flow] hands moves to where the turn opens, as a call moves it: a clip open at
+                # the place it leaves is sent, and the clip owner ends it as the count moves and opens this one in the
+                # same frame; at the same place, the clip open goes on.
+                return replace(self.moved(at), key="down", opened=by)
             case "stop" | "timeout":
                 return replace(self, key=rest, place=at, sent=self.sent + 1)
             case "drop":
@@ -177,7 +181,7 @@ class PushToTalk:
     def move(self, move: Move, by: Trigger) -> Move | None:
         """Report what `move`, made by `by`, did to the turn, and get back what the gate took it as, to cue and tell: the
         desk's trigger and the phone's button call this."""
-        taken = self._gate.took(move, place_of(by))
+        taken = self._gate.took(move, by)
         self._become(self._gate.after(move, by), "turn")
         return taken
 
