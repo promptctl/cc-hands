@@ -2005,7 +2005,7 @@ turn's `UserAsked` says it:
 | Trigger | Down | Up |
 |---|---|---|
 | `shortcut` | Right Shift held alone for 600 ms, in any app, at every level (`hands.voice.shortcut`) | released, or open five minutes; a key, click or scroll while it is held leaves the turn open |
-| `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`; leaving the level sends it |
+| `engaged conversation` | at the engaged level, Silero confirms speech on the desk microphone (`hands.voice.engaged`) | Smart Turn judges the speech complete, or the silence after it runs past its `stop_secs`, or it is open five minutes; leaving the level sends it |
 | `button` | a HID button or headset button pressed | released |
 | `phone button` | the phone page's talk button pressed | released |
 | `wake word` | at the wake word level, openWakeWord hears the wake word, "Hey Jarvis" unless config.toml names another, on the desk microphone (`hands.voice.wake`) | as `engaged conversation`'s, once what is asked has started after the wake word |
