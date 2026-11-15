@@ -768,6 +768,9 @@ def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player
         if held is None:
             # [LAW:no-silent-failure] said as what it is, never as a reply of nothing: a restart of hands forgets what finished before it.
             return {"error": f"no turn of {name} has finished since hands started; read_session reads what it did before"}
+        if held.unread:
+            # [LAW:no-silent-failure] a reply older than the turn's last words is not what the user asked to hear.
+            return {"error": f"hands could not read all of the last turn of {name}, so what it said last is not known; tell_turn says what hands could read of it"}
         if held.reply is None:
             return {"error": f"the last turn of {name} said nothing, so there is nothing to read; tell_turn says what it did"}
         await player.read(await sentences(held.reply))

@@ -306,9 +306,8 @@ async def test_read_reply_aloud_says_the_reply_to_the_speaker_and_hands_the_mode
         result = await tool.body(session=SID)
         said_ = await heard.until(4, TTSSpeakFrame)
     assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == list(await sentences(REPLY))
-    # [LAW:verifiable-goals] nothing of the reply is in what the model is handed, whichever word of it is looked for.
+    # [LAW:verifiable-goals] the whole result, so no word of the reply is in it under any key.
     assert result == {"reading": "s1's last reply, 19 words, is being read to the user now"}
-    assert not {"parser", "tests", "pushed"} & set(str(result).split())
     assert tool.then == "silence"
 
 
@@ -330,5 +329,16 @@ async def test_read_reply_aloud_says_when_there_is_nothing_to_read_and_says_noth
         }
         assert await read_reply_aloud_tool(sessions, holding(None), player).body(session=SID) == {
             "error": "the last turn of s1 said nothing, so there is nothing to read; tell_turn says what it did"
+        }
+        assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]
+
+
+async def test_read_reply_aloud_says_the_last_turn_could_not_be_read_rather_than_read_an_older_reply() -> None:
+    player = Player(lambda _: None)
+    recounts = holding("An older reply.")
+    recounts.unread(SID, PromptId("p1"))
+    async with stood(player) as (_, heard):
+        assert await read_reply_aloud_tool(new_sessions(clock=VirtualClock()), recounts, player).body(session=SID) == {
+            "error": "hands could not read all of the last turn of s1, so what it said last is not known; tell_turn says what hands could read of it"
         }
         assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]

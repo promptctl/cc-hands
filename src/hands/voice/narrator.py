@@ -7,7 +7,8 @@ reading a trimmed transcript does not.
 
 [LAW:one-source-of-truth] every telling of a finished turn is the one summary `speech.told` makes, however it reaches the
 user: handed to the model as the turn finishes, as finished turns are set to be told or the session is watched, or held
-in `Recounts` until the user asks for it (tell_turn), as a muted session's always is. Nothing of a turn is said as written past the model.
+in `Recounts` until the user asks for it (tell_turn), as a muted session's always is. Nothing of a turn is said as written past the
+model but a reply the user asked to hear, which `read_reply_aloud` has hands say from `Recounts` without the model's words.
 """
 
 import asyncio
