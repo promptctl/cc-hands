@@ -59,6 +59,13 @@ class Recount:
     def parts(self) -> tuple[Segment, ...]:
         return tuple(part for telling in self.tellings for part in telling.parts)
 
+    @property
+    def reply(self) -> str | None:
+        """The last thing the session said in the turn, as it wrote it: the latest telling that holds any, since a turn
+        that went on past its Stop may have gone on to a call and no words. [LAW:one-source-of-truth] the same words
+        `told` hands the model as "the last thing it said"."""
+        return next((telling.reply for telling in reversed(self.tellings) if telling.reply is not None), None)
+
 
 class Recounts:
     """Each session's last finished turn, for the user to ask for: tell_turn hands it to the model.

@@ -11,7 +11,7 @@ from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.text.base_text_aggregator import AggregationType
 
-from conftest import Running, running
+from conftest import Running, new_sessions, running
 from hands.clock import SYSTEM
 from hands.core.playback import (
     BOOKMARKS,
@@ -32,8 +32,13 @@ from hands.core.playback import (
 )
 from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
+from hands.core.pending import News
+from hands.core.session import PromptId, SessionId
+from hands.virtualclock import VirtualClock
+from hands.voice.narrator import Recounts
 from hands.voice.player import Player, said
-from hands.voice.tools import audited, playback_tools
+from hands.voice.spoken import sentences
+from hands.voice.tools import audited, playback_tools, read_reply_aloud_tool
 
 # What happens at the speaker, as the taps report it: a sentence handed to it, one played to its end, the user cutting in.
 Happening = str
@@ -194,7 +199,7 @@ async def test_the_player_reads_the_speaker_off_the_pipeline_and_says_the_senten
         await heard.until(1, InterruptionFrame)
         assert recorded == [BargeIn("Its tests pass.", 1)]
 
-        assert await player.act(resume) == ("Its tests pass.", "It pushed.")
+        assert await player.act(resume) == Replay(("Its tests pass.", "It pushed."))
         said = await heard.until(2, TTSSpeakFrame)
         assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == ["Its tests pass.", "It pushed."]
 
@@ -210,12 +215,12 @@ async def test_the_player_reads_the_speaker_off_the_pipeline_and_says_the_senten
 async def test_an_act_with_nothing_to_say_again_says_why(act: Callable[[Playback], tuple[Playback, Played]], line: str) -> None:
     player = Player(lambda _: None)
     async with stood(player) as (_, heard):
-        assert await player.act(act) == (line,)
-        said = await heard.until(1, TTSSpeakFrame)
-        assert [frame.text for frame in said if isinstance(frame, TTSSpeakFrame)] == [line]
+        assert said(await player.act(act)) == (line,)
+        frames = await heard.until(1, TTSSpeakFrame)
+        assert [frame.text for frame in frames if isinstance(frame, TTSSpeakFrame)] == [line]
 
 
-async def test_each_playback_tool_answers_with_what_was_said_and_how_many_readings_still_wait() -> None:
+async def test_each_playback_tool_answers_with_how_much_was_said_never_what_and_how_many_readings_still_wait() -> None:
     recorded: list[Entry] = []
     player = Player(recorded.append)
     tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in playback_tools(player)}
@@ -225,8 +230,8 @@ async def test_each_playback_tool_answers_with_what_was_said_and_how_many_readin
             await run.worker.queue_frame(frame)
             await heard.until(seen, type(frame))
         recorded.clear()
-        assert await tools["resume"].body() == {"said": ("A.", "B."), "waiting": 0}
-        assert await tools["skip"].body() == {"said": ("Nothing was cut off to go back to.",), "waiting": 0}
+        assert await tools["resume"].body() == {"said": "two sentences said again", "waiting": 0}
+        assert await tools["skip"].body() == {"said": "Nothing was cut off to go back to.", "waiting": 0}
         assert [(type(entry), entry.event) for entry in recorded if isinstance(entry, WideEvent)] == [(WideEvent, "tool.run")] * 2 and len(recorded) == 2
 
 
@@ -258,3 +263,72 @@ async def test_the_next_barge_in_asked_for_ahead_of_it_says_how_far_the_reading_
         reading = player.next_barge_in()
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(reading, 2.0) == Bookmark(("Done.",), 1)
+
+
+SID = SessionId("s1")
+REPLY = "It fixed the parser. The tests pass now.\n\n```py\nx = 1. y = 2\n```\nThen it pushed."
+
+
+def telling(reply: str | None, turn: str = "p1") -> News:
+    return News(PromptId(turn), reply, "", "", (), frozenset())
+
+
+def holding(*replies: str | None) -> Recounts:
+    recounts = Recounts()
+    for reply in replies:
+        recounts.put(SID, PromptId("p1"), telling(reply))
+    return recounts
+
+
+async def test_a_reply_is_cut_a_sentence_at_a_time_with_a_fenced_block_whole() -> None:
+    assert await sentences(REPLY) == ("It fixed the parser.", "The tests pass now.", "```py\nx = 1. y = 2\n```\n", "Then it pushed.")
+
+
+async def test_a_reading_is_a_frame_a_sentence_and_goes_back_to_from_the_sentence_a_barge_in_stopped_on() -> None:
+    player = Player(lambda _: None)
+    async with stood(player) as (run, heard):
+        await player.read(("One.", "Two.", "Three."))
+        said_ = await heard.until(3, TTSSpeakFrame)
+        assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == ["One.", "Two.", "Three."]
+        # The speaker made all three, and the user cut in as the first one played.
+        for frame in (spoken("One."), spoken("Two."), spoken("Three."), ended("One.")):
+            await run.worker.queue_frame(frame)
+        await heard.until(1, TTSTextFrame)
+        await run.worker.queue_frame(InterruptionFrame())
+        await heard.until(1, InterruptionFrame)
+        assert await player.act(resume) == Replay(("Two.", "Three."))
+
+
+async def test_read_reply_aloud_says_the_reply_to_the_speaker_and_hands_the_model_only_that_it_was_started() -> None:
+    player = Player(lambda _: None)
+    tool = read_reply_aloud_tool(new_sessions(clock=VirtualClock()), holding("a first reply", REPLY), player)
+    async with stood(player) as (_, heard):
+        result = await tool.body(session=SID)
+        said_ = await heard.until(4, TTSSpeakFrame)
+    assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == list(await sentences(REPLY))
+    # [LAW:verifiable-goals] nothing of the reply is in what the model is handed, whichever word of it is looked for.
+    assert result == {"reading": "s1's last reply, 19 words, is being read to the user now"}
+    assert not {"parser", "tests", "pushed"} & set(str(result).split())
+    assert tool.then == "silence"
+
+
+async def test_read_reply_aloud_reads_the_latest_reply_a_turn_that_went_on_without_words_left_standing() -> None:
+    player = Player(lambda _: None)
+    tool = read_reply_aloud_tool(new_sessions(clock=VirtualClock()), holding("Its words.", None), player)
+    async with stood(player) as (_, heard):
+        assert await tool.body(session=SID) == {"reading": "s1's last reply, two words, is being read to the user now"}
+        said_ = await heard.until(1, TTSSpeakFrame)
+    assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == ["Its words."]
+
+
+async def test_read_reply_aloud_says_when_there_is_nothing_to_read_and_says_nothing_to_the_speaker() -> None:
+    player = Player(lambda _: None)
+    sessions = new_sessions(clock=VirtualClock())
+    async with stood(player) as (_, heard):
+        assert await read_reply_aloud_tool(sessions, Recounts(), player).body(session=SID) == {
+            "error": "no turn of s1 has finished since hands started; read_session reads what it did before"
+        }
+        assert await read_reply_aloud_tool(sessions, holding(None), player).body(session=SID) == {
+            "error": "the last turn of s1 said nothing, so there is nothing to read; tell_turn says what it did"
+        }
+        assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]

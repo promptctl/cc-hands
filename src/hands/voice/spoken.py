@@ -104,3 +104,15 @@ class FenceAggregator(SimpleTextAggregator):
     async def reset(self) -> None:
         await super().reset()
         self._fence, self._line = None, ""
+
+
+async def sentences(text: str) -> tuple[str, ...]:
+    """A whole reply in the pieces a streamed one is said in: a sentence at a time, and a fenced block whole.
+
+    [LAW:one-source-of-truth] cut by `FenceAggregator`, the one rule that cuts a reply for the speaker, so a reply read
+    from its text is cut where the same reply streaming would be. Each piece is a position the user can go back to.
+    """
+    aggregator = FenceAggregator()
+    pieces = [piece.text async for piece in aggregator.aggregate(text)]
+    rest = await aggregator.flush()
+    return tuple(piece for piece in (*pieces, *([] if rest is None else [rest.text])) if piece.strip())

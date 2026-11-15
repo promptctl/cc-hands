@@ -51,9 +51,10 @@ from hands.voice.desk import Level
 from hands.voice.trigger import Levels, described
 from hands.voice.wakeword import Word
 from hands.voice.narrator import Recount, Recounts, delivery, set_to
-from hands.voice.player import Player
+from hands.voice.player import Player, account
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from hands.voice.readback import identifier, keyboard_readback, readback, spoken_mode, spoken_name
+from hands.voice.spoken import sentences
 from hands.voice.refocus import NotRunning, Refocus, move_focus
 from hands.voice.speech import answer_readback, told
 from hands.voice.voices import VOICES, Voices, parse_voice, spoken
@@ -133,6 +134,7 @@ def intermediary_tools(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
+        read_reply_aloud_tool(sessions, recounts, player),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
@@ -159,8 +161,9 @@ def intermediary_tools(
 def playback_tools(player: Player) -> list[Tool]:
     """Going back over what was said: hands says it again from where the speaker was, never the model from memory.
 
-    [LAW:nothing-unseen] each call's result is what hands said for it and how many cut-off readings still wait, so its
-    event holds what was heard and where it left playback.
+    [LAW:nothing-unseen] each call's result is how much hands said for it and how many cut-off readings still wait, so its
+    event holds where it left playback; the sentences themselves are the audit log's, as said. The model is told how many,
+    never which: what was cut off may be a reply it did not write and was never to hold (`read_reply_aloud`).
     """
 
     async def resume() -> Result:
@@ -169,21 +172,21 @@ def playback_tools(player: Player) -> list[Tool]:
         Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
         reply: add no words of your own, and never retell what you remember saying.
         """
-        return {"said": await player.act(playback.resume), "waiting": player.waiting}
+        return {"said": account(await player.act(playback.resume)), "waiting": player.waiting}
 
     async def skip() -> Result:
         """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
 
         Hands says the rest. Calling it is the whole reply: add no words of your own.
         """
-        return {"said": await player.act(playback.skip), "waiting": player.waiting}
+        return {"said": account(await player.act(playback.skip)), "waiting": player.waiting}
 
     async def repeat() -> Result:
         """Say again the last thing you said, whole, exactly as it was said.
 
         Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
         """
-        return {"said": await player.act(playback.repeat), "waiting": player.waiting}
+        return {"said": account(await player.act(playback.repeat)), "waiting": player.waiting}
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 
@@ -714,8 +717,9 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         """More of the last turn a session finished: with no part, the parts it opens into, such as the change, the
         tests, or the commit, each in a line; with a part, that part's records, at more length each time it is asked for.
 
-        Tell it in your own words, in spoken form. There is no word-for-word reading: say what code does and what a
-        command found, and never read out code, output, paths, or hashes as written, however much the user asks for.
+        Tell it in your own words, in spoken form: say what code does and what a command found, and never read out code,
+        output, paths, or hashes as written, however much the user asks for. A session's own words, as it wrote them, are
+        read_reply_aloud's, and only its last reply.
         When `deeper` comes back false, asking for that part again tells no more.
 
         Args:
@@ -743,6 +747,33 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
         return {"parts": [{"part": topic, "told": told} for topic, told in drilled.told], "deeper": drilled.deeper, "depth": depth}
 
     return tool(expand)
+
+
+def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player) -> Tool:
+    async def read_reply_aloud(session: str) -> Result:
+        """Read the last thing a session said in its last finished turn to the user, word for word, as the session wrote it.
+
+        Call this when the user asks you to read a session's reply out, or to hear it as it was written, not as you would
+        put it. Hands says it, never you, and its words are not given to you: calling it is the whole reply, so add no
+        words of your own before or after, and never retell it. The returned line says it was started and how long it is.
+        It is said as every line of yours is, so code, paths, and hashes in it are said as what they are, not spelled out,
+        and the user can cut in, go back, skip, or hear it again.
+
+        Args:
+            session: The session's id, from list_sessions.
+        """
+        id = SessionId(session)
+        name = spoken_name(sessions, id)
+        held = recounts.of(id)
+        if held is None:
+            # [LAW:no-silent-failure] said as what it is, never as a reply of nothing: a restart of hands forgets what finished before it.
+            return {"error": f"no turn of {name} has finished since hands started; read_session reads what it did before"}
+        if held.reply is None:
+            return {"error": f"the last turn of {name} said nothing, so there is nothing to read; tell_turn says what it did"}
+        await player.read(await sentences(held.reply))
+        return {"reading": f"{name}'s last reply, {counted(len(held.reply.split()), 'word')}, is being read to the user now"}
+
+    return tool(read_reply_aloud, then="silence")
 
 
 # How much of the sessions' closing words one catch-up carries, shared among the sessions that finished: a morning away

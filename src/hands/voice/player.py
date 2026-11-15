@@ -24,6 +24,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
 from hands.core.playback import Bookmark, LastOne, NothingBargedIn, NothingSaid, Played, Playback, Replay
+from hands.core.spoken import counted
 from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
@@ -99,16 +100,23 @@ class Player:
         self._cutting.append(cut)
         return cut
 
-    async def act(self, act: Act) -> tuple[str, ...]:
+    async def act(self, act: Act) -> Played:
         """Moves playback by `act`, and says what it says, which is always something: a reading said again, or why not.
         What it says is held whole from the start, so a barge-in on it loses none of it."""
         moved, played = act(self._playback)
-        lines = said(played)
+        await self._hand(moved, said(played))
+        return played
+
+    async def read(self, sentences: tuple[str, ...]) -> None:
+        """Says `sentences` to the user, as written, as a reading of its own: held whole from the start like any line said
+        again, so a barge-in leaves it to go back to."""
+        await self._hand(self._playback, sentences)
+
+    async def _hand(self, moved: Playback, lines: tuple[str, ...]) -> None:
         self._playback = playback.queued(moved, lines)
         for sentence in lines:
             # One sentence a frame, so each is a position.
             await self.lines.push_frame(TTSSpeakFrame(sentence))
-        return lines
 
     async def heard(self, sentence: str) -> bool:
         """Says `sentence`, and returns once the speaker has played it to its end, True, or a barge-in has cut it off, False.
@@ -145,6 +153,20 @@ def said(played: Played) -> tuple[str, ...]:
             return ("I haven't said anything yet.",)
         case LastOne():
             return ("That was the last of it.",)
+
+
+def account(played: Played) -> str:
+    """What the brain is told of an act: how many sentences hands said again, never the sentences, or why there were none.
+
+    The sentences are hands' to say and the user's to hear; the audit log records them as said. Told to the model they would
+    be a reading it never asked to hold, and a reply read aloud would come back to it whole.
+    """
+    match played:
+        case Replay(sentences=sentences):
+            return f"{counted(len(sentences), 'sentence')} said again"
+        case _:
+            [why] = said(played)
+            return why
 
 
 @dataclass

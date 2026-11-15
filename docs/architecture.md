@@ -1693,7 +1693,8 @@ find_path(session?, query)
 catch_up(minutes?)
 recall(query, since?)
 expand(session, part?)           resume()
-skip()                           repeat()
+read_reply_aloud(session?)       skip()
+repeat()
 stay_silent()
 ```
 

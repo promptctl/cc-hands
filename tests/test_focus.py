@@ -67,7 +67,7 @@ async def test_only_stay_silent_ends_a_reply_on_nothing_and_each_reply_hands_say
     """The brain's stage reads `then` to tell a turn that acted from one closing on nothing, so the tools as the daemon
     gives them carry it: a turn closing on any of these but stay_silent is heard."""
     given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
-    whole = {"stage_draft", "amend_draft", "resume", "skip", "repeat", "use_model"}
+    whole = {"stage_draft", "amend_draft", "resume", "skip", "repeat", "use_model", "read_reply_aloud"}
     assert {name: tool.then for name, tool in given.items() if tool.then != "reply"} == {"stay_silent": "nothing", **dict.fromkeys(whole, "silence")}
     assert given["send_draft"].then == "reply"
 
@@ -166,7 +166,7 @@ async def test_every_tool_that_acts_on_a_session_takes_the_focus_for_one_left_un
     given = tools(await two_sessions(tmp_path, []), Home(tmp_path / "home"))
     defaulted = {name for name, tool in given.items() if "session" in tool.properties and "session" not in tool.required}
     assert defaulted == {
-        "read_session", "read_turn", "tell_turn", "expand", "read_backlog", "read_ticket",
+        "read_session", "read_turn", "tell_turn", "expand", "read_reply_aloud", "read_backlog", "read_ticket",
         "stage_draft", "amend_draft", "discard_draft", "send_draft", "send_command", "interrupt_session", "read_screen", "set_overlay",
     }  # fmt: skip
     assert all(str(given[name].properties["session"]["description"]).endswith("Empty for the focused session.") for name in defaulted)
