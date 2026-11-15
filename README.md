@@ -103,7 +103,9 @@ is not, what does it; it exits 0 only when every step is done.
    `ANTHROPIC_API_KEY` set, whether to use that key (no keeps the turn on your login).
    The session cannot join hands until they are answered, so after a minute the run stops
    at `joined` with the end of what Claude Code showed. Run `claude` once in the folder
-   that line names, answer, exit it, and run the smoke test again.
+   that line names, answer, exit it, and run the smoke test again. While any other
+   session is open in a folder named `smoke`, the run stops at `joined` and names it,
+   since hands would call both sessions `smoke`.
 
 ## The intermediary
 

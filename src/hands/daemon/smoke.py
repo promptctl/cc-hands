@@ -41,7 +41,7 @@ from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
-from hands.sessions.membership import holders, parse_membership, recorded
+from hands.sessions.membership import holders, recorded
 from hands.sessions.processes import process_starts
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
@@ -320,13 +320,6 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             smoked.reached("up", heartbeat.describe(verdict, smoked.clock.wall()))
         case _:
             raise NotReached("up", f"{heartbeat.describe(verdict, smoked.clock.wall())}; start it with `hands run`")
-    # hands names a session by its folder, so a live session already in the smoke folder is a second "smoke" session the
-    # brain may type the draft into; the run refuses before it empties that session's folder or starts its own.
-    # [LAW:single-enforcer] the sessions running are the ones the daemon's own rule says their processes hold.
-    records, _ = recorded(home)
-    for other in holders(records, process_starts({record.membership.pid for record in records})).values():
-        if other.cwd.resolve() == folder:
-            raise NotReached("joined", f"session {other.id} (pid {other.pid}) is already open in {folder}, and hands names both it and the session the test starts {FOLDER!r}, so the draft could be typed into it: close it, then run `hands smoke` again")
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
     annotate(model=transcription.MODEL)
@@ -335,6 +328,13 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
     said = [await _synthesized(smoked.clock, text) for text in SAID]
+    # hands speaks of a session by its folder's name, so a live session in any folder named smoke is one the brain may
+    # take for the session the test starts; the run refuses, just before it empties the smoke folder or starts its own.
+    # [LAW:single-enforcer] the sessions running are the ones the daemon's own rule says their processes hold.
+    records, _ = recorded(home)
+    for other in holders(records, process_starts({record.membership.pid for record in records})).values():
+        if other.cwd.name.casefold() == FOLDER:
+            raise NotReached("joined", f"session {other.id} (pid {other.pid}) is already open in {other.cwd}, and hands calls it {FOLDER!r} as it calls the session the test starts, so the brain could take one for the other: close it, then run `hands smoke` again")
     # The folder holds the one file, named for this run's word, and nothing else.
     try:
         shutil.rmtree(folder)
@@ -366,14 +366,9 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
 
 def members(home: Home) -> list[Membership]:
     """The home's memberships as written: hands smoke runs beside the daemon, so it reads them, not the daemon's registry."""
-    written: list[Membership] = []
-    for path in sorted(home.memberships.glob("*.json")):
-        try:
-            written.append(parse_membership(SessionId(path.stem), path.read_bytes()))
-        except (OSError, Rejected):
-            # Being written, or already removed: read again at the next poll.
-            continue
-    return written
+    # [LAW:one-source-of-truth] read as the daemon reads them; one being written or removed is read again at the next poll.
+    records, _ = recorded(home)
+    return [record.membership for record in records]
 
 
 async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -> Membership:
