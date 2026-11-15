@@ -8,6 +8,7 @@ from hands.voice.shortcut import Move
 from hands.sessions.audit import Entry
 from hands.voice.ptt import Gate, Key, PushToTalk
 from hands.voice.tools import modality_tool
+from hands.voice.trigger import Trigger
 
 LOUD = b"\x7f\x7f" * 160
 QUIET = b"\x00\x00" * 160
@@ -85,11 +86,23 @@ def test_the_other_place_cannot_touch_a_turn_but_by_opening_one(move: Move) -> N
     assert on_the_phone.after(move, "shortcut") == on_the_phone
 
 
-def test_leaving_a_place_mid_clip_throws_the_clip_away() -> None:
-    assert Gate().after("start", "phone button").moved("desk") == Gate("up", "desk", dropped=1, opened="phone button")
-    assert Gate().after("arm", "shortcut").moved("phone") == Gate("up", "phone")  # no turn open, so none thrown away
+def test_leaving_a_place_mid_clip_sends_the_clip_as_it_stands() -> None:
+    assert Gate().after("start", "phone button").moved("desk") == Gate("up", "desk", sent=1, opened="phone button")
+    assert Gate().after("arm", "shortcut").moved("phone") == Gate("up", "phone")  # no turn open, so none sent
     assert Gate().moved("phone") == Gate("up", "phone")
     assert Gate("down", "phone").moved("phone") == Gate("down", "phone")
+
+
+@pytest.mark.parametrize("held", [Gate("arming", "desk"), Gate().after("start", "shortcut"), Gate().after("start", "wake word")])
+def test_a_call_that_comes_never_cuts_off_a_press_or_a_clip_at_the_desk(held: Gate) -> None:
+    # The page called again by itself while the user talks at the desk: hands stays, and the phone's first press takes it.
+    assert held.called("phone") == held
+    assert held.called("phone").after("start", "phone button").place == "phone"
+
+
+def test_a_call_that_goes_sends_its_clip_and_one_that_comes_to_a_quiet_desk_takes_hands() -> None:
+    assert Gate().after("start", "phone button").called("desk") == Gate("up", "desk", sent=1, opened="phone button")
+    assert Gate(listens=True).after("listen", "wake word").called("phone") == Gate("up", "phone", listens=True)
 
 
 def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
@@ -97,44 +110,59 @@ def test_every_move_of_the_place_is_recorded_once_by_what_made_it() -> None:
     key = PushToTalk(VirtualClock(), recorded.append)
     key.move("arm", "shortcut")
     key.move("start", "shortcut")
-    key.go("phone")  # a call arrives while the user talks at the desk
+    key.go("phone")  # a call arrives while the user talks at the desk: hands stays for the clip
     key.move("start", "phone button")
     key.move("stop", "phone button")
-    key.move("start", "shortcut")
-    key.move("stop", "shortcut")
+    key.go("desk")
     assert [move.facts for move in events(recorded, "place.moved")] == [
-        {"before": "desk", "after": "phone", "by": "call", "dropped": True},
-        {"before": "phone", "after": "desk", "by": "turn", "dropped": False},
+        {"before": "desk", "after": "phone", "by": "turn", "sent": True},
+        {"before": "phone", "after": "desk", "by": "call", "sent": False},
     ]
     assert all(move.outcome == "ok" for move in events(recorded, "place.moved")) and len(recorded) == 2
 
 
 @pytest.mark.parametrize("held", ["arming", "down"])
-def test_a_turn_opened_at_one_place_while_a_clip_is_open_at_the_other_drops_both(held: Key) -> None:
-    # Right Shift held at the desk, and the phone's button pressed: two hands on two keys.
+def test_a_hand_at_the_other_place_takes_hands_there_and_sends_the_clip_open_where_it_was(held: Key) -> None:
+    # Right Shift held at the desk, and the phone's button pressed: the user's hand is at the phone now.
     gate = Gate(held, "desk")
-    assert gate.took("start", "phone") == "drop"
-    assert gate.after("start", "phone button") == Gate("up", "phone", dropped=1 if held == "down" else 0)
+    assert gate.took("start", "phone button") == "start"
+    assert gate.after("start", "phone button") == Gate("down", "phone", sent=1 if held == "down" else 0, opened="phone button")
     recorded: list[Entry] = []
     key = PushToTalk(VirtualClock(), recorded.append)
     key.move("start", "phone button")
-    assert key.move("start", "shortcut") == "drop"
-    assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "dropped": True}
+    assert key.move("start", "shortcut") == "start"
+    assert events(recorded, "place.moved")[-1].facts == {"before": "phone", "after": "desk", "by": "turn", "sent": True}
 
 
-@pytest.mark.parametrize("ending", ["stop", "drop", "timeout"])
-def test_the_end_of_a_clip_the_gate_already_threw_away_ends_nothing_more(ending: Move) -> None:
-    # The phone's turn was dropped by a press at the desk, whose clip now ends: nothing is sent, nothing cued twice.
-    dropped = Gate("up", "desk", dropped=1)
-    assert dropped.took(ending, "desk") is None
-    assert dropped.after(ending, "shortcut") == dropped
-    assert dropped.took("arm", "desk") == "arm"
+@pytest.mark.parametrize("voice", ["engaged conversation", "wake word"])
+def test_a_voice_the_desk_hears_never_takes_hands_from_the_phone(voice: Trigger) -> None:
+    # Anyone's or nobody's: the TV, or a wake word said in the room while the user talks on the phone.
+    for on_the_phone in (Gate("down", "phone", opened="phone button"), Gate("up", "phone")):
+        assert on_the_phone.took("start", voice) is None
+        assert on_the_phone.after("start", voice) == on_the_phone
+
+
+def test_a_start_where_hands_is_keeps_the_clip_open() -> None:
+    # The talk key pressed during a wake word's turn: one clip, never split, and the hand's from here.
+    assert Gate().after("start", "wake word").after("start", "shortcut") == Gate("down", "desk", opened="shortcut")
+
+
+@pytest.mark.parametrize("ending", ["stop", "timeout"])
+def test_the_end_of_a_clip_the_gate_already_sent_ends_nothing_more(ending: Move) -> None:
+    # The phone's clip was sent as the talk key took hands to the desk, and the phone's button now comes up.
+    taken = Gate("down", "phone").after("start", "shortcut")
+    assert taken.took(ending, "phone button") is None
+    assert taken.after(ending, "phone button") == taken
+    # And at the desk, a clip sent ends nothing more as the key is let go.
+    sent = Gate("up", "desk", sent=1)
+    assert sent.took(ending, "shortcut") is None
+    assert sent.took("arm", "shortcut") == "arm"
 
 
 def test_the_other_place_moves_nothing_and_the_gate_says_so() -> None:
     on_the_phone = Gate("down", "phone")
-    assert on_the_phone.took("stop", "desk") is None
-    assert on_the_phone.took("start", "phone") == "start"
+    assert on_the_phone.took("stop", "shortcut") is None
+    assert on_the_phone.took("start", "phone button") == "start"
 
 
 def test_the_way_the_user_talks_sets_whether_they_can_see_a_screen() -> None:

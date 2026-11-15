@@ -47,7 +47,7 @@ from hands.voice import pipeline as built
 from hands.voice.conversation import AssistantTurns, UserTurns, UserWords, cue_receipt, record_turns
 from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
-from hands.voice.milestone import Milestone
+from hands.voice.milestone import ClipOpened, ClipReleased, Told
 from hands.voice import player as played
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
@@ -208,7 +208,7 @@ class Rig:
     # Each turn hands said it received, as its words went to the brain.
     received: list[None] = field(default_factory=list[None])
     # Each milestone the latency observer told of the turns, as the phone's page would be told.
-    told: list[Milestone] = field(default_factory=list[Milestone])
+    told: list[Told] = field(default_factory=list[Told])
     # Both sides of the conversation, as build_voice wires them.
     conversation: tuple[UserTurns, AssistantTurns] = field(kw_only=True)
     # Each time Whisper read the vocabulary, which is none.
@@ -326,10 +326,10 @@ async def rigged(
     # The floor sits where build_voice puts it, between the clip owner and the user aggregator.
     received: list[None] = []
     cue_receipt(voice.user_turns, lambda: received.append(None))
-    told: list[Milestone] = []
+    told: list[Told] = []
     # The assistant aggregator ends the pipeline, as build_voice puts it: a cut goes on once it has written what it cut off.
     stages = [voice.stt, Floor(lambda id: id, lambda: live, clock), voice.user_turns, out, *behind, voice.assistant_turns]
-    async with running(stages, [LatencyObserver(SYSTEM, told.append), *watching]) as run:
+    async with running(stages, [LatencyObserver(SYSTEM, voice.stt, told.append), *watching]) as run:
         yield Rig(run.worker, voice.stt, out, recorded, clock, live, texts, heard, received, told, conversation=(voice.user_turns, voice.assistant_turns), primed=primed, streamed=streamed)
 
 
@@ -970,11 +970,16 @@ async def by_hand(rig: Rig, clip: int) -> None:
     await rig.until(lambda: rig.out.released == clip)
 
 
+def by_the_key(number: int) -> list[Told]:
+    """What the page is told of a clip of the talk key's, numbered `number`, as it opens and as it is sent."""
+    return [ClipOpened(Clip(number, "shortcut")), ClipReleased(Clip(number, "shortcut"))]
+
+
 async def test_a_turn_with_no_words_is_told_as_that_once_it_ends(rig: Rig) -> None:
     await by_hand(rig, 1)
     await rig.texts.put("")
     await rig.until(lambda: rig.out.stopped == 1)
-    assert rig.told == ["released", "no words"]
+    assert rig.told == [*by_the_key(1), "no words"]
 
 
 async def test_a_silent_clip_in_a_turn_that_has_words_is_not_told_as_no_words(rig: Rig) -> None:
@@ -987,7 +992,7 @@ async def test_a_silent_clip_in_a_turn_that_has_words_is_not_told_as_no_words(ri
     await rig.clip(["up"])
     await rig.texts.put("")
     await rig.until(lambda: rig.out.sent == ["what time is it"])
-    assert rig.told == ["released", "transcript", "released"]
+    assert rig.told == [*by_the_key(1), ClipOpened(Clip(2, "shortcut")), "transcript", ClipReleased(Clip(2, "shortcut"))]
 
 
 async def test_a_clip_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(rig: Rig) -> None:
@@ -998,7 +1003,7 @@ async def test_a_clip_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(ri
     await rig.texts.put("what time is it")
     await rig.until(lambda: rig.out.sent == ["what time is it"])
     assert rig.out.stopped == 1
-    assert rig.told == ["released", "transcript"]
+    assert rig.told == [*by_the_key(1), "transcript"]
 
 
 async def test_a_clip_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1008,7 +1013,7 @@ async def test_a_clip_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
     monkeypatch.setattr(Whisper, "_heard", refused)
     await by_hand(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
-    assert rig.told == ["released", "failed"]
+    assert rig.told == [*by_the_key(1), "failed"]
 
 
 async def test_a_clip_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1020,7 +1025,7 @@ async def test_a_clip_whisper_never_finishes_transcribing_fails_and_ends_its_tur
     monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
     await by_hand(rig, 1)
     await rig.until(lambda: rig.out.stopped == 1)
-    assert rig.told == ["released", "failed"]
+    assert rig.told == [*by_the_key(1), "failed"]
 
 
 async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1051,7 +1056,7 @@ async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, 
         await rig.until(lambda: rig.out.stopped == 1)
         await by_hand(rig, 2)
         await rig.until(lambda: rig.out.stopped == 2)
-        assert rig.told == ["released", "failed", "released", "failed"]
+        assert rig.told == [*by_the_key(1), "failed", *by_the_key(2), "failed"]
         # The second clip's turn failed in its own time without the model being run on it beside the first.
         assert len(begun) == 1
     finally:

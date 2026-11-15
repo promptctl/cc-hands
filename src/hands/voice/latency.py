@@ -22,14 +22,13 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
-    VADUserStartedSpeakingFrame,
-    VADUserStoppedSpeakingFrame,
 )
 from pipecat.observers.base_observer import BaseObserver, FramePushed
+from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.clock import Clock
-from hands.voice.milestone import Milestone
-from hands.voice.turnstop import ClipDiscarded, Words
+from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
+from hands.voice.turnstop import ClipSent, TurnOpened, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
@@ -76,49 +75,43 @@ class Turn:
 
 
 class LatencyObserver(BaseObserver):
-    """Log each milestone's distance from the key release, per turn, and tell `told` each milestone of a turn as it lands."""
+    """Log each milestone's distance from the key release, per turn, and tell `told` each clip `clips` opens and sends, and
+    each milestone of a turn, as it lands."""
 
-    def __init__(self, clock: Clock, told: Callable[[Milestone], None]) -> None:
+    def __init__(self, clock: Clock, clips: FrameProcessor, told: Callable[[Told], None]) -> None:
         # Pipecat's observer base takes untyped **kwargs; nothing is passed.
         super().__init__()  # pyright: ignore[reportUnknownMemberType]
         self._clock = clock
+        self._clips = clips
         self._told = told
         self._window: Window | None = None
         self._turn = Turn()
         # The last error taken, by its frame's id.
         self._erred: int | None = None
-        # Who is sounding, on each side of the conversation. Every frame below is pushed once per processor
-        # boundary it crosses, so what these two record is the transition, and the transition is the event:
-        # the speaker going from silent to sounding is the first audio, and the user falling silent is the
-        # release [LAW:one-source-of-truth].
+        # Who is sounding. Every frame below is pushed once per processor boundary it crosses, so what this records is
+        # the transition, and the transition is the event: the speaker going from silent to sounding is the first audio
+        # [LAW:one-source-of-truth].
         self._speaking = False
-        self._clip_open = False
 
     async def on_push_frame(self, data: FramePushed) -> None:
         now = self._clock.now()
         frame = data.frame
-        if isinstance(frame, VADUserStartedSpeakingFrame):
-            self._clip_open = True
-            return
-        if isinstance(frame, ClipDiscarded):
-            # A clip thrown away is no release: nothing of it is sent, so there is no reply to time from it.
-            if self._clip_open:
-                self._told("discarded")
-            self._clip_open = False
-            return
-        if isinstance(frame, VADUserStoppedSpeakingFrame):
-            if self._clip_open:
-                # The release is what the window's numbers are measured from, so it is also what opens the
-                # window — and what opens it is the user falling silent, not each push of the frame saying so.
-                # Opened on the frame, the second push would throw away the milestones the first push's window had
-                # taken and restart the measurement from a later zero, logging a milestone twice and timing it
-                # from a moment the user was already done speaking at.
+        # [LAW:one-source-of-truth] a clip opens and ends once, as the clip owner pushes it: every later push is the same
+        # frame crossing the next boundary, and may come after the next clip has opened. A clip thrown away, a wake that
+        # asked nothing, is no release: nothing of it is sent, so there is no reply to time from it.
+        match frame:
+            case TurnOpened(clip=clip) if data.source is self._clips:
+                self._told(ClipOpened(clip))
+                return
+            case ClipSent(clip=clip) if data.source is self._clips:
+                # The release is what the window's numbers are measured from, so it is also what opens the window.
                 if self._turn.released is None:
                     self._turn.found = self._window
                 self._window = self._turn.released = Window(released=now)
-                self._told("released")
-            self._clip_open = False
-            return
+                self._told(ClipReleased(clip))
+                return
+            case _:
+                pass
         if isinstance(frame, BotStartedSpeakingFrame):
             if not self._speaking:
                 self._first_audio(now)

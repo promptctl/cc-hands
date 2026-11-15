@@ -28,7 +28,8 @@ from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
-from hands.voice.milestone import Milestone
+from hands.voice.clips import Clip
+from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
 from hands.voice.phone import Asked, CallDeclined, CallLeft, CallRefused, CallUnreached, Offer, Phone, kind
 from hands.voice.transcript import BargeIn, Heard, Line, Saying, Spoken
 from hands.sessions.home import Home
@@ -213,16 +214,22 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 
 # Every line of the transcript there is, as the page is told it.
 LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
+# All a turn answered from the phone tells the page, in its order: its clip opened, released, and the turn's milestones.
+PRESSED = Clip(3, "phone button")
+TOLD: list[Told] = [ClipOpened(PRESSED), ClipReleased(PRESSED), *get_args(Milestone)]
 
 
 @pytest.mark.outside
 async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
-    for milestone in get_args(Milestone):
-        call.phone.tell(milestone)
+    for told in TOLD:
+        call.phone.tell(told)
     for line in LINES:
         call.phone.tell(line)
-    await call.until(lambda: len(call.page.told) == len(get_args(Milestone)) + len(LINES))
-    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)] + [
+    await call.until(lambda: len(call.page.told) == len(TOLD) + len(LINES))
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [
+        {"kind": "opened", "clip": 3, "opener": "phone button"},
+        {"kind": "milestone", "milestone": "released", "clip": 3},
+        *({"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)),
         {"kind": "heard", "text": "Is the parser fixed?"},
         {"kind": "saying", "text": "It is.", "chars_per_sec": 15.0},
         {"kind": "spoken"},
@@ -231,20 +238,20 @@ async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_
     ]
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)
-    assert (left(event).told, left(event).lines) == (len(get_args(Milestone)), len(LINES))
+    assert (left(event).told, left(event).lines) == (len(TOLD), len(LINES))
 
 
 async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:
     """A turn taken at the desk passes the same milestones, and no page is waiting on it."""
     phone = Phone(SYSTEM, PushToTalk(SYSTEM, lambda _: None), heard_rate=16000, played_rate=24000, record=lambda _: None)
-    phone.tell("released")
+    phone.tell(ClipReleased(Clip(1, "shortcut")))
 
 
 def test_the_page_knows_every_milestone_hands_tells_it() -> None:
     """The page says what each milestone means by name, and names one it does not know as an error on its face."""
     page = resources.files("hands.voice").joinpath("phone.html").read_text()
     table = page[page.index("const TOLD = {") : page.index("};", page.index("const TOLD = {"))]
-    assert [milestone for milestone in get_args(Milestone) if f'"{milestone}": ' not in table] == []
+    assert [milestone for milestone in ("released", *get_args(Milestone)) if f'"{milestone}": ' not in table] == []
 
 
 def test_the_page_knows_every_line_of_the_transcript_hands_tells_it() -> None:
@@ -260,8 +267,8 @@ async def test_the_page_hanging_up_puts_hands_back_at_the_desk_and_ends_what_was
     playing = call.phone.play(bytes(24000 * 2 * 60))  # a minute that will never be heard
     call.page.channel.close()
     await call.until(lambda: call.key.gate.place == "desk")
-    # The clip open at the phone is thrown away, not sent.
-    assert (call.key.gate.key, call.key.gate.dropped) == ("up", 1)
+    # The clip open at the phone is sent as it stands.
+    assert (call.key.gate.key, call.key.gate.sent, call.key.gate.dropped) == ("up", 1, 0)
     await asyncio.wait_for(playing, 1)
     [event] = calls(call.recorded)
     assert (event.outcome, event.parent_id, event.facts["remote"]) == ("ok", None, "192.168.7.20")
