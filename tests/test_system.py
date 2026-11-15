@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from loguru import logger
-from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
+from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
@@ -22,6 +22,7 @@ from hands.sessions.audit import Announced, Entry
 from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
 from hands.sessions.home import Home
+from hands.voice.player import LineFrame, Lines, Player
 from hands.voice.system import (
     MicrophoneOff,
     NoMicrophone,
@@ -176,9 +177,11 @@ def test_an_error_is_told_by_the_processor_that_raised_it() -> None:
     assert services.alarm(ErrorFrame("device gone", processor=services.transport)) == Unrouted(str(services.transport), "device gone")
 
 
-class Recorder(FrameProcessor):
+class Recorder(Lines):
+    """The TTS service and the lines ahead of it at once: what is queued on it, and whether it is usable."""
+
     def __init__(self) -> None:
-        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (Pipecat's **kwargs is untyped)
+        super().__init__(Player(lambda _: None))
         self.frames: list[Frame] = []
 
     async def queue_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM, callback: object = None) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -194,11 +197,11 @@ async def test_a_fact_goes_to_speech_while_it_works_and_to_the_screen_when_it_do
         return True
 
     recorded: list[Entry] = []
-    channel = SystemChannel(tts, notify, recorded.append, SYSTEM)
+    channel = SystemChannel(tts, tts, notify, recorded.append, SYSTEM)
     await channel.say(ModelUnreachable())
     # Kept out of the model's context: there it would read as the model's own reply.
     assert [(type(frame), getattr(frame, "text", None), getattr(frame, "append_to_context", None)) for frame in tts.frames] == [
-        (TTSSpeakFrame, "The language model is unreachable.", False)
+        (LineFrame, "The language model is unreachable.", False)
     ]
     await tts.set_usable(False)
     await channel.say(TranscriptionFailed())
@@ -219,7 +222,7 @@ def speaking(clock: VirtualClock) -> tuple[Recorder, list[Entry], SystemChannel]
     async def notify(_text: str) -> bool:
         raise AssertionError("speech works, so nothing goes to the screen")
 
-    return tts, recorded, SystemChannel(tts, notify, recorded.append, clock)
+    return tts, recorded, SystemChannel(tts, tts, notify, recorded.append, clock)
 
 
 def said(tts: Recorder) -> list[str | None]:
@@ -306,7 +309,7 @@ async def test_the_screen_is_not_filled_by_a_burst_either() -> None:
         posted.append(text)
         return True
 
-    channel = SystemChannel(Recorder(), notify, lambda _: None, clock)
+    channel = SystemChannel(Recorder(), Recorder(), notify, lambda _: None, clock)
     for turn in range(200):
         await channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio"))
         clock.advance(0.43)
@@ -326,7 +329,7 @@ async def test_a_post_the_screen_refused_is_not_taken_for_one_the_user_saw() -> 
 
     tts = Recorder()
     await tts.set_usable(False)
-    channel = SystemChannel(tts, notify, recorded.append, clock)
+    channel = SystemChannel(tts, tts, notify, recorded.append, clock)
     for _ in range(200):
         await channel.say(TranscriptionFailed())
         clock.advance(0.43)
@@ -345,7 +348,7 @@ async def test_a_burst_that_arrives_all_at_once_is_still_said_once() -> None:
         posted.append(text)
         return True
 
-    channel = SystemChannel(tts, notify, lambda _: None, VirtualClock())
+    channel = SystemChannel(tts, tts, notify, lambda _: None, VirtualClock())
     await asyncio.gather(*(channel.sound(Post(f"TTS context 0000-{turn:04d} completed with no audio")) for turn in range(200)))
     assert posted == ["hands cannot speak: TTS context 0000-0000 completed with no audio"]
     await asyncio.gather(*(channel.say(TranscriptionFailed()) for _ in range(200)))

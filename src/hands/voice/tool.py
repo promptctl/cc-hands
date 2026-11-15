@@ -32,12 +32,18 @@ class Tool:
     properties: Mapping[str, JsonSchema]
     required: tuple[str, ...]
     body: Body
-    # A result {"says": text} is said by hands, as written, whichever the model does.
+    # A result `read_back` made is said by hands, as written, whichever the model does.
     then: Then
 
     @property
     def input_schema(self) -> JsonSchema:
         return {"type": "object", "properties": dict(self.properties), "required": list(self.required)}
+
+
+def read_back(says: str, label: str) -> Result:
+    """A result hands says `says` for, as written, and tells the brain of by `label`, never by its text.
+    [LAW:single-enforcer] the one shape of such a result, which the brain's stage reads."""
+    return {"says": says, "as": label}
 
 
 def tool(body: Body, *, then: Then = "reply") -> Tool:

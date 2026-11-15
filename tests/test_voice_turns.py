@@ -49,6 +49,7 @@ from hands.voice.floor import Floor
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened, ClipReleased, Told
 from hands.voice import player as played
+from hands.core.playback import hands_says
 from hands.voice.player import Player
 from hands.voice.ptt import Gate, Key, KeyedAudio, PushToTalk
 from hands.voice.trigger import Trigger, place_of
@@ -507,7 +508,7 @@ async def reading(
     player, speaker, output = Player(cut.append), IdentityFilter(), Speaker()
     async with rigged(monkeypatch, tmp_path, FrameProcessor(), [player.lines, speaker, output], [player.watching(speaker, output)], prints) as rig:
         await rig.worker.queue_frames([spoken("The parser is fixed."), spoken("Its tests pass.")])
-        line = asyncio.create_task(player.heard("Shall I push it?"))
+        line = asyncio.create_task(player.heard(hands_says("Shall I push it?")))
         try:
             await rig.until(lambda: len(output.playing) == 1)
             yield rig, cut, line

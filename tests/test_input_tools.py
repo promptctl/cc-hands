@@ -77,10 +77,11 @@ async def test_a_draft_staged_amended_and_discarded_is_read_back_at_each_step(tm
 
     staged = await call(tools, "stage_draft", session=id, text="refactor authMiddleware.ts to use the old helper", resolutions=resolved)
     assert staged == {
-        "says": "Draft for cc-hands, reading 'auth middleware' as auth Middleware dot ts: refactor auth Middleware dot ts to use the old helper"
+        "says": "Draft for cc-hands, reading 'auth middleware' as auth Middleware dot ts: refactor auth Middleware dot ts to use the old helper",
+        "as": "the draft for cc-hands read back",
     }
     amended = await call(tools, "amend_draft", session=id, text="refactor authMiddleware.ts to use the new token helper", resolutions=resolved)
-    assert amended == {"says": "In the draft for cc-hands: 'old' is now 'new token'"}
+    assert amended == {"says": "In the draft for cc-hands: 'old' is now 'new token'", "as": "the change to the draft for cc-hands read back"}
     assert await call(tools, "discard_draft", session=id) == {"readback": "Discarded the draft for cc-hands."}
     assert await call(tools, "discard_draft", session=id) == {"readback": "There is no draft for cc-hands."}
 
@@ -158,7 +159,7 @@ async def test_a_dictation_is_traced_in_the_audit_log_from_what_the_user_said_to
         ("Transcribed", "tell cc-hands to run the tests"),
         ("tool.run", "stage_draft"),
     ]
-    assert written[2]["facts"]["called"]["result"] == {"says": "Draft for cc-hands: run the tests"}
+    assert written[2]["facts"]["called"]["result"] == {"says": "Draft for cc-hands: run the tests", "as": "the draft for cc-hands read back"}
     assert [datetime.fromisoformat(line["at"]) for line in written] == sorted(datetime.fromisoformat(line["at"]) for line in written)
 
 
