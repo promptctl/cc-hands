@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from functools import reduce
+from pathlib import Path
 
 import pytest
 from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
@@ -33,10 +34,16 @@ from hands.core.playback import (
 from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
 from hands.core.pending import News
-from hands.core.session import PromptId, SessionId
+from hands.core.events import Joined
+from hands.core.session import Membership, PromptId, SessionId
+from hands.sessions.audit import Refocused
+from hands.sessions.focus import focused
+from hands.sessions.home import Home
+from hands.sessions.registry import Sessions
 from hands.virtualclock import VirtualClock
 from hands.voice.narrator import Recounts
 from hands.voice.player import Player, said
+from hands.voice.refocus import Refocus
 from hands.voice.spoken import sentences
 from hands.voice.tools import audited, playback_tools, read_reply_aloud_tool
 
@@ -273,6 +280,14 @@ def telling(reply: str | None, turn: str = "p1") -> News:
     return News(PromptId(turn), reply, "", "", (), frozenset())
 
 
+async def reading(tmp_path: Path) -> tuple[Sessions, Refocus, list[Entry]]:
+    """Sessions with SID running, and the focus to move to it, each move recorded."""
+    sessions = new_sessions(clock=VirtualClock())
+    await sessions.apply(Joined(Membership(SID, pid=1, cwd=Path("/code/s1"), transcript=tmp_path / "s1.jsonl"), "startup"))
+    moves: list[Entry] = []
+    return sessions, Refocus(sessions, Home(tmp_path), moves.append), moves
+
+
 def holding(*replies: str | None) -> Recounts:
     recounts = Recounts()
     for reply in replies:
@@ -299,46 +314,64 @@ async def test_a_reading_is_a_frame_a_sentence_and_goes_back_to_from_the_sentenc
         assert await player.act(resume) == Replay(("Two.", "Three."))
 
 
-async def test_read_reply_aloud_says_the_reply_to_the_speaker_and_hands_the_model_only_that_it_was_started() -> None:
+async def test_a_piece_the_speaker_says_as_nothing_is_no_position_to_wait_on() -> None:
+    # A rule ahead of a fence is cut as a piece of its own, which the filter says as nothing and the TTS service drops.
+    assert await sentences("Done.\n\n---\n\n```\ncode\n```\nAfter.") == ("Done.", "```\ncode\n```\n", "After.")
+
+
+async def test_read_reply_aloud_says_the_reply_to_the_speaker_and_hands_the_model_only_that_it_was_started(tmp_path: Path) -> None:
     player = Player(lambda _: None)
-    tool = read_reply_aloud_tool(new_sessions(clock=VirtualClock()), holding("a first reply", REPLY), player)
+    sessions, refocus, moves = await reading(tmp_path)
+    tool = read_reply_aloud_tool(sessions, holding("a first reply", REPLY), player, refocus)
     async with stood(player) as (_, heard):
         result = await tool.body(session=SID)
         said_ = await heard.until(4, TTSSpeakFrame)
-    assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == list(await sentences(REPLY))
+    speaks = [frame for frame in said_ if isinstance(frame, TTSSpeakFrame)]
+    assert [frame.text for frame in speaks] == list(await sentences(REPLY))
+    # Kept out of the brain's turn, so no Replied line credits the session's words to the brain.
+    assert not [frame for frame in speaks if frame.append_to_context]
     # [LAW:verifiable-goals] the whole result, so no word of the reply is in it under any key.
-    assert result == {"reading": "s1's last reply, 19 words, is being read to the user now"}
+    assert result == {"reading": "s1's last reply, four sentences, is being read to the user now"}
     assert tool.then == "silence"
+    # Read as a turn told is, the focus moves to it.
+    assert focused(Home(tmp_path)) == SID
+    assert moves == [Refocused(SID, "moved", None)]
 
 
-async def test_read_reply_aloud_reads_the_latest_reply_a_turn_that_went_on_without_words_left_standing() -> None:
+async def test_read_reply_aloud_reads_the_latest_reply_a_turn_that_went_on_without_words_left_standing(tmp_path: Path) -> None:
     player = Player(lambda _: None)
-    tool = read_reply_aloud_tool(new_sessions(clock=VirtualClock()), holding("Its words.", None), player)
+    sessions, refocus, _ = await reading(tmp_path)
+    tool = read_reply_aloud_tool(sessions, holding("Its words.", None), player, refocus)
     async with stood(player) as (_, heard):
-        assert await tool.body(session=SID) == {"reading": "s1's last reply, two words, is being read to the user now"}
+        assert await tool.body(session=SID) == {"reading": "s1's last reply, one sentence, is being read to the user now"}
         said_ = await heard.until(1, TTSSpeakFrame)
     assert [frame.text for frame in said_ if isinstance(frame, TTSSpeakFrame)] == ["Its words."]
 
 
-async def test_read_reply_aloud_says_when_there_is_nothing_to_read_and_says_nothing_to_the_speaker() -> None:
+async def test_read_reply_aloud_says_when_there_is_nothing_to_read_and_says_nothing_to_the_speaker(tmp_path: Path) -> None:
     player = Player(lambda _: None)
-    sessions = new_sessions(clock=VirtualClock())
+    sessions, refocus, moves = await reading(tmp_path)
     async with stood(player) as (_, heard):
-        assert await read_reply_aloud_tool(sessions, Recounts(), player).body(session=SID) == {
+        assert await read_reply_aloud_tool(sessions, holding("Its words."), player, refocus).body(session="gone") == {
+            "error": "no running session has the id 'gone'; take one from list_sessions"
+        }
+        assert await read_reply_aloud_tool(sessions, Recounts(), player, refocus).body(session=SID) == {
             "error": "no turn of s1 has finished since hands started; read_session reads what it did before"
         }
-        assert await read_reply_aloud_tool(sessions, holding(None), player).body(session=SID) == {
+        assert await read_reply_aloud_tool(sessions, holding(None), player, refocus).body(session=SID) == {
             "error": "the last turn of s1 said nothing, so there is nothing to read; tell_turn says what it did"
         }
         assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]
+    assert moves == []
 
 
-async def test_read_reply_aloud_says_the_last_turn_could_not_be_read_rather_than_read_an_older_reply() -> None:
+async def test_read_reply_aloud_says_the_last_turn_could_not_be_read_rather_than_read_an_older_reply(tmp_path: Path) -> None:
     player = Player(lambda _: None)
+    sessions, refocus, _ = await reading(tmp_path)
     recounts = holding("An older reply.")
     recounts.unread(SID, PromptId("p1"))
     async with stood(player) as (_, heard):
-        assert await read_reply_aloud_tool(new_sessions(clock=VirtualClock()), recounts, player).body(session=SID) == {
+        assert await read_reply_aloud_tool(sessions, recounts, player, refocus).body(session=SID) == {
             "error": "hands could not read all of the last turn of s1, so what it said last is not known; tell_turn says what hands could read of it"
         }
         assert not [frame for frame in heard.frames if isinstance(frame, TTSSpeakFrame)]

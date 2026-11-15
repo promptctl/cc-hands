@@ -115,8 +115,9 @@ class Player:
     async def _hand(self, moved: Playback, lines: tuple[str, ...]) -> None:
         self._playback = playback.queued(moved, lines)
         for sentence in lines:
-            # One sentence a frame, so each is a position.
-            await self.lines.push_frame(TTSSpeakFrame(sentence))
+            # One sentence a frame, so each is a position. Said as written, as every line hands says itself is: kept out of
+            # the brain's turn, which would record a session's reply, or a line said again, as a reply the brain just made.
+            await self.lines.push_frame(TTSSpeakFrame(sentence, append_to_context=False))
 
     async def heard(self, sentence: str) -> bool:
         """Says `sentence`, and returns once the speaker has played it to its end, True, or a barge-in has cut it off, False.
@@ -158,8 +159,8 @@ def said(played: Played) -> tuple[str, ...]:
 def account(played: Played) -> str:
     """What the brain is told of an act: how many sentences hands said again, never the sentences, or why there were none.
 
-    The sentences are hands' to say and the user's to hear; the audit log records them as said. Told to the model they would
-    be a reading it never asked to hold, and a reply read aloud would come back to it whole.
+    The sentences are hands' to say and the user's to hear. Told to the model they would be a reading it never asked to hold,
+    and a reply read aloud would come back to it whole.
     """
     match played:
         case Replay(sentences=sentences):

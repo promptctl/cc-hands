@@ -134,7 +134,7 @@ def intermediary_tools(
         *session_tools(sessions, store),
         tell_turn_tool(sessions, recounts, refocus),
         expand_tool(sessions, recounts),
-        read_reply_aloud_tool(sessions, recounts, player),
+        read_reply_aloud_tool(sessions, recounts, player, refocus),
         *backlog_tools(sessions, store),
         *draft_tools(sessions),
         *keyboard_tools(sessions),
@@ -749,20 +749,23 @@ def expand_tool(sessions: Sessions, recounts: Recounts) -> Tool:
     return tool(expand)
 
 
-def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player) -> Tool:
+def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player, refocus: Refocus) -> Tool:
     async def read_reply_aloud(session: str) -> Result:
         """Read the last thing a session said in its last finished turn to the user, word for word, as the session wrote it.
 
         Call this when the user asks you to read a session's reply out, or to hear it as it was written, not as you would
         put it. Hands says it, never you, and its words are not given to you: calling it is the whole reply, so add no
-        words of your own before or after, and never retell it. The returned line says it was started and how long it is.
-        It is said as every line of yours is, so code, paths, and hashes in it are said as what they are, not spelled out,
-        and the user can cut in, go back, skip, or hear it again.
+        words of your own before or after, and never retell it. The returned line says it was started and how many
+        sentences it is. It is said as every line of yours is, so code, paths, and hashes in it are said as what they are,
+        not spelled out, and the user can cut in, go back, skip, or hear it again. The session read becomes the focus, as
+        one tell_turn tells does.
 
         Args:
             session: The session's id, from list_sessions.
         """
         id = SessionId(session)
+        if sessions.live_session(id) is None:
+            return {"error": f"no running session has the id {id!r}; take one from list_sessions"}
         name = spoken_name(sessions, id)
         held = recounts.of(id)
         if held is None:
@@ -773,8 +776,11 @@ def read_reply_aloud_tool(sessions: Sessions, recounts: Recounts, player: Player
             return {"error": f"hands could not read all of the last turn of {name}, so what it said last is not known; tell_turn says what hands could read of it"}
         if held.reply is None:
             return {"error": f"the last turn of {name} said nothing, so there is nothing to read; tell_turn says what it did"}
-        await player.read(await sentences(held.reply))
-        return {"reading": f"{name}'s last reply, {counted(len(held.reply.split()), 'word')}, is being read to the user now"}
+        reading = await sentences(held.reply)
+        await player.read(reading)
+        await refocus(id)
+        # Counted in sentences, the positions the user moves by and resume, skip and repeat count in.
+        return {"reading": f"{name}'s last reply, {counted(len(reading), 'sentence')}, is being read to the user now"}
 
     return tool(read_reply_aloud, then="silence")
 

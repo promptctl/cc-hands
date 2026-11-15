@@ -110,9 +110,11 @@ async def sentences(text: str) -> tuple[str, ...]:
     """A whole reply in the pieces a streamed one is said in: a sentence at a time, and a fenced block whole.
 
     [LAW:one-source-of-truth] cut by `FenceAggregator`, the one rule that cuts a reply for the speaker, so a reply read
-    from its text is cut where the same reply streaming would be. Each piece is a position the user can go back to.
+    from its text is cut where the same reply streaming would be. Each piece is a position the user can go back to, so a
+    piece this filter says as nothing, a rule or a bare heading, is none: the TTS service drops it unsaid, and a position
+    it never hands the speaker would leave the reading waiting on it forever.
     """
     aggregator = FenceAggregator()
     pieces = [piece.text async for piece in aggregator.aggregate(text)]
     rest = await aggregator.flush()
-    return tuple(piece for piece in (*pieces, *([] if rest is None else [rest.text])) if piece.strip())
+    return tuple(piece for piece in (*pieces, *([] if rest is None else [rest.text])) if spoken(piece).text.strip())
