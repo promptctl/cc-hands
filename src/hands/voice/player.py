@@ -11,8 +11,8 @@ is made, in the order made, where a processor standing in the pipeline would tak
 still waiting in its queue.
 
 Every line hands says as written crosses `lines` as a `LineFrame`, which says whose it is, and is queued there as it
-passes on: the brain's own words reach the speaker as the model's text, never as one. So what the speaker hands that
-hands did not queue is the brain's.
+passes on: the brain's own words reach the speaker as the model's text, never as one. The speaker hands each line on as
+a `LineText`, still whose it is, or says it dropped it (`Unsaid`), so what it hands as bare text is the brain's.
 
 [LAW:single-enforcer] the one holder of `Playback`: its observer reports to it, `lines` queues to it, and the playback
 tools act on it.
@@ -27,8 +27,7 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import Bookmark, Labelled, LastOne, Line, NothingBargedIn, NothingSaid, Played, Playback, Replay, hands_says
-from hands.core.spoken import spoken
+from hands.core.playback import Bookmark, Labelled, LastOne, Line, NothingBargedIn, NothingSaid, Own, Played, Playback, Replay, hands_says
 from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
@@ -46,10 +45,19 @@ def line_frame(line: Line, *, append_to_context: bool = True) -> LineFrame:
     return LineFrame(line.text, append_to_context=append_to_context, line=line)
 
 
-def said_as_nothing(text: str) -> bool:
-    """Whether the speaker would say `text` as nothing: Pipecat drops what is blank once leading line breaks go, before
-    and after the speaker filter (`TTSService._push_tts_frames`, Pipecat 1.10.0), and hands it to no one."""
-    return not spoken(text.lstrip("\n")).text.strip()
+@dataclass
+class LineText(AggregatedTextFrame):
+    """A line of hands' as the speaker hands it on to be said: the sentence Pipecat makes of a `LineFrame`, still whose
+    it is."""
+
+    line: Line = field(kw_only=True)
+
+
+@dataclass
+class Unsaid(DataFrame):
+    """The speaker took up `line` and says it as nothing, so will never hand it on."""
+
+    line: Line
 
 
 class Player:
@@ -86,8 +94,12 @@ class Player:
                 # A sentence's audio made, which is a kind of AggregatedTextFrame too: it has played only once the
                 # output transport pushes it.
                 pass
+            case LineText(line=line) if frame.will_be_spoken:
+                self._playback = playback.handed(self._playback, line)
+            case Unsaid(line=line):
+                self._playback = playback.dropped(self._playback, line)
             case AggregatedTextFrame(text=text) if frame.will_be_spoken:
-                self._playback = playback.handed(self._playback, text)
+                self._playback = playback.handed(self._playback, Own(text))
             case _:
                 pass
 
@@ -116,13 +128,9 @@ class Player:
             case _:
                 pass
 
-    def queued(self, frame: Frame) -> bool:
-        """Takes a frame on its way to the speaker past `lines`: a line is queued, and one it would say as nothing is not
-        to be passed on, so no line waits in `coming` that the speaker will never hand; a barge-in cuts what was queued.
-        Whether to pass it on."""
+    def queued(self, frame: Frame) -> None:
+        """Takes a frame on its way to the speaker past `lines`: a line is queued, and a barge-in cuts what was queued."""
         match frame:
-            case LineFrame(line=line) if said_as_nothing(line.text):
-                return False
             case LineFrame(line=line):
                 self._playback = playback.queued(self._playback, line)
             case InterruptionFrame():
@@ -131,7 +139,6 @@ class Player:
                 self._playback = playback.cut(self._playback)
             case _:
                 pass
-        return True
 
     def next_barge_in(self) -> asyncio.Future[Bookmark]:
         """The reading on the speaker when the next barge-in reaches it, and how many of its lines had played to their
@@ -223,8 +230,9 @@ class _Lines(FrameProcessor):
 
     async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
         # Both ways in meet here: a frame passing through, and one the player or the voices push.
-        if direction is FrameDirection.UPSTREAM or self._player.queued(frame):
-            await super().push_frame(frame, direction)
+        if direction is FrameDirection.DOWNSTREAM:
+            self._player.queued(frame)
+        await super().push_frame(frame, direction)
 
 
 class _Watch(BaseObserver):

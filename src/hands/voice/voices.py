@@ -9,12 +9,12 @@ import asyncio
 import re
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
-from typing import NewType, cast
+from typing import Any, NewType, cast
 
 import numpy as np
 import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
-from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
@@ -25,13 +25,13 @@ from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
-from hands.core.playback import Labelled
+from hands.core.playback import Labelled, Line
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice.clips import RATE, Samples
 from hands.voice.library import Found, Library, address
-from hands.voice.player import LineFrame, line_frame
+from hands.voice.player import LineFrame, LineText, Unsaid, line_frame
 from hands.voice.voiceprints import Synthesize
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
@@ -231,12 +231,39 @@ class SaidInTTS(PocketTTSService):
     utterance is made whole within the one call that processes its text, and a voice change is processed in its own
     call, so no change falls between the two. Nothing reads the service's voice after the fact."""
 
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        # The line whose LineFrame is being made into speech, for the one call that makes it (`_push_tts_frames`): None
+        # while the model's text is.
+        self._making: Line | None = None
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
-        if isinstance(frame, TTSSpeakFrame) and not isinstance(frame, LineFrame):
-            # [LAW:no-silent-failure] [LAW:single-enforcer] every line of hands' is a LineFrame queued as it passes the
-            # player's `lines`: one that is not would be told the brain as its own words.
-            raise TypeError(f"{frame} reached the speaker as no LineFrame, so the player never learned whose it is")
-        await super().process_frame(frame, direction)
+        match frame:
+            case LineFrame(line=line):
+                self._making = line
+                try:
+                    await super().process_frame(frame, direction)
+                finally:
+                    self._making = None
+            case TTSSpeakFrame():
+                # [LAW:no-silent-failure] [LAW:single-enforcer] every line of hands' is a LineFrame queued as it passes the
+                # player's `lines`: one that is not would be told the brain as its own words.
+                raise TypeError(f"{frame} reached the speaker as no LineFrame, so the player never learned whose it is")
+            case _:
+                await super().process_frame(frame, direction)
+
+    async def _push_tts_frames(self, src_frame: AggregatedTextFrame, *args: Any, **kwargs: Any) -> None:
+        # [LAW:types-are-the-program] Pipecat makes a LineFrame's sentence afresh, of its text alone, and hands this frame
+        # on as made: the line rides it, so the player reads whose it is off what the speaker hands, never off its text.
+        # Pipecat says, by `will_be_spoken`, whether it got past its gates; one that did not is never handed on.
+        match self._making:
+            case None:
+                await super()._push_tts_frames(src_frame, *args, **kwargs)  # pyright: ignore[reportPrivateUsage]
+            case line:
+                said = LineText(src_frame.text, src_frame.aggregated_by, raw_text=src_frame.raw_text, line=line)
+                await super()._push_tts_frames(said, *args, **kwargs)  # pyright: ignore[reportPrivateUsage]
+                if not said.will_be_spoken:
+                    await self.push_frame(Unsaid(line))
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         yield SpeakingIn(require_given(self._settings.voice, "Pocket TTS voice"))

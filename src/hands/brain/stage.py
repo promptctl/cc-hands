@@ -485,7 +485,8 @@ class BrainStage(FrameProcessor):
         self._broken_off = ""
         # [LAW:single-enforcer] what each barge-in cut off, told to the brain with its next turn: the one way a cut reaches
         # it, a turn's in flight and one after every turn's end alike, whoever asked the turn.
-        self._cuts: list[asyncio.Future[str]] = []
+        # A turn's is its note, written as it ends; any other's is the bookmark the speaker gives it.
+        self._cuts: list[asyncio.Future[Bookmark] | str] = []
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -541,7 +542,7 @@ class BrainStage(FrameProcessor):
                 cut = self._next_barge_in()
                 if not self._barge_in(self._answering, cut):
                     # No turn's to tell, as it ends: what it cut off is told as the speaker says.
-                    self._cuts.append(asyncio.ensure_future(_cut_note(cut)))
+                    self._cuts.append(cut)
                 await self.push_frame(frame, direction)
                 if turn is not None and not turn.interrupted:
                     if turn.replying:
@@ -642,7 +643,7 @@ class BrainStage(FrameProcessor):
         cuts, self._cuts = self._cuts, []
         # What the user did not hear since the brain last heard them, then what the last turn left: re-left by a turn the
         # brain never took.
-        note = _notes(*[await cut for cut in cuts], broken_off)
+        note = _notes(*[await _told(cut) for cut in cuts], broken_off)
         # After the words, so a turn of the user's never opens with [hands], which marks a message as hands' own.
         typed = _notes(text, _seen(asker), note)
         # What is typed into the brain for the turn, as it is typed.
@@ -721,7 +722,7 @@ class BrainStage(FrameProcessor):
                 # Said to nobody: the turn's words past what the speaker played, and the readbacks. The brain judges whether
                 # to go back to any of it.
                 over = _barge_in_note(await turn.barge_in, "".join((*spoken, *_left(said))), turn.readbacks)
-                self._cuts.append(_settled(over))
+                self._cuts.append(over)
             annotate(barge_in_note=over)
         finally:
             # [LAW:nothing-unseen] what the turn did is on its event however it ended, a turn cancelled mid-way included.
@@ -996,7 +997,8 @@ class BrainStage(FrameProcessor):
         # Only the calls this turn's last reply opened: a request carries every result of the brain's history.
         answers = [(self._tools.get(turn.calls[answer.call]), _result(answer)) for answer in carried if answer.call in turn.calls]
         # Said by hands once the brain's own words are, whatever the model does next: what a call hands hands to say.
-        turn.readbacks.extend(readback for _, result in answers if result is not None and (readback := _readback(result)) is not None)
+        # A call of hands' own tools: what any other returns is the brain's to read, whatever its shape.
+        turn.readbacks.extend(readback for tool, result in answers if tool is not None and result is not None and (readback := _readback(result)) is not None)
         held = whole([tool is not None and result is not None and silent(tool, result) for tool, result in answers])
         # [LAW:single-enforcer] a turn that acted is not let close on stay_silent with nothing heard after what it did: the
         # model is asked on, told to say what it did. Once: a second time, it is held, and the turn's end fails it.
@@ -1225,10 +1227,30 @@ def _broken_off(spoken: str) -> str:
 
 
 def _barge_in_note(bookmark: Bookmark, words: str, readbacks: Sequence[Labelled]) -> str:
-    """The note that tells the brain the user spoke over its last turn: the last line they heard, if the reading cut off
-    holds one, and what they never heard, which is the rest of that reading, the turn's words the speaker was never
-    handed, and the readbacks of its calls. Its own words are quoted, and every line hands said as written is named by
-    its label (`as_told`)."""
+    """The note that tells the brain the user spoke over its last turn, which stopped it: what they heard and did not of
+    it (`_heard_of`), the turn's words the speaker was never handed and the readbacks of its calls among what they did not."""
+    return f"[hands] The user spoke over you, and nothing more was said aloud.{_heard_of(bookmark, words, readbacks)}"
+
+
+def _cut_note(bookmark: Bookmark) -> str:
+    """The note that tells the brain of a barge-in that stopped no turn: what it cut off, if it cut anything. Nothing is
+    said of what was said aloud after it, which a turn still running goes on to say."""
+    return f"[hands] The user cut in.{_heard_of(bookmark, '', ())}" if bookmark.at < len(bookmark.lines) else ""
+
+
+async def _told(cut: "asyncio.Future[Bookmark] | str") -> str:
+    """A cut's note, once the speaker says what it cut off."""
+    match cut:
+        case str():
+            return cut
+        case _:
+            return _cut_note(await cut)
+
+
+def _heard_of(bookmark: Bookmark, words: str, readbacks: Sequence[Labelled]) -> str:
+    """What the user heard and did not of a reading cut off: the last line they heard, if it holds one, and the rest of
+    it, then `words` past what of them it holds, then `readbacks`. Its own words are quoted, and every line hands said as
+    written is named by its label (`as_told`)."""
     # [LAW:one-source-of-truth] the turn's words are all it said; the speaker only marks how far into them was heard. Each
     # sentence of them it was handed is a piece of them, in order, so one still on its way to it is unheard with the rest.
     rest_of_reading: list[Line] = []
@@ -1244,19 +1266,7 @@ def _barge_in_note(bookmark: Bookmark, words: str, readbacks: Sequence[Labelled]
     unheard = as_told((*rest_of_reading, Own(" ".join(words[into:].split())), *readbacks))
     last = f" They last heard {as_told(bookmark.lines[bookmark.at - 1 : bookmark.at])}." if bookmark.at else ""
     rest = f" They did not hear: {unheard}." if unheard else ""
-    return f"[hands] The user spoke over you, and nothing more was said aloud.{last}{rest}"
-
-
-async def _cut_note(cut: "asyncio.Future[Bookmark]") -> str:
-    """The note that tells the brain of a barge-in no turn in flight was stopped by: what it cut off, if it cut anything."""
-    bookmark = await cut
-    return _barge_in_note(bookmark, "", ()) if bookmark.at < len(bookmark.lines) else ""
-
-
-def _settled(note: str) -> "asyncio.Future[str]":
-    settled = asyncio.get_running_loop().create_future()
-    settled.set_result(note)
-    return settled
+    return f"{last}{rest}"
 
 
 def _readback(result: Result) -> Labelled | None:
@@ -1264,9 +1274,9 @@ def _readback(result: Result) -> Labelled | None:
     match result:
         case {"says": str(text), "as": str(label)}:
             return Labelled(text, label)
-        case {"says": says}:
+        case {"says": _}:
             # [LAW:no-silent-failure] a line with no label could only be told the brain by its text.
-            raise TypeError(f"a tool handed hands {says!r} to say with no label to tell the brain it by")
+            raise TypeError(f"a tool of hands' handed {result!r}, which is no line to say and label to tell the brain it by")
         case _:
             return None
 

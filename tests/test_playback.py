@@ -6,9 +6,12 @@ from contextlib import asynccontextmanager
 from functools import reduce
 
 import pytest
-from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSAudioRawFrame, TTSSpeakFrame, TTSTextFrame
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.pocket_tts.tts import PocketTTSSettings
+from pipecat.services.tts_service import TTSService
+from pipecat.transcriptions.language import Language
 from pipecat.utils.text.base_text_aggregator import AggregationType
 
 from conftest import Running, running
@@ -28,6 +31,7 @@ from hands.core.playback import (
     as_told,
     barge_in,
     cut,
+    dropped,
     finished,
     handed,
     hands_says,
@@ -38,8 +42,9 @@ from hands.core.playback import (
 )
 from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
-from hands.voice.player import LineFrame, Player, line_frame, said
+from hands.voice.player import LineFrame, LineText, Player, Unsaid, line_frame, said
 from hands.voice.tools import audited, playback_tools
+from hands.voice.spoken import SpokenForm
 from hands.voice.voices import SaidInTTS
 
 def own(*texts: str) -> tuple[Own, ...]:
@@ -72,7 +77,7 @@ def played(*happenings: Happening) -> Playback:
             case "cut":
                 return barged(playback)
             case sentence:
-                return handed(playback, sentence)
+                return handed(playback, Own(sentence))
 
     return reduce(step, happenings, Playback())
 
@@ -127,7 +132,7 @@ def test_a_sentence_handed_after_a_reading_ended_starts_a_new_one_and_one_handed
 
 def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to() -> None:
     playback, _ = resume(played("A.", "B.", "C.", "cut"))
-    again = reduce(handed, ("A.", "B.", "C."), queue(playback, own("A.", "B.", "C.")))
+    again = reduce(handed, own("A.", "B.", "C."), queue(playback, own("A.", "B.", "C.")))
     after, said = resume(barged(finished(again)))
     assert said == Replay(own("B.", "C."))
     assert after.bookmarks == ()
@@ -136,27 +141,27 @@ def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to
 def test_lines_said_again_while_a_reading_still_plays_go_on_from_it() -> None:
     # The model said a few words of its own before asking to go back: those still playing, the lines follow them, and
     # the words finishing count as the words, not as the first line.
-    playback = finished(handed(queue(handed(Playback(), "Sure."), own("A.", "B.")), "A."))
+    playback = finished(handed(queue(handed(Playback(), Own("Sure.")), own("A.", "B.")), Own("A.")))
     assert playback.reading == own("Sure.", "A.") and playback.played == 1
     assert resume(barged(playback))[1] == Replay(own("A.", "B."))
 
 
 def test_a_word_handed_before_the_lines_queued_takes_its_own_place_and_loses_none_of_them() -> None:
     # The lines were queued while the model's word was still on its way to the speaker.
-    playback = barged(handed(handed(queue(Playback(), own("A.", "B.", "C.")), "Sure."), "A."))
+    playback = barged(handed(handed(queue(Playback(), own("A.", "B.", "C.")), Own("Sure.")), Own("A.")))
     assert playback.stopped == Bookmark(own("Sure.", "A.", "B.", "C."), 0)
 
 
 def test_a_reading_said_again_and_cut_before_all_of_it_reached_the_speaker_is_gone_back_to_whole() -> None:
     # The barge-in drops what had not yet reached the speaker; the reading knew it from the start, and keeps it.
-    said_again = handed(queue(Playback(), own("A.", "B.", "C.")), "A.")
+    said_again = handed(queue(Playback(), own("A.", "B.", "C.")), Own("A."))
     assert said_again.reading == own("A.")
     assert resume(barged(said_again))[1] == Replay(own("A.", "B.", "C."))
     assert repeat(barged(said_again))[1] == Replay(own("A.", "B.", "C."))
 
 
 def test_the_stack_keeps_only_the_latest_readings_cut_off() -> None:
-    playback = reduce(lambda playback, n: barged(handed(playback, f"{n}.")), range(BOOKMARKS + 3), Playback())
+    playback = reduce(lambda playback, n: barged(handed(playback, Own(f"{n}."))), range(BOOKMARKS + 3), Playback())
     assert len(playback.interrupted) == BOOKMARKS
     assert playback.interrupted[0] == Bookmark(own("2."), 0)
 
@@ -166,7 +171,7 @@ READ_BACK = Labelled("Draft for api: run the tests", "the draft for api read bac
 
 def test_a_line_hands_said_as_written_keeps_its_label_through_every_cut_and_replay_and_one_it_did_not_queue_is_the_brains() -> None:
     # The model said a word, a readback was queued behind it, and the model said another: only the queued line is hands'.
-    playback = barged(handed(handed(queue(handed(Playback(), "Sure."), (READ_BACK,)), READ_BACK.text), "Then this."))
+    playback = barged(handed(handed(queue(handed(Playback(), Own("Sure.")), (READ_BACK,)), READ_BACK), Own("Then this.")))
     assert playback.stopped == Bookmark((Own("Sure."), READ_BACK, Own("Then this.")), 0)
     assert repeat(playback)[1] == Replay((Own("Sure."), READ_BACK, Own("Then this.")))
     assert skip(playback)[1] == Replay((READ_BACK, Own("Then this.")))
@@ -174,23 +179,55 @@ def test_a_line_hands_said_as_written_keeps_its_label_through_every_cut_and_repl
 
 def test_a_line_queued_after_a_barge_in_passed_plays_and_one_queued_before_it_is_unheard() -> None:
     # The barge-in passed where lines are queued with the readback still on its way: dropped with it, so unheard.
-    passed = cut(queue(handed(Playback(), "Sure."), (READ_BACK,)))
+    passed = cut(queue(handed(Playback(), Own("Sure.")), (READ_BACK,)))
     later = Labelled("That was the last of it.", "hands saying it")
     reached = barge_in(queued(passed, later))
     assert reached.stopped == Bookmark((Own("Sure."), READ_BACK), 0)
     # What was queued once it had passed plays, and is the next reading.
-    assert handed(reached, later.text).reading == (later,)
+    assert handed(reached, later).reading == (later,)
 
 
 def test_a_line_the_speaker_took_up_as_a_barge_in_passed_keeps_its_label() -> None:
-    took_up = handed(cut(queue(Playback(), (READ_BACK,))), READ_BACK.text)
+    took_up = handed(cut(queue(Playback(), (READ_BACK,))), READ_BACK)
     assert barge_in(took_up).stopped == Bookmark((READ_BACK,), 0)
+
+
+def test_a_line_queued_after_a_barge_in_passed_and_handed_before_it_reached_the_speaker_is_the_next_reading() -> None:
+    passed = cut(queue(handed(Playback(), Own("Sure.")), (READ_BACK,)))
+    later = hands_says("Session two is waiting.")
+    reached = barge_in(handed(queued(passed, later), later))
+    assert reached.stopped == Bookmark((Own("Sure."), READ_BACK), 0)
+    assert reached.reading == (later,) and finished(reached).played == 1
+
+
+def test_a_reading_cut_off_while_lines_queued_behind_the_barge_in_wait_is_gone_back_to_after_the_next() -> None:
+    # The barge-in left a line still coming: the reading cut off is filed with the earlier ones by the next cut, not lost.
+    later = hands_says("Session two is waiting.")
+    reached = barge_in(queued(cut(reduce(handed, own("A.", "B."), Playback())), later))
+    again = barged(handed(reached, later))
+    assert again.bookmarks == (Bookmark(own("A.", "B."), 0), Bookmark((later,), 0))
+
+
+def test_a_line_hands_queued_is_whose_it_is_whichever_lines_the_speaker_hands_and_drops() -> None:
+    aside = hands_says("One moment.")
+    waiting = queue(Playback(), (aside, READ_BACK))
+    # The speaker never hands the aside, and hands the readback: it is still hands', and never quoted as the brain's.
+    assert handed(waiting, READ_BACK).reading == (READ_BACK,)
+    # The aside it says as nothing is no longer coming, so the reading can end.
+    assert finished(dropped(handed(waiting, READ_BACK), aside)).over
 
 
 def test_the_brain_is_told_its_own_words_quoted_and_a_line_said_as_written_by_its_label_alone() -> None:
     assert as_told((Own("First, it rained."), Own("Then it snowed."), READ_BACK, Own(" "), Own("Staged."))) == '"First, it rained. Then it snowed.", then the draft for api read back, then "Staged."'
     assert "run the tests" not in as_told((READ_BACK,))
     assert as_told(()) == ""
+
+
+def said_line(line: Line) -> LineText:
+    """A line of hands' as hands' TTS hands it on ahead of its audio (`SaidInTTS`)."""
+    frame = LineText(line.text, AggregationType.SENTENCE, line=line)
+    frame.will_be_spoken = True
+    return frame
 
 
 def spoken(text: str) -> AggregatedTextFrame:
@@ -314,15 +351,16 @@ async def test_the_next_barge_in_asked_for_ahead_of_it_says_how_far_the_reading_
         assert await asyncio.wait_for(reading, 2.0) == Bookmark(own("Done."), 1)
 
 
-async def test_a_line_passing_the_players_lines_is_queued_whose_it_is_and_one_said_as_nothing_never_passes() -> None:
+async def test_a_line_passing_the_players_lines_is_queued_whose_it_is_and_one_the_speaker_drops_is_no_longer_coming() -> None:
     player = Player(lambda _: None)
+    rule = Labelled("---", "a rule")
     async with stood(player) as (run, heard):
-        await run.worker.queue_frame(line_frame(Labelled("---", "a rule")))
+        await run.worker.queue_frame(line_frame(rule))
         await run.worker.queue_frame(line_frame(READ_BACK))
-        [passed] = await heard.until(1, TTSSpeakFrame)
-        assert isinstance(passed, LineFrame) and passed.line == READ_BACK
-        # The speaker hands it on as Pipecat's TTS does, by its text, and the brain's word after it.
-        for frame in (spoken(READ_BACK.text), spoken("Anything else?")):
+        passed = await heard.until(2, TTSSpeakFrame)
+        assert [frame.line for frame in passed if isinstance(frame, LineFrame)] == [rule, READ_BACK]
+        # The speaker says the rule as nothing, hands the readback on whose it is, and the brain's word after it.
+        for frame in (Unsaid(rule), said_line(READ_BACK), spoken("Anything else?")):
             await run.worker.queue_frame(frame)
         reading = player.next_barge_in()
         await run.worker.queue_frame(InterruptionFrame())
@@ -337,7 +375,7 @@ async def test_going_back_over_a_line_said_as_written_tells_the_brain_its_label_
     async with stood(player) as (run, heard):
         await run.worker.queue_frame(line_frame(READ_BACK))
         await heard.until(1, TTSSpeakFrame)
-        await run.worker.queue_frame(spoken(READ_BACK.text))
+        await run.worker.queue_frame(said_line(READ_BACK))
         await run.worker.queue_frame(InterruptionFrame())
         await heard.until(1, InterruptionFrame)
         assert await tools["repeat"].body() == {"said": "the draft for api read back", "waiting": 0}
@@ -348,3 +386,31 @@ async def test_a_line_that_reaches_the_speaker_as_no_line_frame_is_refused_there
     speaker = object.__new__(SaidInTTS)
     with pytest.raises(TypeError, match="no LineFrame"):
         await speaker.process_frame(TTSSpeakFrame("Draft for api: run the tests"), FrameDirection.DOWNSTREAM)
+
+
+class Unvoiced(SaidInTTS):
+    """hands' TTS on Pipecat's own text path, its gates and filters, with the synthesis taken out: no model is loaded."""
+
+    def __init__(self) -> None:
+        TTSService.__init__(  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+            self, push_start_frame=True, push_stop_frames=True, settings=PocketTTSSettings(model=None, voice="alba", language=Language.EN), text_filters=[SpokenForm()]
+        )
+        self._making = None
+
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
+        yield TTSAudioRawFrame(b"\x00\x00", self.sample_rate, 1, context_id=context_id)
+
+
+async def test_the_speaker_hands_each_line_on_whose_it_is_and_says_which_it_dropped() -> None:
+    player = Player(lambda _: None)
+    speaker, output, heard = Unvoiced(), IdentityFilter(), Heard()
+    rule = Labelled("---", "a rule")
+    async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
+        for line in (READ_BACK, rule, Own("Anything else?")):
+            await run.worker.queue_frame(line_frame(line))
+        [*_, last] = await heard.until(2, LineText)
+        assert isinstance(last, LineText) and last.line == Own("Anything else?")
+        await heard.until(1, Unsaid)
+        reading = player.next_barge_in()
+        await run.worker.queue_frame(InterruptionFrame())
+        assert await asyncio.wait_for(reading, 2.0) == Bookmark((READ_BACK, Own("Anything else?")), 2)

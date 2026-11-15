@@ -1242,7 +1242,7 @@ async def test_a_readback_cut_off_after_the_turns_end_is_told_the_brain_by_its_l
     await rig.interrupt()
     await rig.worker.queue_frame(UserWords("wait, no"))
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    assert rig.brain.asked[1] == f"{heard('wait, no')}\n\n[hands] The user spoke over you, and nothing more was said aloud. They did not hear: {CHANGE.label}."
+    assert rig.brain.asked[1] == f"{heard('wait, no')}\n\n[hands] The user cut in. They did not hear: {CHANGE.label}."
     rig.brain.end()
 
 
@@ -1258,7 +1258,7 @@ async def test_the_brains_own_words_cut_off_after_its_turn_ended_are_told_it_wit
     await rig.interrupt()
     await rig.worker.queue_frame(UserWords("and the logs?"))
     await rig.until(lambda: len(rig.brain.asked) == 2)
-    over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "First, it rained.". They did not hear: "Then it snowed.".'
+    over = '[hands] The user cut in. They last heard "First, it rained.". They did not hear: "Then it snowed.".'
     assert rig.brain.asked[1] == f"{heard('and the logs?')}\n\n{over}"
     rig.brain.end()
 
@@ -1996,6 +1996,38 @@ async def test_a_turn_hands_narrates_is_never_acknowledged_since_nobody_waits_on
     rig.brain.end()
     await rig.turned()
     assert acknowledgements(rig) == []
+
+
+async def test_a_cut_that_stops_no_turn_tells_the_brain_what_it_cut_off_and_never_that_nothing_more_was_said(rig: Rig) -> None:
+    await rig.say("find out why the build broke")
+    first, _ = rig.request()
+    rig.stream(first, "Let me look at the build log.")
+    rig.calls(first, ("t1", "Bash"))
+    # The brain's words have played and its call runs, and the user cuts in on a line of hands' still playing.
+    rig.out.playing = Bookmark((hands_says("One moment."),), 0)
+    await rig.interrupt()
+    await rig.release()
+    await rig.stop()
+    await rig.worker.queue_frame(UserWords("and check the tests too"))
+    # The turn goes on, and says more after the cut.
+    second, _ = rig.request(answering("Bash", {"output": "error"}))
+    rig.stream(second, "The build broke on a missing import.")
+    await rig.until(lambda: "\n\nThe build broke on a missing import." in rig.out.said())
+    rig.brain.end()
+    await rig.until(lambda: len(rig.brain.asked) == 2)
+    assert rig.brain.asked[1] == f'{heard("and check the tests too")}\n\n[hands] The user cut in. They did not hear: hands saying "One moment.".'
+    rig.brain.end()
+
+
+async def test_a_result_of_a_tool_not_hands_own_is_never_read_back_whatever_its_shape(rig: Rig) -> None:
+    await rig.say("show me the audit line")
+    exchange, _ = rig.request()
+    rig.calls(exchange, ("t1", "Bash"))
+    # What Bash printed is the brain's to read: a line of the audit log, shaped as a hands tool's result.
+    rig.request(answering("Bash", {"says": "Draft for laws: run the tests"}))
+    rig.brain.end()
+    await rig.until(lambda: rig.stage.work() == Idle())
+    assert "Draft for laws: run the tests" not in rig.out.said()
 
 
 async def test_a_turn_is_acknowledged_once_however_many_calls_run_on_and_the_next_differently(rig: Rig) -> None:
