@@ -52,6 +52,14 @@ def observed(home: Home, membership: Membership) -> Observed:
     return next(observation for observation in seen if observation.membership.id == membership.id)
 
 
+def live(home: Home) -> tuple[list[Membership], list[Unreadable]]:
+    """The sessions running now, and the membership files that do not parse; nothing is removed."""
+    records, unreadable = recorded(home)
+    # [LAW:single-enforcer] a session is running when the sweep would attach it, and by no other test.
+    seen, _ = observations((), records, process_starts({record.membership.pid for record in records}), frozenset())
+    return [observed.membership for observed in seen if isinstance(observed, Attached)], unreadable
+
+
 def observations(
     listed: Collection[Membership], records: Collection[Recorded], started: Mapping[int, float], unfiled_before: Unfiled
 ) -> tuple[list[Observed], Unfiled]:

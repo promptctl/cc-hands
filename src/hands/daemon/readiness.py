@@ -24,7 +24,6 @@ from typing import get_args
 
 from hands.brain import pinned
 from hands.core.effects import Fritter
-from hands.core.events import Attached
 from hands.core.reach import Unwrapped, through, writer
 from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.core.session import Membership
@@ -34,7 +33,6 @@ from hands.sessions import heartbeat, liveness, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.processes import process_starts
 from hands.sessions.terminals import Terminal, Terminals, Undescribed, interactive, terminal_processes
 from hands.voice import backends
 
@@ -328,11 +326,7 @@ def sessions(home: Home, path: str, keyboards: Keyboards) -> Finding:
     """Whether every running session can be typed into, those hands knows of and those it does not, each by the fritter
     that wrapped it or the tmux pane in front of it, as `keyboards` reads them. Nothing is removed or dialled."""
     try:
-        records, unreadable = liveness.recorded(home)
-        started = process_starts({record.membership.pid for record in records})
-        # [LAW:single-enforcer] a session is running when the sweep would attach it, and by no other test.
-        seen, _ = liveness.observations((), records, started, frozenset())
-        running = [observed.membership for observed in seen if isinstance(observed, Attached)]
+        running, unreadable = liveness.live(home)
         # A socket that is gone is a fritter that is gone. It is never dialled here: fritter writes what it cannot read
         # into the session's own terminal.
         listening = {member.fritter for member in running if member.fritter is not None and member.fritter.is_socket()}
