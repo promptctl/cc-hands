@@ -117,11 +117,17 @@ def queued(playback: Playback, line: Line) -> Playback:
 
 
 def handed(playback: Playback, line: Line) -> Playback:
-    """A line is on its way to the speaker: the next of the reading playing, or the first of a new one, and no longer
-    one hands has yet to hand. A word of the model's handed meanwhile takes its own place in the reading ahead of the
-    lines still coming."""
+    """A line hands queued is on its way to the speaker: the next of the reading playing, or the first of a new one, and
+    no longer one hands has yet to hand."""
     start = begun(playback) if playback.over else playback
     return replace(start, reading=(*start.reading, line), coming=_without(start.coming, line))
+
+
+def streamed(playback: Playback, text: str) -> Playback:
+    """A sentence of the model's streamed text is on its way to the speaker. Hands never queued it, so it takes its own
+    place in the reading ahead of the lines still coming, an equal one among them included."""
+    start = begun(playback) if playback.over else playback
+    return replace(start, reading=(*start.reading, Own(text)))
 
 
 def dropped(playback: Playback, line: Line) -> Playback:

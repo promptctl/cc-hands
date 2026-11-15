@@ -38,6 +38,7 @@ from hands.core.playback import (
     repeat,
     resume,
     skip,
+    streamed,
 )
 from hands.sessions.audit import BargeIn, Entry
 from hands.sessions.wide import WideEvent
@@ -70,7 +71,7 @@ def played(*happenings: Happening) -> Playback:
             case Labelled() as line:
                 return handed(playback, line)
             case sentence:
-                return handed(playback, Own(sentence))
+                return streamed(playback, sentence)
 
     return reduce(step, happenings, Playback())
 
@@ -143,14 +144,14 @@ def test_what_is_said_again_is_itself_a_reading_that_can_be_cut_and_gone_back_to
 def test_lines_said_again_while_a_reading_still_plays_go_on_from_it() -> None:
     # The model said a few words of its own before asking to go back: those still playing, the lines follow them, and
     # the words finishing count as the words, not as the first line.
-    playback = finished(handed(all_queued(handed(Playback(), Own("Sure.")), own("A.", "B.")), Own("A.")))
+    playback = finished(handed(all_queued(streamed(Playback(), "Sure."), own("A.", "B.")), Own("A.")))
     assert playback.reading == own("Sure.", "A.") and playback.played == 1
     assert resume(barge_in(playback))[1] == Replay(own("A.", "B."))
 
 
 def test_a_word_handed_before_the_lines_queued_takes_its_own_place_and_loses_none_of_them() -> None:
     # The lines were queued while the model's word was still on its way to the speaker.
-    playback = barge_in(handed(handed(all_queued(Playback(), (DRAFT, Own("B."), Own("C."))), Own("Sure.")), DRAFT))
+    playback = barge_in(handed(streamed(all_queued(Playback(), (DRAFT, Own("B."), Own("C."))), "Sure."), DRAFT))
     assert playback.stopped == Bookmark((Own("Sure."), DRAFT, Own("B."), Own("C.")), 0)
 
 
@@ -175,8 +176,14 @@ def test_a_line_handed_is_the_first_of_its_equal_still_coming() -> None:
     assert playback.coming == (Own("A."), DRAFT)
 
 
+def test_the_models_sentence_equal_to_a_line_still_coming_takes_none_of_them() -> None:
+    # The model streams the very sentence a reading said again opens with, ahead of it: the reading is still all coming.
+    playback = barge_in(streamed(all_queued(Playback(), own("It is done.", "Anything else?")), "It is done."))
+    assert playback.stopped == Bookmark(own("It is done.", "It is done.", "Anything else?"), 0)
+
+
 def test_the_stack_keeps_only_the_latest_readings_cut_off() -> None:
-    playback = reduce(lambda playback, n: barge_in(handed(playback, Own(f"{n}."))), range(BOOKMARKS + 3), Playback())
+    playback = reduce(lambda playback, n: barge_in(streamed(playback, f"{n}.")), range(BOOKMARKS + 3), Playback())
     assert len(playback.interrupted) == BOOKMARKS
     assert playback.interrupted[0] == Bookmark(own("2."), 0)
 

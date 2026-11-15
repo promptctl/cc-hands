@@ -27,7 +27,7 @@ from pipecat.observers.base_observer import BaseObserver, FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import Bookmark, Labelled, LastOne, Line, NothingBargedIn, NothingSaid, Own, Played, Playback, Replay, hands_says
+from hands.core.playback import Bookmark, Labelled, LastOne, Line, NothingBargedIn, NothingSaid, Played, Playback, Replay, hands_says
 from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
@@ -98,7 +98,7 @@ class Player:
             case Unsaid(line=line):
                 self._playback = playback.dropped(self._playback, line)
             case AggregatedTextFrame(text=text) if frame.will_be_spoken:
-                self._playback = playback.handed(self._playback, Own(text))
+                self._playback = playback.streamed(self._playback, text)
             case _:
                 pass
 

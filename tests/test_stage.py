@@ -1323,6 +1323,22 @@ async def test_a_cut_in_a_turn_claude_code_opened_itself_is_told_with_the_next_t
     rig.brain.end()
 
 
+async def test_words_said_over_a_turn_claude_code_opened_itself_are_typed_while_it_runs_on(rig: Rig) -> None:
+    # Claude Code goes on with its own turn after the cut: the user's words are not held for its end, and are told what
+    # it has said so far.
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The build finished. It took a while. ")
+    await rig.until(lambda: rig.out.said() == ["The build finished. It took a while. "])
+    rig.out.playing = Bookmark((Own("The build finished."), Own("It took a while.")), 1)
+    await rig.interrupt()
+    await rig.say("which test failed?")
+    over = '[hands] The user spoke over you, and nothing more was said aloud. They last heard "The build finished.". They did not hear: "It took a while.".'
+    assert rig.brain.asked[-1] == f"{heard('which test failed?')}\n\n{over}"
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    rig.brain.end()
+
+
 async def test_a_result_of_no_tool_of_hands_shaped_as_a_readback_is_the_brains_to_read(rig: Rig) -> None:
     await rig.say("print the readback")
     exchange, _ = rig.request()
