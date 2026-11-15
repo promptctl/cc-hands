@@ -11,6 +11,8 @@ from typing import Literal, cast, get_args, get_origin, get_type_hints, is_typed
 
 import docstring_parser
 
+from hands.core.playback import Labelled
+
 
 # What the model is handed back from a call: an object, as every tool API carries a result.
 Result = Mapping[str, object]
@@ -42,8 +44,17 @@ class Tool:
 
 def read_back(says: str, label: str) -> Result:
     """A result hands says `says` for, as written, and tells the brain of by `label`, never by its text.
-    [LAW:single-enforcer] the one shape of such a result, which the brain's stage reads."""
+    [LAW:single-enforcer] the one shape of such a result, which `said_back` reads."""
     return {"says": says, "as": label}
+
+
+def said_back(result: Result) -> Labelled | None:
+    """The line a result `read_back` made has hands say; None for any other result, which hands says nothing for."""
+    match result:
+        case {"says": str() as says, "as": str() as label}:
+            return Labelled(says, label)
+        case _:
+            return None
 
 
 def tool(body: Body, *, then: Then = "reply") -> Tool:

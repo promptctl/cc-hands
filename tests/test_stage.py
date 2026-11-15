@@ -786,7 +786,7 @@ async def test_a_turn_is_one_event_saying_how_long_the_user_waited_and_where_the
     # the model's and its tool's, as the parts show.
     assert {fact: turn.facts[fact] for fact in ("asker", "waited_ms", "transcribed_ms", "queued_ms")} == {"asker": ASKED, "waited_ms": 2000.0, "transcribed_ms": 400.0, "queued_ms": 0.0}
     # Not spoken over: nothing went unheard.
-    assert (turn.facts["interrupted"], turn.facts["barge_in_note"]) == (False, "")
+    assert turn.facts["interrupted"] is False
     [call] = [event for event in events if event is not turn]
     assert (call.event, call.duration_ms, call.outcome, call.facts) == ("tool.call", 300.0, "ok", {"call": "t1", "tool": "mcp__hands__read_session"})
     # The call's run is the child of the very span the call is emitted as, and the turn's end forgets it.
@@ -1132,7 +1132,7 @@ async def test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs
     # Nothing of the turn was said after the barge-in.
     assert rig.out.said() == ["First, it rained. Then it snowed. "]
     [turn] = turns(rig.recorded)
-    assert (turn.facts["exchanges"], turn.facts["interrupted"], turn.facts["barge_in_note"]) == ((exchange, after), True, over)
+    assert (turn.facts["exchanges"], turn.facts["interrupted"]) == ((exchange, after), True)
     rig.brain.end()
 
 
@@ -1251,6 +1251,22 @@ async def test_a_cut_in_a_readback_after_the_turn_ended_reaches_the_next_turn_by
     await rig.interrupt()
     await rig.say("wait, which one?")
     assert rig.brain.asked[1] == f"{heard('wait, which one?')}\n\n[hands] The user cut in. They did not hear: the change to the draft for api read back."
+    rig.brain.end()
+
+
+async def test_a_cut_after_a_broken_turn_ended_is_told_after_what_that_turn_left(rig: Rig) -> None:
+    await rig.say("tell me about lighthouses")
+    rig.stream(rig.request()[0], "Lighthouses stand")
+    await rig.until(lambda: len(rig.out.said()) == 1)
+    rig.brain.fail(RuntimeError("no voice"))
+    await rig.until(lambda: len(rig.errors) == 1)
+    # The turn is over, and the user cuts in on a line of hands' own that plays after it.
+    rig.out.playing = Bookmark((hands_says("web finished its turn."),), 0)
+    await rig.interrupt()
+    await rig.say("what were you saying?")
+    broken = '[hands] Your last turn was broken off. The user heard you say "Lighthouses stand", then that it failed. Mention this only if the user asks.'
+    cut = '[hands] The user cut in. They did not hear: hands saying "web finished its turn.".'
+    assert rig.brain.asked[1] == f"{heard('what were you saying?')}\n\n{broken}\n\n{cut}"
     rig.brain.end()
 
 
@@ -2105,7 +2121,7 @@ async def test_words_said_while_a_call_runs_with_nothing_to_hear_stop_nothing_an
     assert acknowledgements(rig) == ["Got it. I'll come to that when this is done."]
     [turn] = turns(rig.recorded)
     # Timed from the end of the words, the release, as the turn's own wait is.
-    assert (turn.facts["interrupted"], turn.counts["barge_ins"], turn.facts["asides"], turn.facts["barge_in_note"]) == (False, 1, (("Got it. I'll come to that when this is done.", 1000.0),), "")
+    assert (turn.facts["interrupted"], turn.counts["barge_ins"], turn.facts["asides"]) == (False, 1, (("Got it. I'll come to that when this is done.", 1000.0),))
     # The words are the next turn, with no note: nothing was spoken over.
     assert rig.brain.asked[1] == heard("and check the tests too")
     rig.brain.end()
@@ -2530,13 +2546,13 @@ async def test_hands_words_filed_into_a_turn_claude_code_opened_itself_are_answe
 
 
 async def test_a_turn_nobody_waited_on_leaves_what_the_next_turn_tells_the_brain_as_it_found_it(rig: Rig) -> None:
-    rig.stage._broken_off = "[hands] what the user did not hear"  # pyright: ignore[reportPrivateUsage]
+    rig.stage._untold = ["[hands] what the user did not hear"]  # pyright: ignore[reportPrivateUsage]
     notified = rig.brain.opens()
     told, _ = rig.request()
     rig.stream(told, "Half a")
     notified.ended.set_exception(RuntimeError("the brain exited"))
     await rig.turned()
-    assert rig.stage._broken_off == "[hands] what the user did not hear"  # pyright: ignore[reportPrivateUsage]
+    assert rig.stage._untold == ["[hands] what the user did not hear"]  # pyright: ignore[reportPrivateUsage]
     await rig.say("hello")
     assert rig.brain.asked[-1].endswith("[hands] what the user did not hear")
 

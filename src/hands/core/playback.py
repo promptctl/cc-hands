@@ -137,7 +137,7 @@ def dropped(playback: Playback, line: Line) -> Playback:
 
 def _without(coming: tuple[Line, ...], line: Line) -> tuple[Line, ...]:
     """`coming` with the first line equal to `line` taken off it."""
-    at = coming.index(line) if line in coming else len(coming)
+    at = next((at for at, coming_line in enumerate(coming) if coming_line == line), len(coming))
     return (*coming[:at], *coming[at + 1 :])
 
 
