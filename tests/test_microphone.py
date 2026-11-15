@@ -619,6 +619,7 @@ async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_sto
         await devices.capture(at=1.02)  # the wake word's level, where a voice can open a clip
         devices.key.move("start", "shortcut")
         await devices.capture(at=1.04)  # a clip open
+        devices.key.move("stop", "shortcut")
         devices.key.go("phone")
         await devices.capture(at=1.06)  # hands at the phone
         heard = [await anext(echoes) for _ in range(4)]

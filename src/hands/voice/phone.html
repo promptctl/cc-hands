@@ -155,10 +155,9 @@ const OWN = {
 };
 // The milestones hands tells (hands.voice.milestone), each naming the milestones it may come after. Nothing a milestone carries says which
 // clip it is of, so what places it is where it falls: a milestone that cannot come after the shown clip's last is of a clip
-// the page has let go of, and until hands says it took this clip or threw it away, nothing else told is of it.
+// the page has let go of, and until hands says it took this clip, nothing else told is of it.
 const TOLD = {
   "released": {after: ["sent"], text: () => "Received. Transcribing…", counts: true},
-  "discarded": {after: ["held", "sent"], text: () => "Not sent: hands threw that clip away.", bad: true},
   "transcript": {after: ["released"], text: () => "Heard. Waiting for a reply…", counts: true},
   "no words": {after: ["released"], text: (clip) => `No words heard, after ${secs(clip.at - clip.released)}.`, bad: true},
   "failed": {after: ["released", "transcript", "first LLM token"], text: (clip) => `hands failed, after ${secs(clip.at - clip.released)}.`, bad: true},
@@ -426,7 +425,6 @@ function up() {
   if (!held) return;
   held = false;
   talk.classList.remove("held");
-  // A clip hands threw away while the button was down stays said as that: nothing of it was sent to be waited on.
   if (clip?.milestone === "held") show({...clip, milestone: "sent", released: performance.now()});
   call.release();
 }

@@ -101,9 +101,8 @@ class LatencyObserver(BaseObserver):
             self._clip_open = True
             return
         if isinstance(frame, ClipDiscarded):
-            # A clip thrown away is no release: nothing of it is sent, so there is no reply to time from it.
-            if self._clip_open:
-                self._told("discarded")
+            # A clip thrown away, a wake that asked nothing, is no release: nothing of it is sent, so there is no reply to
+            # time from it, and no phone's page waits on it, since only the desk's wake word throws a clip away.
             self._clip_open = False
             return
         if isinstance(frame, VADUserStoppedSpeakingFrame):
