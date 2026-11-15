@@ -329,9 +329,12 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     said = [await _synthesized(smoked.clock, text) for text in SAID]
     # hands speaks of a session by its folder's name, so a live session in any folder of the smoke folder's name is one the
     # brain may take for the session the test starts; the run refuses, just before it empties the smoke folder or starts its own.
-    for other in members(home):
-        if other.cwd.name.casefold() == folder.name.casefold():
-            raise NotReached("joined", f"session {other.id} (pid {other.pid}) is already open in {other.cwd}, and hands calls it {folder.name!r} as it calls the session the test starts, so the brain could take one for the other: close it, or end it with `kill {other.pid}`, then run `hands smoke` again")
+    # [LAW:single-enforcer] running as the daemon's sweep judges it.
+    running, _ = live(home)
+    if others := [other for other in running if other.cwd.name.casefold() == folder.name.casefold()]:
+        named = "; ".join(f"session {other.id} (pid {other.pid}) in {other.cwd}, which hands calls {other.cwd.name!r}" for other in others)
+        pids = " ".join(str(other.pid) for other in others)
+        raise NotReached("joined", f"already open: {named}; the brain could take one for the session the test starts, which hands calls {folder.name!r}: close each, or end them with `kill {pids}`, then run `hands smoke` again")
     # The folder holds the one file, named for this run's word, and nothing else.
     try:
         shutil.rmtree(folder)
@@ -361,19 +364,14 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         await session.stop()
 
 
-def members(home: Home) -> list[Membership]:
-    """The sessions running now, as their files and the OS say: hands smoke runs beside the daemon, so it reads them,
-    not the daemon's registry."""
-    # [LAW:single-enforcer] running as the daemon's sweep judges it; a file being written is read again at the next poll.
-    running, _ = live(home)
-    return running
-
-
 async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -> Membership:
     home = smoked.home
 
     async def found() -> Membership | None:
-        return joined(members(home), session.pid, process_table())
+        # Read beside the daemon, as its sweep reads them, not from its registry; a file being written is read again
+        # at the next poll.
+        running, _ = live(home)
+        return joined(running, session.pid, process_table())
 
     member = await until(
         smoked.clock, "joined", JOIN_SECONDS, found,

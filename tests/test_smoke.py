@@ -22,8 +22,9 @@ from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
 from hands.sessions.startsession import joined
+from hands.sessions.liveness import live
 from hands.sessions.terminals import process_table
-from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
+from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import ClipHeard, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
@@ -178,9 +179,9 @@ def test_the_smoke_session_is_the_one_that_joined_under_its_process(tmp_path: Pa
     # A session of another process's in the same folder, and one being written.
     member(OTHER, 1)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert joined(members(home), started, process_table()) is None
+    assert joined(live(home)[0], started, process_table()) is None
     member(SESSION, started)
-    found = joined(members(home), started, process_table())
+    found = joined(live(home)[0], started, process_table())
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 
@@ -276,8 +277,8 @@ def test_a_live_session_in_a_folder_hands_also_calls_smoke_stops_the_run_before_
     (smoke_folder / "kept.txt").write_text("")
     last, started = stand_in_run(tmp_path, capsys, monkeypatch, cwd, datetime.now(UTC).timestamp())
     assert last == (
-        f"FAILED joined: session {OTHER} (pid {os.getpid()}) is already open in {cwd}, and hands calls it 'smoke' as it calls"
-        f" the session the test starts, so the brain could take one for the other: close it, or end it with `kill {os.getpid()}`,"
+        f"FAILED joined: already open: session {OTHER} (pid {os.getpid()}) in {cwd}, which hands calls {cwd.name!r}; the brain"
+        f" could take one for the session the test starts, which hands calls 'smoke': close each, or end them with `kill {os.getpid()}`,"
         " then run `hands smoke` again"
     )
     # Refused before the smoke folder was emptied and before a claude was started.
