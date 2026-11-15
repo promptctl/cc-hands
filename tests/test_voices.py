@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 from pipecat.frames.frames import Frame, InterruptionFrame, TTSSpeakFrame
-from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.services.pocket_tts.tts import PocketTTSSettings
 from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
@@ -19,6 +18,7 @@ from hands.sessions.wide import WideEvent
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice import voices
+from hands.voice.player import Player
 from hands.voice.tools import audited, voice_tools
 from hands.voice.library import Library
 from hands.voice.voices import DEFAULT, VOICES, Chosen, LibraryVoice, Voice, Voices, chosen, parse_voice, sample
@@ -102,7 +102,7 @@ def test_a_choice_that_is_not_text_is_refused_by_name(tmp_path: Path) -> None:
 
 async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    lines, speaker = IdentityFilter(), Speaker(DEFAULT)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     tools = {tool.name: tool for tool in voice_tools(Voices(home, lines, offline, unlisted(), lambda _voice: None))}
     async with running([lines, speaker]) as run:
         assert "cannot reach the hub for mary" in str((await tools["hear_voices"].body(names=["Mary"]))["error"])
@@ -114,7 +114,7 @@ async def test_a_voice_that_cannot_be_fetched_is_neither_heard_nor_kept(tmp_path
 
 async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_next_line_is_in_the_kept_one(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    lines, speaker, speaking = IdentityFilter(), Speaker(DEFAULT), list[str]()
+    lines, speaker, speaking = Player(lambda _: None).lines, Speaker(DEFAULT), list[str]()
     chosen_voices = Voices(home, lines, ready, unlisted(), speaking.append)
     async with running([lines, speaker]) as run:
         assert await chosen_voices.hear((Voice("mary"), Voice("bill_boerst"))) == DEFAULT
@@ -132,7 +132,7 @@ async def test_the_voices_heard_each_say_their_line_in_their_own_voice_and_the_n
 
 async def test_a_library_voice_chosen_is_told_by_what_the_tts_service_is_handed(tmp_path: Path) -> None:
     # One string names the voice to the TTS service, to the speaker's SpeakingIn, and to hands' print of it.
-    lines, speaker, speaking = IdentityFilter(), Speaker(DEFAULT), list[str]()
+    lines, speaker, speaking = Player(lambda _: None).lines, Speaker(DEFAULT), list[str]()
     async with running([lines, speaker]):
         await Voices(Home(tmp_path), lines, ready, unlisted(), speaking.append).use(LibraryVoice("vctk/p225_023_enhanced"))
     assert speaking == [voices.source(LibraryVoice("vctk/p225_023_enhanced"))] and speaking[0].startswith("hf://")
@@ -140,7 +140,7 @@ async def test_a_library_voice_chosen_is_told_by_what_the_tts_service_is_handed(
 
 async def test_a_hearing_and_a_choice_called_together_each_run_whole(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    lines, speaker = IdentityFilter(), Speaker(DEFAULT)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     chosen_voices = Voices(home, lines, downloading, unlisted(), lambda _voice: None)
     async with running([lines, speaker]) as run:
         # As Pipecat runs two calls of one reply: side by side.
@@ -153,7 +153,7 @@ async def test_a_hearing_and_a_choice_called_together_each_run_whole(tmp_path: P
 
 async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_path: Path) -> None:
     home = Home(tmp_path)
-    lines, speaker = IdentityFilter(), Speaker(DEFAULT)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     async with running([lines, speaker]) as run:
         await Voices(home, lines, ready, unlisted(), lambda _voice: None).hear(VOICES[:3])
         await run.worker.queue_frame(InterruptionFrame())
@@ -166,7 +166,7 @@ async def test_a_hearing_cut_short_still_ends_in_the_voice_hands_speaks_in(tmp_p
 
 async def test_each_voice_tool_answers_with_the_voice_spoken_in_after_it_and_refuses_a_voice_hands_lacks(tmp_path: Path) -> None:
     recorded: list[Entry] = []
-    lines, speaker = IdentityFilter(), Speaker(DEFAULT)
+    lines, speaker = Player(lambda _: None).lines, Speaker(DEFAULT)
     tools = {tool.name: audited(SYSTEM, tool, recorded.append) for tool in voice_tools(Voices(Home(tmp_path), lines, ready, unlisted(), lambda _voice: None))}
     async with running([lines, speaker]):
         assert await tools["voices_on_offer"].body() == {"speaking_in": DEFAULT, "voices": VOICES}

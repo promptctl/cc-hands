@@ -168,7 +168,7 @@ The brain reads the note under this instruction, `voice/intermediary_instruction
 
 A live check reads the `voice.turn` event, one per brain turn (`brain/stage.py:609–625`; the event
 and the note, `docs/architecture.md:1063–1097`): `asked`, `text`, `interrupted`, `barge_ins` (how many
-times you cut in on the turn and stopped nothing of it), `barge_in_note`,
+times you cut in on the turn and stopped nothing of it), `cuts` and `told_ms` (how many cuts the turn's note tells of, and how long it waited for the speaker to say what they cut off),
 `asides` (each line hands said in the turn, the acknowledgement and its answers to words said behind
 it, with how long after your wait began it went to the speaker), `refused`, `refusals`, `queued_ms` (how long your words waited behind the turn
 before them) and `waited_ms` (from the end of your words to the turn's first word; null when none
@@ -208,7 +208,7 @@ sequenceDiagram
 - Mechanics tests: `test_a_barge_in_mid_reply_stops_it_being_said_and_the_brains_turn_runs_on_to_its_end`,
   `test_a_sentence_on_its_way_to_the_speaker_when_the_user_spoke_over_it_is_told_unheard_whole`,
   `test_a_word_the_brain_streams_after_the_user_spoke_over_its_turn_is_no_wait_of_theirs`.
-- Live check: the cut turn's `interrupted` and `barge_in_note`; the next turn's `asked`, `text`,
+- Live check: the cut turn's `interrupted`; the next turn's `asked` (which carries the note), `cuts`, `text`,
   `queued_ms`, `waited_ms`.
 
 ### S2 — Added information while the brain works silently (not a barge-in)
@@ -250,7 +250,7 @@ sequenceDiagram
   `test_what_a_turn_says_while_the_user_speaks_over_its_silence_waits_for_them_and_it_is_not_acknowledged`,
   `test_a_reply_asked_again_that_opens_with_thinking_goes_on_with_the_block_the_break_left_streaming`,
   `test_an_answer_waiting_behind_a_block_the_turn_ends_in_is_said`.
-- Live check: the first turn's `interrupted` false, its `barge_ins` 1, its `barge_in_note` empty, and its
+- Live check: the first turn's `interrupted` false, its `barge_ins` 1, and its
   `asides` holding the answer with its milliseconds; the next turn's `asked` with no note.
 
 The user, 2026-10-18, on this scenario: "speaking while the brain works silently should not count
@@ -393,10 +393,10 @@ sequenceDiagram
 
 | | Criterion | In standard terms | Passes when | Read from |
 |---|---|---|---|---|
-| C1 | Hands stopped at once | barge-in latency | nothing of the turn played after your first word | your ear; the cut turn's `interrupted` true, and its `barge_in_note` quoting as last heard the sentence you actually heard last |
-| C2 | Nothing is lost | context retention | everything the brain said or did after the cut is in `barge_in_note`, every word past the last-heard sentence and every readback, and the brain's transcript holds no rejected or interrupted result and your prompt intact | `text` against `barge_in_note`; the brain's transcript file |
+| C1 | Hands stopped at once | barge-in latency | nothing of the turn played after your first word | your ear; the cut turn's `interrupted` true, and the next turn's `asked` quoting as last heard the sentence you actually heard last |
+| C2 | Nothing is lost | context retention | everything the brain said or did after the cut is in the note the next turn's `asked` carries, every word past the last-heard sentence and every readback by its label, and the brain's transcript holds no rejected or interrupted result and your prompt intact | the cut turn's `text` against the next turn's `asked`; the brain's transcript file |
 | C3 | The correction landed | task success | the next turn's `asked` is your words followed by the note, and its `text` acts on your words | the next turn's `asked`, `text` |
-| C4 | The brain stayed coherent | conversational repair | it does not re-say what you heard, does not say you stopped or rejected anything, and does not carry on with what you said no to; what it tells you you missed comes from the note | the next turn's `text` read against `barge_in_note` and the instruction at `voice/intermediary_instruction.py:124` |
+| C4 | The brain stayed coherent | conversational repair | it does not re-say what you heard, does not say you stopped or rejected anything, and does not carry on with what you said no to; what it tells you you missed comes from the note | the next turn's `text` read against the note in its `asked` and the instruction at `voice/intermediary_instruction.py:124` |
 | C5 | The correction was not slow | response latency | measured and recorded | the next turn's `queued_ms` and `waited_ms` |
 
 ## A run

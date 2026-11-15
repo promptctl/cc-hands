@@ -31,7 +31,7 @@ from hands.voice.utterance import Audible
 from hands.voice.microphone import KeyedAudioTransport
 from hands.voice.phone import Phone
 from hands.sessions.audit import Record
-from hands.voice.player import Markers, Player
+from hands.voice.player import Lines, Markers, Player
 from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import TriggerTurnStart, interrupting
@@ -67,6 +67,8 @@ class Voice:
     phone: Phone
     stt: ClipOwner
     llm: FrameProcessor
+    # Where every line of hands' enters ahead of the TTS (`Player.lines`).
+    lines: Lines
     tts: SaidInTTS
     user_turns: conversation.UserTurns
     assistant_turns: conversation.AssistantTurns
@@ -152,6 +154,6 @@ def build_voice(
         idle_timeout_secs=None,
     )
     return Voice(
-        worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator,
+        worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, lines=player.lines, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator,
         recorder=recorder,
     )

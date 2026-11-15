@@ -10,6 +10,7 @@ import functools
 from collections.abc import Callable
 from typing import Protocol
 
+from hands.core.playback import Labelled, hands_says
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.tool import Result
@@ -35,7 +36,7 @@ class BargedIn(Rejected):
 class Heard(Protocol):
     """The speaker as a model switch reads it: a line said, and whether the user heard it to its end."""
 
-    async def heard(self, sentence: str) -> bool: ...
+    async def heard(self, line: Labelled) -> bool: ...
 
 
 async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
@@ -51,7 +52,7 @@ async def switch_model(own: OwnModel, player: Heard, model: str) -> Result:
         keep = await off_loop(functools.partial(own.weigh, model), "weighing a model chosen by voice")
         line = f"Switching to {model.strip()}. I'll be back in a few seconds."
         # [LAW:no-ambient-temporal-coupling] written only once heard: the edit restarts hands, which would cut the line off.
-        if not await player.heard(line):
+        if not await player.heard(hands_says(line)):
             raise BargedIn(f"The user spoke over hands saying it would switch to {model.strip()}, so it did not switch.")
         await off_loop(keep, "keeping a model chosen by voice")
     return {"said": line, "running_on": own.running(), "switching_to": model.strip()}

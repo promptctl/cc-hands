@@ -376,7 +376,7 @@ async def converse(
     """Run the pipeline and what feeds it until the run is told to stop, telling `stop` of whatever fails, the pipeline
     ending on its own among them. The start is ready, and ends, once the pipeline has started."""
     pipeline = PipelineWatch(voice.worker)
-    channel = SystemChannel(voice.tts, partial(post_notification, clock=clock), record, clock)
+    channel = SystemChannel(voice.tts, voice.lines, partial(post_notification, clock=clock), record, clock)
     listen(voice, channel, after_crash)
     record_turns(voice.user_turns, voice.assistant_turns, record)
     cue_receipt(voice.user_turns, lambda: quiet_cues.owe(RECEIVED))

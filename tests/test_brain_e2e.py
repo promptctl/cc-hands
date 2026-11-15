@@ -486,13 +486,10 @@ async def test_words_pasted_at_the_brain_s_prompt_are_sent_by_its_submit_chord(m
 
 def reply_accounted(hands: Hands) -> bool:
     """The Write's end, "I left it unwritten.", reached the user or the brain: said aloud, or, its turn cut by the next, in
-    that turn's note of what the user did not hear, which a later turn then asked the brain with."""
-    if "I left it unwritten." in "".join(hands.out.said()):
-        return True
-    turns = events(hands.recorded, "voice.turn")
-    notes = [str(turn.facts["barge_in_note"]) for turn in turns if "I left it unwritten." in str(turn.facts["barge_in_note"])]
+    the note of what the user did not hear that a later turn asked the brain with."""
     # A turn Claude Code opened itself was asked nothing by hands, so it records no asked.
-    return any(note in str(turn.facts["asked"]) for note in notes for turn in turns if "asked" in turn.facts)
+    asked = (str(turn.facts["asked"]) for turn in events(hands.recorded, "voice.turn") if "asked" in turn.facts)
+    return "I left it unwritten." in "".join(hands.out.said()) or any("They did not hear" in typed and "I left it unwritten." in typed for typed in asked)
 
 
 async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
@@ -545,7 +542,7 @@ async def test_words_said_while_the_brain_works_in_silence_are_answered_at_once_
         case asides:
             raise AssertionError(f"the first turn's asides are not one answer: {asides!r}")
     # C1: not a barge-in. Neither turn is interrupted, the first is cut in on once, and nothing of it is spoken over.
-    assert (first.facts["interrupted"], first.counts["barge_ins"], first.facts["barge_in_note"], second.facts["interrupted"]) == (False, 1, "", False)
+    assert (first.facts["interrupted"], first.counts["barge_ins"], second.facts["interrupted"]) == (False, 1, False)
     # C2: nothing is lost: the turn runs on to its end, heard, its sentence before the call, then the answer, then the rest.
     assert answer in ANSWERS
     assert said.index("Let me look.") < said.index(answer) < said.index("Renamed it.") < said.index("The logs are clean."), said

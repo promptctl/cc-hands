@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hands.clock import SYSTEM
 from hands.core.place import Modality
+from hands.core.playback import Labelled
 from hands.sessions.audit import Entry
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import WideEvent
@@ -84,8 +85,8 @@ class Speaker:
     hold: float = 0.0
     said: list[str] = field(default_factory=list[str])
 
-    async def heard(self, sentence: str) -> bool:
-        self.said.append(sentence)
+    async def heard(self, line: Labelled) -> bool:
+        self.said.append(line.text)
         await asyncio.sleep(self.hold)
         return self.heard_in_full
 

@@ -19,6 +19,7 @@ from hands.daemon.config import Claude, Config
 from hands.sessions.audit import Entry, SettingsEdited
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.core.playback import hands_says
 from hands.voice.player import Marker, Markers, Player
 from hands.voice.tool import Tool, silent
 from hands.sessions.wide import WideEvent
@@ -176,7 +177,7 @@ def _tools(own: FakeOwn, player: Player) -> dict[str, Tool]:
 async def test_a_line_heard_to_its_end_is_said_so() -> None:
     player = Player(lambda _entry: None)
     async with spoken(player):
-        assert await asyncio.wait_for(player.heard("Switching."), 2.0) is True
+        assert await asyncio.wait_for(player.heard(hands_says("Switching.")), 2.0) is True
 
 
 class Unfinished(FrameProcessor):
@@ -196,7 +197,7 @@ async def test_a_line_is_heard_once_the_output_passes_its_marker_on_whatever_tak
     # No Markers behind the output: a barge-in empties its queue, so what counts is the output's push, seen in order.
     speaker, output, heard = IdentityFilter(), IdentityFilter(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
-        hearing = asyncio.create_task(player.heard("Switching."))
+        hearing = asyncio.create_task(player.heard(hands_says("Switching.")))
         await heard.until(1, Marker)
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(hearing, 2.0) is True
@@ -207,7 +208,7 @@ async def test_a_line_cut_off_by_a_barge_in_is_said_so() -> None:
     # The marker is never passed on, so the line is never heard to its end: only a barge-in can settle it.
     speaker, output, heard = IdentityFilter(), Unfinished(), Heard()
     async with running([player.lines, speaker, output, heard], [player.watching(speaker, output)]) as run:
-        hearing = asyncio.create_task(player.heard("Switching."))
+        hearing = asyncio.create_task(player.heard(hands_says("Switching.")))
         await heard.until(1, TTSSpeakFrame)
         await run.worker.queue_frame(InterruptionFrame())
         assert await asyncio.wait_for(hearing, 2.0) is False
