@@ -56,6 +56,8 @@ class KeyedAudio(InputAudioRawFrame):
     # How many turns the gate has sent, and thrown away, by this frame.
     sent: int
     dropped: int
+    # The gate's number for the turn this audio is of, or the next to open (`Gate.turn`).
+    turn: int
     place: Place
     # The trigger that opened the last clip, as it opened it.
     opened: Trigger
@@ -142,6 +144,12 @@ class Gate:
             case _:
                 return self.moved(to)
 
+    @property
+    def turn(self) -> int:
+        """The gate's number for the turn open, or the next to open: how many turns it has ended. A press learns the turn
+        it opens from it, and the clip owner numbers the clip the turn opens with it, so the two are bound exactly."""
+        return self.sent + self.dropped
+
     @staticmethod
     def _rest(place: Place, listens: bool) -> Key:
         """The key between turns at `place`."""
@@ -169,7 +177,7 @@ class Gate:
         `played` over it, tagged with this gate. What was played is not the microphone's, so the key mutes none of it."""
         return KeyedAudio(
             audio=self.audible(audio), captured=self.audible(captured), played=played, sample_rate=sample_rate, num_channels=num_channels,
-            key=self.key, sent=self.sent, dropped=self.dropped, place=place, opened=self.opened,
+            key=self.key, sent=self.sent, dropped=self.dropped, turn=self.turn, place=place, opened=self.opened,
         )
 
 

@@ -214,20 +214,23 @@ async def test_what_hands_says_is_played_on_the_phone(call: Call) -> None:
 
 # Every line of the transcript there is, as the page is told it.
 LINES: list[Line] = [Heard("Is the parser fixed?"), Saying("It is.", 15.0), Spoken(), Saying("Its tests pass.", 12.5), BargeIn()]
-# All a turn answered from the phone tells the page, in its order: its clip opened, released, and the turn's milestones.
+# All a turn answered from the phone tells the page, in its order: the clip its press opened, as the gate's first turn,
+# released, and the turn's milestones.
 PRESSED = Clip(3, "phone button")
-TOLD: list[Told] = [ClipOpened(PRESSED), ClipReleased(PRESSED), *get_args(Milestone)]
+TOLD: list[Told] = [ClipOpened(PRESSED, 0), ClipReleased(PRESSED), *get_args(Milestone)]
 
 
 @pytest.mark.outside
 async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_transcript_and_the_call_counts_them(call: Call) -> None:
+    call.page.send("press")
+    await call.until(lambda: call.key.gate.key == "down")
     for told in TOLD:
         call.phone.tell(told)
     for line in LINES:
         call.phone.tell(line)
     await call.until(lambda: len(call.page.told) == len(TOLD) + len(LINES))
     assert [json.loads(cast(str, told)) for told in call.page.told] == [
-        {"kind": "opened", "clip": 3, "opener": "phone button"},
+        {"kind": "opened", "press": 1, "clip": 3},
         {"kind": "milestone", "milestone": "released", "clip": 3},
         *({"kind": "milestone", "milestone": milestone} for milestone in get_args(Milestone)),
         {"kind": "heard", "text": "Is the parser fixed?"},
@@ -239,6 +242,18 @@ async def test_the_page_is_told_each_milestone_of_its_turn_and_each_line_of_the_
     await call.phone.hang_up("stopped")
     [event] = calls(call.recorded)
     assert (left(event).told, left(event).lines) == (len(TOLD), len(LINES))
+
+
+@pytest.mark.outside
+async def test_each_press_is_told_the_clip_of_the_turn_it_opened_whenever_that_clip_is_told_and_no_other(call: Call) -> None:
+    """A tap, and a press made before the tap's clip is told: each is bound to the gate's turn it opened as it arrived."""
+    for said in ["press", "release", "press"]:
+        call.page.send(said)
+    await call.until(lambda: call.key.gate.turn == 1 and call.key.gate.key == "down")
+    for told in [ClipOpened(Clip(8, "shortcut"), 7), ClipOpened(Clip(5, "phone button"), 1), ClipOpened(Clip(4, "phone button"), 0)]:
+        call.phone.tell(told)
+    await call.until(lambda: len(call.page.told) == 2)
+    assert [json.loads(cast(str, told)) for told in call.page.told] == [{"kind": "opened", "press": 2, "clip": 5}, {"kind": "opened", "press": 1, "clip": 4}]
 
 
 async def test_a_milestone_with_no_call_up_is_told_to_nobody() -> None:

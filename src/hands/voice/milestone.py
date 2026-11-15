@@ -17,9 +17,11 @@ Milestone = Literal["transcript", "no words", "failed", "first LLM token", "firs
 
 @dataclass(frozen=True)
 class ClipOpened:
-    """A clip opened, numbered and by what opened it: how the phone's page learns which clip its press is."""
+    """A clip of the key's opened, numbered and by what opened it, as the gate's `turn`: the press that opened the turn
+    learned it as it was made, so the call tells the page which clip its press is by it, never by when it opened."""
 
     clip: Clip
+    turn: int
 
 
 @dataclass(frozen=True)

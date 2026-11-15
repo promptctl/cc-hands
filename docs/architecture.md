@@ -2119,10 +2119,13 @@ the turn's latency window, so what hands says next, the failure itself included,
 is not timed as the answer. `first audio` is the first sound after the release,
 whatever hands said with it, and the page says only that hands spoke.
 
-A clip's opening and its release name the clip by number, since a hand at the desk
-can take hands there and send the phone's clip while its button is still held: the
-page takes as its own the first clip of its button opened since the press, and only
-that clip's release. The milestones after the release are of the turn and carry no
+A clip's release names the clip by number, since a hand at the desk can take hands
+there and send the phone's clip while its button is still held, which the page then
+says. Which clip is the page's is bound on hands' side, never by when a message
+arrives: the page and its call each number the presses on the ordered channel, the
+call notes the gate's turn each press opened as it arrives, and the clip the clip
+owner opens as that turn is told to the page as that press's. The page takes only the
+release of the shown press's clip. The milestones after the release are of the turn and carry no
 clip, so the page places them by where they fall: each names the milestones it may
 come after, and until hands says it took the clip shown, nothing else told is of it. A milestone of a clip the
 page has let go of is not shown. A call's `phone.call` event counts the milestones its

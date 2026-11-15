@@ -10,7 +10,7 @@ let go before it connected, or left after hands was at it, and why; its duration
 
 The page sends its microphone as plain 16-bit audio over the call's data channel, in order with its button, and hands
 plays to it over an audio track. Over the same channel hands tells the page each milestone of the turn it is waiting on
-(`hands.voice.milestone`): each clip opened, so the page knows which is its press's, the clip taken, its words heard or none found, a stage failing, the reply begun,
+(`hands.voice.milestone`): the clip each of its presses opened, by the press's number, the clip taken, its words heard or none found, a stage failing, the reply begun,
 and the first sound, which the page shows with how long each took; and each line of the transcript
 (`hands.voice.transcript`), which the page shows when asked to. Earbuds keep hands' voice out of the phone's microphone, and the page asks the browser
 for its echo cancellation as well; so the phone's audio is gated by its button alone, with none of the desk
@@ -25,7 +25,7 @@ import asyncio
 import fractions
 import json
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -38,7 +38,7 @@ from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import Begun, Fact, continuing, ended, since
-from hands.voice.milestone import ClipOpened, ClipReleased, Told
+from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.shortcut import Move
 from hands.voice.transcript import Line
@@ -124,11 +124,20 @@ def kind(line: type[Line]) -> str:
     return line.__name__.lower()
 
 
-def wire(told: Told | Line) -> str:
+@dataclass(frozen=True)
+class Opened:
+    """The clip a press of the page's opened: the page's number for the press, counted in the call, and hands' for the
+    clip."""
+
+    press: int
+    clip: int
+
+
+def wire(told: Opened | ClipReleased | Milestone | Line) -> str:
     """[LAW:single-enforcer] what the page is told, as it reads it: one JSON object, its `kind` saying which."""
     match told:
-        case ClipOpened(clip=clip):
-            return json.dumps({"kind": "opened", "clip": clip.number, "opener": clip.opener})
+        case Opened(press=press, clip=clip):
+            return json.dumps({"kind": "opened", "press": press, "clip": clip})
         case ClipReleased(clip=clip):
             return json.dumps({"kind": "milestone", "milestone": "released", "clip": clip.number})
         case str():
@@ -242,6 +251,10 @@ class _Call:
     channel: RTCDataChannel | None = None
     watch: asyncio.Task[None] | None = None
     arrived_ms: float = 0.0
+    # How many presses the page has sent, as it numbers them, and the gate's turn each opened, until its clip opens.
+    # [LAW:one-source-of-truth] the channel is ordered and reliable, so the call counts every press the page counts.
+    presses: int = 0
+    pressing: dict[int, int] = field(default_factory=dict[int, int])
     # How many milestones of its turns, and lines of the transcript, the page has been told.
     told: int = 0
     lines: int = 0
@@ -250,8 +263,9 @@ class _Call:
 class Phone:
     """The one call to the phone, and what it hears, plays, and presses.
 
-    A call is offered once its page's offer is answered, and is where hands is once its channel opens, the page's
-    first word: hands never moves to a call that cannot yet hear it, and an offer that never connects leaves the call
+    A call is offered once its page's offer is answered, and takes hands once its channel opens, the page's first
+    word, unless a press or a clip at the desk keeps it there for the phone's first press: hands never moves to a call
+    that cannot yet hear it, and an offer that never connects leaves the call
     that is up as it was. The newest offer is the page in the user's hand, so it lets go of any older one not yet up;
     but a resume is a page calling again on its own, not the user's hand, so it gives way to any other page's call or
     offer.
@@ -387,7 +401,16 @@ class Phone:
                         audio = out.to_ndarray().astype(np.int16).tobytes()
                         self.heard.put_nowait(gate.framed(audio, audio, None, self._heard_rate, 1, "phone"))
             case move:
-                match self._key.move(move, "phone button"):
+                taken = self._key.move(move, "phone button")
+                match move:
+                    case "start":
+                        # [LAW:no-ambient-temporal-coupling] the press is bound to the turn it opened as it opens it, so
+                        # the page learns its clip exactly, however late either reaches it.
+                        call.presses += 1
+                        call.pressing[self._key.gate.turn] = call.presses
+                    case _:
+                        pass
+                match taken:
                     case None:
                         pass
                     case taken:
@@ -428,11 +451,18 @@ class Phone:
         page sends its button. With no call up, or its channel on its way shut, there is no page to tell."""
         match self._call:
             case _Call(channel=RTCDataChannel(readyState="open") as channel) as call:
-                channel.send(wire(told))
                 match told:
-                    case ClipOpened() | ClipReleased() | str():
+                    case ClipOpened(clip=clip, turn=turn) if turn in call.pressing:
+                        channel.send(wire(Opened(call.pressing.pop(turn), clip.number)))
                         call.told += 1
-                    case _:
+                    case ClipOpened():
+                        # A clip no press of the page's opened, the desk's: nothing of the page's.
+                        pass
+                    case ClipReleased() | str():
+                        channel.send(wire(told))
+                        call.told += 1
+                    case line:
+                        channel.send(wire(line))
                         call.lines += 1
             case _:
                 pass

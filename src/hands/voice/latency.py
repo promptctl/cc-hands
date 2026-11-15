@@ -28,7 +28,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 
 from hands.clock import Clock
 from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
-from hands.voice.turnstop import ClipSent, TurnOpened, Words
+from hands.voice.turnstop import ClipSent, KeyOpened, Words
 
 # The first arrival of each of these frame types in an open window is a milestone. `first audio` is not among them:
 # the speaker starting is a transition into sounding rather than a frame, and the frame announcing it is pushed
@@ -100,8 +100,8 @@ class LatencyObserver(BaseObserver):
         # frame crossing the next boundary, and may come after the next clip has opened. A clip thrown away, a wake that
         # asked nothing, is no release: nothing of it is sent, so there is no reply to time from it.
         match frame:
-            case TurnOpened(clip=clip) if data.source is self._clips:
-                self._told(ClipOpened(clip))
+            case KeyOpened(clip=clip, turn=turn) if data.source is self._clips:
+                self._told(ClipOpened(clip, turn))
                 return
             case ClipSent(clip=clip) if data.source is self._clips:
                 # The release is what the window's numbers are measured from, so it is also what opens the window.

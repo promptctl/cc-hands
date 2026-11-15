@@ -9,7 +9,7 @@ plugin is installed and enabled; its hooks are plugin/hooks/hooks.json.
 Every heartbeat rewrites ~/.hands/status.json, which `hands status` and the
 menu-bar indicator read. Right Shift held by itself, in any app, is the talk
 key: held for a moment it opens a turn, released it sends it, and any other key
-or click while it is held leaves the turn open. It needs the Input Monitoring
+or click once the turn is open leaves it open; one before then was typing. It needs the Input Monitoring
 grant, checked before the run starts. `q` in hands' own terminal quits.
 Latency from key release to the first audio out is logged for every turn.
 """

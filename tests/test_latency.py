@@ -18,7 +18,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import Clip
 from hands.voice.latency import LatencyObserver
 from hands.voice.milestone import ClipOpened, ClipReleased, Told
-from hands.voice.turnstop import ClipDiscarded, ClipSent, TurnOpened, TurnResolved, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, TurnOpened, TurnResolved, Words
 
 # The clip owner, and the boundary after it: a frame is pushed first by the processor that made it, and every push of
 # it after that is the same frame crossing the next boundary.
@@ -51,8 +51,8 @@ def clip(number: int) -> Clip:
     return Clip(number, "shortcut")
 
 
-def opened(number: int) -> TurnOpened:
-    return TurnOpened(clip=clip(number))
+def opened(number: int) -> KeyOpened:
+    return KeyOpened(clip=clip(number), turn=number - 1)
 
 
 def sent(number: int) -> ClipSent:
@@ -65,7 +65,7 @@ def resolved(number: int) -> TurnResolved:
 
 def by_the_key(number: int) -> list[Told]:
     """What is told of a clip of the talk key's as it opens and as it is sent."""
-    return [ClipOpened(clip(number)), ClipReleased(clip(number))]
+    return [ClipOpened(clip(number), number - 1), ClipReleased(clip(number))]
 
 
 async def told(*frames: Frame) -> list[Told]:
@@ -87,17 +87,22 @@ async def test_a_release_still_crossing_boundaries_as_the_next_clip_opens_is_one
     """A move between places sends the clip open and opens the next in one step, so the first clip's release is still
     being pushed after the next clip's opening."""
     release = sent(1)
-    assert await told(opened(1), release, opened(2), release) == [*by_the_key(1), ClipOpened(clip(2))]
+    assert await told(opened(1), release, opened(2), release) == [*by_the_key(1), ClipOpened(clip(2), 1)]
 
 
 async def test_a_release_names_the_clip_it_sent() -> None:
     phone = Clip(1, "phone button")
-    assert await told(TurnOpened(clip=phone), ClipSent(clip=phone)) == [ClipOpened(phone), ClipReleased(phone)]
+    assert await told(KeyOpened(clip=phone, turn=4), ClipSent(clip=phone)) == [ClipOpened(phone, 4), ClipReleased(phone)]
+
+
+async def test_words_typed_open_no_turn_of_the_key_and_are_told_only_as_released() -> None:
+    typed = Clip(1, "typed")
+    assert await told(TurnOpened(clip=typed), ClipSent(clip=typed)) == [ClipReleased(typed)]
 
 
 async def test_a_clip_thrown_away_is_never_told_as_released() -> None:
     discarded = ClipDiscarded()
-    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == [ClipOpened(clip(1))]
+    assert await told(opened(1), discarded, discarded, resolved(1), UserStoppedSpeakingFrame()) == [ClipOpened(clip(1), 0)]
 
 
 async def test_a_turn_with_no_words_in_it_is_told_and_what_hands_says_next_is_no_answer_to_it() -> None:
@@ -155,7 +160,7 @@ async def test_another_clip_done_with_says_nothing_of_the_clip_still_being_trans
         resolved(1),
         UserStoppedSpeakingFrame(),
     )
-    assert milestones == [*by_the_key(1), ClipOpened(clip(2)), "transcript"]
+    assert milestones == [*by_the_key(1), ClipOpened(clip(2), 1), "transcript"]
 
 
 async def test_a_clip_with_no_words_in_a_turn_that_has_some_is_still_answered_and_timed_from_its_release() -> None:
@@ -173,7 +178,7 @@ async def test_a_clip_with_no_words_in_a_turn_that_has_some_is_still_answered_an
         LLMTextFrame("Hi"),
         BotStartedSpeakingFrame(),
     )
-    assert milestones == [*by_the_key(1), ClipOpened(clip(2)), "transcript", ClipReleased(clip(2)), "first LLM token", "first audio"]
+    assert milestones == [*by_the_key(1), ClipOpened(clip(2), 1), "transcript", ClipReleased(clip(2)), "first LLM token", "first audio"]
     assert lines[-1].startswith("latency: first audio") and "after key release" in lines[-1]
 
 
@@ -192,7 +197,7 @@ async def test_a_clip_thrown_away_after_a_turn_was_sent_says_nothing_of_the_repl
         UserStoppedSpeakingFrame(),
         BotStartedSpeakingFrame(),
     )
-    assert milestones == [*by_the_key(1), "transcript", ClipOpened(clip(2)), "first audio"]
+    assert milestones == [*by_the_key(1), "transcript", ClipOpened(clip(2), 1), "first audio"]
     assert "after key release" in lines[-1]
 
 

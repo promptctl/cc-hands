@@ -29,7 +29,7 @@ from hands.threads import tell
 from hands.voice.clips import LANGUAGE, RATE, Clip, Cleared, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
-from hands.voice.turnstop import ClipDiscarded, ClipSent, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
+from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
 
 # What every clip is said in, as Pipecat names it.
 _LANGUAGE = Language(LANGUAGE)
@@ -260,7 +260,7 @@ class ClipOwner(FrameProcessor):
             case "up" | "listening" | "arming", "down":
                 self._clips += 1
                 self._latest = Clip(self._clips, frame.opened)
-                await self.push_frame(TurnOpened(clip=self._latest))
+                await self.push_frame(KeyOpened(clip=self._latest, turn=frame.turn))
                 # What the press heard while arming, or the second the desk heard while listening, is the clip's start.
                 before, cleared = self._recording.sound, self._clearing(self._latest)
                 self._tell(self._latest, lambda listener: listener.opened(self._latest, before, cleared))

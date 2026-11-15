@@ -972,7 +972,7 @@ async def by_hand(rig: Rig, clip: int) -> None:
 
 def by_the_key(number: int) -> list[Told]:
     """What the page is told of a clip of the talk key's, numbered `number`, as it opens and as it is sent."""
-    return [ClipOpened(Clip(number, "shortcut")), ClipReleased(Clip(number, "shortcut"))]
+    return [ClipOpened(Clip(number, "shortcut"), number - 1), ClipReleased(Clip(number, "shortcut"))]
 
 
 async def test_a_turn_with_no_words_is_told_as_that_once_it_ends(rig: Rig) -> None:
@@ -992,7 +992,7 @@ async def test_a_silent_clip_in_a_turn_that_has_words_is_not_told_as_no_words(ri
     await rig.clip(["up"])
     await rig.texts.put("")
     await rig.until(lambda: rig.out.sent == ["what time is it"])
-    assert rig.told == [*by_the_key(1), ClipOpened(Clip(2, "shortcut")), "transcript", ClipReleased(Clip(2, "shortcut"))]
+    assert rig.told == [*by_the_key(1), ClipOpened(Clip(2, "shortcut"), 1), "transcript", ClipReleased(Clip(2, "shortcut"))]
 
 
 async def test_a_clip_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(rig: Rig) -> None:
