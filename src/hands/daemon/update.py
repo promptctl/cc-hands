@@ -191,10 +191,10 @@ class _Stopped(Exception):
         self.stopped = stopped
 
 
-def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
+def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[str, str], work: Path, run: Run) -> Installed | Failed | Unfinished:
     """Bring the code hands runs from, at `prefix`, up to date, as `parse_target` judges it, cloning master into `work`
-    for the uv tool environment; or the step that failed. `restarts_from` is the environment the running hands starts
-    again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
+    for the uv tool environment; or the step that failed. `runs_from` is the environment the running hands runs from,
+    and its restart starts it again on, by its own word: None with none running, or one from before its heartbeat said. `caller` is the caller's
     environment, whose Claude Code config the plugin steps run under."""
     ran: list[Ran] = []
     advised: list[Advised] = []
@@ -228,8 +228,8 @@ def install(home: Home, prefix: Path, restarts_from: Path | None, caller: Mappin
         target = parse_target(prefix, tool)
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
-        if restarts_from is not None and restarts_from.resolve() != prefix.resolve():
-            raise ending(Step.WHERE, f"the running hands runs from {restarts_from}, not from {prefix}, the environment the update brings current, so the update would leave it running what it runs now: run hands from {prefix}")
+        if runs_from is not None and runs_from.resolve() != prefix.resolve():
+            raise ending(Step.WHERE, f"the running hands runs from {runs_from}, not from {prefix}, the environment the update brings current, so the update would leave it running what it runs now: run hands from {prefix}")
         match target:
             case Tool():
                 step(Step.FETCH, ("git", "clone", "--quiet", "--filter=blob:none", "--single-branch", "--branch", BRANCH, REPOSITORY, str(clone)), work)

@@ -196,7 +196,7 @@ def test_a_hands_run_from_another_environment_is_not_updated(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(("stalled", "verdict"), [(timedelta(0), heartbeat.Up), (heartbeat.HEARTBEAT * heartbeat.MISSED_BEATS * 2, heartbeat.Unresponsive)], ids=["up", "unresponsive"])
-def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, verdict: type, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(stalled: timedelta, verdict: type[heartbeat.Up] | type[heartbeat.Unresponsive], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     home = Home(tmp_path / "home")
     commands = Commands(tools_of_this_hands(tmp_path))
     monkeypatch.setattr(update, "run", commands)
@@ -213,7 +213,7 @@ def test_a_running_hands_that_restarts_from_another_environment_is_not_updated(s
     _out, err = capsys.readouterr()
     assert err.startswith(f"hands update: where failed, so hands was not restarted and runs as it did: the running hands runs from /checkout/.venv, not from {sys.prefix}, ")
     [event] = events(home)
-    assert (event["facts"]["failed"], event["facts"]["exit_code"], event["facts"]["restarts_from"]) == ("where", 1, "/checkout/.venv")
+    assert (event["facts"]["failed"], event["facts"]["exit_code"], event["facts"]["runs_from"]) == ("where", 1, "/checkout/.venv")
 
 
 # What an update of a checkout runs in place of the tool environment's fetch, commit, constraints, and install.
@@ -332,7 +332,7 @@ def test_an_update_restarts_hands_onto_master_and_says_the_commit_whether_or_not
         if not killed:
             assert facts["exit_taken"] is True
         # The running hands named the environment its restart starts it on, the one the update installed into.
-        assert facts["restarts_from"] == sys.prefix
+        assert facts["runs_from"] == sys.prefix
         assert [step["step"] for step in facts["steps"]] == TOOL_STEPS
         assert [json.loads(line)[:3] for line in log.read_text().splitlines()] == [list(argv[:3]) for argv, _cwd in expected(home, Path("/"))]
         first, restarted = said.read_text().splitlines()

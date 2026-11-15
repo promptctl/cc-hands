@@ -844,16 +844,19 @@ def restarted(clock: Clock, home: Home) -> Outcome:
 def updated(clock: Clock, home: Home) -> exits.Exit:
     """`hands update`: bring the code hands runs from up to date, and restart onto it, saying the commit it runs; or the step that failed, unrestarted."""
     prefix = Path(sys.prefix)
-    # [LAW:one-source-of-truth] the running hands' own word on the environment its restart starts it again on; one that
-    # has stopped beating still runs from it.
-    match heartbeat.look(home.status, clock.wall()):
-        case heartbeat.Up(status=heartbeat.Status(runs_from=restarts_from)) | heartbeat.Unresponsive(status=heartbeat.Status(runs_from=restarts_from)):
-            pass
-        case _:
-            restarts_from = None
-    wide.annotate(restarts_from=None if restarts_from is None else str(restarts_from))
+    # [LAW:one-source-of-truth] the running hands' own word on the environment it runs from, and its restart starts it
+    # again on; one that has stopped beating still runs from it.
+    verdict = heartbeat.look(home.status, clock.wall())
+    wide.annotate(verdict=verdict)
+    match verdict:
+        case heartbeat.Up(status=status) | heartbeat.Unresponsive(status=status):
+            runs_from = status.runs_from
+        # A heartbeat this hands cannot read may be a later hands' own, which the update is what lets it read.
+        case heartbeat.NeverRan() | heartbeat.Down() | heartbeat.Stopped() | heartbeat.Refused() | heartbeat.Unreadable():
+            runs_from = None
+    wide.annotate(runs_from=None if runs_from is None else str(runs_from))
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, prefix, restarts_from, os.environ, Path(work), update.run)
+        installed = update.install(home, prefix, runs_from, os.environ, Path(work), update.run)
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
