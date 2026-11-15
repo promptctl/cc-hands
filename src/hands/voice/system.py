@@ -10,16 +10,18 @@ from datetime import datetime
 from typing import ClassVar
 
 from loguru import logger
-from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
+from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
 from hands.clock import Clock
+from hands.core.playback import hands_says
 from hands.sessions.audit import Announced, Record
 from hands.voice.devicechoice import HeardOn, Instead, Missing, Off, PlayedOn
 from hands.voice.microphone import Devices
 from hands.voice.pipeline import Voice
+from hands.voice.player import line_frame
 from hands.core.wire import Seconds, UsageLimitReached
 from hands.core.stopfailure import StopFailed
 from hands.sessions.model_facts import ModelActedUntold, ModelFact, ModelFailed, ModelFault, ModelReplyEmpty, ModelUnanswered, ModelUnreachable
@@ -274,12 +276,15 @@ class SystemChannel:
     def __init__(
         self,
         tts: FrameProcessor,
+        lines: FrameProcessor,
         notify: Notify,
         record: Record,
         clock: Clock,
         throttle: float = THROTTLE_SECONDS,
     ) -> None:
         self._tts = tts
+        # [LAW:single-enforcer] where every line of hands' enters ahead of the TTS, so the player knows whose it is.
+        self._lines = lines
         self._notify = notify
         self._record = record
         self._clock = clock
@@ -293,9 +298,9 @@ class SystemChannel:
             # Said and audited once already inside this window; the terminal is not where it is read again.
             return
         if self._tts.is_usable:
-            # [LAW:effects-at-boundaries] queued at the TTS, past the model, because this channel reports the model's own failures;
+            # [LAW:effects-at-boundaries] queued just ahead of the TTS, past the model, because this channel reports the model's own failures;
             # kept out of the replies the audit log records too, where it would read as a reply the model gave.
-            await self._tts.queue_frame(TTSSpeakFrame(text, append_to_context=False))
+            await self._lines.queue_frame(line_frame(hands_says(text), append_to_context=False))
             self._record(Announced(text, "speech"))
         elif await self._notify(f"hands cannot speak, so: {text}"):
             self._record(Announced(text, "screen"))

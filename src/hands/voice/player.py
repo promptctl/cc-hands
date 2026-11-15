@@ -10,23 +10,46 @@ has played to its end, and a barge-in after every sentence that finished before 
 is made, in the order made, where a processor standing in the pipeline would take a barge-in ahead of a sentence's end
 still waiting in its queue.
 
-[LAW:single-enforcer] the one holder of `Playback`: its observer reports to it, and the playback tools act on it.
+Every line hands says as written crosses `lines` as a `LineFrame`, which says whose it is, and is queued there as it
+passes on: the brain's own words reach the speaker as the model's text, never as one. So what the speaker hands that
+hands did not queue is the brain's.
+
+[LAW:single-enforcer] the one holder of `Playback`: its observer reports to it, `lines` queues to it, and the playback
+tools act on it.
 """
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
 from pipecat.observers.base_observer import BaseObserver, FramePushed
-from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from hands.core import playback
-from hands.core.playback import Bookmark, LastOne, NothingBargedIn, NothingSaid, Played, Playback, Replay
+from hands.core.playback import Bookmark, Labelled, LastOne, Line, NothingBargedIn, NothingSaid, Played, Playback, Replay, hands_says
+from hands.core.spoken import spoken
 from hands.sessions.audit import BargeIn, Record
 
 Act = Callable[[Playback], tuple[Playback, Played]]
+
+
+@dataclass
+class LineFrame(TTSSpeakFrame):
+    """A line for the speaker, and whose it is: the one way anything of hands' reaches it, which `lines` queues as it passes."""
+
+    line: Line = field(kw_only=True)
+
+
+def line_frame(line: Line, *, append_to_context: bool = True) -> LineFrame:
+    """The frame that says `line`. [LAW:one-source-of-truth] its text is the line's."""
+    return LineFrame(line.text, append_to_context=append_to_context, line=line)
+
+
+def said_as_nothing(text: str) -> bool:
+    """Whether the speaker would say `text` as nothing: Pipecat drops what is blank once leading line breaks go, before
+    and after the speaker filter (`TTSService._push_tts_frames`, Pipecat 1.10.0), and hands it to no one."""
+    return not spoken(text.lstrip("\n")).text.strip()
 
 
 class Player:
@@ -41,7 +64,7 @@ class Player:
         self._record = record
         self._playback = Playback()
         # Stood ahead of the TTS service, the one place the lines enter the pipeline; it passes everything else on.
-        self.lines = IdentityFilter()
+        self.lines: FrameProcessor = _Lines(self)
         # [LAW:no-shared-mutable-globals] each `heard` waiting on its line, by the marker behind it: settled by the output
         # passing the marker on, or by the next barge-in, whichever the output pushes first.
         self._hearing: dict[asyncio.Future[bool], Marker] = {}
@@ -83,35 +106,52 @@ class Player:
                     _settle(hearing, False)
                 was = self._playback
                 cutting, self._cutting = self._cutting, []
+                whole = playback.cut_off(was)
                 for cut in cutting:
                     if not cut.done():
-                        cut.set_result(Bookmark((*was.reading, *was.coming), was.played))
+                        cut.set_result(Bookmark(whole, was.played))
                 self._playback = playback.barge_in(was)
                 # [LAW:nothing-unseen] every barge-in is a line, one that cut nothing off included.
-                self._record(BargeIn(None if was.over else (*was.reading, *was.coming)[was.played], len(self._playback.bookmarks)))
+                self._record(BargeIn(None if was.played == len(whole) else whole[was.played].text, len(self._playback.bookmarks)))
             case _:
                 pass
 
+    def queued(self, frame: Frame) -> bool:
+        """Takes a frame on its way to the speaker past `lines`: a line is queued, and one it would say as nothing is not
+        to be passed on, so no line waits in `coming` that the speaker will never hand; a barge-in cuts what was queued.
+        Whether to pass it on."""
+        match frame:
+            case LineFrame(line=line) if said_as_nothing(line.text):
+                return False
+            case LineFrame(line=line):
+                self._playback = playback.queued(self._playback, line)
+            case InterruptionFrame():
+                # [LAW:no-ambient-temporal-coupling] cut here, in order with what is queued: a line queued once it has
+                # passed is not dropped with it, however long it takes to reach the speaker.
+                self._playback = playback.cut(self._playback)
+            case _:
+                pass
+        return True
+
     def next_barge_in(self) -> asyncio.Future[Bookmark]:
-        """The reading on the speaker when the next barge-in reaches it, and how many of its sentences had played to their
+        """The reading on the speaker when the next barge-in reaches it, and how many of its lines had played to their
         end: all of them when it was cut off in none. Asked for before that barge-in is passed down, so it is the one."""
         cut = asyncio.get_running_loop().create_future()
         self._cutting.append(cut)
         return cut
 
-    async def act(self, act: Act) -> tuple[str, ...]:
-        """Moves playback by `act`, and says what it says, which is always something: a reading said again, or why not.
-        What it says is held whole from the start, so a barge-in on it loses none of it."""
-        moved, played = act(self._playback)
+    async def act(self, act: Act) -> tuple[Line, ...]:
+        """Moves playback by `act`, and says what it says, which is always something: a reading said again, each line
+        still whose it was, or why not."""
+        self._playback, played = act(self._playback)
         lines = said(played)
-        self._playback = playback.queued(moved, lines)
-        for sentence in lines:
-            # One sentence a frame, so each is a position.
-            await self.lines.push_frame(TTSSpeakFrame(sentence))
+        for line in lines:
+            # One line a frame, so each is a position.
+            await self.lines.push_frame(line_frame(line))
         return lines
 
-    async def heard(self, sentence: str) -> bool:
-        """Says `sentence`, and returns once the speaker has played it to its end, True, or a barge-in has cut it off, False.
+    async def heard(self, line: Labelled) -> bool:
+        """Says `line`, and returns once the speaker has played it to its end, True, or a barge-in has cut it off, False.
 
         [LAW:no-ambient-temporal-coupling] what follows a line only once the user has heard it waits on this, never on how
         long the line takes to say.
@@ -121,7 +161,7 @@ class Player:
         marker = Marker(lambda: None)
         self._hearing[hearing] = marker
         try:
-            await self.lines.push_frame(TTSSpeakFrame(sentence, append_to_context=False))
+            await self.lines.push_frame(line_frame(line, append_to_context=False))
             await self.lines.push_frame(marker)
             return await hearing
         finally:
@@ -134,17 +174,17 @@ def _settle(hearing: "asyncio.Future[bool]", played: bool) -> None:
         hearing.set_result(played)
 
 
-def said(played: Played) -> tuple[str, ...]:
-    """What an act has hands say: the sentences again, or in one sentence why there are none."""
+def said(played: Played) -> tuple[Line, ...]:
+    """What an act has hands say: the lines again, or in one line why there are none."""
     match played:
-        case Replay(sentences=sentences):
-            return sentences
+        case Replay(lines=lines):
+            return lines
         case NothingBargedIn():
-            return ("Nothing was cut off to go back to.",)
+            return (hands_says("Nothing was cut off to go back to."),)
         case NothingSaid():
-            return ("I haven't said anything yet.",)
+            return (hands_says("I haven't said anything yet."),)
         case LastOne():
-            return ("That was the last of it.",)
+            return (hands_says("That was the last of it."),)
 
 
 @dataclass
@@ -167,6 +207,24 @@ class Markers(FrameProcessor):
                 played()
             case _:
                 await self.push_frame(frame, direction)
+
+
+class _Lines(FrameProcessor):
+    """Where every line of hands' enters the pipeline, ahead of the TTS service: what passes it, pushed through it or
+    by the player, is queued as it is pushed on."""
+
+    def __init__(self, player: Player) -> None:
+        super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self._player = player
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+    async def push_frame(self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
+        # Both ways in meet here: a frame passing through, and one the player or the voices push.
+        if direction is FrameDirection.UPSTREAM or self._player.queued(frame):
+            await super().push_frame(frame, direction)
 
 
 class _Watch(BaseObserver):

@@ -6,11 +6,12 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePath
 
-from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, UninterruptibleFrame
+from pipecat.frames.frames import DataFrame, Frame, UninterruptibleFrame
 
 from hands.core.attention import Amount, Attention, Overlay, Route, progress_route
 from hands.core.effects import Allow, Answers, Approve, Asking, Decision, Deny, Heard, KeepPlanning, ModeAfterPlan, Narrate, Progress, SessionGone, Tell
 from hands.core.occurrences import route as occurrence_route, said as occurrence_said
+from hands.core.playback import Labelled, hands_says
 from hands.core.pending import Finished, Mentioned, News, Pending, Unread, Working, went_on
 from hands.core.progress import lowered, said
 from hands.core.permissions import Answered, NotWaiting, Outcome, Unfit
@@ -18,6 +19,7 @@ from hands.core.session import AskedQuestion, Blocker, Permission, Plan, PromptI
 from hands.core.summaries import bounded
 from hands.core.turn import AgentTask
 from hands.sessions.registry import Sessions
+from hands.voice.player import LineFrame, line_frame
 from hands.voice.utterance import Utterance, Utterances
 
 # How much of what a session replied is handed to the model in one telling, however many turns it folds. Every telling
@@ -78,7 +80,7 @@ class Aloud(DataFrame, UninterruptibleFrame):
     """A line hands says as written, held in hands' lane behind what it has already handed the brain, so the user
     hears a session's story in the order it happened, and sent with the frames that say what of `utterances` was heard."""
 
-    spoken: TTSSpeakFrame
+    spoken: LineFrame
     utterances: tuple[Utterance, ...]
 
 
@@ -86,7 +88,7 @@ class Aloud(DataFrame, UninterruptibleFrame):
 class AsWritten:
     """A line hands says as written."""
 
-    spoken: TTSSpeakFrame
+    spoken: LineFrame
 
 
 @dataclass(frozen=True)
@@ -185,16 +187,18 @@ def frames(pending: Pending, names: Names) -> Saying:
             name = names(session)
             return InOwnWords(told(session, name, news, amount), f"{name} finished {_turns(news)}, and I could not tell it.", session)
         case Unread(session=session):
-            return AsWritten(TTSSpeakFrame(f"{names(session)} finished a turn, and I could not read it.", append_to_context=False))
+            return AsWritten(line_frame(hands_says(f"{names(session)} finished a turn, and I could not read it."), append_to_context=False))
         case SessionGone(session=session):
-            return AsWritten(TTSSpeakFrame(f"The session {names(session)} is gone."))
+            return AsWritten(line_frame(hands_says(f"The session {names(session)} is gone.")))
         case Mentioned(session=session, occurrence=occurrence, amount=amount):
             # Said as written: what the hook said, worded here, with nothing for a model to add.
-            return AsWritten(TTSSpeakFrame(occurrence_said(occurrence, names(session), amount)))
+            name = names(session)
+            return AsWritten(line_frame(Labelled(occurrence_said(occurrence, name, amount), f"hands telling of {name}")))
         case Working(session=session, of=of, doings=doings):
             # Said as written: what it is doing is arithmetic over its calls, with nothing for a model to add; the session
             # listing says what it last set out to do [LAW:one-source-of-truth].
-            return AsWritten(TTSSpeakFrame(f"{_doer(names(session), of)}: {said(doings)}.", append_to_context=False))
+            name = names(session)
+            return AsWritten(line_frame(Labelled(f"{_doer(name, of)}: {said(doings)}.", f"hands telling what {name} is doing"), append_to_context=False))
 
 
 def _doer(name: str, of: frozenset[PromptId] | AgentTask) -> str:

@@ -15,7 +15,7 @@ import numpy as np
 import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.frames.frames import DataFrame, Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
-from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
 from pipecat.utils.types import require_given
@@ -25,11 +25,13 @@ from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
+from hands.core.playback import Labelled
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice.clips import RATE, Samples
 from hands.voice.library import Found, Library, address
+from hands.voice.player import LineFrame, line_frame
 from hands.voice.voiceprints import Synthesize
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
@@ -193,7 +195,7 @@ class Voices:
             try:
                 for voice in voices:
                     await self._speak_in(voice)
-                    await self._lines.push_frame(TTSSpeakFrame(sample(voice), append_to_context=False))
+                    await self._lines.push_frame(line_frame(Labelled(sample(voice), f"a sample of the voice {spoken(voice)}"), append_to_context=False))
             finally:
                 # A hearing cancelled or failed partway still hands the speaker back the voice it speaks in.
                 await self._speak_in(now)
@@ -228,6 +230,13 @@ class SaidInTTS(PocketTTSService):
     [LAW:one-source-of-truth] the voice is read as the utterance is made, where the state it is made from is derived: an
     utterance is made whole within the one call that processes its text, and a voice change is processed in its own
     call, so no change falls between the two. Nothing reads the service's voice after the fact."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        if isinstance(frame, TTSSpeakFrame) and not isinstance(frame, LineFrame):
+            # [LAW:no-silent-failure] [LAW:single-enforcer] every line of hands' is a LineFrame queued as it passes the
+            # player's `lines`: one that is not would be told the brain as its own words.
+            raise TypeError(f"{frame} reached the speaker as no LineFrame, so the player never learned whose it is")
+        await super().process_frame(frame, direction)
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         yield SpeakingIn(require_given(self._settings.voice, "Pocket TTS voice"))

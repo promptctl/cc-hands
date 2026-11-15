@@ -46,6 +46,7 @@ from hands.sessions.overlays import Overlays
 from hands.sessions.registry import Listing, Sessions
 from hands.sessions import attention as settings
 from hands.core import playback, status
+from hands.core.playback import as_told
 from hands.core.place import Modality
 from hands.voice.desk import Level
 from hands.voice.trigger import Levels, described
@@ -169,21 +170,21 @@ def playback_tools(player: Player) -> list[Tool]:
         Hands says it, exactly as it was said, from the start of the sentence that was cut off. Calling it is the whole
         reply: add no words of your own, and never retell what you remember saying.
         """
-        return {"said": await player.act(playback.resume), "waiting": player.waiting}
+        return {"said": as_told(await player.act(playback.resume)), "waiting": player.waiting}
 
     async def skip() -> Result:
         """Skip the sentence the user cut in on, and go on with what you were saying from the one after it.
 
         Hands says the rest. Calling it is the whole reply: add no words of your own.
         """
-        return {"said": await player.act(playback.skip), "waiting": player.waiting}
+        return {"said": as_told(await player.act(playback.skip)), "waiting": player.waiting}
 
     async def repeat() -> Result:
         """Say again the last thing you said, whole, exactly as it was said.
 
         Hands says it. Calling it is the whole reply: add no words of your own, and never say it again yourself.
         """
-        return {"said": await player.act(playback.repeat), "waiting": player.waiting}
+        return {"said": as_told(await player.act(playback.repeat)), "waiting": player.waiting}
 
     return [tool(resume, then="silence"), tool(skip, then="silence"), tool(repeat, then="silence")]
 
@@ -1253,8 +1254,10 @@ def draft_tools(sessions: Sessions) -> list[Tool]:
         ear, and a model asked to say it would say it in its own words. Any other outcome changed nothing, so it is the
         model's to answer, as a refusal: to retry, as with the session's id, or to say what went wrong."""
         match outcome:
-            case DraftStaged() | DraftAmended():
-                return {"says": readback(outcome, name)}
+            case DraftStaged():
+                return {"says": readback(outcome, name), "as": f"the draft for {name} read back"}
+            case DraftAmended():
+                return {"says": readback(outcome, name), "as": f"the change to the draft for {name} read back"}
             case _:
                 return {"error": readback(outcome, name)}
 

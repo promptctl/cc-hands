@@ -32,7 +32,7 @@ class Tool:
     properties: Mapping[str, JsonSchema]
     required: tuple[str, ...]
     body: Body
-    # A result {"says": text} is said by hands, as written, whichever the model does.
+    # A result {"says": text, "as": label} is said by hands, as written, whichever the model does, and told the brain by its label.
     then: Then
 
     @property

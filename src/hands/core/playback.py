@@ -8,8 +8,13 @@ A reading is the run of sentences handed to the speaker since it last fell quiet
 both back to back. A position is what the TTS service hands the speaker as one: a sentence of a reply, or a line said as
 written, whole. pocket-tts reports no word timings, so there is nothing finer, and "where it stopped" is the one that was
 playing, said again from its start.
+
+Each position knows whose it is: a sentence of the brain's own words, or a line hands says as written, which the brain
+is told of by its label and never by its text. [LAW:types-are-the-program] whose a line is is its type, so nothing that
+tells the brain of a line can quote one it did not write.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 # How many cut-off readings are kept to go back to. Each barge-in that is never resumed leaves one, so the stack is
@@ -18,34 +23,87 @@ BOOKMARKS = 8
 
 
 @dataclass(frozen=True)
-class Bookmark:
-    """A reading that was cut off, and the sentence that was playing when it was."""
+class Own:
+    """A sentence of the brain's own words, as the TTS service made it of the model's text."""
 
-    sentences: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True)
+class Labelled:
+    """A line hands says as written, and what the brain is told it by: `label`, never `text`, which the brain did not write."""
+
+    text: str
+    label: str
+
+
+Line = Own | Labelled
+
+
+def hands_says(text: str) -> Labelled:
+    """A line of hands' own, short and in its own voice, whose words are no one's to keep from the brain: told by what it says."""
+    return Labelled(text, f'hands saying "{text}"')
+
+
+def as_told(lines: Iterable[Line]) -> str:
+    """The lines as the brain is told them: each run of its own words quoted, and each line hands said as written by its label.
+
+    [LAW:single-enforcer] the one place a line is put into words for the brain.
+    """
+    parts: list[str] = []
+    run: list[str] = []
+    for line in lines:
+        match line:
+            case Own(text=text):
+                run.append(text)
+            case Labelled(label=label):
+                parts.extend(_quoted(run))
+                run = []
+                parts.append(label)
+    parts.extend(_quoted(run))
+    return ", then ".join(parts)
+
+
+def _quoted(run: list[str]) -> list[str]:
+    # Words that are all space say nothing, so are told as nothing.
+    words = " ".join(text for text in run if text.strip())
+    return [f'"{words}"'] if words else []
+
+
+@dataclass(frozen=True)
+class Bookmark:
+    """A reading that was cut off, and the line that was playing when it was."""
+
+    lines: tuple[Line, ...]
     at: int
 
 
 @dataclass(frozen=True)
 class Playback:
-    """The latest reading, how many of its sentences have finished playing, the sentences of it hands has yet to hand
-    the speaker, and the readings cut off.
+    """The latest reading, how many of its lines have finished playing, the lines of it hands has yet to hand the
+    speaker, and the readings cut off.
 
     A reading every sentence of which has played is over, and the next sentence handed starts a new one. `pressed_on`
     is the reading the user's latest barge-in found, cut off or played to its end: what "say that again" says, whatever
     the model said before asking for it. `stopped` is that reading when the barge-in cut it off, kept apart from the
     earlier ones because going back is going back from it, to the reading before.
+
+    `flushed` is what hands had queued for the speaker when a barge-in passed it on the way down, which that barge-in
+    drops: unheard, and held for the barge-in to join to the reading when it reaches the speaker. A line queued after it
+    passed is `coming`, and plays.
     """
 
-    reading: tuple[str, ...] = ()
+    reading: tuple[Line, ...] = ()
     played: int = 0
-    coming: tuple[str, ...] = ()
-    pressed_on: tuple[str, ...] = ()
+    coming: tuple[Line, ...] = ()
+    flushed: tuple[Line, ...] = ()
+    pressed_on: tuple[Line, ...] = ()
     stopped: Bookmark | None = None
     interrupted: tuple[Bookmark, ...] = ()
 
     @property
     def over(self) -> bool:
-        return self.played == len(self.reading) and not self.coming
+        return self.played == len(self.reading) and not self.coming and not self.flushed
 
     @property
     def bookmarks(self) -> tuple[Bookmark, ...]:
@@ -58,20 +116,31 @@ def begun(playback: Playback) -> Playback:
     return Playback(pressed_on=playback.pressed_on, interrupted=playback.bookmarks[-BOOKMARKS:])
 
 
-def queued(playback: Playback, sentences: tuple[str, ...]) -> Playback:
-    """Hands will hand the speaker these next, and knows them before it does: the rest of the reading playing, or a new
-    one, as for each sentence handed."""
+def queued(playback: Playback, line: Line) -> Playback:
+    """Hands will hand the speaker this line next, and knows it before it does: the rest of the reading playing, or a
+    new one, as for each sentence handed."""
     start = begun(playback) if playback.over else playback
-    return replace(start, coming=(*start.coming, *sentences))
+    return replace(start, coming=(*start.coming, line))
+
+
+def cut(playback: Playback) -> Playback:
+    """A barge-in has passed the point lines are queued at, on its way to the speaker: what was queued ahead of it is
+    dropped with it, and what is queued from here on plays."""
+    return replace(playback, flushed=(*playback.flushed, *playback.coming), coming=())
 
 
 def handed(playback: Playback, sentence: str) -> Playback:
     """A sentence is on its way to the speaker: the next of the reading playing, or the first of a new one. It is the
-    next line hands queued when it is that line; anything else handed meanwhile, a word of the model's or a line
-    another part of hands says, takes its own place in the reading ahead of the lines still coming."""
+    next line hands queued when it is that line, one the speaker took up just as a barge-in passed included; anything
+    else handed is the model's words, which take their own place in the reading ahead of the lines still coming."""
     start = begun(playback) if playback.over else playback
-    coming = start.coming[1:] if start.coming[:1] == (sentence,) else start.coming
-    return replace(start, reading=(*start.reading, sentence), coming=coming)
+    match start:
+        case Playback(flushed=((Own() | Labelled()) as line, *rest)) if line.text == sentence:
+            return replace(start, reading=(*start.reading, line), flushed=tuple(rest))
+        case Playback(coming=((Own() | Labelled()) as line, *rest)) if line.text == sentence:
+            return replace(start, reading=(*start.reading, line), coming=tuple(rest))
+        case _:
+            return replace(start, reading=(*start.reading, Own(sentence)))
 
 
 def finished(playback: Playback) -> Playback:
@@ -81,18 +150,24 @@ def finished(playback: Playback) -> Playback:
 
 
 def barge_in(playback: Playback) -> Playback:
-    """The user barged in: the reading stops, with what hands had yet to hand of it, and the sentence it stopped on is
-    bookmarked to go back to. A reading that had played to its end is not cut off, and leaves nothing to go back to."""
-    whole = (*playback.reading, *playback.coming)
-    pressed = replace(playback, pressed_on=whole)
-    return pressed if playback.over else replace(pressed, reading=whole, played=len(whole), coming=(), stopped=Bookmark(whole, playback.played))
+    """The user barged in, and it has reached the speaker: the reading stops, with what the barge-in dropped of it on the
+    way, and the line it stopped on is bookmarked to go back to; what hands queued once the barge-in had passed is the
+    next reading. A reading that had played to its end is not cut off, and leaves nothing to go back to."""
+    whole = cut_off(playback)
+    pressed = replace(playback, pressed_on=whole, flushed=())
+    return pressed if playback.played == len(whole) else replace(pressed, reading=(), played=0, stopped=Bookmark(whole, playback.played))
+
+
+def cut_off(playback: Playback) -> tuple[Line, ...]:
+    """The reading a barge-in reaching the speaker now stops: what was handed it, and what the barge-in dropped."""
+    return (*playback.reading, *playback.flushed)
 
 
 @dataclass(frozen=True)
 class Replay:
-    """Sentences to say again, in order, as they were said."""
+    """Lines to say again, in order, as they were said, each still whose it was."""
 
-    sentences: tuple[str, ...]
+    lines: tuple[Line, ...]
 
 
 @dataclass(frozen=True)
@@ -137,7 +212,7 @@ def _popped(playback: Playback, stack: tuple[Bookmark, ...], past: int) -> tuple
     if not stack:
         return playback, NothingBargedIn()
     *earlier, latest = stack
-    rest = latest.sentences[latest.at + past :]
+    rest = latest.lines[latest.at + past :]
     return replace(playback, stopped=None, interrupted=tuple(earlier)), Replay(rest) if rest else LastOne()
 
 
