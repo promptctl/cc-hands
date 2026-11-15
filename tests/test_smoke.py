@@ -22,8 +22,9 @@ from hands.core.session import PromptId, PromptText, SessionId
 from hands.core.trace import Span
 from hands.daemon.cli import main
 from hands.sessions.startsession import joined
+from hands.sessions.liveness import live
 from hands.sessions.terminals import process_table
-from hands.daemon.smoke import members, FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
+from hands.daemon.smoke import FOLDER, QUIET_SECS, WORDS, Caller, Ear, Line, NotReached, parsed, proof
 from hands.sessions import heartbeat
 from hands.sessions.audit import ClipHeard, Typing, TypingFailed, Unsaid, encoded, segment
 from hands.sessions.home import Home
@@ -178,9 +179,9 @@ def test_the_smoke_session_is_the_one_that_joined_under_its_process(tmp_path: Pa
     # A session of another process's in the same folder, and one being written.
     member(OTHER, 1)
     home.membership(SessionId("0998fa11-3723-4c9a-bb7a-b454ae05dfca")).write_text('{"pid": ')
-    assert joined(members(home), started, process_table()) is None
+    assert joined(live(home)[0], started, process_table()) is None
     member(SESSION, started)
-    found = joined(members(home), started, process_table())
+    found = joined(live(home)[0], started, process_table())
     assert found is not None and (found.id, found.fritter) == (SESSION, Path("/tmp/f/session.sock"))
 
 
@@ -218,20 +219,24 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     assert isinstance(facts["up_ms"], int) and facts["up"].startswith(f"hands is up: pid {os.getpid()}") and "joined_ms" not in facts
 
 
-def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    # The claude on PATH here is no shim, so nothing but the smoke run itself switches its auto-updater off.
+def stand_in_run(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, cwd: Path, written_at: float) -> tuple[str, list[dict[str, str]]]:
+    """A smoke run against a hands that is up, whose claude is a stand-in that stops it at joined, with the test's own
+    process a session of hands in `cwd`, its membership file written at `written_at`. The run's last line, and the
+    environment of each claude it started."""
     from hands.daemon import smoke
 
     home = Home(tmp_path / "home")
     now = datetime.now(UTC)
-    home.root.mkdir()
+    home.memberships.mkdir(parents=True)
     heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
+    record = {"pid": os.getpid(), "cwd": str(cwd), "transcript_path": f"/t/{OTHER}.jsonl", "fritter_socket": "/tmp/f/session.sock"}
+    home.membership(OTHER).write_text(json.dumps(record))
+    os.utime(home.membership(OTHER), (written_at, written_at))
     real = tmp_path / "real" / "claude"
     real.parent.mkdir()
     real.write_text("#!/bin/sh\n")
     real.chmod(0o755)
     monkeypatch.setenv("PATH", str(real.parent))
-    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     monkeypatch.setattr(transcription, "load", lambda: None)
 
     async def synthesized(_clock: Clock, _text: str) -> bytes:
@@ -246,6 +251,45 @@ def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path
     monkeypatch.setattr(smoke, "_synthesized", synthesized)
     monkeypatch.setattr(smoke, "on_terminal", on_terminal)
     assert main(["--home", str(home.root), "smoke"]) == 1
-    assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: the test's stand-in claude is not started"
+    return capsys.readouterr().out.splitlines()[-1], started
+
+
+STOPPED_BY_THE_STAND_IN = "FAILED joined: the test's stand-in claude is not started"
+
+
+def test_the_claude_the_smoke_run_starts_runs_with_its_auto_updater_off(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    # The claude on PATH here is no shim, so nothing but the smoke run itself switches its auto-updater off.
+    monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
+    last, started = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / "elsewhere", datetime.now(UTC).timestamp())
+    assert last == STOPPED_BY_THE_STAND_IN
     [environment] = started
     assert environment["DISABLE_AUTOUPDATER"] == "1"
+
+
+@pytest.mark.parametrize("folder", ["home/smoke", "code/Smoke"])
+def test_a_live_session_in_a_folder_hands_also_calls_smoke_stops_the_run_before_it_empties_its_folder_and_is_named(
+    folder: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The test's own process stands for a claude left open in the smoke folder, or in any folder hands speaks of as smoke.
+    cwd = tmp_path / folder
+    smoke_folder = tmp_path / "home" / FOLDER
+    smoke_folder.mkdir(parents=True)
+    (smoke_folder / "kept.txt").write_text("")
+    last, started = stand_in_run(tmp_path, capsys, monkeypatch, cwd, datetime.now(UTC).timestamp())
+    assert last == (
+        f"FAILED joined: already open: session {OTHER} (pid {os.getpid()}) in {cwd}, which hands calls {cwd.name!r}; the brain"
+        f" could take one for the session the test starts, which hands calls 'smoke': close each, or end them with `kill {os.getpid()}`,"
+        " then run `hands smoke` again"
+    )
+    # Refused before the smoke folder was emptied and before a claude was started.
+    assert (smoke_folder / "kept.txt").exists() and started == []
+
+
+@pytest.mark.parametrize(("folder", "ago"), [("home/smoke", 1e9), ("code/smokey", 0.0)], ids=["exited", "named-otherwise"])
+def test_a_session_hands_does_not_call_smoke_does_not_stop_the_run(
+    folder: str, ago: float, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A file written before the test's process started names a claude that has exited and whose pid was handed out
+    # again; a live session in a folder of another name is called by that name.
+    last, _ = stand_in_run(tmp_path, capsys, monkeypatch, tmp_path / folder, datetime.now(UTC).timestamp() - ago)
+    assert last == STOPPED_BY_THE_STAND_IN

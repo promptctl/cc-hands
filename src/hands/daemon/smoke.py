@@ -41,7 +41,7 @@ from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
 from hands.sessions.child import run
 from hands.sessions.home import Home
-from hands.sessions.membership import parse_membership
+from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
 from hands.sessions.pseudoterminal import ClaudeCode, on_terminal
 from hands.sessions.wide import annotate
@@ -327,6 +327,14 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
     if claude is None:
         raise NotReached("joined", "there is no `claude` on PATH")
     said = [await _synthesized(smoked.clock, text) for text in SAID]
+    # hands speaks of a session by its folder's name, so a live session in any folder of the smoke folder's name is one the
+    # brain may take for the session the test starts; the run refuses, just before it empties the smoke folder or starts its own.
+    # [LAW:single-enforcer] running as the daemon's sweep judges it.
+    running, _ = live(home)
+    if others := [other for other in running if other.cwd.name.casefold() == folder.name.casefold()]:
+        named = "; ".join(f"session {other.id} (pid {other.pid}) in {other.cwd}, which hands calls {other.cwd.name!r}" for other in others)
+        pids = " ".join(str(other.pid) for other in others)
+        raise NotReached("joined", f"already open: {named}; the brain could take one for the session the test starts, which hands calls {folder.name!r}: close each, or end them with `kill {pids}`, then run `hands smoke` again")
     # The folder holds the one file, named for this run's word, and nothing else.
     try:
         shutil.rmtree(folder)
@@ -356,23 +364,14 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
         await session.stop()
 
 
-def members(home: Home) -> list[Membership]:
-    """The home's memberships as written: hands smoke runs beside the daemon, so it reads them, not the daemon's registry."""
-    written: list[Membership] = []
-    for path in sorted(home.memberships.glob("*.json")):
-        try:
-            written.append(parse_membership(SessionId(path.stem), path.read_bytes()))
-        except (OSError, Rejected):
-            # Being written, or already removed: read again at the next poll.
-            continue
-    return written
-
-
 async def _joined(smoked: Run, folder: Path, claude: str, session: ClaudeCode) -> Membership:
     home = smoked.home
 
     async def found() -> Membership | None:
-        return joined(members(home), session.pid, process_table())
+        # Read beside the daemon, as its sweep reads them, not from its registry; a file being written is read again
+        # at the next poll.
+        running, _ = live(home)
+        return joined(running, session.pid, process_table())
 
     member = await until(
         smoked.clock, "joined", JOIN_SECONDS, found,
