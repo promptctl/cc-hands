@@ -18,7 +18,9 @@ from hands.clock import SYSTEM
 from hands.core.effects import SessionGone
 from hands.core.session import SessionId
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, begun
+from hands.voice.synthesis import Made, SpeakingIn, Synthesis
+from test_synthesis import speech
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
 
 from conftest import running
@@ -33,6 +35,12 @@ GONE = SessionGone(API)
 # What the output transport pushes of one utterance: the frames that lead and close it, and what plays between.
 Step = Literal["lead", "audio", "barge-in", "resume", "close"]
 AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_channels=1)
+
+
+def synthesized(frames: int) -> list[Frame]:
+    """One synthesis of hands' TTS as it reaches the speaker: `frames` frames of 100 ms of sound, led on and made."""
+    synthesis = Synthesis("alba", begun(SYSTEM))
+    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * 0.1)]
 
 
 @dataclass
@@ -200,7 +208,7 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
     utterance = utterances.heard(API, GONE)
     try:
         async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
-            await run.worker.queue_frames([Uttering((utterance,)), TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
+            await run.worker.queue_frames([Uttering((utterance,)), *synthesized(1), Uttered((utterance,))])
             async with asyncio.timeout(5):
                 while not recorded:
                     await asyncio.sleep(0.01)
@@ -224,7 +232,7 @@ async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_
         async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
             # The device takes its first chunk and holds it: the rest of the line waits in the output transport.
             speakers.speaker.holding = True
-            await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20)), Uttered((utterance,))])
+            await run.worker.queue_frames([Uttering((utterance,)), *synthesized(20), Uttered((utterance,))])
             await asyncio.sleep(0.1)
             await run.worker.queue_frame(InterruptionFrame())
             await asyncio.sleep(0.1)
@@ -253,12 +261,12 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
     try:
         async with running([speaker], observers=[Audible(SYSTEM, speaker)]) as run:
             speakers.speaker.holding = True
-            await run.worker.queue_frames([Uttering((utterance,)), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(20))])
+            await run.worker.queue_frames([Uttering((utterance,)), *synthesized(20)[:-1]])
             await asyncio.sleep(0.1)
             await run.worker.queue_frames([InterruptionFrame(), Resumed((utterance,))])
             await asyncio.sleep(0.1)
             speakers.speaker.holding = False
-            await run.worker.queue_frames([TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1), Uttered((utterance,))])
+            await run.worker.queue_frames([*synthesized(1), Uttered((utterance,))])
             async with asyncio.timeout(5):
                 while not recorded:
                     await asyncio.sleep(0.01)
@@ -268,3 +276,60 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
         await asyncio.gather(keeping, return_exceptions=True)
     [event] = recorded
     assert isinstance(event, WideEvent) and event.facts["fate"] == "played"
+
+
+def _speaker(speakers: Speakers, recorded: list[Entry]) -> KeyedAudioTransport:
+    params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
+    return KeyedAudioTransport(
+        SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), recorded.append, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()
+    )
+
+
+def _synthesis(voice: str) -> Synthesis:
+    return Synthesis(voice, begun(SYSTEM))
+
+
+def _synthesized(synthesis: Synthesis, frames: int, length: int) -> list[Frame]:
+    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * (length // 2), 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * length / 32_000)]
+
+
+async def _events(recorded: list[Entry], count: int) -> list[dict[str, object]]:
+    async with asyncio.timeout(5):
+        while len(recorded) < count:
+            await asyncio.sleep(0.01)
+    return speech(cast(list[WideEvent], recorded))
+
+
+async def test_through_pipecat_s_own_sender_each_synthesis_plays_whole_chunks_and_is_one_event_once_its_last_byte_is_taken() -> None:
+    speakers, recorded = Speakers(), list[Entry]()
+    alba, mary = _synthesis("alba"), _synthesis("mary")
+    async with running([_speaker(speakers, recorded).output()]) as run:
+        # 3000 bytes each: two of the sender's 1280-byte chunks and a tail of 440, padded to a third.
+        await run.worker.queue_frames([*_synthesized(alba, 3, 1000), *_synthesized(mary, 3, 1000)])
+        speeches = await _events(recorded, 2)
+    assert [(spoken["voice"], spoken["how"], spoken["played_s"], spoken["made_s"]) for spoken in speeches] == [
+        ("alba", "made", pytest.approx(0.12), 0.09375),
+        ("mary", "made", pytest.approx(0.12), 0.09375),
+    ]
+
+
+async def test_a_barge_in_with_hands_close_queued_behind_its_speech_ends_the_synthesis_once_with_what_of_it_played() -> None:
+    """Pipecat's sender keeps its audio task, and the write in progress, running through this barge-in: the close of what
+    hands said is uninterruptible. The TTS had made all of alba's sentence, so the cut is in what of it played."""
+    speakers, recorded = Speakers(), list[Entry]()
+    alba, mary = _synthesis("alba"), _synthesis("mary")
+    try:
+        async with running([_speaker(speakers, recorded).output()]) as run:
+            speakers.speaker.holding = True
+            await run.worker.queue_frames([*_synthesized(alba, 20, 3200), Uttered(())])
+            await asyncio.sleep(0.1)
+            await run.worker.queue_frame(InterruptionFrame())
+            await asyncio.sleep(0.1)
+            speakers.speaker.holding = False
+            await run.worker.queue_frames(_synthesized(mary, 1, 3200))
+            speeches = await _events(recorded, 2)
+    finally:
+        speakers.speaker.holding = False
+    [cut, whole] = speeches
+    assert (cut["voice"], cut["how"], cut["made_s"], whole["voice"], whole["played_s"]) == ("alba", "made", 2.0, "mary", pytest.approx(0.12))
+    assert 0 < cast(float, cut["played_s"]) < 2.0

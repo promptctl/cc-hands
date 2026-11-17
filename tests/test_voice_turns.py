@@ -143,7 +143,7 @@ class NoSpeech(FrameProcessor):
 
     Settings = built.SaidInTTS.Settings
 
-    def __init__(self, **_: object) -> None:
+    def __init__(self, _clock: object, **_: object) -> None:
         super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 
 
