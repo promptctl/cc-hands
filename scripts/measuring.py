@@ -69,8 +69,8 @@ def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
 
 
 def heard_in(sound: Stretch, start: float, end: float) -> bool:
-    """Whether `sound` is heard for any time between `start` and `end`, none when they are the same."""
-    return min(sound.end, end) > max(sound.start, start)
+    """Whether `sound`, a mark of no length included, is heard between `start` and `end`, nothing being heard in no time."""
+    return start < end and sound.start < end and sound.end > start
 
 
 def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:

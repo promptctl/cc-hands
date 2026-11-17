@@ -55,6 +55,8 @@ packages = ["src/hands"]
 
 [tool.pyright]
 include = ["src", "tests"]
+# What tests import from scripts/ (tests/test_measuring.py), resolved as the tests put it on the path.
+extraPaths = ["scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
