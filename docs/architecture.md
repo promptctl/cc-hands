@@ -1954,8 +1954,8 @@ captured. Through hands'
 canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
 person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by
 `scripts/record-double-talk.py`), so a person saying "No, the build is broken." over hands' "the
-build is green" is sent every word; `ClipHeard.cancelled` counts the words of hands' the canceller
-took out. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
+build is green" is sent every word; `ClipHeard.unheard` counts the words of hands' the canceller
+took out, or no echo of which reached the microphone. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
 person who says a word hands said within 1.5 s of it loses that word. A clip hands played nothing
 over, or one the canceller took all of hands' voice out of, is decoded without its words timed,
 which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own

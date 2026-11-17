@@ -168,27 +168,23 @@ class EchoPath:
             self.reached = _verdict(self.reached, *self._read())
         self.reached = self.reached or self._unplayed >= _FORGET_FRAMES
 
-    def _read(self) -> tuple[float | None, bool]:
-        """The stretch's reading, None where hands played none of it, and whether it was hands alone: hands played at
-        least half of it, and the microphone was quiet over it."""
+    def _read(self) -> tuple[float, bool]:
+        """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:
+        hands played at least half of it, and the microphone was quiet over it."""
         captured = np.concatenate(self._captured)
         tts = [frame for frame in self._played if frame is not None]
         alone = 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
         if not tts:
-            return None, alone
+            return 0.0, alone
         silence = np.zeros(len(tts[0]))
         played = np.concatenate([silence if frame is None else frame for frame in self._played])
         return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), alone
 
 
-def _verdict(reached: bool, reading: float | None, alone: bool) -> bool:
+def _verdict(reached: bool, reading: float, alone: bool) -> bool:
     """Whether there is an echo path, given whether there was and a stretch's reading: one at `_ECHO_PATH` says there
-    is; one under it over hands alone says there is not; none, or one a person spoke over, leaves it as it was."""
-    match reading:
-        case None:
-            return reached
-        case _:
-            return reading >= _ECHO_PATH or (reached and not alone)
+    is; one under it over hands alone says there is not; any other leaves it as it was."""
+    return reading >= _ECHO_PATH or (reached and not alone)
 
 
 class EchoCanceller:

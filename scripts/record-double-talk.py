@@ -125,4 +125,8 @@ def main(fixture: Path, gain: float) -> None:
 
 
 if __name__ == "__main__":
-    main(FIXTURES / sys.argv[1], float(sys.argv[2]))
+    match sys.argv[1:]:
+        case [fixture, gain]:
+            main(FIXTURES / fixture, float(gain))
+        case _:
+            sys.exit("usage: record-double-talk.py FIXTURE GAIN (a name under tests/fixtures/; hands' speaker gain, 1 at the desk, 0 as in headphones)")
