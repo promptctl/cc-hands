@@ -61,7 +61,7 @@ from hands.voice.portaudio import Channels, Lists, default_input, device_index, 
 from hands.voice.ptt import Key, PushToTalk
 from hands.voice.turnstop import TurnOpened
 from hands.voice.synthesis import Chunking, Cutter, Ended, Made, Piece, SpeakingIn, Synthesis, Syntheses, Taken
-from hands.threads import SerialThread, off_loop
+from hands.threads import SerialThread, off_loop, tell
 
 Instant = float  # seconds on the clock's `now`
 
@@ -434,6 +434,8 @@ class Speaker(LocalAudioOutputTransport):
         # thread the interpreter waits for at exit: a write blocked on a lost device would hold the process open.
         self.opened = Attached(opened.stream, opened.device, opened.echo, SerialThread("speaker writes"))
         self._out_stream = opened.stream
+        # What the new stream's device finds missing before hands' speech reaches it is the move, not a gap.
+        self.syntheses.moved()
         self._attached.set()
 
     def detach(self) -> Attached:
@@ -465,7 +467,7 @@ class Speaker(LocalAudioOutputTransport):
 
     def _report(self, taken: Taken) -> None:
         # On the device's thread, or the writer's: the syntheses are the loop's.
-        self.get_event_loop().call_soon_threadsafe(self.syntheses.took, taken)
+        tell(self.get_event_loop(), self.syntheses.took, taken)
 
     def _failed(self, error: Exception) -> None:
         # On the device's thread, as the microphone's capture fails on its own.

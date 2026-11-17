@@ -156,6 +156,17 @@ def test_a_sentence_carried_on_at_the_phone_and_back_has_no_gap_for_its_stretch_
     assert (spoken["played_s"], spoken["phone_s"], spoken["gaps"]) == (0.08, 0.5, 0)
 
 
+def test_a_sentence_carried_on_onto_a_reopened_device_has_no_gap_for_the_move() -> None:
+    events: list[WideEvent] = []
+    syntheses, alba = Syntheses(events.append), _synthesis()
+    syntheses.opened(alba)
+    syntheses.took(Taken(((alba, 0.04),), (), 0, 0))
+    syntheses.moved()  # the speaker attached a new stream, whose device ran without hands' speech until it came
+    syntheses.took(Taken(((alba, 0.04),), (Ended(alba, "cut"),), missing=0.3, late=0))
+    [spoken] = speech(events)
+    assert (spoken["played_s"], spoken["gaps"]) == (0.08, 0)
+
+
 def test_a_synthesis_whose_end_never_came_out_is_still_one_event_as_the_speaker_shuts() -> None:
     events: list[WideEvent] = []
     syntheses, alba, mary = Syntheses(events.append), _synthesis("alba"), _synthesis("mary")

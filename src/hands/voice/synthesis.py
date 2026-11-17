@@ -189,9 +189,13 @@ class Syntheses:
 
     def phoned(self, synthesis: Synthesis | None, length: float) -> None:
         # The phone plays on: what the desk finds missing meanwhile is no gap in what it played.
-        self._last = None
+        self.moved()
         if synthesis is not None:
             self._followed[synthesis].phone += length
+
+    def moved(self) -> None:
+        """hands' speech went elsewhere than the device last taking it: what that device finds missing is no gap."""
+        self._last = None
 
     def finished(self, end: Ended) -> None:
         """Every byte of `end`'s synthesis has been taken by the device, handed to the phone, or let go of."""
