@@ -1854,7 +1854,13 @@ wide event, carrying how many frames its canceller heard, how many of those had 
 playing, how many it dropped unheard because the microphone had stopped taking them, and
 how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
-callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
+callbacks PortAudio said came too late. Those cover the silence between replies too, so
+each sentence the TTS makes is one `speech` event of its own (`hands/voice/synthesis.py`):
+the gaps the device found inside it, where nothing was written while more of it was still
+to come, which is heard as a crackle; the late callbacks while it played; and how long
+the TTS took to make it against how long it plays (`rtf`). A gap under an `rtf` above 1
+is a TTS that fell behind; a gap under a low one is delivery. `scripts/measure-playout.py`
+says them out loud on this machine, alone or beside the listeners. Every frame the microphone pushes carries the same sound as it
 was captured, before the canceller (`KeyedAudio.captured`), and the clip owner keeps it for the
 frames a clip is made of, so each clip's `clip` event says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the

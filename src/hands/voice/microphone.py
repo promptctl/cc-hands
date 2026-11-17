@@ -191,7 +191,7 @@ class Playout:
         self._stream.close()
         # Closed once the callback has stopped and no write is inside: what was still playing ends here, delivered as far
         # as it played.
-        self._tallies.took([Ended()], 0, False)
+        self._tallies.closed()
 
     def _pull(self, in_data: bytes | None, frame_count: int, time_info: object, status: int) -> tuple[bytes, int]:
         # [LAW:dataflow-not-control-flow] the device takes a whole buffer every time: what is waiting, then silence.
@@ -300,7 +300,7 @@ class NoOutput:
 
     def close(self) -> None:
         # Closed once no write is inside, as a device's stream is.
-        self._tallies.took([Ended()], 0, False)
+        self._tallies.closed()
 
 
 @dataclass(frozen=True)

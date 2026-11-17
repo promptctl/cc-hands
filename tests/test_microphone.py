@@ -764,11 +764,29 @@ def test_a_synthesis_s_tail_played_after_a_pause_counts_the_pause_as_its_gap() -
     device.take()  # the pause, alba's tail held back
     playout.write(LOUD, (alba, mary))  # alba's tail joined to mary's start
     playout.write(LOUD, (mary,))
+    device.take()
+    device.take()
+    playout.close()
+    assert delivered == [Delivered(alba, None, 40.0, 1, 20.0, 0), Delivered(mary, None, 40.0, 0, 0.0, 0)]
+
+
+def test_a_chunk_given_to_a_synthesis_after_hands_speech_ended_delivers_it_once_and_the_silence_between_is_no_gap() -> None:
+    """The speaker gives the first chunk after a new synthesis to the one before too, in case Pipecat's sender joined
+    the end of the one before on; where it had flushed that end before hands' speech stopped, the chunk is all the new
+    one's."""
+    delivered: list[Delivered] = []
+    device = Device()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing, delivered.append)
+    alba, mary = _synthesis("alba"), _synthesis("mary")
+    playout.write(LOUD, (alba,))
     playout.mark(Ended())
     device.take()
+    device.take()  # the silence after hands stopped speaking
+    playout.write(LOUD, (alba, mary))
+    playout.write(LOUD, (mary,))
     device.take()
-    device.take()  # the end of hands' speech: mary is delivered
-    assert delivered == [Delivered(alba, None, 40.0, 1, 20.0, 0), Delivered(mary, None, 40.0, 0, 0.0, 0)]
+    device.take()  # mary's alone: alba is finished
+    assert delivered == [Delivered(alba, None, 40.0, 0, 0.0, 0)]
 
 
 def test_a_synthesis_is_delivered_with_its_making_and_the_late_callbacks_while_it_played_and_a_cue_inside_it_breaks_nothing() -> None:
@@ -787,6 +805,7 @@ def test_a_synthesis_is_delivered_with_its_making_and_the_late_callbacks_while_i
     device.take()
     device.take()
     device.take()  # nothing more is written: the end of hands' speech was reached, so no gap
+    playout.close()
     assert delivered == [Delivered(alba, made, 40.0, 0, 0.0, 1)]
 
 

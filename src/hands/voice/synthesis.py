@@ -37,7 +37,7 @@ class Made(DataFrame):
 
 @dataclass(frozen=True)
 class Ended:
-    """Hands' speech ended: every synthesis it held is played out, and the silence after it is no gap."""
+    """Hands' speech ended: the silence after it is no gap."""
 
 
 @dataclass(frozen=True)
@@ -87,39 +87,59 @@ class _Tally:
 @dataclass
 class Tallies:
     """[LAW:single-enforcer] what the device made of each synthesis, read off what it takes; on the one thread that takes
-    it. `finished` is handed each synthesis as the device takes the last of it, on that thread."""
+    it. `finished` is handed each synthesis as the device takes audio of the next and none of it, or as the stream
+    closes, on that thread.
+
+    A synthesis is playing until hands' speech ends after it, and ended after: what the device finds missing counts
+    toward a gap only while it is playing. Ending is not finishing: the speaker gives the first chunk after a new
+    synthesis to the one before as well, in case Pipecat's sender joined its end on, so one that ended may still be in
+    the next chunk.
+    """
 
     bytes_per_second: int
     finished: Callable[[Delivered], None]
-    _open: dict[Synthesis, _Tally] = field(default_factory=dict[Synthesis, _Tally])
+    _playing: dict[Synthesis, _Tally] = field(default_factory=dict[Synthesis, _Tally])
+    _ended: dict[Synthesis, _Tally] = field(default_factory=dict[Synthesis, _Tally])
 
     def took(self, taken: Iterable[Written], missing: int, late: bool) -> None:
         """The device took `taken`, in order, then found `missing` bytes more than was written, `late` as PortAudio said."""
         for each in taken:
             match each:
                 case Run(syntheses=()):
-                    # Sound of no synthesis's: it neither carries one on nor ends one.
+                    # Sound of no synthesis's: it neither carries one on nor finishes one.
                     pass
                 case Run(length=length, syntheses=syntheses):
-                    # A synthesis ends where the device takes audio of the next and none of it.
-                    self._finish([synthesis for synthesis in self._open if synthesis not in syntheses])
+                    self._finish([synthesis for synthesis in (*self._playing, *self._ended) if synthesis not in syntheses])
                     for synthesis in syntheses:
-                        tally = self._open.setdefault(synthesis, _Tally())
+                        tally = self._tally(synthesis)
                         tally.gaps += tally.missing > 0
                         tally.gap += tally.missing
                         tally.missing = 0
                         tally.played += length
                 case Made(synthesis=synthesis):
-                    self._open.setdefault(synthesis, _Tally()).made = each
+                    self._tally(synthesis).made = each
                 case Ended():
-                    self._finish(list(self._open))
-        for tally in self._open.values():
+                    # What went missing up to its end was its end, not a gap.
+                    for tally in self._playing.values():
+                        tally.missing = 0
+                    self._ended |= self._playing
+                    self._playing = {}
+        for tally in self._playing.values():
             tally.missing += missing
+        for tally in (*self._playing.values(), *self._ended.values()):
             tally.late += late
+
+    def closed(self) -> None:
+        """The stream closed: every synthesis still held is finished, as far as it played."""
+        self._finish([*self._playing, *self._ended])
+
+    def _tally(self, synthesis: Synthesis) -> _Tally:
+        # One that ended stays ended until it is finished.
+        return self._ended[synthesis] if synthesis in self._ended else self._playing.setdefault(synthesis, _Tally())
 
     def _finish(self, syntheses: list[Synthesis]) -> None:
         for synthesis in syntheses:
-            tally = self._open.pop(synthesis)
+            tally = self._ended.pop(synthesis) if synthesis in self._ended else self._playing.pop(synthesis)
             self.finished(Delivered(synthesis, tally.made, self._ms(tally.played), tally.gaps, self._ms(tally.gap), tally.late))
 
     def _ms(self, length: int) -> float:
