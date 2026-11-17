@@ -109,7 +109,8 @@ def main() -> None:
     channels = np.stack([as_float(heard), as_float(captured), as_float(track(tuple(played)))], axis=1)
     soundfile.write(f"{FIXTURE}.flac", channels, RATE, subtype="PCM_16")
     # Where the speaker's timeline falls on the recording's, which began as the microphone opened: the first slot the
-    # canceller matched with hands' speech, less how far into its sentence that was and when the sentence began.
+    # canceller matched with hands' speech, less how far into its sentence that was and when the sentence began: to
+    # within a 20 ms buffer, and early by it, not late, as the buffer a sentence begins in is placed at its start.
     first = next(reference for reference in played if reference is not None)
     offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]

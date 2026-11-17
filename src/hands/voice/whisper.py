@@ -223,9 +223,9 @@ def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list
     [LAW:single-enforcer] the one rule of whose words are hands', of the words of hands' `placed`: those the canceller
     left in (`_left`), which is all of them heard through no canceller. Each word Whisper heard is hands' where each word
     of it takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the
-    nearest in time. A person's word that hands said within that time is
-    taken for hands': by text and time, the two are the same. A segment none of whose words is hands' is sent as Whisper
-    wrote it, as is every segment of a clip hands played nothing over, whose words were never timed."""
+    nearest in time. A person's word that hands said within that time is taken for hands': by text and time, the two are
+    the same. A segment none of whose words is hands' is sent as Whisper wrote it, as is every segment of a clip hands
+    played nothing over, whose words were never timed."""
     free = placed
     said: list[str] = []
     echo: list[str] = []
