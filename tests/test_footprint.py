@@ -12,17 +12,19 @@ from hands import footprint
 MEGABYTE = 2**20
 
 
+# Each hold is random bytes, which macOS cannot compress: under the full suite's memory pressure it compresses what it can, and the
+# footprint counts a compressed page at its compressed size, so an array of ones was once measured at 153 of its 200 MB.
 def numpy_array(size: int) -> object:
-    held = np.ones(size, np.uint8)
-    assert held.sum() == size
-    return held
+    return np.random.default_rng(0).integers(0, 256, size, np.uint8)
 
 
 def mlx_array(size: int) -> object:
     # Written by MLX's default device: on Metal, memory the resident set size never counts.
     # A buffer an earlier test let go of is not taken back from MLX's cache: it is grown anew, as a model's load grows it.
     mx.clear_cache()
-    held = mx.ones((size,), dtype=mx.uint8)
+    # Drawn as 32-bit words: drawn as bytes, each is cut from a word of random bits, which grows the process by four times
+    # the array, and clearing MLX's cache does not give that back.
+    held = mx.random.randint(0, 2**31, (size // 4,), dtype=mx.uint32, key=mx.random.key(0)).view(mx.uint8)
     mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
     return held
 
