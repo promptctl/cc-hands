@@ -52,7 +52,7 @@ class Whisper:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
-            # Silero, which says how sure it is that anyone spoke in a segment; run on the model's thread alone.
+            # Silero, which says how sure it is that anyone spoke in a segment; run on its own thread alone.
             self._silero = SileroOnnxModel(str(_SILERO))
             annotate(model=transcription.MODEL, revision=transcription.REVISION)
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
@@ -61,6 +61,9 @@ class Whisper:
         # [LAW:single-enforcer] the one thread the model runs on: a transcription given up on is still running, and the
         # next must not run beside it.
         self._model = SerialThread("Whisper")
+        # Silero's pass over a clip, a few milliseconds, on a thread of its own: it waits on the clip's identification,
+        # and must not then wait behind the next clip's decode.
+        self._voicing = SerialThread("Silero")
 
     async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
         """The words a person said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke
@@ -87,7 +90,7 @@ class Whisper:
             # only Silero's pass, a few milliseconds, waits on who they were.
             segments = await self._model.run(lambda: [] if given_up.is_set() else transcription.segments(samples, prompt))
             people = _silenced(samples, (await identified).echo)
-            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(segments, people))
+            scored = await self._voicing.run(lambda: [] if given_up.is_set() else self._scored(segments, people))
         finally:
             given_up.set()
         said: list[str] = []

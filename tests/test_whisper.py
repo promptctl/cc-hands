@@ -2,6 +2,7 @@
 model, and what hands takes as said from the segments it answers with."""
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -187,6 +188,32 @@ async def test_whisper_hears_a_clip_while_its_speakers_are_still_being_identifie
     assert not transcribing.done()
     pending.set_result(Identified(None, ()))
     assert await transcribing == "Okay."
+
+
+async def test_a_clips_words_wait_on_its_identification_and_not_behind_the_next_clips_decode(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    decoding, released = threading.Event(), threading.Event()
+    decoded: list[int] = []
+
+    def segments(samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+        decoded.append(len(decoded))
+        if len(decoded) == 2:
+            # The second clip's decode holds the model's thread until the test lets it go.
+            decoding.set()
+            released.wait(10)
+        return [transcription.Segment("Okay.", 0.0, len(samples) / 16_000, 0.8, -0.3)]
+
+    monkeypatch.setattr(transcription, "segments", segments)
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=lambda _: None)
+    pending: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
+    first = asyncio.create_task(whisper.transcribed(clip(1), SPOKEN, pending))
+    second = asyncio.create_task(whisper.transcribed(clip(2), SPOKEN, identified()))
+    await asyncio.to_thread(decoding.wait, 10)
+    pending.set_result(Identified(None, ()))
+    try:
+        assert await asyncio.wait_for(first, 5) == "Okay."
+    finally:
+        released.set()
+    assert await second == "Okay."
 
 
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:

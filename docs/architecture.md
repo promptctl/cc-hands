@@ -1926,17 +1926,20 @@ the event loop and cuts only while that clip is still open. Each clip's end is s
 path, nobody cleared where the identification failed.
 
 The same last identification decides which of a clip's words reach the brain. Where a clip
-holds only speakers who may be hands' echo (`voiceprints.echo`: ones hands played over who are
-not a `Person`), and no one else was heard in the same frames, those stretches are hands' own.
+holds only speakers heard as hands' echo (`voiceprints.echo`: ones hands played over whose
+voiceprint found hands, `Hands` or `Unsure`), and no one else was heard in the same frames, those
+stretches are hands' own.
 Whisper decodes the whole clip while the lane is still working. It then scores each segment with
-Silero over the clip with those stretches silenced, so a segment heard only in hands' voice is
+Silero, on a thread of its own, over the clip with those stretches silenced, so a segment heard only in hands' voice is
 dropped by the same floor that drops one nobody spoke in (`hands.voice.whisper`). A turn of hands'
 echo alone sends nothing, and its `clip` event says `transcript` none with `echo_seconds`. A
 frame a person shares with hands is the person's, so what they say over hands goes. A clip hands
 played nothing over waits on no identification. One that misses `IDENTIFIED_SECONDS` keeps every
 word, because losing a person's words costs more than one turn of hands' echo. On the recorded
-echo, seven of eight sentences ended `Unsure` rather than `Hands`, which is why every speaker
-who is not a person counts (`tests/test_streaming.py`).
+echo, seven of eight sentences ended `Unsure` rather than `Hands`, which is why `Unsure`
+counts, though people over hands have scored in that band too (the table's notes in
+`hands.voice.voiceprints`). A speaker heard too briefly to score, or not scored at all, could be
+anyone, so their words go, though they cut nothing (`tests/test_streaming.py`).
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
