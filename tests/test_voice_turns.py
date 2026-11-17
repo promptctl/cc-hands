@@ -529,7 +529,8 @@ async def test_a_clip_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.clip(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.texts.put("")
-        await rig.until(lambda: user_turns(rig) == [("on a person", False)])
+        # The line is recorded as Pipecat stops the turn, ahead of the stop reaching the end of the pipeline.
+        await rig.until(lambda: user_turns(rig) == [("on a person", False)] and rig.out.stopped == 1)
         # The turn took the floor and nothing over: nothing behind it heard the user start, so the model's reply streams
         # on and runs on a tool's result, the reading plays on, and the line waits.
         assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (0, 1, 0, [], False)
