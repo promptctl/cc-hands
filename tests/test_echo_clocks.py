@@ -15,6 +15,7 @@ import numpy as np
 
 from hands.voice.echo import Echo, EchoCanceller
 from hands.voice.microphone import Playout, Pull
+from hands.voice.synthesis import Delivered, Synthesis
 
 PLAYED_RATE, HEARD_RATE = 24000, 16000
 TICKS = 48000  # the clock's ticks a second: a whole number of them to every sample at either rate
@@ -32,7 +33,7 @@ NOISE = 33.0  # the room's floor, about -60 dBFS
 class Speaker(Protocol):
     """Hands' side of a speaker device: written to by the pipeline, taken from by the device's callback."""
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None: ...
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None: ...
     def take(self, frames: int) -> bytes: ...
 
 
@@ -41,14 +42,15 @@ class Playing:
 
     def __init__(self, echo: Echo) -> None:
         self._pull: Pull | None = None
-        self.playout = Playout(self._opened, echo, PLAYED_RATE, 1, _unfailing)
+        self.delivered: list[Delivered] = []
+        self.playout = Playout(self._opened, echo, PLAYED_RATE, 1, _unfailing, self.delivered.append)
 
     def _opened(self, pull: Pull) -> "Playing":
         self._pull = pull
         return self
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
-        self.playout.write(audio, voices)
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None:
+        self.playout.write(audio, syntheses)
 
     def take(self, frames: int) -> bytes:
         assert self._pull is not None

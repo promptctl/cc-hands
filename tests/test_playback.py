@@ -6,10 +6,10 @@ from contextlib import asynccontextmanager
 from functools import reduce
 
 import pytest
-from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSSpeakFrame, TTSTextFrame
+from pipecat.frames.frames import AggregatedTextFrame, Frame, InterruptionFrame, TTSAudioRawFrame, TTSSpeakFrame, TTSTextFrame
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameCallback, FrameDirection, FrameProcessor
-from pipecat.services.pocket_tts.tts import PocketTTSSettings
+from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings
 from pipecat.services.tts_service import TTSService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.text.base_text_aggregator import AggregationType
@@ -45,7 +45,9 @@ from hands.sessions.wide import WideEvent
 from hands.voice.player import LineFrame, LineText, Player, Unsaid, line_frame, said
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import audited, playback_tools
-from hands.voice.voices import SaidInTTS
+from hands.virtualclock import VirtualClock
+from hands.voice.synthesis import Made
+from hands.voice.voices import SaidInTTS, SpeakingIn
 
 # What happens at the speaker, as the taps report it: a line handed to it (a sentence's text is a sentence of the brain's),
 # one played to its end, the user cutting in.
@@ -409,6 +411,26 @@ async def test_hands_tts_hands_each_line_on_still_whose_it_is_and_says_which_it_
         [unsaid] = await heard.until(1, Unsaid)
     assert isinstance(handed, LineText) and handed.line == DRAFT and handed.will_be_spoken
     assert isinstance(unsaid, Unsaid) and unsaid.line == hands_says("  ")
+
+
+async def test_hands_tts_says_each_synthesis_ahead_of_its_audio_and_how_long_it_took_to_make_behind_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = VirtualClock()
+
+    async def making(_self: object, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
+        clock.at += 0.25
+        yield TTSAudioRawFrame(audio=bytes(24000), sample_rate=24000, num_channels=1, context_id=context_id)  # half a second
+        clock.at += 0.25
+        yield TTSAudioRawFrame(audio=bytes(24000), sample_rate=24000, num_channels=1, context_id=context_id)
+
+    monkeypatch.setattr(PocketTTSService, "run_tts", making)
+    tts = Stubbed()
+    tts._clock = clock  # pyright: ignore[reportPrivateUsage]  (Stubbed loads no model, so it is not made with one)
+    frames = [frame async for frame in SaidInTTS.run_tts(tts, "Hello there.", "reply")]
+    assert [type(frame) for frame in frames] == [SpeakingIn, TTSAudioRawFrame, TTSAudioRawFrame, Made]
+    speaking, made = frames[0], frames[-1]
+    assert isinstance(speaking, SpeakingIn) and isinstance(made, Made)
+    assert speaking.synthesis.voice == "alba"
+    assert (made.synthesis, made.making, made.audio) == (speaking.synthesis, 0.5, 1.0)
 
 
 async def test_hands_tts_refuses_a_line_that_says_not_whose_it_is() -> None:

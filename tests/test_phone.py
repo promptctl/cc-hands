@@ -25,6 +25,7 @@ from pipecat.transports.local.audio import LocalAudioTransportParams
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry
+from hands.voice.synthesis import Ended, Made, Synthesis
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
 from hands.voice import phone as phone_module
@@ -536,8 +537,10 @@ class Desk:
     def __init__(self) -> None:
         self.written: list[bytes] = []
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None:
         self.written.append(audio)
+
+    def mark(self, mark: Made | Ended) -> None: ...
 
     def get_output_latency(self) -> float:
         return 0.0

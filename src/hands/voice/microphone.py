@@ -54,12 +54,13 @@ from hands.voice import coreaudio
 from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
-from hands.sessions.wide import annotate, begun, count, unit
+from hands.sessions.wide import annotate, begun, continuing, count, unit
 from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
 from hands.voice.phone import Phone
 from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
 from hands.voice.ptt import Key, PushToTalk
 from hands.voice.turnstop import TurnOpened
+from hands.voice.synthesis import Delivered, Ended, Made, Run, Synthesis, Tallies, Written, voices
 from hands.voice.voices import SpeakingIn
 from hands.threads import SerialThread, off_loop
 
@@ -77,6 +78,9 @@ WRITE_AHEAD_SECS = 0.14
 # What a playout counts over its life: 10 ms frames the device took; of those, frames it took with nothing written,
 # played as silence; and callbacks PortAudio said came too late, the device having played a gap before them.
 PLAYOUT_COUNTS = ("pulled", "unwritten", "underflowed")
+
+# What each synthesis's event counts: the gaps inside it, and callbacks PortAudio said came too late while it played.
+SPEECH_COUNTS = ("gaps", "late")
 
 # How long a reopen may take before the run gives up on reopening in place. Closing a microphone whose device is
 # gone was measured at 2.7 to 3.7 s; a reopen that never finishes fails the run, which reads as down, and the next
@@ -107,7 +111,8 @@ class Stream(Protocol):
 class Playback(Stream, Protocol):
     """A stream the speaker writes to."""
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None: ...
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None: ...
+    def mark(self, mark: Made | Ended) -> None: ...
     def counts(self) -> dict[str, int]: ...
 
 
@@ -124,10 +129,12 @@ class Playout:
     device's buffers and the microphone's; AEC3 met each move as a new echo path, and let the reading's opening through.
 
     A write fills WRITE_AHEAD_SECS of waiting sound as the device makes room in it, as a blocking stream's write fills
-    its buffer.
+    its buffer. What the device made of each synthesis is handed to `delivered` as it takes the last of it, on its thread.
     """
 
-    def __init__(self, opening: Callable[[Pull], Stream], echo: Echo, sample_rate: int, channels: int, failed: Callable[[Exception], None]) -> None:
+    def __init__(
+        self, opening: Callable[[Pull], Stream], echo: Echo, sample_rate: int, channels: int, failed: Callable[[Exception], None], delivered: Callable[[Delivered], None]
+    ) -> None:
         self._echo = echo
         self._rate = sample_rate
         self._channels = channels
@@ -137,17 +144,19 @@ class Playout:
         # [LAW:no-shared-mutable-globals] written by the speaker's writer thread, taken by the device's callback, under
         # the one condition, which wakes a waiting write as the device takes sound and as the stream stops.
         self._waiting = bytearray()
-        # The voices of hands' TTS in what is waiting, in order: how many bytes of it each run of voices is.
-        self._voiced: deque[tuple[int, tuple[str, ...]]] = deque()
+        # What is waiting, in order: how many bytes of it each write was, with its syntheses, and the marks between.
+        self._written: deque[Written] = deque()
         self._room = threading.Condition()
         self._stopped = False
         # [LAW:nothing-unseen] read onto the speaker's event as it is let go of; written by the device's callback alone.
         self._counts: dict[str, int] = dict.fromkeys(PLAYOUT_COUNTS, 0)
+        # Taken by the device's callback alone, and by the close once it has stopped.
+        self._tallies = Tallies(sample_rate * channels * SAMPLE_BYTES, delivered)
         self._stream = opening(self._pull)
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
-        """Queue sound behind what is waiting, as there is room for it, with the `voices` of hands' TTS in it. A stopped
-        stream refuses it, as PortAudio's does."""
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None:
+        """Queue sound behind what is waiting, as there is room for it, with the `syntheses` of hands' TTS in it. A
+        stopped stream refuses it, as PortAudio's does."""
         with self._room:
             while audio:
                 self._room.wait_for(lambda: self._stopped or len(self._waiting) < self._ahead_bytes)
@@ -155,8 +164,13 @@ class Playout:
                     raise OSError("the speaker stream is stopped")
                 room = self._ahead_bytes - len(self._waiting)
                 self._waiting += audio[:room]
-                self._voiced.append((len(audio[:room]), voices))
+                self._written.append(Run(len(audio[:room]), syntheses))
                 audio = audio[room:]
+
+    def mark(self, mark: Made | Ended) -> None:
+        """Queue `mark` behind what is waiting, for the device to reach in its turn."""
+        with self._room:
+            self._written.append(mark)
 
     def counts(self) -> dict[str, int]:
         """What the device has taken so far, by the names in PLAYOUT_COUNTS."""
@@ -175,6 +189,9 @@ class Playout:
 
     def close(self) -> None:
         self._stream.close()
+        # Closed once the callback has stopped and no write is inside: what was still playing ends here, delivered as far
+        # as it played.
+        self._tallies.took([Ended()], 0, False)
 
     def _pull(self, in_data: bytes | None, frame_count: int, time_info: object, status: int) -> tuple[bytes, int]:
         # [LAW:dataflow-not-control-flow] the device takes a whole buffer every time: what is waiting, then silence.
@@ -182,11 +199,11 @@ class Playout:
         with self._room:
             taken = bytes(self._waiting[:size])
             del self._waiting[:size]
-            voices = self._taken_voices(len(taken))
+            written = self._taken(len(taken))
             self._room.notify_all()
         played = taken + bytes(size - len(taken))
         try:
-            self._echo.played(played, self._rate, self._channels, voices)
+            self._echo.played(played, self._rate, self._channels, voices(written))
         except Exception as error:
             # [LAW:no-silent-failure] PyAudio would abort the stream and say so only on stderr, leaving hands mute.
             self._failed(error)
@@ -194,21 +211,27 @@ class Playout:
         self._counts["pulled"] += size // self._frame_bytes
         self._counts["unwritten"] += (size - len(taken)) // self._frame_bytes
         self._counts["underflowed"] += bool(status & pyaudio.paOutputUnderflow)
+        self._tallies.took(written, size - len(taken), bool(status & pyaudio.paOutputUnderflow))
         return played, pyaudio.paContinue
 
-    def _taken_voices(self, taken: int) -> tuple[str, ...]:
-        """The voices in the `taken` bytes just taken from what is waiting, let go of from its runs; under the condition."""
-        voices = dict[str, None]()
-        while taken:
-            length, run = self._voiced.popleft()
-            voices |= dict.fromkeys(run)
-            match length > taken:
-                case True:
-                    self._voiced.appendleft((length - taken, run))
-                    taken = 0
-                case False:
+    def _taken(self, taken: int) -> list[Written]:
+        """What was written of the `taken` bytes just taken from what is waiting, in order, with every mark the device
+        reached, let go of from what is written; under the condition."""
+        reached: list[Written] = []
+        while self._written:
+            match self._written[0]:
+                case Run(length=length, syntheses=syntheses) if length > taken:
+                    # The device stops partway through this write: it takes what it took, and the rest waits.
+                    self._written[0] = Run(length - taken, syntheses)
+                    reached.append(Run(taken, syntheses))
+                    return reached
+                case Run(length=length) as run:
                     taken -= length
-        return tuple(voices)
+                    reached.append(run)
+                case mark:
+                    reached.append(mark)
+            self._written.popleft()
+        return reached
 
 
 class NoInput:
@@ -236,19 +259,24 @@ class NoOutput:
     without a device; only this value differs. A write waits until no more than WRITE_AHEAD_SECS of what was written is
     yet to play, as a device's playout does, so the pipeline's hearing of its own speech, which the write paces, is the
     same with the speaker off. The wait is to a deadline, so the time a wait overshoots is not added to the next.
+
+    Each synthesis is delivered as the dropping reaches the last of it, whole and with no gap, as nothing is late.
     """
 
-    def __init__(self, clock: Clock, sample_rate: int, channels: int) -> None:
+    def __init__(self, clock: Clock, sample_rate: int, channels: int, delivered: Callable[[Delivered], None]) -> None:
         self._clock = clock
         self._bytes_per_second = sample_rate * channels * SAMPLE_BYTES
         self._plays_until = clock.now()
         self._stopped = False
         self._stop = queue.SimpleQueue[None]()
+        # Taken by the writer thread alone, and by the close once no write is inside.
+        self._tallies = Tallies(self._bytes_per_second, delivered)
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, syntheses: tuple[Synthesis, ...]) -> None:
         """Take `audio`; a stopped stream refuses it, as PortAudio's does, and releases a write waiting out its time."""
         if self._stopped:
             raise OSError("the speaker stream is stopped")
+        self._tallies.took([Run(len(audio), syntheses)], 0, False)
         now = self._clock.now()
         self._plays_until = max(self._plays_until, now) + len(audio) / self._bytes_per_second
         try:
@@ -256,6 +284,9 @@ class NoOutput:
         except queue.Empty:
             return
         raise OSError("the speaker stream is stopped")
+
+    def mark(self, mark: Made | Ended) -> None:
+        self._tallies.took([mark], 0, False)
 
     def counts(self) -> dict[str, int]:
         return dict.fromkeys(PLAYOUT_COUNTS, 0)
@@ -268,7 +299,8 @@ class NoOutput:
         self._stop.put(None)
 
     def close(self) -> None:
-        pass
+        # Closed once no write is inside, as a device's stream is.
+        self._tallies.took([Ended()], 0, False)
 
 
 @dataclass(frozen=True)
@@ -332,11 +364,11 @@ class Speaker(LocalAudioOutputTransport):
         self._speaking: set[Literal["hands", "user"]] = set()
         self.quiet = asyncio.Event()
         self.quiet.set()
-        # [LAW:one-source-of-truth] the voice hands' TTS said its last utterance in, as the TTS said so ahead of its
-        # audio (`hands.voice.voices.SpeakingIn`), and the voices of the next chunk written: Pipecat's sender joins
+        # [LAW:one-source-of-truth] hands' TTS's last synthesis, as the TTS said so ahead of its audio
+        # (`hands.voice.voices.SpeakingIn`), and the syntheses of the next chunk written: Pipecat's sender joins
         # utterances into its chunks, so the first chunk after a new one may hold the end of the one before.
-        self._voice: str | None = None
-        self._chunk_voices: tuple[str, ...] = ()
+        self._synthesis: Synthesis | None = None
+        self._chunk: tuple[Synthesis, ...] = ()
 
     @property
     def hands_speaking(self) -> bool:
@@ -360,7 +392,7 @@ class Speaker(LocalAudioOutputTransport):
 
         match _opening(self._choice, py_audio, "maxOutputChannels"):
             case Off():
-                return Output(NoOutput(self._clock, self.sample_rate, self._params.audio_out_channels), Off(), echo)
+                return Output(NoOutput(self._clock, self.sample_rate, self._params.audio_out_channels, self._delivered), Off(), echo)
             case Found(index=index, name=name):
                 return Output(self._playout(py_audio, echo, index), name, echo)
             case Absent(name=name):
@@ -386,6 +418,7 @@ class Speaker(LocalAudioOutputTransport):
             self.sample_rate,
             self._params.audio_out_channels,
             self._failed,
+            self._delivered,
         )
 
     def attach(self, py_audio: PortAudio, opened: Output) -> None:
@@ -423,6 +456,28 @@ class Speaker(LocalAudioOutputTransport):
             finally:
                 count(**opened.stream.counts())
 
+    def _delivered(self, delivered: Delivered) -> None:
+        # On the device's thread, or the writer's where there is no device; the event is emitted on the loop.
+        self.get_event_loop().call_soon_threadsafe(self._report, delivered)
+
+    def _report(self, delivered: Delivered) -> None:
+        # [LAW:nothing-unseen] one event for each synthesis, timed from its making to the device taking its last frame.
+        with continuing(None), unit("speech", self._record, delivered.synthesis.begun, SPEECH_COUNTS):
+            annotate(voice=delivered.synthesis.voice, played_ms=delivered.played_ms, gap_ms=delivered.gap_ms)
+            count(gaps=delivered.gaps, late=delivered.late)
+            match delivered.made:
+                case Made(making=making, audio=audio):
+                    annotate(made_ms=round(making * 1000, 3), audio_ms=round(audio * 1000, 3), rtf=round(making / audio, 3) if audio else None)
+                case None:
+                    # The TTS was stopped before it finished making it.
+                    annotate(made_ms=None)
+
+    async def _mark(self, mark: Made | Ended) -> None:
+        # Behind every write handed over before it, on the stream attached when it comes, as a frame is written.
+        await self._attached.wait()
+        opened = cast(Attached, self.opened)
+        opened.writes.give(lambda: opened.stream.mark(mark))
+
     def _failed(self, error: Exception) -> None:
         # On the device's thread, as the microphone's capture fails on its own.
         asyncio.run_coroutine_threadsafe(self._fail(error), self.get_event_loop())
@@ -445,14 +500,17 @@ class Speaker(LocalAudioOutputTransport):
                 self._speaking.add("hands")
             case BotStoppedSpeakingFrame():
                 self._speaking.discard("hands")
+                await self._mark(Ended())
             case TurnOpened():
                 # The user is speaking from their turn's first clip, before it cuts anything off.
                 self._speaking.add("user")
             case UserStoppedSpeakingFrame():
                 self._speaking.discard("user")
-            case SpeakingIn(voice=voice):
-                self._chunk_voices = tuple(dict.fromkeys((*self._chunk_voices, voice)))
-                self._voice = voice
+            case SpeakingIn(synthesis=synthesis):
+                self._chunk = tuple(dict.fromkeys((*self._chunk, synthesis)))
+                self._synthesis = synthesis
+            case Made():
+                await self._mark(frame)
             case _:
                 pass
         if self._speaking:
@@ -464,7 +522,7 @@ class Speaker(LocalAudioOutputTransport):
     async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
         # [LAW:one-source-of-truth] the gate says where hands is, read as each frame is written: a reply carries on at
         # the place the user has moved to. The phone's earbuds keep its microphone clear, so the canceller is not told.
-        voices = self._voiced(frame)
+        syntheses = self._spoken(frame)
         match self._key.gate.place:
             case "phone":
                 if frame.audio.count(0) != len(frame.audio):
@@ -472,19 +530,19 @@ class Speaker(LocalAudioOutputTransport):
                 await self._phone.play(frame.audio)
                 return True
             case "desk":
-                return await self._write_here(frame, voices)
+                return await self._write_here(frame, syntheses)
 
-    def _voiced(self, frame: OutputAudioRawFrame) -> tuple[str, ...]:
-        """The voices of hands' TTS in `frame`: those of the chunk for a chunk of TTS audio, none for the silence and
+    def _spoken(self, frame: OutputAudioRawFrame) -> tuple[Synthesis, ...]:
+        """The syntheses of hands' TTS in `frame`: those of the chunk for a chunk of TTS audio, none for the silence and
         padding the transport writes of its own."""
         match frame:
             case TTSAudioRawFrame():
-                voices, self._chunk_voices = self._chunk_voices, () if self._voice is None else (self._voice,)
-                return voices
+                syntheses, self._chunk = self._chunk, () if self._synthesis is None else (self._synthesis,)
+                return syntheses
             case _:
                 return ()
 
-    async def _write_here(self, frame: OutputAudioRawFrame, voices: tuple[str, ...]) -> bool:
+    async def _write_here(self, frame: OutputAudioRawFrame, syntheses: tuple[Synthesis, ...]) -> bool:
         # [LAW:dataflow-not-control-flow] every frame is written; one that comes while the transport reopens waits for
         # the new stream, so a reply carries on over the move instead of losing its middle.
         await self._attached.wait()
@@ -495,7 +553,7 @@ class Speaker(LocalAudioOutputTransport):
             # interruption cancels the await, but the chunk already handed to that thread plays out all the same.
             if frame.audio.count(0) != len(frame.audio):
                 self.sounded_at = self._clock.now()
-            opened.stream.write(frame.audio, voices)
+            opened.stream.write(frame.audio, syntheses)
 
         await opened.writes.run(write)
         return True

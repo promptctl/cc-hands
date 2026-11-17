@@ -14,7 +14,7 @@ from typing import Any, NewType, cast
 import numpy as np
 import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
-from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, TTSSpeakFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import AggregatedTextFrame, DataFrame, Frame, TTSAudioRawFrame, TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
@@ -25,8 +25,12 @@ from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
+from hands.clock import Clock
 from hands.core.playback import Line, hands_says
 from hands.sessions.files import replace_whole
+from hands.sessions.wide import begun, continuing
+from hands.voice.echo import SAMPLE_BYTES
+from hands.voice.synthesis import Made, Synthesis
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.voice.clips import RATE, Samples
@@ -217,11 +221,11 @@ class Voices:
 
 @dataclass
 class SpeakingIn(DataFrame):
-    """The voice the audio behind it, to the next of these, was made in, as the TTS service was handed it (`source`):
+    """The synthesis the audio behind it, to the next of these, is, in the voice the TTS service was handed (`source`):
     sent by hands' TTS ahead of each utterance, and queued by Pipecat's sender in line with the audio, so the speaker
-    knows the voice of each chunk it plays."""
+    knows the synthesis and the voice of each chunk it plays."""
 
-    voice: str
+    synthesis: Synthesis
 
 
 class SaidInTTS(PocketTTSService):
@@ -232,12 +236,16 @@ class SaidInTTS(PocketTTSService):
     call, so no change falls between the two. Nothing reads the service's voice after the fact.
 
     It also hands each line of hands' on still whose it is, as the `LineText` Pipecat pushes ahead of its audio, and says
-    which it dropped (`Unsaid`).
+    which it dropped (`Unsaid`); and behind each utterance's audio, how long it took to make (`Made`).
     """
 
     # The line whose LineFrame is being made into speech, for the one call that makes it (`_push_tts_frames`): None while
     # the model's text is.
     _making: Line | None = None
+
+    def __init__(self, clock: Clock, **kwargs: Any) -> None:
+        super().__init__(**kwargs)  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
+        self._clock = clock
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         match frame:
@@ -268,11 +276,19 @@ class SaidInTTS(PocketTTSService):
                     await self.push_frame(Unsaid(line))
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
-        yield SpeakingIn(require_given(self._settings.voice, "Pocket TTS voice"))
+        # Its own trace: an utterance is made for whatever turn or session gave hands the line, which none of the TTS knows.
+        with continuing(None):
+            synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), begun(self._clock))
+        yield SpeakingIn(synthesis)
         # Pipecat's tracing decorator leaves the method untyped.
         said = cast(Callable[[str, str], AsyncGenerator[Frame | None, None]], super().run_tts)  # pyright: ignore[reportUnknownMemberType]
+        audio = 0.0
         async for frame in said(text, context_id):
+            if isinstance(frame, TTSAudioRawFrame):
+                audio += len(frame.audio) / (frame.sample_rate * frame.num_channels * SAMPLE_BYTES)
             yield frame
+        # Not reached where a barge-in stops the making: that synthesis was never made whole.
+        yield Made(synthesis, self._clock.now() - synthesis.begun.began, audio)
 
 
 def pocket() -> Synthesize:
