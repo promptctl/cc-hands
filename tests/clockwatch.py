@@ -131,6 +131,7 @@ UNMOVED = frozenset({
     "test_wake.py",
     "test_watchdog.py",
     "test_whisper.py",
+    "test_whisper_recorded.py",
     "test_wide.py",
     "test_wrapper.py",
     "timeouts.py",
