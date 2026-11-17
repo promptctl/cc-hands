@@ -79,11 +79,13 @@ class Transcribed:
 
 @dataclass(frozen=True)
 class Unsaid:
-    """A segment Whisper transcribed and hands dropped as not said, with the scores it was dropped for."""
+    """A segment Whisper transcribed and hands dropped as not said, with the scores it was dropped for: Whisper's two, and
+    how sure Silero was that anyone spoke in it, from 0 to 1."""
 
     text: str
     compression_ratio: float
     avg_logprob: float
+    voiced: float
 
 
 @dataclass(frozen=True)

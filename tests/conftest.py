@@ -49,7 +49,7 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import library, streaming, voiceprints
+from hands.voice import library, streaming, transcription, voiceprints
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -287,6 +287,7 @@ def no_whisper_weights(monkeypatch: pytest.MonkeyPatch) -> None:
     def transcribe(_audio: object, **_options: object) -> dict[str, object]:
         return {"segments": []}
 
+    monkeypatch.setattr(transcription, "weights", lambda: f"{transcription.MODEL}@{transcription.REVISION}")
     monkeypatch.setattr(mlx_whisper, "transcribe", transcribe)
 
 

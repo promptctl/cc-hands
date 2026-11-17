@@ -40,7 +40,7 @@ from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -1043,7 +1043,7 @@ async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, mon
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     returns, begun = threading.Event(), list[None]()
 
-    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+    def stuck(samples: np.ndarray, prompt: str | None) -> list[transcription.Segment]:
         begun.append(None)
         returns.wait()
         return []
