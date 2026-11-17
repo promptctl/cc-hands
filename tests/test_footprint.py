@@ -22,9 +22,10 @@ def mlx_array(size: int) -> object:
     # Written by MLX's default device: on Metal, memory the resident set size never counts.
     # A buffer an earlier test let go of is not taken back from MLX's cache: it is grown anew, as a model's load grows it.
     mx.clear_cache()
-    # Drawn as 32-bit words: drawn as bytes, each is cut from a word of random bits, which grows the process by four times
-    # the array, and clearing MLX's cache does not give that back.
-    held = mx.random.randint(0, 2**31, (size // 4,), dtype=mx.uint32, key=mx.random.key(0)).view(mx.uint8)
+    # Raw Threefry bits, as split keys: randint draws through a float32 uniform, whose words are part zeros a compressor
+    # takes, and drawn as bytes it grows the process by its float32 draw, four times the array, which clearing MLX's cache
+    # does not give back.
+    held = mx.random.split(mx.random.key(0), size // 8).view(mx.uint8)
     mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
     return held
 
