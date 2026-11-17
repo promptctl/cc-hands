@@ -111,7 +111,7 @@ def build_voice(
         # own reply alike, so this is the one place all of them meet before they are heard.
         # It also decides the reply the audit log records, which is built from what a filter returned: what the user heard,
         # never what was sent to the speaker. See voice/spoken.py, which also records what it costs.
-        tts = SaidInTTS(settings=SaidInTTS.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
+        tts = SaidInTTS(clock=clock, settings=SaidInTTS.Settings(voice=voices.source(config.voice), language=voices.LANGUAGE), text_filters=[SpokenForm()])
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())

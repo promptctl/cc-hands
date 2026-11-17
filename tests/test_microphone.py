@@ -17,14 +17,15 @@ from pipecat.utils.asyncio.task_manager import TaskManager
 
 from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, EndWorkerFrame, Frame, InputAudioRawFrame, OutputAudioRawFrame, TTSAudioRawFrame, UserStoppedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection
+from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.local.audio import LocalAudioInputTransport, LocalAudioOutputTransport, LocalAudioTransportParams
 
-from conftest import speaker_writers
+from conftest import Kept, speaker_writers
 
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry, Record
-from hands.sessions.wide import WideEvent
+from hands.sessions.wide import WideEvent, begun
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
 from hands.voice.clips import Played, Reference
@@ -35,6 +36,7 @@ from hands.voice.phone import Phone
 from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.clips import Clip
 from hands.voice.turnstop import TurnOpened
+from hands.voice.synthesis import Made, Piece, Synthesis
 from hands.voice.voices import SpeakingIn
 
 LOUD = b"\x7f\x7f" * 320
@@ -83,7 +85,8 @@ class Rig:
         self.played: list[Played] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-        self.transport = KeyedAudioTransport(self.clock, params, self.key, self.phone, lambda _: None, echo=lambda: self.room)
+        self.events: list[Entry] = []
+        self.transport = KeyedAudioTransport(self.clock, params, self.key, self.phone, self.events.append, echo=lambda: self.room)
         self.speaker = self.transport.output()
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -98,7 +101,9 @@ class Rig:
 
         self.microphone.push_audio_frame = push_audio_frame
         self.microphone.get_event_loop = asyncio.get_running_loop
-        self.speaker.get_event_loop = asyncio.get_running_loop
+        # Pipecat's loop, as fixed as Pipecat's is: a stream says what it played from the threads it plays on.
+        loop = asyncio.get_running_loop()
+        self.speaker.get_event_loop = lambda: loop
 
     async def play(self, audio: bytes, at: float) -> None:
         self.clock.at = at
@@ -131,14 +136,14 @@ class SimpleStream:
     def __init__(self) -> None:
         self.blocking = False
         self.written: list[bytes] = []
-        self.voiced: list[tuple[str, ...]] = []
+        self.pieces: list[list[Piece]] = []
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, pieces: list[Piece]) -> None:
         # A blocking write returns when the device has taken the chunk, about when it has played.
         while self.blocking:
             time.sleep(0.001)
         self.written.append(audio)
-        self.voiced.append(voices)
+        self.pieces.append(pieces)
 
     def get_output_latency(self) -> float:
         return 0.0
@@ -236,7 +241,7 @@ class LostStream:
         self.name = name
         self.stopped = threading.Event()
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, pieces: list[Piece]) -> None:
         self.stopped.wait()
         self.log.append(f"write returned from {self.name}")
         raise OSError(-9986, "Internal PortAudio error")
@@ -314,7 +319,8 @@ def lost_transport(log: list[str], events: list[Entry] | None = None, choices: C
         choices=choices,
     )
     speaker, microphone = transport.output(), transport.input()
-    speaker.get_event_loop = asyncio.get_running_loop
+    loop = asyncio.get_running_loop()
+    speaker.get_event_loop = lambda: loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     speaker._sample_rate = 24000  # pyright: ignore[reportPrivateUsage]
     old = Room(log, "old canceller")
@@ -569,7 +575,7 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone(devices: Rig) -> No
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     written = devices.stream.write
 
-    def stopped(audio: bytes, voices: tuple[str, ...]) -> None:
+    def stopped(audio: bytes, pieces: list[Piece]) -> None:
         raise OSError("Stream is stopped")
 
     devices.stream.write = stopped
@@ -580,36 +586,92 @@ async def test_a_tone_that_fails_to_play_loses_only_the_tone(devices: Rig) -> No
     assert devices.stream.written == [LOUD]
 
 
-async def test_each_chunk_is_written_with_the_voices_hands_tts_made_it_in_and_a_cue_with_none(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
+async def _passed_in(_self: object, frame: Frame, direction: FrameDirection) -> None:
+    """Pipecat's own handling of a frame reaching the speaker: its sender, which these tests stand in for."""
+
+
+async def _heard(devices: Rig, *frames: Frame) -> None:
+    """Frames of hands' TTS reaching the speaker, ahead of Pipecat's sender."""
+    for frame in frames:
+        await devices.speaker.process_frame(frame, FrameDirection.DOWNSTREAM)
+
+
+def _tts(audio: bytes) -> TTSAudioRawFrame:
+    return TTSAudioRawFrame(audio=audio, sample_rate=16000, num_channels=1, context_id="reply")
+
+
+async def test_each_chunk_is_written_in_the_pieces_of_the_syntheses_heard_ahead_of_pipecats_sender(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
-
-    async def passed(_self: object, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM) -> None:
-        pass
-
-    monkeypatch.setattr(LocalAudioOutputTransport, "push_frame", passed)
-    await devices.tts(LOUD, at=1.0)  # before the TTS says any voice: none
-    await devices.speaker.push_frame(SpeakingIn("alba"))
-    await devices.tts(LOUD, at=1.02)
-    await devices.play(LOUD, at=1.03)  # the transport's own silence or padding: no voice, and alba's next chunk keeps hers
-    await devices.tts(LOUD, at=1.04)
-    await devices.speaker.push_frame(SpeakingIn("mary"))
-    # Pipecat's sender joins utterances into its chunks: the first after the change may end alba's last.
-    await devices.tts(LOUD, at=1.06)
-    await devices.tts(LOUD, at=1.08)
+    monkeypatch.setattr(BaseOutputTransport, "process_frame", _passed_in)
+    alba, mary = Synthesis("alba", begun(devices.clock)), Synthesis("mary", begun(devices.clock))
+    await _heard(devices, SpeakingIn(alba), _tts(LOUD + LOUD[:320]), Made(alba, 0.1), SpeakingIn(mary), _tts(LOUD[:320]), Made(mary, 0.1))
+    await devices.tts(LOUD, at=1.0)
+    await devices.play(LOUD, at=1.02)  # the transport's own silence: nobody's
+    await devices.tts(LOUD, at=1.04)  # Pipecat's sender joined alba's end to mary's start
+    await devices.tts(LOUD, at=1.06)  # its padding, flushing a reply's tail
     devices.speaker.cue(OPENED)
     await devices.written()
-    assert devices.stream.voiced == [(), ("alba",), (), ("alba",), ("alba", "mary"), ("mary",), ()]
+    assert devices.stream.pieces == [
+        [Piece(alba, 640)],
+        [Piece(None, 640)],
+        [Piece(alba, 320), Piece(mary, 320)],
+        [Piece(None, 640)],
+        [Piece(None, len(sound(OPENED, 16000, 1)))],
+    ]
+
+
+async def test_hands_tts_at_another_rate_than_the_speakers_is_refused_as_it_reaches_it(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(BaseOutputTransport, "process_frame", _passed_in)
+    with pytest.raises(ValueError, match="spoke at 24000 Hz"):
+        await _heard(devices, TTSAudioRawFrame(audio=LOUD, sample_rate=24000, num_channels=1, context_id="reply"))
+
+
+async def test_each_synthesis_is_one_speech_event_as_the_device_takes_its_last_byte(monkeypatch: pytest.MonkeyPatch, devices: Rig) -> None:
+    devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(BaseOutputTransport, "process_frame", _passed_in)
+    await devices.speaker.let_go(devices.speaker.detach())
+    device = Device()
+    playout = Playout(device.open, devices.room, 16000, 1, _unfailing, devices.speaker._delivery())  # pyright: ignore[reportPrivateUsage]
+    devices.speaker.attach(cast(PortAudio, SimpleNamespace()), Output(playout, "MacBook Pro Speakers", devices.room))
+    devices.events.clear()
+    devices.clock.at = 1.0
+    alba = Synthesis("alba", begun(devices.clock))
+    await _heard(devices, SpeakingIn(alba), _tts(LOUD + LOUD[:320]), Made(alba, 0.3))
+    await devices.tts(LOUD, at=1.3)
+    await devices.written()
+    device.take()
+    device.take()  # the sender stalled: the device finds nothing written, and more of alba's is to come
+    await devices.tts(LOUD[:320] + QUIET[:320], at=1.34)  # her tail, padded as the reply's last chunk is
+    await devices.written()
+    device.take()
+    devices.clock.at = 1.4
+    await asyncio.sleep(0)
+    speech = [event for event in cast(list[WideEvent], devices.events) if event.event == "speech"]
+    assert [(dict(event.counts), event.duration_ms) for event in speech] == [({"gaps": 1, "late": 0}, 400.0)]
+    assert {name: speech[0].facts[name] for name in ("voice", "audio_ms", "played_ms", "gap_ms", "made_ms", "rtf")} == {
+        "voice": "alba",
+        "audio_ms": 30.0,
+        "played_ms": 30.0,
+        "gap_ms": 20.0,
+        "made_ms": 300.0,
+        "rtf": 10.0,
+    }
 
 
 def test_the_canceller_is_given_the_voices_in_each_buffer_the_device_takes() -> None:
     room, device = Room(), Device()
-    playout = Playout(device.open, room, 16000, 1, _unfailing)
-    playout.write(LOUD[:400], ("alba",))
-    playout.write(LOUD[:400], ("mary",))
+    kept = Kept()
+    playout = Playout(device.open, room, 16000, 1, _unfailing, kept)
+    alba, mary = Synthesis("alba", begun(SYSTEM)), Synthesis("mary", begun(SYSTEM))
+    playout.write(LOUD[:400], [Piece(alba, 400)])
+    playout.write(LOUD[:400], [Piece(mary, 400)])
     device.take()  # 640 bytes: all of alba's, and 240 of mary's
     device.take()  # the rest of mary's, then silence
     device.take()  # silence
     assert [voices for *_, voices in room.plays] == [("alba", "mary"), ("mary",), ()]
+    # And the speaker is told the pieces each buffer took, then how much it found missing.
+    assert kept.taken == [([Piece(alba, 400), Piece(mary, 240)], 0, False), ([Piece(mary, 160)], 480, False), ([], 640, False)]
 
 
 async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood(devices: Rig) -> None:
@@ -692,6 +754,10 @@ class Device:
     def close(self) -> None: ...
 
 
+def _nobodys(audio: bytes) -> list[Piece]:
+    return [Piece(None, len(audio))]
+
+
 def _unfailing(error: Exception) -> None:
     raise AssertionError(f"the playout failed: {error}")
 
@@ -700,9 +766,9 @@ def test_the_canceller_is_given_what_the_device_takes_as_it_takes_it_silence_inc
     """The reference keeps the device's time through a silence, so a reading's opening meets its echo where the last
     reading's did: written ahead instead, it moved against its echo by where the first write fell."""
     room, device = Room(), Device()
-    playout = Playout(device.open, room, 16000, 1, _unfailing)
+    playout = Playout(device.open, room, 16000, 1, _unfailing, Kept())
     taken = [device.take()]  # nothing written yet: the device plays silence, and the canceller is given it
-    playout.write(LOUD[:400], ())  # a reading's first chunk, ending partway through the device's next buffer
+    playout.write(LOUD[:400], _nobodys(LOUD[:400]))  # a reading's first chunk, ending partway through the device's next buffer
     taken += [device.take(), device.take()]
     assert [audio for audio, _ in taken] == [QUIET, LOUD[:400] + bytes(240), QUIET]
     assert room.plays == [(audio, 16000, 1, ()) for audio, _ in taken]
@@ -712,7 +778,7 @@ def test_the_canceller_is_given_what_the_device_takes_as_it_takes_it_silence_inc
 
 def test_a_callback_portaudio_says_came_too_late_is_counted() -> None:
     device = Device()
-    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing, Kept())
     assert device.pull is not None
     device.pull(None, 320, {}, pyaudio.paOutputUnderflow)
     device.pull(None, 320, {}, 0)
@@ -721,9 +787,10 @@ def test_a_callback_portaudio_says_came_too_late_is_counted() -> None:
 
 def test_a_write_waits_until_the_write_ahead_has_room_for_all_of_it_and_goes_on_as_the_device_takes_sound() -> None:
     device = Device()
-    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
-    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2), ())  # a write-ahead full but for one sample
-    writing = threading.Thread(target=playout.write, args=(LOUD, ()))
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing, Kept())
+    ahead = bytes(round(16000 * WRITE_AHEAD_SECS) * 2 - 2)
+    playout.write(ahead, _nobodys(ahead))  # a write-ahead full but for one sample
+    writing = threading.Thread(target=playout.write, args=(LOUD, _nobodys(LOUD)))
     writing.start()
     writing.join(0.05)
     assert writing.is_alive()  # waits, as a blocking stream's write does on a buffer without room for it
@@ -735,13 +802,15 @@ def test_a_write_waits_until_the_write_ahead_has_room_for_all_of_it_and_goes_on_
 def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     """What lets a reopen go on when the device is gone and takes nothing more."""
     device = Device()
-    playout = Playout(device.open, Room(), 16000, 1, _unfailing)
-    playout.write(bytes(round(16000 * WRITE_AHEAD_SECS) * 2), ())
+    kept = Kept()
+    playout = Playout(device.open, Room(), 16000, 1, _unfailing, kept)
+    ahead = bytes(round(16000 * WRITE_AHEAD_SECS) * 2)
+    playout.write(ahead, _nobodys(ahead))
     refused: list[OSError] = []
 
     def write() -> None:
         try:
-            playout.write(LOUD, ())
+            playout.write(LOUD, _nobodys(LOUD))
         except OSError as error:
             refused.append(error)
 
@@ -752,20 +821,23 @@ def test_stopping_the_stream_releases_a_waiting_write_and_refuses_it() -> None:
     writing.join(1)
     assert [str(error) for error in refused] == ["the speaker stream is stopped"]
     assert device.log == ["stop"]
+    # Closed, it says what it never played: what was waiting, and the write it refused.
+    playout.close()
+    assert kept.never == [*_nobodys(ahead), *_nobodys(LOUD)]
 
 
 def test_writes_to_no_output_run_no_further_ahead_of_the_sound_than_a_device_lets_them_and_stopping_it_releases_and_refuses_one() -> None:
     """The pipeline's hearing of its own speech is paced by the write, as a device's playout paces it."""
-    nothing = NoOutput(SYSTEM, 1000, 1)
+    nothing = NoOutput(SYSTEM, 1000, 1, Kept())
     began = time.monotonic()
-    nothing.write(bytes(2 * 300), ())  # 300 ms of 16-bit mono at 1 kHz, of which WRITE_AHEAD_SECS is let go ahead
-    nothing.write(bytes(2 * 300), ())
+    nothing.write(bytes(2 * 300), _nobodys(bytes(2 * 300)))  # 300 ms of 16-bit mono at 1 kHz, of which WRITE_AHEAD_SECS is let go ahead
+    nothing.write(bytes(2 * 300), _nobodys(bytes(2 * 300)))
     assert time.monotonic() - began >= 0.6 - WRITE_AHEAD_SECS
     refused: list[OSError] = []
 
     def write() -> None:
         try:
-            nothing.write(bytes(2 * 60_000), ())  # a minute of it
+            nothing.write(bytes(2 * 60_000), _nobodys(bytes(2 * 60_000)))  # a minute of it
         except OSError as error:
             refused.append(error)
 
@@ -873,7 +945,7 @@ async def test_a_side_left_off_opens_no_device_and_the_other_opens_as_chosen(los
     # What hands says goes nowhere, and the speaker writes it as it writes to a device.
     attached = transport.output().opened
     assert attached is not None and isinstance(attached.stream, NoOutput)
-    attached.stream.write(LOUD, ())
+    attached.stream.write(LOUD, _nobodys(LOUD))
     assert attached.stream.counts() == {"pulled": 0, "unwritten": 0, "underflowed": 0}
 
     # Only the speaker off: the microphone is on the default, and hears.

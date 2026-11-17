@@ -50,6 +50,7 @@ from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
 from hands.voice import library, streaming, voiceprints
+from hands.voice.synthesis import Piece
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -380,6 +381,20 @@ def stood_in(clock: Clock, kept: Path) -> voiceprints.Voiceprints:
 
 async def unprimed() -> None:
     """Whisper's prompt where no test is about its vocabulary: none, so it transcribes unprimed."""
+
+
+@dataclass
+class Kept:
+    """A speaker stream's `Delivery`, keeping what it says became of each piece written to it."""
+
+    taken: list[tuple[list[Piece], int, bool]] = field(default_factory=list[tuple[list[Piece], int, bool]])
+    never: list[Piece] = field(default_factory=list[Piece])
+
+    def took(self, pieces: list[Piece], missing: int, late: bool) -> None:
+        self.taken.append((pieces, missing, late))
+
+    def unplayed(self, pieces: list[Piece]) -> None:
+        self.never.extend(pieces)
 
 
 def speaker_writers() -> set[threading.Thread]:

@@ -27,6 +27,7 @@ from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry
 from hands.voice.echo import EchoCanceller
 from hands.voice.microphone import KeyedAudioTransport, Output, PortAudio
+from hands.voice.synthesis import Piece
 from hands.voice import phone as phone_module
 from hands.voice.clips import Clip
 from hands.voice.milestone import ClipOpened, ClipReleased, Milestone, Told
@@ -536,7 +537,7 @@ class Desk:
     def __init__(self) -> None:
         self.written: list[bytes] = []
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, pieces: list[Piece]) -> None:
         self.written.append(audio)
 
     def get_output_latency(self) -> float:
