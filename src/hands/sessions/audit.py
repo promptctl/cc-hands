@@ -98,12 +98,14 @@ class Levels:
 
 @dataclass(frozen=True)
 class ClipHeard:
-    """What Whisper made of one clip: what it took as said, None where nothing was, and each segment it dropped. How loud
-    the clip was is on its `clip` event, beside it."""
+    """What Whisper made of one clip: what it took as said, None where nothing was, each segment it dropped, and how sure
+    Silero was that anyone spoke in it, from 0 to 1, which a clip's segments are all dropped below. How loud the clip was is
+    on its `clip` event, beside it."""
 
     clip: int
     said: str | None
     dropped: tuple[Unsaid, ...]
+    voiced: float
 
 
 @dataclass(frozen=True)

@@ -321,7 +321,7 @@ async def rigged(
     async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
         heard.append(audio)
-        return ClipHeard(clip, await texts.get() or None, ())
+        return ClipHeard(clip, await texts.get() or None, (), 1.0)
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between the clip owner and the user aggregator.
@@ -363,7 +363,7 @@ async def test_a_clips_event_says_how_loud_it_was_before_and_after_the_echo_canc
     await rig.until(lambda: len(clips_told(rig)) == 1)
     [told] = clips_told(rig)
     assert (told.facts["clip"], told.facts["fate"], told.facts["levels"], told.facts["transcript"]) == (1, "sent", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0), "words")
-    assert clips_heard(rig) == [ClipHeard(1, "run", ())]
+    assert clips_heard(rig) == [ClipHeard(1, "run", (), 1.0)]
     # The event is of the audio Whisper was given: the three frames from the press on.
     assert rig.heard[0] == residual * 3
 

@@ -7,16 +7,20 @@ and hands measured it slower: key release to transcript 613 to 724 ms through Lo
 the same six spoken turns, by upload and by its Realtime socket alike (hands-dictation-2bs.kpm, 2026-10-04).
 """
 
+from functools import cache
 from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
+from huggingface_hub import snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
 
 from hands.sessions.audit import Unsaid
 from hands.voice.clips import LANGUAGE, RATE, decoded
 
-# The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load.
+# The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load, at the
+# revision pinned: the weights a test measured are the weights hands runs, and CI keys its cache of them on it.
 MODEL = "mlx-community/whisper-large-v3-turbo"
+REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 
 # A second of silence: what the model is loaded by.
 _SILENCE = np.zeros(RATE, dtype=np.float32)
@@ -42,6 +46,13 @@ def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
     ]
 
 
+@cache
+def weights() -> str:
+    """The directory MODEL's weights are in at REVISION, fetched into the hub's cache if they are not there yet; the hub
+    is not asked again once they are, since a commit names its files for good."""
+    return snapshot_download(MODEL, revision=REVISION)
+
+
 def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
     """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every clip run.
 
@@ -51,6 +62,6 @@ def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
     (promptctl-voice-je8.d20). MLX Whisper then primes only the first window with `prompt`.
     """
     transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
-        audio, path_or_hf_repo=MODEL, temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
+        audio, path_or_hf_repo=weights(), temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
     )
     return cast("list[dict[str, Any]]", transcribed["segments"])
