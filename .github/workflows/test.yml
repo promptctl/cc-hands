@@ -55,28 +55,6 @@ jobs:
         with:
           path: .pytest_cache/d/nltk-data
           key: nltk-data-${{ hashFiles('tests/sentences.py') }}
-      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
-      # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the Hugging Face cache at the
-      # revisions streaming.py, engaged.py, voiceprints.py and transcription.py pin; kept the same way, for the same reason. The whole hub:
-      # a model's directory holds only links into the hub's shared store of blobs, where its weights are. Keyed on the
-      # revisions, the one thing the weights depend on, so an edit to the rest of any of the files still finds them.
-      - name: The speech models' pinned revisions
-        if: matrix.fetches
-        id: speech
-        run: |
-          revisions=""
-          for pin in streaming.py:REVISION streaming.py:DIARIZATION_REVISION engaged.py:SMART_TURN_REVISION voiceprints.py:REVISION transcription.py:REVISION; do
-            file=${pin%%:*} name=${pin#*:}
-            revision=$(sed -n "s/^$name = \"\([0-9a-f]*\)\"$/\1/p" "src/hands/voice/$file")
-            test -n "$revision" || { echo "$file pins no $name this step can read" >&2; exit 1; }
-            revisions="$revisions-$revision"
-          done
-          echo "revisions=$revisions" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        if: matrix.fetches
-        with:
-          path: ~/.cache/huggingface/hub
-          key: speech${{ steps.speech.outputs.revisions }}
       # The brain's end-to-end tests run the pinned Claude Code, fetched from npm's registry into pytest's cache against its
       # checksum, and the mock of Anthropic's API at the release they name, installed with go; kept the same way, keyed on the
       # pin and on the release.
@@ -103,6 +81,23 @@ jobs:
       # [LAW:one-source-of-truth] the versions the suite runs on are uv.lock's; a lock out of step with pyproject fails here.
       - name: Install the locked environment
         run: uv sync --locked
+      # The streaming tests run Nemotron Speech Streaming paired with Nemotron 3 Diarization, the engaged tests run
+      # Smart Turn on MLX, the voiceprint tests run ERes2Net, and the Whisper tests Whisper, on real sound, fetched into the
+      # Hugging Face cache at the revisions hands pins; kept across runs, so a download outage cannot fail a PR. The whole hub: a model's
+      # directory holds only links into the hub's shared store of blobs, where its weights are.
+      # [LAW:one-source-of-truth] keyed on tests/fetches.py's WEIGHTS, the list the run fetches, so a weight added to the
+      # fetch is a new key and never a hit on a cache saved without it; an edit to the rest of any file still finds them.
+      - name: The speech models' cache key
+        if: matrix.fetches
+        id: speech
+        run: |
+          key=$(uv run --locked python -c 'import sys; sys.path.insert(0, "tests"); from fetches import hub_key; print(hub_key())')
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        if: matrix.fetches
+        with:
+          path: ~/.cache/huggingface/hub
+          key: speech-${{ steps.speech.outputs.key }}
       # The backlog tests that run lit itself skip without one; the release its own installer hands out is what hands
       # meets, so a lit release that changes what hands reads fails here, not days later in every brain's audit log.
       # gh names that release under the job's token, and the installer comes from the same tag as the archive it
