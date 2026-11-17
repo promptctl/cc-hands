@@ -40,37 +40,36 @@ MOCK_MODULE = "github.com/promptctl/mock-anthropic"
 MOCK_RELEASE = "v0.1.0"
 
 
-
 @dataclass(frozen=True)
 class Weights:
-    """A model's weights on the Hugging Face hub at the revision hands pins it to, and the call its load makes to fetch
-    them, so the run fetches what a load would."""
+    """A model's weights on the Hugging Face hub, at the revision hands pins it to: `what` of them is fetched, and
+    `fetch` is the call its load makes to fetch them, so the run fetches what a load would."""
 
-    repo: str
-    revision: str
+    what: str
     fetch: Callable[[], object]
 
 
 def loaded_by_mlx_audio(repo: str, revision: str) -> Weights:
-    return Weights(repo, revision, partial(get_model_path, repo, revision=revision))
+    return Weights(f"{repo} at {revision}", partial(get_model_path, repo, revision=revision))
 
 
 # [LAW:one-source-of-truth] every speech weight a test loads, the one list the run fetches and CI keys its cache of the
-# hub on (hub_key), so a weight fetched is a weight the key names.
+# hub on (hub_key): each weight's `what` is made of what its fetch is called with.
 WEIGHTS = (
     loaded_by_mlx_audio(streaming.MODEL, streaming.REVISION),
     loaded_by_mlx_audio(streaming.DIARIZATION, streaming.DIARIZATION_REVISION),
     loaded_by_mlx_audio(engaged.SMART_TURN, engaged.SMART_TURN_REVISION),
-    Weights(transcription.MODEL, transcription.REVISION, transcription.weights),
+    Weights(f"{transcription.MODEL} at {transcription.REVISION}", transcription.weights),
     # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
-    Weights(voiceprints.MODEL, voiceprints.REVISION, partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION)),
+    Weights(f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION}", partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION)),
 )
 
 
 def hub_key() -> str:
-    """What CI keys its cache of the hub on: a digest of every weight WEIGHTS fetches, which repository at which
-    revision, the one thing the cache's contents depend on."""
-    return hashlib.sha256("".join(f"{weights.repo}@{weights.revision}\n" for weights in WEIGHTS).encode()).hexdigest()[:16]
+    """What CI keys its cache of the hub on: a digest of what of each weight WEIGHTS fetches, so a weight added, moved
+    or narrowed is a new key."""
+    return hashlib.sha256("\n".join(weights.what for weights in WEIGHTS).encode()).hexdigest()[:16]
+
 
 # The wake words whose models a switch to the wake word loads.
 WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
@@ -138,7 +137,7 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         return
     for weights in WEIGHTS:
         # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
-        fetching(write, f"{weights.repo} at {weights.revision} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
+        fetching(write, f"{weights.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(fetches.wake_word, word)))
     fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))
