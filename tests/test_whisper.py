@@ -182,6 +182,14 @@ async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_sa
     assert all(unsaid.voiced >= 0.25 for entry in heard for unsaid in entry.dropped)
 
 
+async def test_a_segment_of_only_punctuation_and_underscores_has_no_word_and_is_not_said(model: Model) -> None:
+    # Primed with identifiers, Whisper may write an underscore over noise: no letter, so no word.
+    model.answers += [[], [("__ ...", 1.0, -0.2)]]
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+
+    assert await whisper.transcribed(clip(1), as_heard(SPOKEN)) is None
+
+
 async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -> None:
     # What Whisper answered unprimed for each of the user's silent holds, sure of it (promptctl-voice-i15t.a5s.x48).
     model.answers += [[], [("Thank you.", 0.56, -0.21)], [("Thank you.", 0.56, -0.21)]]

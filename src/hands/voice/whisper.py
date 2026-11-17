@@ -66,8 +66,9 @@ _RESPELLED = 0.8
 # "the", "its" for "it", "your" for "you").
 _SPELLED = 5
 
-# A word, as Whisper and hands' TTS both write one: letters and digits, with an apostrophe inside ("won't").
-_WORD = re.compile(r"\w+(?:'\w+)*")
+# A word, as Whisper and hands' TTS both write one: letters and digits, with an apostrophe inside ("won't"); an
+# underscore is no letter, so "auth_middleware" is two words and "_" none.
+_WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 
 # Silence after a clip's last sample: a segment that ends right where the speech stopped has its last word dropped or
 # garbled, so Whisper hears half a second of it past the end, as Pipecat padded every segment it gave a transcriber.

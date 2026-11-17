@@ -436,8 +436,8 @@ class ClipOwner(FrameProcessor):
         """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip hands played
         nothing over has no echo of hands in it, so it waits on nothing.
 
-        [LAW:no-silent-failure] one that misses the bound cuts nothing and keeps every word, which the clip's event says,
-        as it says what one in time came to: a person's words lost to a slow lane cost more than a turn of hands' echo."""
+        [LAW:no-silent-failure] one that misses the bound cuts nothing, which the clip's event says, as it says what one in
+        time came to; the clip's words never wait on it."""
         match voices(sound):
             case ():
                 return NOBODY

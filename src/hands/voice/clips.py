@@ -16,7 +16,7 @@ clip changes for it.
 
 import math
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import numpy as np
@@ -160,11 +160,15 @@ class Play:
 
 def plays(sound: Sound) -> tuple[Play, ...]:
     """Each synthesis hands played over `sound`, in the order it began; none at the phone, where none is known."""
-    found: dict[Synthesis, Play] = {}
+    # Read on the event loop as a clip closes, once for each 10 ms of it: where each began is kept once, and where it
+    # stopped is moved on, and nothing more is made per slot.
+    began: dict[Synthesis, tuple[int, float]] = {}
+    last: dict[Synthesis, int] = {}
     for at, reference in enumerate(sound.played or ()):
         for playhead in () if reference is None else reference.playheads:
-            found[playhead.synthesis] = replace(found.get(playhead.synthesis, Play(playhead.synthesis, at, playhead.into, at)), stop=at + 1)
-    return tuple(found.values())
+            began.setdefault(playhead.synthesis, (at, playhead.into))
+            last[playhead.synthesis] = at
+    return tuple(Play(synthesis, start, into, last[synthesis] + 1) for synthesis, (start, into) in began.items())
 
 
 class Recording:
