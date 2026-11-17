@@ -12,17 +12,19 @@ from hands import footprint
 MEGABYTE = 2**20
 
 
+# Each hold is uniform random bytes and allocates nothing beside itself: the footprint counts a compressed page at its
+# compressed size, and macOS compresses under the full suite's memory pressure.
 def numpy_array(size: int) -> object:
-    held = np.ones(size, np.uint8)
-    assert held.sum() == size
-    return held
+    return np.random.default_rng(0).integers(0, 256, size, np.uint8)
 
 
 def mlx_array(size: int) -> object:
     # Written by MLX's default device: on Metal, memory the resident set size never counts.
     # A buffer an earlier test let go of is not taken back from MLX's cache: it is grown anew, as a model's load grows it.
     mx.clear_cache()
-    held = mx.ones((size,), dtype=mx.uint8)
+    # Split keys are raw Threefry bits. mx.random.randint is neither: it scales a float32 uniform, whose low bits are
+    # zeros, through a float32 buffer the size of its output that clearing the cache does not give back.
+    held = mx.random.split(mx.random.key(0), size // 8).view(mx.uint8)
     mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
     return held
 
