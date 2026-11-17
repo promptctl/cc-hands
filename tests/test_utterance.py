@@ -201,7 +201,7 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
     written: the fate read off its pushes is what the speaker played, with hands' own transport on a fake device."""
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda _: Room()).output()
     recorded: list[Entry] = []
     utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
@@ -223,7 +223,7 @@ async def test_the_output_transport_passes_what_reads_an_utterance_in_order_with
 async def test_a_barge_in_while_the_output_transport_still_holds_an_utterance_s_audio_cuts_it_and_its_close_still_arrives() -> None:
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda _: Room()).output()
     recorded: list[Entry] = []
     utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
@@ -253,7 +253,7 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
     """Led on again right behind the barge-in, through the output transport's flush of what it held."""
     speakers = Speakers()
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
-    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()).output()
+    speaker = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda _: Room()).output()
     recorded: list[Entry] = []
     utterances = Utterances(SYSTEM, recorded.append)
     keeping = asyncio.create_task(utterances.keep())
@@ -281,7 +281,7 @@ async def test_what_a_turn_says_after_a_barge_in_it_went_on_through_is_still_its
 def _speaker(speakers: Speakers, recorded: list[Entry]) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_out_enabled=True, audio_out_sample_rate=16_000)
     return KeyedAudioTransport(
-        SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), recorded.append, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda: Room()
+        SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), recorded.append, portaudio=lambda: speakers, hardware=lambda: Hardware(DefaultDevices(input=1, output=1)), echo=lambda _: Room()
     )
 
 

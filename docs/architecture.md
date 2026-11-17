@@ -1857,11 +1857,15 @@ and each reference says so (`Reference.reached`), which Whisper's rule of hands'
 rule of who cuts hands off read. It is taken to be there until a stretch of hands alone, the
 microphone quiet, reads none: under a person's voice, an echo well down reads like none. A
 reading outlasts the pauses between replies, so a person cutting into a reply's opening in
-headphones is heard unducked; a change of device opens a new canceller, read afresh. Each
+headphones is heard unducked: what changes it is told. A change of device opens a new
+canceller, and a change of the speaker's volume or mute, which CoreAudio says
+(`coreaudio.loudness_changes`), a new reading (`EchoCanceller.turned`), each read afresh; only
+a path that comes with nothing told, headphones pulled from a device that plays its speakers
+too, is read off the room, up to a stretch and a hop late. Each
 microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
 its canceller heard, how many of those had nothing playing, how many it dropped unheard
-because the microphone had stopped taking them, how many it slipped, and how many it
-passed on as captured; each speaker stream let go of is one `speaker.let_go`, carrying how
+because the microphone had stopped taking them, how many it slipped, how many it
+passed on as captured, and how many times the speaker's volume turned; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS made, is one `speech`
 wide event once its end comes out of the device behind its last byte: how long of it the device played

@@ -1,7 +1,8 @@
 # pyright: basic, reportAttributeAccessIssue=false
 # PyObjC ships no type stubs and loads its names lazily, so a static check cannot see them; this file is the only one
 # that touches CoreAudio.
-"""The system's audio devices, from CoreAudio: the defaults and the names of those there are, and word when they change."""
+"""The system's audio devices, from CoreAudio: the defaults and the names of those there are, and word when they change,
+or when the speaker's volume or mute does."""
 
 import itertools
 import struct
@@ -14,7 +15,7 @@ import CoreFoundation
 import objc
 from loguru import logger
 
-from hands.voice.devicechoice import DefaultDevices, Hardware
+from hands.voice.devicechoice import Closed, DefaultDevices, Hardware, OnDefault, OnNamed, Place
 
 _SYSTEM = CoreAudio.kAudioObjectSystemObject
 
@@ -29,12 +30,14 @@ _DEVICES = _address(CoreAudio.kAudioHardwarePropertyDevices)
 _NAME = _address(CoreAudio.kAudioObjectPropertyName)
 _INPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudioObjectPropertyScopeInput)
 _OUTPUT_STREAMS = _address(CoreAudio.kAudioDevicePropertyStreams, CoreAudio.kAudioObjectPropertyScopeOutput)
+# How loud a device plays: its mute and its volume, on the main element, where the volume keys set them.
+_LOUDNESS = tuple(_address(selector, CoreAudio.kAudioObjectPropertyScopeOutput) for selector in (CoreAudio.kAudioDevicePropertyMute, CoreAudio.kAudioDevicePropertyVolumeScalar))
 
 
 def hardware() -> Hardware:
     """The default devices, and how to find a device by name. The devices are listed and named only when a side names
     one: reading them is no part of following the defaults, and a device mid-teardown can fail the read."""
-    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), partial(_found, _INPUT_STREAMS), partial(_found, _OUTPUT_STREAMS))
+    return Hardware(DefaultDevices(_device(_INPUT), _device(_OUTPUT)), partial(_found, _INPUT_STREAMS), partial(_found, _OUTPUT_STREAMS), loudness_changes)
 
 
 def _found(scope: object, name: str) -> int | None:
@@ -99,7 +102,7 @@ def _has_streams(device: int, scope: object) -> bool:
     return size > 0
 
 
-# [LAW:no-shared-mutable-globals] owned by device_changes alone, which adds a target when it registers its
+# [LAW:no-shared-mutable-globals] owned by _listening alone, which adds a target when it registers its
 # listener and deletes it after the listener is removed, so the listener never looks up a token that is gone.
 # CoreAudio carries only an integer to the listener, so the token is how a call finds its target.
 _targets: dict[int, Callable[[], object]] = {}
@@ -127,21 +130,45 @@ def device_changes(changed: Callable[[], object]) -> Iterator[None]:
     It is called on a CoreAudio thread, within milliseconds: measured at 17 ms from an aggregate device being
     destroyed to the call, once for the input and once for the output.
     """
+    with _listening(_SYSTEM, (_INPUT, _OUTPUT, _DEVICES), changed, "changes to the audio devices"):
+        yield
+
+
+@contextmanager
+def loudness_changes(place: Place, changed: Callable[[], object]) -> Iterator[None]:
+    """Call `changed` whenever the volume or mute of the device a speaker is on at `place` changes, for as long as the
+    context is open: of what it has of them, none for a device with no volume of its own or no device at all.
+
+    It is called on a CoreAudio thread: measured once for each mute toggled with osascript, within half a second.
+    """
+    match place:
+        case OnDefault(device=device) | OnNamed(device=device):
+            has = tuple(address for address in _LOUDNESS if CoreAudio.AudioObjectHasProperty(device, address))
+        case Closed():
+            device, has = _SYSTEM, ()
+    with _listening(device, has, changed, "changes to the speaker's volume"):
+        yield
+
+
+@contextmanager
+def _listening(target: int, addresses: tuple[object, ...], changed: Callable[[], object], what: str) -> Iterator[None]:
+    """[LAW:single-enforcer] the one way a listener is added to CoreAudio and removed again: `changed` called whenever
+    any of `addresses` of `target` changes, for as long as the context is open."""
     token = next(_tokens)
     _targets[token] = changed
     listening: list[object] = []
     try:
-        for address in (_INPUT, _OUTPUT, _DEVICES):
-            _check(CoreAudio.AudioObjectAddPropertyListener(_SYSTEM, address, _listener, token), "listen for changes to the audio devices")
+        for address in addresses:
+            _check(CoreAudio.AudioObjectAddPropertyListener(target, address, _listener, token), f"listen for {what}")
             listening.append(address)
         yield
     finally:
         # Only what was added is removed, so a refused registration is the error that is reported.
-        refused = [CoreAudio.AudioObjectRemovePropertyListener(_SYSTEM, address, _listener, token) for address in listening]
+        refused = [CoreAudio.AudioObjectRemovePropertyListener(target, address, _listener, token) for address in listening]
         if any(refused):
             # [LAW:no-silent-failure] logged, not raised: raising here would turn a clean stop into a failed run. The
             # target stays, because a listener CoreAudio kept would otherwise look up a token that is gone.
-            logger.error(f"CoreAudio would not stop listening for changes to the audio devices: OSStatus {refused}")
+            logger.error(f"CoreAudio would not stop listening for {what}: OSStatus {refused}")
         else:
             del _targets[token]
 

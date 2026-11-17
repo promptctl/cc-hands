@@ -1057,4 +1057,6 @@ async def test_a_person_over_a_reply_in_headphones_cuts_it_off_as_soon_as_over_i
     # at the desk they wait on a voiceprint. Measured: over a reply's middle 1.85 s at the desk, 1.33 s in headphones;
     # over its opening, after a pause, 1.84 s and 0.96 s, where the canceller once ducked the person and nothing cut.
     at_the_desk = await cut_after(overheard, 1, desk)
-    assert await cut_after(overheard, 2, headphones) <= min(at_the_desk, CUT_SECONDS), overheard.identified()
+    assert at_the_desk >= 0.0, overheard.identified()
+    # Never before the person speaks: a cut ahead of them would be hands' own voice, or the room, cutting it.
+    assert 0.0 <= await cut_after(overheard, 2, headphones) <= min(at_the_desk, CUT_SECONDS), overheard.identified()

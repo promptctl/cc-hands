@@ -86,7 +86,7 @@ def test_a_speaker_under_a_second_is_unheard_and_never_scored_and_one_heard_long
     [Person(0.0, 3.0, NONE), Hands(1.0, 3.0, NONE), Unsure(0.4, 1.2, NONE), Unheard(0.4), Unidentified(3.0, "no print yet of charles")],
     ids=["person", "hands", "unsure", "unheard", "unidentified"],
 )
-def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_it_played_over_only_as_a_person(who: Who) -> None:
+def test_a_speaker_no_echo_of_hands_reached_cuts_it_off_by_their_words_and_one_it_reached_only_as_a_person(who: Who) -> None:
     assert cleared(who, echoed=False, said=True)
     # A sound the diarizer took for a speaker, with no words in it, cuts nothing.
     assert not cleared(who, echoed=False, said=False)

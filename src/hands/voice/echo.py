@@ -11,6 +11,8 @@ in 8 of 8, where muting the microphone until the reply's sound had died away los
 
 import threading
 from collections import deque
+from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -61,9 +63,17 @@ _QUIET = -45.0
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
 # playing, matched with silence; frames the speaker's device took, silence included, dropped unheard because the
 # microphone had stopped taking them (how much of the device's sound was silence is the speaker's own `unwritten`);
-# frames slipped, held through a whole window that never needed them; and frames passed on as captured, with no echo
-# path to take anything out of.
-COUNTS = ("heard", "unplayed", "dropped", "slipped", "unreached")
+# frames slipped, held through a whole window that never needed them; frames passed on as captured, with no echo
+# path to take anything out of; and the times the speaker's volume or mute changed, each reading the echo path afresh.
+COUNTS = ("heard", "unplayed", "dropped", "slipped", "unreached", "turned")
+
+# Word whenever the speaker's volume or mute changes, called with no arguments, for as long as the context is open
+# (`hands.voice.coreaudio.loudness_changes`, on the device the canceller's speaker is on).
+Turns = Callable[[Callable[[], object]], AbstractContextManager[None]]
+
+
+def _never_turned(turned: Callable[[], object]) -> AbstractContextManager[None]:
+    return nullcontext()
 
 
 def frame_bytes(sample_rate: int, channels: int) -> int:
@@ -141,11 +151,12 @@ class EchoPath:
     So any stretch hands played in that reads `_ECHO_PATH` or more says there is one, and only hands alone says there
     is none: a stretch hands played at least half of reading under it, the microphone under `_QUIET` over it. Any other,
     a person speaking over hands, says nothing. A reading outlasts the pauses between replies, so a person who cuts into
-    a reply as it opens is heard as they were in the last; a change of device opens a new canceller, read afresh. A path
-    that comes while it is read as none, a speaker unmuted mid-reply or between replies, is read at the first hop whose
-    stretch carries enough of hands through the room: a stretch with a few frames of hands in it can read under
-    `_ECHO_PATH`, so up to `_PATH_FRAMES` and a `_PATH_HOP` of hands are heard as captured. The capture thread alone
-    touches it."""
+    a reply as it opens is heard as they were in the last: what changes it is told. A change of device opens a new
+    canceller, and a change of the speaker's volume or mute a new reading (`EchoCanceller.turned`), each read afresh. A
+    path that comes with nothing told, headphones pulled from a device that plays its speakers too, is read at the first
+    hop whose stretch carries enough of hands through the room: a stretch with a few frames of hands in it can read
+    under `_ECHO_PATH`, so up to `_PATH_FRAMES` and a `_PATH_HOP` of hands are heard as captured. The capture thread
+    alone touches it."""
 
     def __init__(self) -> None:
         self.reached = True
@@ -197,10 +208,15 @@ class EchoCanceller:
     are surplus, and are slipped: dropped, as a jitter buffer drops samples between two clocks.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, turns: Turns = _never_turned) -> None:
         self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
         # [LAW:single-enforcer] the one reading of whether hands' voice reaches the microphone; each reference says it.
         self._path = EchoPath()
+        # How many times the speaker's volume or mute has changed, and how many of them the reading has been made afresh
+        # for. [LAW:no-shared-mutable-globals] `_turns` is written by CoreAudio's thread and read by the capture thread,
+        # under the lock; `_read_turns` is the capture thread's alone.
+        self._turns = 0
+        self._read_turns = 0
         # The speaker's audio short of a whole frame, carried to its next buffer, with the syntheses in it. The speaker's
         # device callback alone touches them.
         self._unplayed = b""
@@ -218,6 +234,16 @@ class EchoCanceller:
         # [LAW:nothing-unseen] the canceller's own decisions, read onto the microphone's event as it is let go of.
         # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` and `slipped` under the lock.
         self._counts: dict[str, int] = dict.fromkeys(COUNTS, 0)
+        # Listened to last, once the canceller can take a turn; let go of as the canceller is.
+        self._listening = ExitStack()
+        self._listening.enter_context(turns(self.turned))
+
+    def turned(self) -> None:
+        """The speaker's volume or mute changed: whether hands' voice reaches the microphone is read afresh, from the
+        next microphone frame on, as a new canceller's is."""
+        with self._holding:
+            self._turns += 1
+            self._counts["turned"] += 1
 
     def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None:
         """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo,
@@ -246,6 +272,10 @@ class EchoCanceller:
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
         cleaned, played = bytearray(), list[Reference | None]()
+        with self._holding:
+            turns = self._turns
+        # [LAW:no-ambient-temporal-coupling] a turn is taken at a buffer's edge, on the thread that reads the path.
+        self._path, self._read_turns = (self._path if turns == self._read_turns else EchoPath()), turns
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference, and goes
             # through AEC3, which keeps learning the room either way; the echo path says which of the two is heard.
@@ -276,6 +306,7 @@ class EchoCanceller:
         Left to the garbage collector, it is let go of after LiveKit's own exit handler has shut its runtime down, and
         LiveKit fails an assertion on every exit saying so.
         """
+        self._listening.close()
         self._apm._ffi_handle.dispose()  # pyright: ignore[reportPrivateUsage]  (LiveKit gives the module no close of its own)
 
     def _next_played(self) -> tuple[rtc.AudioFrame, tuple[Playhead, ...]]:

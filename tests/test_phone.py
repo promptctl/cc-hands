@@ -559,7 +559,7 @@ async def a_transport(call: Call) -> AsyncGenerator[tuple[KeyedAudioTransport, D
     """The keyed transport on the call's gate and phone, its desk stream kept and its pushed audio kept, and cleaned up
     as the test ends, which ends its stream's writer."""
     echo = EchoCanceller()
-    transport = KeyedAudioTransport(SYSTEM, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone, lambda _: None, echo=lambda: echo)
+    transport = KeyedAudioTransport(SYSTEM, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), call.key, call.phone, lambda _: None, echo=lambda _: echo)
     desk, pushed = Desk(), list[bytes]()
     transport.output().attach(cast(PortAudio, SimpleNamespace()), Output(desk, "MacBook Pro Speakers", echo))
     microphone = transport.input()

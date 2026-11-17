@@ -83,7 +83,7 @@ class Rig:
         self.played: list[Played] = []
         self.room = Room()
         params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-        self.transport = KeyedAudioTransport(self.clock, params, self.key, self.phone, lambda _: None, echo=lambda: self.room)
+        self.transport = KeyedAudioTransport(self.clock, params, self.key, self.phone, lambda _: None, echo=lambda _: self.room)
         self.speaker = self.transport.output()
         self.microphone = self.transport.input()
         self.microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
@@ -316,7 +316,7 @@ def lost_transport(log: list[str], events: list[Entry] | None = None, choices: C
     cancellers = iter(Room(log, f"canceller {n}") for n in itertools.count(1))
     record: Record = (lambda _: None) if events is None else events.append
     transport = KeyedAudioTransport(SYSTEM, 
-        params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), hardware=lambda: next(hardware), echo=lambda: next(cancellers),
+        params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), hardware=lambda: next(hardware), echo=lambda _: next(cancellers),
         choices=choices,
     )
     speaker, microphone = transport.output(), transport.input()
@@ -387,7 +387,7 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert all(isinstance(event, WideEvent) for event in events)
     assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
         ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
-        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0}),
+        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0, "turned": 0}),
     ]
 
 
@@ -537,7 +537,7 @@ async def test_with_no_microphone_left_the_transport_reopens_to_speak_and_says_i
 
 async def test_a_daemon_started_with_no_microphone_runs_rather_than_failing_its_setup() -> None:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
-    transport = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), hardware=lambda: Hardware(DefaultDevices(0, 1)), echo=Room)
+    transport = KeyedAudioTransport(SYSTEM, params, PushToTalk(SYSTEM, lambda _: None), _phone(), lambda _: None, portaudio=lambda: DeafPortAudio([]), hardware=lambda: Hardware(DefaultDevices(0, 1)), echo=lambda _: Room())
     assert not transport.deaf  # nothing is said of hearing before setup opens the microphone
     setup = FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=cast(Any, None), audio_in_sample_rate=16000, audio_out_sample_rate=24000)
     await transport.input().setup(setup)

@@ -1,5 +1,8 @@
 """The echo canceller, run for real on WebRTC's AEC3 against a room made of arithmetic."""
 
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+
 import numpy as np
 import pytest
 
@@ -87,7 +90,7 @@ def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had
     canceller.heard(bytes(640), HEARD_RATE, 1)  # two frames, nothing played
     canceller.played(bytes(320 * 102), HEARD_RATE, 1, ())  # 102 frames played to a microphone that takes none
     canceller.heard(bytes(320), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0}
+    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0, "turned": 0}
 
 
 def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_but_for_one_buffer() -> None:
@@ -97,11 +100,11 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
     for _ in range(50):  # one second of 20 ms buffers
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0}
+    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "turned": 0}
     for _ in range(50):  # the next second holds only the spare buffer, and slips nothing more
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0}
+    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "turned": 0}
 
 
 def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_of_its_frames_as_it_was_played() -> None:
@@ -238,6 +241,38 @@ def test_with_no_echo_path_the_microphone_is_heard_as_it_captured_and_each_refer
     # Once it is read, the person is heard as the microphone captured them, not ducked under hands.
     assert all(cancelled.heard == captured for captured, cancelled in heard[100:])
     assert canceller.counts()["unreached"] == 2 * len(heard[100:])
+
+
+def test_a_change_of_the_speakers_volume_reads_the_echo_path_afresh_and_the_canceller_stops_hearing_of_them_as_it_closes() -> None:
+    told: list[Callable[[], object]] = []
+    listening: list[str] = []
+
+    @contextmanager
+    def turns(turned: Callable[[], object]) -> Generator[None]:
+        told.append(turned)
+        listening.append("open")
+        yield
+        listening.append("closed")
+
+    canceller = EchoCanceller(turns)
+    played = _noise(3.0, PLAYED_RATE, seed=3)
+    room = _dbfs(-62, 3.0, seed=6).astype(np.int16)
+
+    def reached(index: int) -> list[bool]:
+        """Whether each frame of TTS in the `index`th 20 ms buffer of hands alone reached the microphone."""
+        canceller.played(played[index * 480 : (index + 1) * 480].tobytes(), PLAYED_RATE, 1, (ALBA,))
+        cancelled = canceller.heard(room[index * 320 : (index + 1) * 320].tobytes(), HEARD_RATE, 1)
+        return [reference.reached for reference in cancelled.played if reference is not None]
+
+    # Hands alone in headphones, or with the speaker muted: no echo path.
+    assert [reached(index) for index in range(120)][-1] == [False, False]
+    # The speaker unmuted between replies: from the next buffer, hands' voice is taken to reach the microphone, as a new
+    # canceller takes it, until a stretch says otherwise.
+    told[0]()
+    assert reached(120) == [True, True]
+    assert canceller.counts()["turned"] == 1
+    canceller.close()
+    assert listening == ["open", "closed"]
 
 
 def _unreached(sound: Sound) -> int:

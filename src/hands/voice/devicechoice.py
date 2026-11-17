@@ -6,6 +6,7 @@ is a function of the choice and the hardware alone (`placed`), which the followe
 """
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 
 
@@ -53,16 +54,6 @@ def _none_found(name: str) -> int | None:
 
 
 @dataclass(frozen=True)
-class Hardware:
-    """What CoreAudio says is there: the defaults, and the way to find a device by name, which is asked only for a side
-    that names one: a side on the default has no use for the list of devices."""
-
-    defaults: DefaultDevices
-    inputs: Find = _none_found
-    outputs: Find = _none_found
-
-
-@dataclass(frozen=True)
 class OnDefault:
     """On the default device, by CoreAudio's id for it."""
 
@@ -83,6 +74,27 @@ class Closed:
 
 
 Place = OnDefault | OnNamed | Closed
+
+
+# Word whenever the volume or mute of the device a speaker is on changes, called with no arguments, for as long as the
+# context is open.
+Loudness = Callable[[Place, Callable[[], object]], AbstractContextManager[None]]
+
+
+def _heard_nowhere(place: Place, changed: Callable[[], object]) -> AbstractContextManager[None]:
+    return nullcontext()
+
+
+@dataclass(frozen=True)
+class Hardware:
+    """What CoreAudio says is there: the defaults, and the way to find a device by name, which is asked only for a side
+    that names one: a side on the default has no use for the list of devices; and the way to hear a speaker's volume
+    change."""
+
+    defaults: DefaultDevices
+    inputs: Find = _none_found
+    outputs: Find = _none_found
+    loudness: Loudness = _heard_nowhere
 
 
 @dataclass(frozen=True)

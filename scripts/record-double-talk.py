@@ -45,7 +45,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 class Script:
     """What a take plays: hands' first sentence, each after it with the pause before it, and each line of the other
     voice: what it says, over which of hands' sentences, and which of hands' words in it it says where hands says them,
-    none for a line begun as the sentence begins."""
+    the empty string for a line begun as the sentence begins."""
 
     first: str
     then: tuple[tuple[float, str], ...]

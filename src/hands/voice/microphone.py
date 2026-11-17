@@ -56,7 +56,7 @@ from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
-from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes, seconds
+from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, Turns, frame_bytes, seconds
 from hands.voice.phone import Phone
 from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
 from hands.voice.ptt import Key, PushToTalk
@@ -835,7 +835,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         record: Record,
         portaudio: Callable[[], PortAudio] = lambda: cast(PortAudio, pyaudio.PyAudio()),
         hardware: Callable[[], Hardware] = coreaudio.hardware,
-        echo: Callable[[], Echo] = EchoCanceller,
+        echo: Callable[[Turns], Echo] = EchoCanceller,
         choices: Choices = Choices(),
     ) -> None:
         # [LAW:one-source-of-truth] where the streams are is read where PortAudio lists the devices, just before it
@@ -843,7 +843,8 @@ class KeyedAudioTransport(LocalAudioTransport):
         # miss an unplug during the model load between this and the pipeline's start.
         self._choices = choices
         self._hardware = hardware
-        self.opened_on = self.wanted()
+        hardware_now = hardware()
+        self.opened_on = placed(choices, hardware_now)
         # [LAW:single-enforcer] PortAudio is started by the one factory, here and at every reopen. LocalAudioTransport's
         # own init would start an instance of its own, and while two are alive, ending one lists no devices anew.
         BaseTransport.__init__(self)
@@ -853,7 +854,7 @@ class KeyedAudioTransport(LocalAudioTransport):
         # [LAW:one-source-of-truth] one canceller for the streams opened together: what the speaker plays is what it
         # takes out of what the microphone hears. A reopen opens the next pair with a new one, which learns the new
         # devices' room from nothing and holds none of the old one's sound.
-        cancelling = echo()
+        cancelling = echo(_turns(hardware_now, self.opened_on))
         self._echo = echo
         self._speaker = Speaker(self._pyaudio, params, key, phone, cancelling, record, clock, choices.output)
         self._microphone = KeyedMicrophone(self._pyaudio, params, key, phone, cancelling, record, clock, choices.input)
@@ -925,9 +926,10 @@ class KeyedAudioTransport(LocalAudioTransport):
 
     def _start_again(self, ending: PortAudio) -> "_Started":
         ending.terminate()
-        placement = self.wanted()
+        hardware = self._hardware()
+        placement = placed(self._choices, hardware)
         portaudio = self._portaudio()
-        cancelling = self._echo()
+        cancelling = self._echo(_turns(hardware, placement))
         opened: list[Stream] = []
         try:
             speaker = self._speaker.open_stream(portaudio, cancelling)
@@ -946,6 +948,11 @@ class KeyedAudioTransport(LocalAudioTransport):
             cancelling.close()
             raise
         return _Started(placement, portaudio, speaker, microphone)
+
+
+def _turns(hardware: Hardware, placement: Placement) -> Turns:
+    """[LAW:one-source-of-truth] word of the volume of the device the speaker is placed on, read with the placement."""
+    return partial(hardware.loudness, placement.output)
 
 
 @dataclass(frozen=True)
