@@ -336,3 +336,11 @@ async def test_hands_words_the_canceller_left_in_are_hands_beside_a_stretch_it_t
     timed.segments += [spaced("Okay, run the tests.", 0.1, 0.3), spaced("The build is green.", 2.6, 0.3)]
     clip_heard = await told(cancelling(saying(4.0, ("Okay, run the tests.", 0.0, 1.5), ("The build is green.", 2.5, 3.8)), 0.0, 1.5))
     assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled) == ("Okay, run the tests.", ("The", "build", "is", "green."), 4)
+
+
+async def test_a_word_hands_played_before_the_clip_opened_is_hands_where_the_canceller_took_out_only_what_came_later(timed: Timed) -> None:
+    # The key opened 2 s into hands' sentence, and the echo of its "finished", played 1.4 s before, is heard as the clip
+    # opens: the canceller taking hands' voice out from 0.5 s on is no reach of a word that far before.
+    timed.segments.append(spaced("finished", 0.05, 0.25))
+    clip_heard = await told(cancelling(saying(3.0, ("Phosphene finished its render, and the build is green.", -2.0, 1.4)), 0.5, 3.0))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("finished",)), clip_heard

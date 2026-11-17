@@ -79,8 +79,9 @@ def main() -> None:
         start, stop = position, position + frames
         position = stop
         chunk = out[2 * start : 2 * stop].ljust(2 * frames, b"\0")
-        at = sentence[start] if start < length else -1
-        playheads = () if at < 0 else (Playhead(syntheses[at], start / RATE - onsets[at]),)
+        # As hands' speaker gives the canceller: a playhead for each sentence the buffer holds any of, where in it the
+        # buffer's first sample of it is.
+        playheads = tuple(Playhead(syntheses[at], max(start / RATE - onsets[at], 0.0)) for at in dict.fromkeys(sentence[start:stop].tolist()) if at >= 0)
         echo.played(reference[2 * start : 2 * stop].ljust(2 * frames, b"\0"), RATE, 1, playheads)
         if stop >= length:
             done.set()

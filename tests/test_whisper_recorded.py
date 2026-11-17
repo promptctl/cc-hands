@@ -10,7 +10,7 @@ import pytest
 
 from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
-from hands.voice.clips import Clip, Sound
+from hands.voice.clips import SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
 from echoes import ANOTHER, ANOTHER_STOPPED, HANDS_ALONE, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played
 from speech import RATE, audio, quiet, spoken
@@ -177,6 +177,14 @@ async def test_a_person_talking_over_hands_is_sent_and_hands_own_voice_is_not(wi
 
 async def test_hands_heard_alone_after_the_person_sends_nothing() -> None:
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_and_another.flac", *HANDS_ALONE, ANOTHER, ANOTHER_STOPPED)) is None
+
+
+async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
+    # hands' first sentence, to 7 s, before the second voice speaks at 7.85 s: no word of hands' is left to match.
+    sound = cancelled()
+    alone = Sound(sound.heard[: 2 * SLOT * 700], sound.captured[: 2 * SLOT * 700], (sound.played or ())[:700])
+
+    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), alone) is None
 
 
 async def test_a_person_saying_hands_words_over_hands_through_the_canceller_is_sent_every_word() -> None:
