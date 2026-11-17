@@ -4,7 +4,7 @@ silence, fed in clips as the listener feeds them.
     uv run scripts/measure-gating.py DIR [GATING ...]    # fetches what it needs into DIR once; GATING 1 2 4 if none given
 
 The turns: AMI Meeting Corpus's sixteen test meetings (Mix-Headset, CC BY 4.0), cut by AMI's manual word-level
-transcripts into each turn one person says alone (`measuring.turns`) that nobody sounds in for BEFORE ahead of it or for
+transcripts into each turn one person says alone (`turntaking.turns`) that nobody sounds in for BEFORE ahead of it or for
 engaged.STOP_SECS past it, as a turn ends. Each is a clip in the two shapes a clip takes, cut and fed as the real-pair
 tests cut and feed theirs (tests/listening.py): the shortcut, let go just after the last word, and engaged conversation,
 closed once STOP_SECS of the silence after it are heard. One session per meeting, as a run has one, loaded at each GATING.
@@ -25,7 +25,8 @@ from xml.etree import ElementTree
 import numpy as np
 
 from hands.voice import engaged, streaming
-from measuring import AMI_AUDIO, AMI_TEST, RATE, SHAPES, Live, Stretch, fetched, mono, turn, turns
+from measuring import AMI_AUDIO, AMI_TEST, RATE, SHAPES, Live, fetched, mono, turn
+from turntaking import Stretch, turns
 
 AMI_WORDS = "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip"
 PEOPLE = "ABCD"

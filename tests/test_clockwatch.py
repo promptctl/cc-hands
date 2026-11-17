@@ -147,3 +147,15 @@ def test_a_decorated_test_is_charged_and_a_keyword_wait_of_none_is_no_reach(pyte
     lines = reached(pytester, monkeypatch, helper=helper, test_user=user)
     assert "test_user.py: ['time.strftime']" in lines
     assert not any(line.startswith("helper.py") for line in lines)
+
+
+@pytest.mark.outside
+def test_a_shared_fixture_torn_down_after_a_test_is_charged_to_the_harness_and_not_the_test(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    # This repo's timeouts.py, run from the run's own tests/ and registered as its conftest does.
+    hooks = "\nimport timeouts\n\ndef pytest_configure(config):\n    config.pluginmanager.register(timeouts, 'timeouts')\n    clockwatch.register(config, frozenset({'timeouts.py'}))\n"
+    shared = "import pytest\n\n@pytest.fixture(scope='module')\ndef shared():\n    yield\n\ndef test_uses(shared):\n    pass\n"
+    timeouts = (Path(__file__).parent / "timeouts.py").read_text()
+    result = run(pytester, monkeypatch, "--timeout", "60", hooks=hooks, timeouts=timeouts, test_quiet=shared)
+    result.assert_outcomes(passed=1)
+    assert not any(line.startswith("test_quiet.py") for line in result.outlines)
+    assert result.ret == pytest.ExitCode.OK

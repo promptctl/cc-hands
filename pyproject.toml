@@ -55,7 +55,7 @@ packages = ["src/hands"]
 
 [tool.pyright]
 include = ["src", "tests"]
-# What tests import from scripts/ (tests/test_measuring.py), resolved as the tests put it on the path.
+# What tests import from scripts/, as pytest's pythonpath below puts it on the path.
 extraPaths = ["scripts"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
@@ -65,6 +65,7 @@ reportMatchNotExhaustive = "error"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["scripts"]
 # pytester, for the tests of conftest's own hooks (tests/test_ci_skips.py): pytest_plugins is read only from the
 # rootdir's conftest.
 # --durations: the slowest setups and calls of every run, CI's among them, beside the timeout below, so how close a test
