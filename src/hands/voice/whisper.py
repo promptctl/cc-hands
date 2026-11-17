@@ -171,8 +171,8 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
 
 
 def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list[str], tuple[str, ...]]:
-    """The text of each segment as a person said it, none of a segment all hands', and each word of hands' own echo in
-    them, in order.
+    """The text of each segment as a person said it, none of a segment with no word of a person's left in it, and each
+    word of hands' own echo in them, in order.
 
     [LAW:single-enforcer] the one rule of whose words are hands'. Each word Whisper heard is hands' where each word of it
     takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the nearest
@@ -192,7 +192,7 @@ def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list
                     free = left
                     echo.append(word.text.strip())
         said.append(segment.text if len(kept) == len(segment.words) else "".join(kept).strip())
-    return [text for text in said if text], tuple(echo)
+    return [text for text in said if _words(text)], tuple(echo)
 
 
 def _taking(heard: list[str], at: float, free: Placed) -> Placed | None:

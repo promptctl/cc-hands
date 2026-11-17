@@ -93,7 +93,7 @@ def said(sound: Sound) -> list[dict[str, object]]:
     """Each sentence hands said over `sound`, in the order it began to play: its voice, its text, from when to when it
     played, in seconds from the sound's start, and how many seconds of it had played before."""
     return [
-        dict(voice=play.synthesis.voice, text=play.synthesis.text, start=play.start * SLOT / RATE, into=round(play.into, 3), stop=play.stop * SLOT / RATE)
+        dict(voice=play.synthesis.voice, text=play.synthesis.text, start=round(play.start * SLOT / RATE, 3), into=round(play.into, 3), stop=round(play.stop * SLOT / RATE, 3))
         for play in plays(sound)
     ]
 

@@ -125,13 +125,15 @@ async def told(sound: Sound) -> ClipHeard:
 
 async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first clip pays for
-    no load only if the one done at construction asked for exactly what a clip's transcription asks for."""
+    no load only if the one done at construction asked for exactly what a clip's transcription asks for; and it was
+    asked to time the words of speech, so the first clip hands played over pays for no first timing either."""
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     await whisper.transcribed(clip(1), as_heard(SILENCE))
 
-    [(_, loaded), (_, transcribed)] = model.asked
-    assert loaded == transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False, "word_timestamps": False}
+    [(heard, loaded), (_, transcribed)] = model.asked
+    assert transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False, "word_timestamps": False}
+    assert (loaded, bool(np.abs(heard).max() > 0.1)) == ({**transcribed, "word_timestamps": True}, True)
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert (event.outcome, model_facts(event)) == ("ok", {"model": transcription.MODEL, "revision": transcription.REVISION})
@@ -285,7 +287,8 @@ async def test_a_word_of_hands_heard_out_of_its_order_leaves_the_rest_of_hands_w
 
 
 async def test_a_segment_all_hands_between_two_of_a_persons_leaves_their_words_joined_as_said(timed: Timed) -> None:
-    timed.segments += [spaced("Run the tests.", 0.1, 0.2), spaced("Build is green.", 1.0, 0.2), spaced("Then deploy.", 2.6, 0.2)]
+    # The segment of hands' sentence also holds a dash, which is no word of anyone's.
+    timed.segments += [spaced("Run the tests.", 0.1, 0.2), [*spaced("Build is green.", 1.0, 0.2), (" -", 1.6, 1.7)], spaced("Then deploy.", 2.6, 0.2)]
     clip_heard = await told(saying(3.5, ("Build is green.", 0.9, 1.9)))
     assert clip_heard.said == "Run the tests. Then deploy."
 

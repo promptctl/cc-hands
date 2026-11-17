@@ -7,8 +7,10 @@ and hands measured it slower: key release to transcript 613 to 724 ms through Lo
 the same six spoken turns, by upload and by its Realtime socket alike (hands-dictation-2bs.kpm, 2026-10-04).
 """
 
+import wave
 from dataclasses import dataclass
 from functools import cache
+from importlib.resources import files
 from typing import Any, cast
 
 import mlx_whisper
@@ -16,27 +18,30 @@ import numpy as np
 from huggingface_hub import is_offline_mode, snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-from hands.voice.clips import LANGUAGE, RATE
+from hands.voice.clips import LANGUAGE, decoded
 
 # The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load, at the
 # revision pinned: the weights a test measured are the weights hands runs, and CI keys its cache of them on it.
 MODEL = "mlx-community/whisper-large-v3-turbo"
 REVISION = "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 
-# A second of silence: what the model is loaded by.
-_SILENCE = np.zeros(RATE, dtype=np.float32)
+# hands' own TTS saying "Hands here.", a second of it, mono 16-bit at a clip's rate: what the model is loaded by.
+_HANDS_HERE = files("hands.voice") / "hands_here.wav"
 
 
 def load() -> None:
-    """Fetch the model, load it, and run it once.
+    """Fetch the model, load it, and run it once, its words timed.
 
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
     fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched, loading takes
-    0.5 s and the first run after it 1.3 s against 0.3 s for every later one. The model is kept for the process, keyed
-    on the directory `weights` names, so silence transcribed here through the call every clip makes leaves every clip finding it loaded and
-    run [LAW:no-ambient-temporal-coupling].
+    0.5 s and the first run after it 1.3 s against 0.3 s for every later one; and the first run that times its words
+    0.82 s against 0.43 s for every later one, on 8 s of hands' echo (2026-11-17), which silence, in which Whisper hears
+    no word to time, never reaches. The model is kept for the process, keyed on the directory `weights` names, so a
+    sentence transcribed here, its words timed, leaves every clip finding it loaded and run, whichever way it is
+    decoded [LAW:no-ambient-temporal-coupling].
     """
-    _transcribe(_SILENCE, None, False)
+    with wave.open(str(_HANDS_HERE)) as said:
+        _transcribe(decoded(said.readframes(said.getnframes())), None, True)
 
 
 @dataclass(frozen=True)
