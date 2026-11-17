@@ -387,7 +387,7 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert all(isinstance(event, WideEvent) for event in events)
     assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
         ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
-        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0}),
+        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0, "unread": 0}),
     ]
 
 

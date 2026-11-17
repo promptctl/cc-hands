@@ -14,7 +14,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED_ALONE, HANDS_ALONE, NO_ECHO, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played, replayed, take
+from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED_ALONE, HANDS_ALONE, NO_ECHO, OPENING, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, cut_in, played, replayed, take
 from speech import RATE, audio, quiet, spoken
 
 pytestmark = pytest.mark.outside
@@ -218,3 +218,12 @@ async def test_each_of_hands_sentences_heard_uncancelled_sends_nothing(sentence:
     end = [*onsets[1:], STOPPED][sentence]
 
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_echo_uncancelled.flac", onsets[sentence], end, onsets, STOPPED)) is None
+
+
+async def test_hands_heard_alone_over_each_replys_opening_on_the_desks_speaker_sends_nothing() -> None:
+    # Up to where the second voice first speaks: each reply's opening is heard as the microphone captured it until a
+    # stretch reads the echo path there, and hands' words in it are known by their text and time.
+    sound, slots = replayed(*take(OPENING)), round(cut_in(OPENING) * 100)
+    alone = Sound(sound.heard[: 2 * SLOT * slots], sound.captured[: 2 * SLOT * slots], (sound.played or ())[:slots])
+
+    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), alone) is None

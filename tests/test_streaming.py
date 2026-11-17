@@ -19,7 +19,8 @@ import soundfile
 from loguru import logger
 
 import recordings
-from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES
+import echoes
+from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed, take
 from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
@@ -27,7 +28,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice import engaged, streaming, voiceprints
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis
+from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis, decoded, slots
 from hands.voice.voiceprints import Identifier, Voiced
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -312,7 +313,7 @@ async def test_each_speaker_is_handed_on_as_their_clip_ends_with_the_clips_own_s
     heard = decoded_as_captured(clip)
     [(of, voiced)] = told.ended_with
     assert of == CLIP
-    assert [(each.speaker, each.voice.tobytes(), each.seconds, each.shared, each.played) for each in voiced] == [
+    assert [(each.speaker, each.voice.tobytes(), each.seconds, each.shared, each.echoed) for each in voiced] == [
         (0, np.concatenate([heard[: 2 * frame], heard[3 * frame : 4 * frame]]).tobytes(), 3 * frame / streaming.RATE, frame / streaming.RATE, ()),
         (1, heard[3 * frame : 5 * frame].tobytes(), 2 * frame / streaming.RATE, frame / streaming.RATE, ()),
     ]
@@ -389,7 +390,7 @@ async def test_each_speaker_carries_the_voices_hands_played_over_the_frames_they
     await rig.heard(CLIP, sound(seconds(STEPPED)), voices=())
     await rig.ended(CLIP, "sent")
     [(_, voiced)] = told.ended_with
-    assert [(each.speaker, each.played) for each in voiced] == [(0, ("alba",)), (1, ())]
+    assert [(each.speaker, each.echoed) for each in voiced] == [(0, ("alba",)), (1, ())]
 
 
 @pytest.mark.parametrize(("over", "cuts"), [((), 0.06), (("charles",), None)], ids=["nothing played", "hands played"])
@@ -953,13 +954,15 @@ class Overheard:
         """Who each identification found, and when the first speaker it cleared was first heard."""
         return [(entry.facts.get("speakers"), entry.facts.get("barge_in")) for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == "voiceprints.identified"]
 
-    async def held(self, number: int, clip: Samples) -> Identified:
-        """A clip of `clip`, heard to its end: what its last identification came to."""
-        held, stream, over = Clip(number, "wake word"), self.fed.stream, ("charles",)
+    async def held(self, number: int, clip: Samples, echoed: tuple[tuple[str, ...], ...] | None = None) -> Identified:
+        """A clip of `clip`, heard to its end, `echoed` the voices of hands' that may be in each 10 ms of it, 'charles'
+        in all of it unless said: what its last identification came to."""
+        held, stream = Clip(number, "wake word"), self.fed.stream
+        echoed = (("charles",),) * -(-len(clip) // SLOT) if echoed is None else echoed
         stream.opened(np.zeros(0, np.float32), self.fed.samples, ())
         for start in range(0, len(clip), FRAME_SAMPLES):
             piece = clip[start : start + FRAME_SAMPLES]
-            stream.heard(piece, (over,) * (len(piece) // SLOT))
+            stream.heard(piece, echoed[start // SLOT : (start + len(piece)) // SLOT])
             self.fed.samples += len(piece)
             if steps(self.fed.samples) > steps(self.fed.samples - len(piece)):
                 asked, since = (start + len(piece)) / streaming.RATE, stream.said()
@@ -1034,3 +1037,34 @@ async def test_a_person_too_brief_over_hands_to_cut_while_heard_cuts_it_off_as_t
     closed = (await overheard.held(1, phrase)).first
     assert overheard.barge_ins == [], overheard.identified()
     assert closed is not None and closed > 3.0, overheard.identified()
+
+
+async def cut_after(overheard: Overheard, number: int, fixture: Path) -> float:
+    """How long after the second voice first speaks on a take of scripts/record-double-talk.py its words cut hands off,
+    the take heard again through the canceller as one clip, hands' voice where the canceller says it may be."""
+    sound = replayed(*take(fixture))
+    overheard.barge_ins.clear()
+    await overheard.held(number, decoded(sound.heard), slots(sound))
+    assert overheard.barge_ins, overheard.identified()
+    return overheard.barge_ins[0][0] - echoes.cut_in(fixture)
+
+
+@pytest.mark.outside
+@pytest.mark.parametrize(("desk", "headphones"), [(echoes.CANCELLED, echoes.NO_ECHO), (echoes.OPENING, echoes.NO_ECHO_OPENING)], ids=["over its middle", "over its opening"])
+async def test_a_person_over_a_reply_in_headphones_cuts_it_off_as_soon_as_over_it_on_the_desks_speaker(overheard: Overheard, desk: Path, headphones: Path) -> None:
+    at_the_desk = await cut_after(overheard, 1, desk)
+    in_headphones = await cut_after(overheard, 2, headphones)
+    # Measured: over a reply's middle 1.85 s at the desk, 1.23 s in headphones; over its opening, after a pause, 1.84 s
+    # and 1.58 s, where the canceller once ducked the person under hands and nothing cut. Never before the person speaks:
+    # a cut ahead of them would be hands' own voice, or the room, cutting it.
+    assert 0.0 <= in_headphones <= at_the_desk, (at_the_desk, in_headphones, overheard.identified())
+
+
+@pytest.mark.outside
+async def test_hands_alone_over_a_replys_opening_on_the_desks_speaker_cuts_nothing_though_heard_uncancelled_until_read(overheard: Overheard) -> None:
+    # The take to the person's first word: a reply, a 4 s pause, the next reply's opening, each opening heard as the
+    # microphone captured it until a stretch reads the echo path there.
+    sound = replayed(*take(echoes.OPENING))
+    end = round(echoes.cut_in(echoes.OPENING) * streaming.RATE)
+    closed = (await overheard.held(1, decoded(sound.heard)[:end], slots(sound)[: end // SLOT])).first
+    assert (overheard.barge_ins, closed) == ([], None), overheard.identified()

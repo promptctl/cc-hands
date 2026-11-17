@@ -50,9 +50,9 @@ def by_length(prints: dict[int, Print]) -> Embed:
 
 
 def voiced(
-    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True
+    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, echoed: tuple[str, ...] = (), first: float = 0.0, said: bool = True
 ) -> Voiced:
-    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said)
+    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, echoed, first, said)
 
 
 def rounded(who: Who) -> Who:
@@ -87,11 +87,11 @@ def test_a_speaker_under_a_second_is_unheard_and_never_scored_and_one_heard_long
     ids=["person", "hands", "unsure", "unheard", "unidentified"],
 )
 def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_it_played_over_only_as_a_person(who: Who) -> None:
-    assert cleared(who, played=False, said=True)
+    assert cleared(who, echoed=False, said=True)
     # A sound the diarizer took for a speaker, with no words in it, cuts nothing.
-    assert not cleared(who, played=False, said=False)
+    assert not cleared(who, echoed=False, said=False)
     # Hands' own echo, and anyone not yet told from it, the model loading or a print being made included, cuts nothing.
-    assert cleared(who, played=True, said=True) == cleared(who, played=True, said=False) == isinstance(who, Person)
+    assert cleared(who, echoed=True, said=True) == cleared(who, echoed=True, said=False) == isinstance(who, Person)
 
 
 def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end_and_by_nothing_before() -> None:
@@ -137,16 +137,16 @@ async def test_the_lane_tells_each_person_it_clears_over_hands_and_settles_each_
     over = ("charles",)
     cleared_at: list[float] = []
     # hands' echo, from the clip's start, and a person over it from 0.9 s: the person cuts, heard from 0.9 s.
-    prints.identify(CLIP, (voiced(7, 3.0, played=over, first=0.0), voiced(5, 1.5, speaker=1, played=over, first=0.9)), cleared_at.append)
+    prints.identify(CLIP, (voiced(7, 3.0, echoed=over, first=0.0), voiced(5, 1.5, speaker=1, echoed=over, first=0.9)), cleared_at.append)
     # hands' echo alone cuts nothing.
-    prints.identify(SECOND, (voiced(7, 3.0, played=over),), cleared_at.append)
+    prints.identify(SECOND, (voiced(7, 3.0, echoed=over),), cleared_at.append)
     settled: list[Identified] = []
     # A wake phrase said alone over hands, 0.8 s from 0.3 s, after hands' echo: told at the end by the closing row.
-    ending = (voiced(5, 0.8, speaker=2, played=over, first=0.3), voiced(7, 3.0, played=over))
+    ending = (voiced(5, 0.8, speaker=2, echoed=over, first=0.3), voiced(7, 3.0, echoed=over))
     prints.ended(CLIP, ending, settled.append)
     # Nobody heard; and an identification that fails: both settle, with nobody.
     prints.ended(SECOND, (), settled.append)
-    prints.ended(Clip(3, "wake word"), (voiced(9, 3.0, played=over),), settled.append)
+    prints.ended(Clip(3, "wake word"), (voiced(9, 3.0, echoed=over),), settled.append)
     assert await appeared(settled, 3) == [Identified(0.3), NOBODY, NOBODY]
     assert cleared_at == [0.9]
     failed = entries(recorded, "voiceprints.identified")[-1]
@@ -282,7 +282,7 @@ async def test_a_speaker_heard_over_a_voice_hands_clips_no_print_of_is_unidentif
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(CLIP, (voiced(7, 3.0, played=("charles", "fantine")),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0, echoed=("charles", "fantine")),), ignored)
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "hands played fantine over them and holds no print of it")]
 
@@ -379,7 +379,7 @@ async def test_an_echo_span_is_identified_as_one_voice_on_an_event_of_its_own(tm
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.spanned(3, voiced(7, 3.0, played=("charles",)))
+    prints.spanned(3, voiced(7, 3.0, echoed=("charles",)))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert event.facts["span"] == 3 and "clip" not in event.facts
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]

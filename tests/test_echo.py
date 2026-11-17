@@ -5,8 +5,8 @@ import pytest
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import Reference, Playhead, Sound, Synthesis
-from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, echo_path
+from hands.voice.clips import SLOT, Reference, Playhead, Sound, Synthesis
+from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, Reading, echo_path
 from echoes import CANCELLED, NO_ECHO, replayed, take
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
@@ -39,7 +39,8 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
     played_bytes, chunk = played.tobytes(), 2 * int(0.02 * PLAYED_RATE)
     for index in range(len(echo) // 320):
         start, end = index * chunk + (6 if index % 2 else 0), (index + 1) * chunk + (0 if index % 2 else 6)
-        canceller.played(played_bytes[start:end], PLAYED_RATE, 1, ())
+        # hands' TTS, whose echo the path is read for: AEC3's output is heard once it is read there.
+        canceller.played(played_bytes[start:end], PLAYED_RATE, 1, (ALBA,))
         buffer = echo[index * 320 : (index + 1) * 320].tobytes()
         cleaned = canceller.heard(buffer, HEARD_RATE, 1).heard
         assert len(cleaned) == len(buffer)
@@ -87,7 +88,7 @@ def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had
     canceller.heard(bytes(640), HEARD_RATE, 1)  # two frames, nothing played
     canceller.played(bytes(320 * 102), HEARD_RATE, 1, ())  # 102 frames played to a microphone that takes none
     canceller.heard(bytes(320), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0}
+    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0, "unread": 3}
 
 
 def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_but_for_one_buffer() -> None:
@@ -97,11 +98,11 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
     for _ in range(50):  # one second of 20 ms buffers
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0}
+    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 100}
     for _ in range(50):  # the next second holds only the spare buffer, and slips nothing more
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0}
+    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 200}
 
 
 def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_of_its_frames_as_it_was_played() -> None:
@@ -144,15 +145,15 @@ def _dbfs(level: float, seconds: float, seed: int) -> np.ndarray:
     return noise / np.sqrt(np.mean(noise**2)) * 32768 * 10 ** (level / 20)
 
 
-def _path_over(path: EchoPath, captured: np.ndarray, played: np.ndarray | None) -> list[bool]:
-    """Each 10 ms of `captured` at HEARD_RATE and `played` at PLAYED_RATE, None for no TTS, through `path`, and whether
-    it read an echo path after each second. A frame of `played` that is all silence is no TTS, as `referenced` has it."""
-    after: list[bool] = []
+def _path_over(path: EchoPath, captured: np.ndarray, played: np.ndarray | None) -> list[Reading]:
+    """Each 10 ms of `captured` at HEARD_RATE and `played` at PLAYED_RATE, None for no TTS, through `path`, and what it
+    read of the echo path after each second. A frame of `played` that is all silence is no TTS, as `referenced` has it."""
+    after: list[Reading] = []
     for frame in range(len(captured) // 160):
         tts = None if played is None else played[frame * 240 : (frame + 1) * 240] / 32768
         path.heard(captured[frame * 160 : (frame + 1) * 160] / 32768, None if tts is None or not tts.any() else tts)
         if frame % 100 == 99:
-            after.append(path.reached)
+            after.append(path.reading)
     return after
 
 
@@ -162,56 +163,58 @@ def test_an_echo_of_what_hands_played_reads_as_one_at_another_rate_with_no_resam
     assert echo_path(_dbfs(-50, 2.0, seed=4) / 32768, HEARD_RATE, played / 32768) < 10
 
 
-def test_hands_heard_through_the_room_is_an_echo_path_even_quiet_and_with_a_person_over_it() -> None:
+def test_hands_heard_through_the_room_is_an_echo_path_even_quiet_and_a_person_over_it_leaves_it_unread() -> None:
     played = _noise(6.0, PLAYED_RATE, seed=3).astype(np.float64)
     echo = _room(played, 10 ** (-40 / 20))  # the speaker turned well down
-    assert _path_over(EchoPath(), echo + _dbfs(-30, 6.0, seed=5), played) == [True] * 6
-    assert _path_over(EchoPath(), echo, played) == [True] * 6
+    assert _path_over(EchoPath(), echo, played) == ["there"] * 6
+    # A person 25 dB over it hides it (a reading of 7, as low as none): hands' voice is taken to be maybe in what is
+    # heard, never none.
+    assert _path_over(EchoPath(), echo + _dbfs(-30, 6.0, seed=5), played) == ["unread"] * 6
 
 
 def test_hands_heard_by_no_microphone_is_no_echo_path_once_two_seconds_of_it_are_read() -> None:
-    # In headphones: the microphone hears the room alone while hands plays.
+    # In headphones: the microphone hears the room alone while hands plays. A second of it is too short to say so.
     played = _noise(4.0, PLAYED_RATE, seed=3).astype(np.float64)
-    assert _path_over(EchoPath(), _dbfs(-62, 4.0, seed=6), played) == [True, False, False, False]
+    assert _path_over(EchoPath(), _dbfs(-62, 4.0, seed=6), played) == ["unread", "none", "none", "none"]
 
 
 def test_a_person_speaking_over_hands_in_headphones_says_nothing_of_the_echo_path() -> None:
     # Under double talk an echo well down reads as low as none: a loud stretch with a low reading leaves the path as it was.
     played = _noise(4.0, PLAYED_RATE, seed=3).astype(np.float64)
-    assert _path_over(EchoPath(), _dbfs(-30, 4.0, seed=7), played) == [True] * 4
+    assert _path_over(EchoPath(), _dbfs(-30, 4.0, seed=7), played) == ["unread"] * 4
     path = EchoPath()
     _path_over(path, _dbfs(-62, 3.0, seed=6), played[: 3 * PLAYED_RATE])
-    assert _path_over(path, _dbfs(-30, 4.0, seed=7), played) == [False] * 4
+    assert _path_over(path, _dbfs(-30, 4.0, seed=7), played) == ["none"] * 4
 
 
 def test_the_echo_path_is_read_again_when_hands_is_heard_through_the_room_again() -> None:
     played = _noise(6.0, PLAYED_RATE, seed=3).astype(np.float64)
     path = EchoPath()
     _path_over(path, _dbfs(-62, 3.0, seed=6), played[: 3 * PLAYED_RATE])
-    assert not path.reached
+    assert path.reading == "none"
     # The headphones come off mid-reply: the first stretch the room carries hands in says so.
-    assert _path_over(path, _room(played, 0.3), played)[1:] == [True] * 5
+    assert _path_over(path, _room(played, 0.3), played) == ["there"] * 6
 
 
 def test_short_replies_through_the_room_say_there_is_an_echo_path_though_too_short_to_say_there_is_none() -> None:
     played = _noise(6.0, PLAYED_RATE, seed=3).astype(np.float64)
     path = EchoPath()
     _path_over(path, _dbfs(-62, 3.0, seed=6), played[: 3 * PLAYED_RATE])
-    assert not path.reached
+    assert path.reading == "none"
     # The speaker unmuted, and hands says the last half second of each two, never three seconds apart: no stretch is
     # half hands, but each carries it through the room.
     short = np.where(np.arange(len(played)) % (2 * PLAYED_RATE) >= 3 * PLAYED_RATE // 2, played, 0)
-    assert _path_over(path, _room(short, 0.3), short) == [False] + [True] * 5
+    assert _path_over(path, _room(short, 0.3), short) == ["none"] + ["there"] * 5
 
 
-def test_the_echo_path_is_taken_to_be_there_again_after_hands_plays_nothing_for_three_seconds() -> None:
+def test_the_echo_path_is_unread_again_after_hands_plays_nothing_for_three_seconds() -> None:
     played = _noise(3.0, PLAYED_RATE, seed=3).astype(np.float64)
     path = EchoPath()
     _path_over(path, _dbfs(-62, 3.0, seed=6), played)
-    assert _path_over(path, _dbfs(-62, 4.0, seed=6), None) == [False, False, True, True]
+    assert _path_over(path, _dbfs(-62, 4.0, seed=6), None) == ["none", "none", "unread", "unread"]
 
 
-def test_with_no_echo_path_the_microphone_is_heard_as_it_captured_and_each_reference_says_so() -> None:
+def test_with_no_echo_path_read_the_microphone_is_heard_as_it_captured_and_each_reference_says_whether_it_reached() -> None:
     canceller = EchoCanceller()
     played = _noise(4.0, PLAYED_RATE, seed=3)
     room = _dbfs(-62, 4.0, seed=6).astype(np.int16)
@@ -223,21 +226,28 @@ def test_with_no_echo_path_the_microphone_is_heard_as_it_captured_and_each_refer
         captured = (room if index < 150 else voice)[index * 320 : (index + 1) * 320].tobytes()
         heard.append((captured, canceller.heard(captured, HEARD_RATE, 1)))
     reached = [reference.reached for _, cancelled in heard for reference in cancelled.played if reference is not None]
-    assert reached[:100] == [True] * 100 and not any(reached[200:])
-    # Once it is read, the person is heard as the microphone captured them, not ducked under hands.
-    assert all(cancelled.heard == captured for captured, cancelled in heard[100:])
-    assert canceller.counts()["unreached"] == 2 * len(heard[100:])
+    # Unread, hands' voice may be in the microphone; read none, a whole stretch in, it is not.
+    assert reached[:200] == [True] * 200 and not any(reached[200:])
+    # Unread or read none, the person is heard as the microphone captured them, not ducked under hands.
+    assert all(cancelled.heard == captured for captured, cancelled in heard)
+    assert (canceller.counts()["unread"], canceller.counts()["unreached"]) == (200, 200)
 
 
 def _unreached(sound: Sound) -> int:
     return sum(reference is not None and not reference.reached for reference in sound.played or ())
 
 
-def test_hands_through_the_desks_speaker_is_never_heard_as_captured() -> None:
-    assert _unreached(replayed(*take(CANCELLED))) == 0
+def test_hands_through_the_desks_speaker_never_reads_as_reaching_nothing_and_is_cancelled_from_a_quarter_second_in() -> None:
+    sound = replayed(*take(CANCELLED))
+    assert _unreached(sound) == 0
+    # Unread until a stretch says there is an echo path: hands' first sentence, at 1.24 s, is heard uncancelled to 1.5 s,
+    # and cancelled from then on.
+    slot = 2 * SLOT
+    differs = [sound.heard[at : at + slot] != sound.captured[at : at + slot] for at in range(0, len(sound.heard), slot)]
+    assert not any(differs[:150]) and all(differs[150:400])
 
 
-def test_hands_echo_20_db_down_under_a_person_is_never_heard_as_captured() -> None:
+def test_hands_echo_20_db_down_under_a_person_never_reads_as_reaching_nothing() -> None:
     # Under double talk an echo well down reads as low as none: the person is loud, so it says nothing of the path.
     echo, reference, playheads = take(CANCELLED)
     person, _, _ = take(NO_ECHO)
@@ -246,9 +256,10 @@ def test_hands_echo_20_db_down_under_a_person_is_never_heard_as_captured() -> No
     assert _unreached(replayed(mixed, reference, playheads)) == 0
 
 
-def test_hands_in_headphones_is_heard_as_captured_once_a_stretch_of_it_is_read() -> None:
+def test_hands_in_headphones_is_heard_as_captured_and_reaches_nothing_once_a_stretch_of_it_is_read() -> None:
     sound = replayed(*take(NO_ECHO))
     reached = [reference.reached for reference in sound.played or () if reference is not None]
-    # Hands is heard through AEC3 until a stretch shows no echo path, 1.76 s of it in, then as captured to the end,
-    # the person's lines over it with it.
-    assert all(reached[:100]) and not any(reached[200:])
+    # The microphone is heard as captured throughout, the person's lines over hands with it; hands' voice may be in it
+    # until a whole stretch shows no echo path, 1.01 s of hands in, and is not from then on.
+    assert sound.heard == sound.captured
+    assert all(reached[:100]) and not any(reached[102:])
