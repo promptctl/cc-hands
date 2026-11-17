@@ -1941,7 +1941,7 @@ voice's. A turn of hands' echo alone sends nothing: its `clip` event says `trans
 its `ClipHeard` record holds each word taken as hands' under `echo`. Text and time cannot tell a
 person repeating hands' words from hands' echo, so a word of hands' is placed only where the echo
 canceller left hands' voice in what Whisper hears: none within 1 s of a 10 ms slot where, while
-hands played, the heard audio over the 0.2 s about it is 20 dB or more below what the microphone
+hands played, the heard audio over the 0.2 s about it is more than 20 dB below what the microphone
 captured. Through hands'
 canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
 person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by

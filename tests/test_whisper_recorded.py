@@ -12,7 +12,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, HANDS_ALONE, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played
+from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED_ALONE, HANDS_ALONE, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played
 from speech import RATE, audio, quiet, spoken
 
 pytestmark = pytest.mark.outside
@@ -180,9 +180,9 @@ async def test_hands_heard_alone_after_the_person_sends_nothing() -> None:
 
 
 async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
-    # hands' first sentence, to 7 s, before the second voice speaks at 7.85 s: no word of hands' is left to match.
-    sound = cancelled()
-    alone = Sound(sound.heard[: 2 * SLOT * 700], sound.captured[: 2 * SLOT * 700], (sound.played or ())[:700])
+    # Up to where the second voice first speaks: no word of hands' is left to match.
+    sound, slots = cancelled(), round(CANCELLED_ALONE * 100)
+    alone = Sound(sound.heard[: 2 * SLOT * slots], sound.captured[: 2 * SLOT * slots], (sound.played or ())[:slots])
 
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), alone) is None
 

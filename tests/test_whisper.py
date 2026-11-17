@@ -344,3 +344,14 @@ async def test_a_word_hands_played_before_the_clip_opened_is_hands_where_the_can
     timed.segments.append(spaced("finished", 0.05, 0.25))
     clip_heard = await told(cancelling(saying(3.0, ("Phosphene finished its render, and the build is green.", -2.0, 1.4)), 0.5, 3.0))
     assert (clip_heard.said, clip_heard.echo) == (None, ("finished",)), clip_heard
+
+
+async def test_hands_words_the_canceller_left_in_after_a_minute_of_loud_speech_are_hands(timed: Timed) -> None:
+    # 50 s at -10 dBFS, then hands' echo captured at -45 dBFS and heard at -55: the canceller took out 10 dB of it, short
+    # of `_CANCELLING`, however long the loud stretch before it.
+    timed.segments.append(spaced("The build is green.", 55.1, 0.3))
+    rng = np.random.default_rng(0)
+    loud = rng.normal(0, 10_362, 50 * 16_000)
+    captured, heard = (np.concatenate((loud, rng.normal(0, deviation, 10 * 16_000))).astype(np.int16).tobytes() for deviation in (184, 58))
+    clip_heard = await told(Sound(heard, captured, saying(60.0, ("The build is green.", 55.0, 56.5)).played))
+    assert (clip_heard.said, clip_heard.cancelled) == (None, 0), clip_heard

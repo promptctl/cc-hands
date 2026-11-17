@@ -64,7 +64,7 @@ def main() -> None:
         begins = onsets[over] + HANDS[over].index(words) / len(HANDS[over]) * len(made[over]) / RATE - text.index(words) / len(text) * len(audio) / RATE
         at = round(begins * RATE)
         other[at : at + len(audio)] = audio[: length - at]
-        lines.append({"text": text, "start": round(begins, 3)})
+        lines.append((text, begins))
     syntheses = [Synthesis(DEFAULT, text, begun(VirtualClock())) for text in HANDS]
     out = np.clip((hands + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
     reference = np.clip(hands * 32767, -32768, 32767).astype(np.int16).tobytes()
@@ -108,9 +108,13 @@ def main() -> None:
     as_float = lambda raw: np.frombuffer(bytes(raw), np.int16).astype(np.float32) / 32768  # noqa: E731
     channels = np.stack([as_float(heard), as_float(captured), as_float(track(tuple(played)))], axis=1)
     soundfile.write(f"{FIXTURE}.flac", channels, RATE, subtype="PCM_16")
+    # Where the speaker's timeline falls on the recording's, which began as the microphone opened: the first slot the
+    # canceller matched with hands' speech, less how far into its sentence that was and when the sentence began.
+    first = next(reference for reference in played if reference is not None)
+    offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]
     FIXTURE.with_suffix(".json").write_text(
-        json.dumps({"hands": list(HANDS), "other": lines, "played": slots}) + "\n"
+        json.dumps({"hands": list(HANDS), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
     )
     print(f"{FIXTURE}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
 

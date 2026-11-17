@@ -197,12 +197,13 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
 def _left(placed: Placed, sound: Sound) -> Placed:
     """The words of hands' placed over `sound` that the echo canceller left in what Whisper hears: none placed within
     `_CANCELLED_SECONDS` of a 10 ms slot it took hands' voice out of, where, while hands played, what it heard over the
-    `_ERLE_SLOTS` about it was `_CANCELLING` dB or more below what the microphone captured. A person's word heard there
+    `_ERLE_SLOTS` about it was more than `_CANCELLING` dB below what the microphone captured. A person's word heard there
     is theirs, whatever hands said."""
     slots = len(sound.heard) // (2 * SLOT)
     # The energy of each side over the `_ERLE_SLOTS` centred on each slot, as far as the clip reaches: a moving sum.
     about = np.arange(slots)
-    totals = [np.concatenate(([0.0], np.cumsum((decoded(audio[: 2 * SLOT * slots]).reshape(slots, SLOT) ** 2).sum(axis=1)))) for audio in (sound.captured, sound.heard)]
+    # Summed in float64: a running sum in float32 over a minute of speech has no digits left for a quiet slot after it.
+    totals = [np.concatenate(([0.0], np.cumsum((decoded(audio[: 2 * SLOT * slots]).reshape(slots, SLOT) ** 2).sum(axis=1), dtype=np.float64))) for audio in (sound.captured, sound.heard)]
     energy = [total[np.minimum(about + _ERLE_SLOTS // 2, slots)] - total[np.maximum(about - _ERLE_SLOTS // 2, 0)] for total in totals]
     # At the phone, where what was played is not known, nothing was taken out, as nothing of hands' is placed.
     playing = np.array([reference is not None for reference in sound.played or (None,) * slots][:slots], dtype=bool)
@@ -219,9 +220,10 @@ def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list
     """The text of each segment as a person said it, none of a segment with no word of a person's left in it, and each
     word of hands' own echo in them, in order.
 
-    [LAW:single-enforcer] the one rule of whose words are hands'. Each word Whisper heard is hands' where each word of it
-    takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the nearest
-    in time; a word of hands' the canceller took out is never taken. A person's word that hands said within that time is
+    [LAW:single-enforcer] the one rule of whose words are hands', of the words of hands' `placed`: those the canceller
+    left in (`_left`), which is all of them heard through no canceller. Each word Whisper heard is hands' where each word
+    of it takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the
+    nearest in time. A person's word that hands said within that time is
     taken for hands': by text and time, the two are the same. A segment none of whose words is hands' is sent as Whisper
     wrote it, as is every segment of a clip hands played nothing over, whose words were never timed."""
     free = placed
