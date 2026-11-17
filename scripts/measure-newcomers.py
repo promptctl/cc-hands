@@ -4,7 +4,7 @@ each the run heard alone first, on hands' diarizer (hands.voice.streaming.diariz
     uv run scripts/measure-newcomers.py DIR    # fetches what it needs into DIR once, then measures
 
 The voices: AMI Meeting Corpus's sixteen test meetings (Mix-Headset, CC BY 4.0), cut into each turn one person says
-alone (`measuring.turns`) that nobody sounds in, laughs and coughs included, for LEAD ahead of it or for
+alone (`measuring.meeting_turns`) that nobody sounds in, laughs and coughs included, for LEAD ahead of it or for
 engaged.STOP_SECS past it, per pyannote's AMI-diarization-setup references, and that is no longer than LONGEST, as a clip
 is. Each ordered pair of people in a meeting is a user, the voice the run knows, and a newcomer. A run hears the user
 alone in each of USERS of their turns, then the newcomer alone in each of NEWCOMERS of theirs, then one clip of the next
@@ -29,7 +29,7 @@ import numpy as np
 
 from hands.voice import engaged, streaming
 from hands.voice.streaming import MEL_HOP, SUBSAMPLING, through
-from measuring import AMI_AUDIO, AMI_TEST, LEAD, RATE, fetched, mono, referenced, turn, turns
+from measuring import AMI_AUDIO, AMI_TEST, LEAD, RATE, fetched, meeting_turns, mono, turn
 
 USERS = (1, 2, 5)
 NEWCOMERS = (1, 3)
@@ -94,8 +94,7 @@ def main() -> None:
     missed: Counter[tuple[str, str, str]] = Counter()
     for name in AMI_TEST:
         audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-        spoken, sounds = referenced(directory, name, "only_words"), referenced(directory, name, "word_and_vocalsounds")
-        alone = [t for t in turns(spoken, sounds, len(audio) / RATE, before=LEAD, after=engaged.STOP_SECS) if t.end - t.start <= LONGEST]
+        alone = [t for t in meeting_turns(directory, name, len(audio) / RATE, before=LEAD, after=engaged.STOP_SECS) if t.end - t.start <= LONGEST]
         for user, newcomer in itertools.permutations(sorted({t.person for t in alone}), 2):
             mine, theirs = [t for t in alone if t.person == user], [t for t in alone if t.person == newcomer]
             if len(mine) <= max(USERS) or len(theirs) <= max(NEWCOMERS):

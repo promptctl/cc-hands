@@ -68,6 +68,11 @@ def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
     return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in path.read_text().splitlines())]
 
 
+def heard_in(sound: Stretch, start: float, end: float) -> bool:
+    """Whether `sound` is heard for any time between `start` and `end`, none when they are the same."""
+    return min(sound.end, end) > max(sound.start, start)
+
+
 def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
     """Each person's spoken stretches, merged across gaps under GAP, that are at least SHORTEST long, that nobody else
     sounds in, and that nobody sounds in the `before` ahead of or the `after` past, the recording, `recorded` seconds
@@ -81,11 +86,19 @@ def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before:
             merged.append(stretch)
 
     def heard_over(turn: Stretch, sound: Stretch) -> bool:
-        # The turn's own person, heard within it, is the turn; anyone heard around it, or them before or after it, a laugh
-        # that runs on past its last word included, is not.
-        inside = sound.person == turn.person and turn.start <= sound.start and sound.end <= turn.end
-        return sound.start < turn.end + after and sound.end > turn.start - before and not inside
+        # Anyone else heard in the turn or the silences around it; the turn's own person only in those silences, so a
+        # laugh of theirs that runs on past their last word into `after` is, and the part of it in the turn is the turn.
+        if sound.person == turn.person:
+            return heard_in(sound, turn.start - before, turn.start) or heard_in(sound, turn.end, turn.end + after)
+        return heard_in(sound, turn.start - before, turn.end + after)
 
     # A transcript says nothing outside the recording, so a turn at either end of it is not known to be set in silence.
     held = [turn for turn in merged if turn.end - turn.start >= SHORTEST and 0 <= turn.start - before and turn.end + after <= recorded]
     return [turn for turn in held if not any(heard_over(turn, sound) for sound in sounds)]
+
+
+def meeting_turns(directory: Path, name: str, recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
+    """`turns` of AMI meeting `name`, `recorded` seconds long: what each person says is their words, and what is heard is
+    every word, laugh, cough and other sound, per pyannote's references."""
+    spoken, sounds = referenced(directory, name, "only_words"), referenced(directory, name, "word_and_vocalsounds")
+    return turns(spoken, sounds, recorded, before, after)

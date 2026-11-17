@@ -319,13 +319,13 @@ So that in conversation hands can tell the owner from another person, and from i
   paired with the streaming recognizer in one session for the run, so each word a clip's
   stream hears comes with its speaker, and a speaker keeps the same number from clip to clip;
   each clip the key sent or dropped ends in one of the streaming listener's `hearing` events,
-  with each speaker's words (`hands.voice.streaming`). Measured 2026-10-28 through that code by
+  with each speaker's words (`hands.voice.streaming`). Measured through that code by
   `scripts/measure-diarization.py`, at GATING 1, a clip's speaker being whoever said most of its
-  words: 73.7 min of one LibriVox reader in 1493 clips, all 12814 words one speaker and none
-  anyone else's, 5 clips with no words. On AMI test meetings, measured 2026-11-17 in clips of one
-  person's turns with no word, laugh, cough or other sound of anyone else's in them: ES2004a, 4
-  speakers found of 4, 20 of 21 clips given their own speaker and the miss one of MEE014's 3
-  given MEO015's; IS1009a, 3 of 3 (its fourth person has no such turn), 21 of 21. On the
+  words. On 2026-10-28, 73.7 min of one LibriVox reader in 1493 clips: all 12814 words one
+  speaker and none anyone else's, 5 clips with no words. On 2026-11-17, AMI test meetings in
+  clips of one person's turns with no word, laugh, cough or other sound of anyone else's in them:
+  ES2004a, 4 speakers found of 4, 21 of 22 clips given their own speaker and the other with no
+  words; IS1009a, 3 of 3 (its fourth person has no such turn), 23 of 23. On the
   two-speaker AMI fixture, at GATING 4, every word's speaker matched what the transformers path
   on the CPU decided for the same audio, 663 of 663 over five phases of the grid. In a clip a
   newcomer shares with a voice the run knows, each is given their own speaker about 24 times in
