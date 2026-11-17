@@ -44,6 +44,7 @@ from hands.voice.ptt import KeyedAudio, PushToTalk
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.wakeword import Pretrained
+from hands.voice.synthesis import Ended, Synthesis
 from conftest import events
 
 
@@ -536,8 +537,11 @@ class Desk:
     def __init__(self) -> None:
         self.written: list[bytes] = []
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, synthesis: Synthesis | None) -> None:
         self.written.append(audio)
+
+    def end(self, end: Ended) -> None:
+        pass
 
     def get_output_latency(self) -> float:
         return 0.0

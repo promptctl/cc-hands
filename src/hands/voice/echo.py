@@ -47,6 +47,11 @@ def frame_bytes(sample_rate: int, channels: int) -> int:
     return sample_rate // _FRAMES_PER_SECOND * channels * SAMPLE_BYTES
 
 
+def seconds(length: int, sample_rate: int, channels: int) -> float:
+    """How long `length` bytes of 16-bit sound at `sample_rate` over `channels` play."""
+    return length / (sample_rate * channels * SAMPLE_BYTES)
+
+
 @dataclass(frozen=True)
 class Cancelled:
     """A microphone buffer through the canceller: `heard`, with the speaker's echo taken out; and `played`, the reference

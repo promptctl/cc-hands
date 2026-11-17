@@ -52,6 +52,11 @@ class SerialThread:
                 # everything queued behind it, and everything given later, still runs.
                 logger.exception(f"work on {self._name} failed")
 
+    @property
+    def closed(self) -> bool:
+        """Whether this takes no more work: everything given before it was closed still runs."""
+        return self._closed
+
     def give(self, work: Callable[[], None]) -> None:
         """Queue work behind everything given before it, and return without waiting for it to run."""
         if self._closed:

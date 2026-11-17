@@ -337,7 +337,7 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
 
         Settings = built.SaidInTTS.Settings
 
-        def __init__(self, **kwargs: object) -> None:
+        def __init__(self, _clock: object, **kwargs: object) -> None:
             given.update(kwargs)
             super().__init__()  # pyright: ignore[reportUnknownMemberType]  (untyped in Pipecat)
 

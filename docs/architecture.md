@@ -1854,7 +1854,14 @@ wide event, carrying how many frames its canceller heard, how many of those had 
 playing, how many it dropped unheard because the microphone had stopped taking them, and
 how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
-callbacks PortAudio said came too late. Every frame the microphone pushes carries the same sound as it
+callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS made, is one `speech`
+wide event once its end comes out of the device behind its last byte: how long of it the device played
+and the phone was handed; the gaps inside it, how many and how long the device found nothing written
+between two of its bytes, which a listener hears as crackle; the callbacks PortAudio said came late
+inside it; and how its making ended, `made` with its `rtf` (how long the TTS took to make it over how
+long it plays), or `cut` before the TTS was done. A sentence made whole and cut by a barge-in as it
+played is `made`, with less of it played than made; one the TTS said it failed is a failed event. A gap under an rtf above 1 is a TTS that fell behind; a gap under a low one is
+delivery. Every frame the microphone pushes carries the same sound as it
 was captured, before the canceller (`KeyedAudio.captured`), and the clip owner keeps it for the
 frames a clip is made of, so each clip's `clip` event says its mean power in dBFS
 on both sides (`levels.captured_dbfs`, `levels.heard_dbfs`): a transcript made of the
@@ -1927,10 +1934,12 @@ one before the last change. The model loads on the lane as its first work (`voic
 off the voice's build.
 
 hands knows which voice it played under each 10 ms of what the microphone heard. Its TTS
-(`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each utterance's audio.
-Pipecat's sender queues that frame in line with the audio chunks, and the speaker labels each
-chunk of TTS audio it writes with the voice; the transport's own silence and padding carry none.
-The playout carries the label to the echo canceller. On the capture thread, the canceller keeps a
+(`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each synthesis's audio and a
+`Made` behind it. The speaker cuts that audio into Pipecat's chunks itself, each of one synthesis, so
+the sender never joins two, and ends each synthesis it opened with one uninterruptible `Ended`
+(`hands.voice.synthesis`). The sender queues both in line with the chunks, and the speaker labels
+each chunk of TTS audio it writes with the synthesis whose `SpeakingIn` it last wrote; the
+transport's own silence and padding carry none. The playout carries the label to the echo canceller. On the capture thread, the canceller keeps a
 10 ms reference only for a frame of labelled, non-silent TTS audio, and None for every other frame. A speaker is `Unidentified` with the reason when nothing can score
 them against every voice they may be: the model did not load, there is no print yet of the voice
 hands speaks in, or hands played a voice over them that it holds no print of.
