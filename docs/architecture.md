@@ -1936,7 +1936,7 @@ frame a person shares with hands is the person's, so what they say over hands go
 played nothing over waits on no identification. One that misses `IDENTIFIED_SECONDS` keeps every
 word, because losing a person's words costs more than one turn of hands' echo. On the recorded
 echo, seven of eight sentences ended `Unsure` rather than `Hands`, which is why every speaker
-who is not a person counts (`tests/test_echo_recorded.py`).
+who is not a person counts (`tests/test_streaming.py`).
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print

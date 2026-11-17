@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import mlx_whisper
 import numpy as np
 import pytest
 import soundfile
@@ -24,10 +25,12 @@ from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
-from hands.voice import engaged, streaming, voiceprints
+from hands.virtualclock import VirtualClock
+from hands.voice import engaged, streaming, transcription, voiceprints
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import NOBODY, Clip, Cleared, Fate, Identified, Reference, Settle, Sound
 from hands.voice.voiceprints import Identifier, Voiced
+from hands.voice.whisper import Whisper
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
@@ -1044,3 +1047,47 @@ async def test_a_person_too_brief_over_hands_to_cut_while_heard_cuts_it_off_as_t
     closed = (await overheard.held(1, phrase)).first
     assert overheard.barge_ins == [], overheard.identified()
     assert closed is not None and closed > 3.0, overheard.identified()
+
+
+# Whisper as hands runs it, as this module found it before the suite's stand-in for the model (conftest's
+# no_whisper_weights) is put in its place for each test.
+TRANSCRIBE: Callable[..., dict[str, Any]] = mlx_whisper.transcribe  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
+WEIGHTS = transcription.weights
+
+
+@pytest.fixture
+def whisper(monkeypatch: pytest.MonkeyPatch) -> Whisper:
+    """The real model at its pinned weights, unprimed: the tests below are about whose words it is given to send."""
+    monkeypatch.setattr(mlx_whisper, "transcribe", TRANSCRIBE)
+    monkeypatch.setattr(transcription, "weights", WEIGHTS)
+
+    async def unprimed() -> str | None:
+        return None
+
+    return Whisper(clock=VirtualClock(), prompt=unprimed, record=lambda _: None)
+
+
+async def sent(overheard: Overheard, whisper: Whisper, number: int, clip: Samples) -> str | None:
+    """What a turn of `clip` sends: Whisper's words, given its last identification as the clip owner gives it."""
+    last: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
+    last.set_result(await overheard.held(number, clip))
+    return await whisper.transcribed(Clip(number, "wake word"), pcm(clip), last)
+
+
+@pytest.mark.outside
+async def test_a_clip_of_hands_own_echo_sends_no_words(overheard: Overheard, whisper: Whisper) -> None:
+    [echo] = fixture_clips("hands_echo_uncancelled.flac")
+    starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
+    # Each sentence a clip of its own, as the wake word or engaged conversation would open one on hands' own voice.
+    words = [await sent(overheard, whisper, number, echo[start:end]) for number, (start, end) in enumerate(zip(starts, [*starts[1:], len(echo)]), 1)]
+    assert words == [None] * len(SENTENCES), overheard.identified()
+
+
+@pytest.mark.outside
+async def test_a_person_over_hands_sends_their_words_and_hands_alone_after_them_sends_none(overheard: Overheard, whisper: Whisper) -> None:
+    [mic] = fixture_clips("hands_and_another.flac")
+    over, alone = (mic[round(start * streaming.RATE) : round(end * streaming.RATE)] for start, end in (OVER_HANDS, HANDS_ALONE))
+    # The second voice's lines each say who is speaking ("...the second speaker...").
+    theirs = await sent(overheard, whisper, 1, over)
+    assert theirs is not None and "second speaker" in theirs.lower(), (theirs, overheard.identified())
+    assert await sent(overheard, whisper, 2, alone) is None, overheard.identified()
