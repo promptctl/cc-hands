@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Protocol
 
+import numpy as np
 from livekit import rtc
 
 from hands.voice.clips import Reference, Playhead
@@ -35,11 +36,38 @@ _SLIP_WINDOW = 100
 _SPARE_FRAMES = 2
 
 
+# The stretch the echo path is read over, in 10 ms frames, and how often: 2 s, once a second. Over one 2 s stretch hands
+# played in, the reading below was 42.9 to 81.6 at the desk with its speaker on (tests/fixtures/hands_cancelled_and_another.flac)
+# and 4.2 to 7.8 in headphones (hands_no_echo_and_another.flac); over 1 s, the speaker's dipped to 9.1.
+_PATH_FRAMES = 200
+_PATH_HOP = 100
+
+# The reading at least, where hands' voice reached the microphone: the GCC-PHAT of what the microphone captured against
+# what the speaker played, its peak over its RMS. Between the two takes' 7.8 and 42.9; with the echo 30 dB down, hands
+# alone still read 49 to 73. Fitted on one room, 13 stretches of each.
+_ECHO_PATH = 20.0
+
+# Where the echo path is looked for, in Hz, where speech carries; and how far apart in time, in seconds, the reference
+# and its echo may be, either way: 68 ms at the desk, and at a reopen the reference can come as late as all of it the
+# canceller holds (`_HELD_FRAMES`).
+_PATH_BAND = (200.0, 4000.0)
+_PATH_LAG = 1.0
+
+# How loud the microphone is, at most, over a stretch whose low reading says no echo reached it: hands alone in
+# headphones -60 to -61.5 dBFS, the room alone -63, a person speaking -26 to -34. Under double talk an echo 20 dB down
+# reads 7 to 9, as low as none, so a stretch a person spoke in says nothing either way.
+_QUIET = -45.0
+
+# How long, in 10 ms frames, hands plays nothing before the echo path is taken to be there again, as it is when the
+# canceller is made: 3 s, so a speaker unmuted or turned up between replies is read afresh, not taken for headphones.
+_FORGET_FRAMES = 300
+
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
 # playing, matched with silence; frames the speaker's device took, silence included, dropped unheard because the
 # microphone had stopped taking them (how much of the device's sound was silence is the speaker's own `unwritten`);
-# and frames slipped, held through a whole window that never needed them.
-COUNTS = ("heard", "unplayed", "dropped", "slipped")
+# frames slipped, held through a whole window that never needed them; and frames passed on as captured, with no echo
+# path to take anything out of.
+COUNTS = ("heard", "unplayed", "dropped", "slipped", "unreached")
 
 
 def frame_bytes(sample_rate: int, channels: int) -> int:
@@ -70,7 +98,7 @@ class Echo(Protocol):
     def close(self) -> None: ...
 
 
-def referenced(reference: rtc.AudioFrame, playheads: tuple[Playhead, ...]) -> Reference | None:
+def referenced(reference: rtc.AudioFrame, playheads: tuple[Playhead, ...], reached: bool) -> Reference | None:
     """The frame of reference as hands' TTS, kept as given, where it carries TTS audio: a synthesis it is of, and sound;
     None for silence, a cue, or the speaker's own padding. Only a frame of TTS is copied, on the capture thread."""
     match playheads:
@@ -78,7 +106,85 @@ def referenced(reference: rtc.AudioFrame, playheads: tuple[Playhead, ...]) -> Re
             return None
         case _:
             audio = bytes(reference.data.cast("B"))
-            return None if audio.count(0) == len(audio) else Reference(audio, reference.sample_rate, reference.num_channels, playheads)
+            return None if audio.count(0) == len(audio) else Reference(audio, reference.sample_rate, reference.num_channels, playheads, reached)
+
+
+def mono(audio: bytes, channels: int) -> np.ndarray:
+    """16-bit audio over `channels` as one channel of samples from -1 to 1."""
+    return np.frombuffer(audio, np.int16).reshape(-1, channels).mean(axis=1) / 32768
+
+
+def echo_path(captured: np.ndarray, rate: int, played: np.ndarray) -> float:
+    """How far above chance the echo of `played` is in `captured`, at `rate`, the same stretch of time each at its own
+    rate: the GCC-PHAT of the two in `_PATH_BAND`, within `_PATH_LAG` either way, its peak over its RMS. The phase
+    transform weighs every frequency alike, so the room, which spreads an echo over many lags, still leaves one peak.
+    Zero-padded to twice the stretch, so no lag wraps round onto another, each side's bin k is the same frequency at
+    either rate, and the two spectra are multiplied bin by bin with no resampling."""
+    size = 2 * len(captured)
+    heard, said = np.fft.rfft(captured, size), np.fft.rfft(played, 2 * len(played))
+    bins = min(len(heard), len(said))
+    cross = np.zeros(len(heard), complex)
+    cross[:bins] = heard[:bins] * np.conj(said[:bins])
+    frequency = np.fft.rfftfreq(size, 1 / rate)
+    band = (frequency >= _PATH_BAND[0]) & (frequency <= _PATH_BAND[1]) & (np.abs(cross) > 0)
+    gcc = np.fft.irfft(np.where(band, cross / np.where(band, np.abs(cross), 1), 0), size)
+    lag = round(_PATH_LAG * rate)
+    lags = np.concatenate((gcc[: lag + 1], gcc[size - lag :]))
+    spread = float(np.sqrt(np.mean(lags**2)))
+    # Nothing in the band on either side, as digital silence captured: no higher above chance than nothing.
+    return float(np.abs(lags).max()) / spread if spread else 0.0
+
+
+class EchoPath:
+    """Whether hands' voice reaches the microphone, read off the last `_PATH_FRAMES` of what it captured and what the
+    speaker played, every `_PATH_HOP`: a fact of the speaker and the room, not of any clip, so it is read wherever hands
+    plays, not only in the stretch a clip holds.
+
+    An echo path is taken to be there until a stretch shows none, the canceller's way. The evidence is asymmetric as the
+    costs are: a path taken for none sends hands' own words as a person's, one taken for there costs a person's words.
+    So any stretch hands played in that reads `_ECHO_PATH` or more says there is one, and only hands alone says there
+    is none: a stretch hands played at least half of reading under it, the microphone under `_QUIET` over it. Any other,
+    a person speaking over hands, says nothing. `_FORGET_FRAMES` with hands playing nothing and it is taken to be there
+    again. A path that comes while it is read as none, a speaker unmuted mid-reply, is read at the next hop, up to
+    `_PATH_HOP` of hands heard as captured. The capture thread alone touches it."""
+
+    def __init__(self) -> None:
+        self.reached = True
+        self._captured: deque[np.ndarray] = deque(maxlen=_PATH_FRAMES)
+        # Each frame the speaker played TTS in; None where it played none, made silence at the TTS's rate when read.
+        self._played: deque[np.ndarray | None] = deque(maxlen=_PATH_FRAMES)
+        self._frames = 0
+        self._unplayed = 0
+
+    def heard(self, captured: np.ndarray, played: np.ndarray | None) -> None:
+        """Take one 10 ms frame of the microphone, mono, and what the speaker played of hands' TTS with it, mono, or None
+        where it played none."""
+        self._captured.append(captured)
+        self._played.append(played)
+        self._frames += 1
+        self._unplayed = 0 if played is not None else self._unplayed + 1
+        # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played none of reads as saying nothing.
+        if self._frames % _PATH_HOP == 0 and len(self._captured) == _PATH_FRAMES:
+            self.reached = _verdict(self.reached, *self._read())
+        self.reached = self.reached or self._unplayed >= _FORGET_FRAMES
+
+    def _read(self) -> tuple[float, bool]:
+        """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:
+        hands played at least half of it, and the microphone was quiet over it."""
+        captured = np.concatenate(self._captured)
+        tts = [frame for frame in self._played if frame is not None]
+        alone = 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
+        if not tts:
+            return 0.0, alone
+        silence = np.zeros(len(tts[0]))
+        played = np.concatenate([silence if frame is None else frame for frame in self._played])
+        return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), alone
+
+
+def _verdict(reached: bool, reading: float, alone: bool) -> bool:
+    """Whether there is an echo path, given whether there was and a stretch's reading: one at `_ECHO_PATH` says there
+    is; one under it over hands alone says there is not; any other leaves it as it was."""
+    return reading >= _ECHO_PATH or (reached and not alone)
 
 
 class EchoCanceller:
@@ -97,6 +203,8 @@ class EchoCanceller:
 
     def __init__(self) -> None:
         self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
+        # [LAW:single-enforcer] the one reading of whether hands' voice reaches the microphone; each reference says it.
+        self._path = EchoPath()
         # The speaker's audio short of a whole frame, carried to its next buffer, with the syntheses in it. The speaker's
         # device callback alone touches them.
         self._unplayed = b""
@@ -143,13 +251,22 @@ class EchoCanceller:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
         cleaned, played = bytearray(), list[Reference | None]()
         for start in range(0, len(audio), size):
-            # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference.
+            # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference, and goes
+            # through AEC3, which keeps learning the room either way; the echo path says which of the two is heard.
             reference, playheads = self._next_played()
             self._apm.process_reverse_stream(reference)
-            played.append(referenced(reference, playheads))
-            frame = rtc.AudioFrame(audio[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
+            captured = audio[start : start + size]
+            # The echo path as the frame came: read once a second, it changes at a frame's edge, never within one.
+            reached = self._path.reached
+            tts = referenced(reference, playheads, reached)
+            self._path.heard(mono(captured, channels), None if tts is None else mono(tts.audio, tts.channels))
+            played.append(tts)
+            frame = rtc.AudioFrame(captured, sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
             self._apm.process_stream(frame)  # in place
-            cleaned += frame.data.cast("B")
+            # With no echo path there is nothing to take out, and AEC3 still ducks a person's voice under hands', 30 to
+            # 50 dB on hands_no_echo_and_another.flac: what the microphone captured is heard as it was.
+            cleaned += frame.data.cast("B") if reached else captured
+            self._counts["unreached"] += not reached
         self._counts["heard"] += len(audio) // size
         return Cancelled(bytes(cleaned), tuple(played))
 

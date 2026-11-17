@@ -99,12 +99,15 @@ class Playhead:
 @dataclass(frozen=True)
 class Reference:
     """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
-    speaker's own rate and channels, which are not a clip's; and each synthesis of the TTS in it, where in it."""
+    speaker's own rate and channels, which are not a clip's; each synthesis of the TTS in it, where in it; and whether the
+    canceller, as it was matched, read an echo path from the speaker to the microphone (`hands.voice.echo.EchoPath`):
+    none in headphones, or with the speaker muted, where nothing of it reached the microphone."""
 
     audio: bytes
     rate: int
     channels: int
     playheads: tuple[Playhead, ...]
+    reached: bool
 
     @property
     def voices(self) -> tuple[str, ...]:

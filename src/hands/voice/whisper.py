@@ -6,7 +6,8 @@ hands' own words are known by their text and their time: each word Whisper heard
 hands played near when it was heard. A Whisper segment is no voice boundary: primed with hands' vocabulary, Whisper
 heard a person's lines and hands' sentences in one segment (tests/fixtures/hands_and_another.flac, 8.2 s to 24 s), so
 only a word, timed, is one voice's. Text and time alone cannot tell a person repeating hands' words from hands' echo,
-so a word of hands' counts only where the echo canceller left hands' voice in what Whisper hears.
+so a word of hands' counts only where hands' voice is in what Whisper hears: its echo reached the microphone, and the
+echo canceller left it in.
 """
 
 import re
@@ -126,8 +127,9 @@ class Whisper:
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
         and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Of the rest, each
         word that is hands' own voice come back (`_parted`) goes too. A clip with nothing said in it comes back with no
-        segment. A clip hands' voice was left in is decoded with its words timed, which one hands played nothing over, or
-        one the canceller took all of hands' voice out of, has no need of, and does not wait on.
+        segment. A clip hands' voice was left in is decoded with its words timed, which one hands played nothing over, one
+        no echo of hands' reached, or one the canceller took all of hands' voice out of, has no need of, and does not
+        wait on.
         """
         played = _placed(plays(sound))
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
@@ -153,7 +155,7 @@ class Whisper:
         return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo, len(played) - len(placed))
 
     def _scored(self, sound: Sound, prompt: str | None, played: Placed) -> tuple[Placed, list[tuple[transcription.Segment, float]]]:
-        """The words of hands' `played` over a clip that the canceller left in it (`_left`), and each segment Whisper hears
+        """The words of hands' `played` over a clip that are in what Whisper hears (`_left`), and each segment Whisper hears
         in it, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, its words timed where any of hands' were
         left, and how sure Silero is that anyone spoke in the stretch it was heard in. It blocks while the model runs."""
         placed = _left(played, sound)
@@ -195,10 +197,10 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
 
 
 def _left(placed: Placed, sound: Sound) -> Placed:
-    """The words of hands' placed over `sound` that the echo canceller left in what Whisper hears: none placed within
-    `_CANCELLED_SECONDS` of a 10 ms slot it took hands' voice out of, where, while hands played, what it heard over the
-    `_ERLE_SLOTS` about it was more than `_CANCELLING` dB below what the microphone captured. A person's word heard there
-    is theirs, whatever hands said."""
+    """The words of hands' placed over `sound` that are in what Whisper hears: none placed within `_CANCELLED_SECONDS`
+    of a 10 ms slot hands' voice was not in it at, where hands played and either no echo of it reached the microphone
+    (`Reference.reached`) or the canceller took it out, what it heard over the `_ERLE_SLOTS` about it more than
+    `_CANCELLING` dB below what the microphone captured. A person's word heard there is theirs, whatever hands said."""
     slots = len(sound.heard) // (2 * SLOT)
     # The energy of each side over the `_ERLE_SLOTS` centred on each slot, as far as the clip reaches: a moving sum.
     about = np.arange(slots)
@@ -206,10 +208,12 @@ def _left(placed: Placed, sound: Sound) -> Placed:
     totals = [np.concatenate(([0.0], np.cumsum((decoded(audio[: 2 * SLOT * slots]).reshape(slots, SLOT) ** 2).sum(axis=1), dtype=np.float64))) for audio in (sound.captured, sound.heard)]
     energy = [total[np.minimum(about + _ERLE_SLOTS // 2, slots)] - total[np.maximum(about - _ERLE_SLOTS // 2, 0)] for total in totals]
     # At the phone, where what was played is not known, nothing was taken out, as nothing of hands' is placed.
-    playing = np.array([reference is not None for reference in sound.played or (None,) * slots][:slots], dtype=bool)
+    references = (sound.played or (None,) * slots)[:slots]
+    playing = np.array([reference is not None for reference in references], dtype=bool)
+    reached = np.array([reference is not None and reference.reached for reference in references], dtype=bool)
     # [LAW:types-are-the-program] a ratio of powers, not of levels: digital silence heard has no level (clips.dbfs), and
     # where both sides are silent nothing was taken out.
-    taking = playing & (energy[0] > energy[1] * 10 ** (_CANCELLING / 10))
+    taking = playing & (~reached | (energy[0] > energy[1] * 10 ** (_CANCELLING / 10)))
     reach = round(_CANCELLED_SECONDS * RATE / SLOT)
     # Each word's slots, clamped to the clip's: a word placed before the clip opened looks only at what of its reach
     # the clip holds.
@@ -220,8 +224,8 @@ def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list
     """The text of each segment as a person said it, none of a segment with no word of a person's left in it, and each
     word of hands' own echo in them, in order.
 
-    [LAW:single-enforcer] the one rule of whose words are hands', of the words of hands' `placed`: those the canceller
-    left in (`_left`), which is all of them heard through no canceller. Each word Whisper heard is hands' where each word
+    [LAW:single-enforcer] the one rule of whose words are hands', of the words of hands' `placed`: those in what Whisper
+    heard (`_left`), which is all of them heard through no canceller with an echo path. Each word Whisper heard is hands' where each word
     of it takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the
     nearest in time. A person's word that hands said within that time is taken for hands': by text and time, the two are
     the same. A segment none of whose words is hands' is sent as Whisper wrote it, as is every segment of a clip hands

@@ -76,8 +76,9 @@ def written(path: Path, audio: bytes) -> int:
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
     """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was, every
-    voice of hands' TTS over it, and each sentence it said over it, with when, so whose words were whose can be told
-    from the recording alone; how many bytes they are."""
+    voice of hands' TTS over it, each sentence it said over it, with when, so whose words were whose can be told from
+    the recording alone, and how much of hands' TTS over it, in seconds, played with no echo path to the microphone; how
+    many bytes they are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)
     match sound.played:
         case tuple() as played:
@@ -85,7 +86,10 @@ def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]
         case None:
             pass
     described = directory / f"{name}.json"
-    described.write_text(json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound), "said": said(sound)}) + "\n")
+    unreached = sum(reference is not None and not reference.reached for reference in sound.played or ()) * SLOT / RATE
+    described.write_text(
+        json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound), "said": said(sound), "unreached": unreached}) + "\n"
+    )
     return size + described.stat().st_size
 
 
@@ -143,8 +147,9 @@ class Overheard(Protocol):
 
 def echoed(each: Overheard) -> bool:
     """Whether a buffer is hands' echo and nobody else's: heard at the desk at the off level with no press, as it was
-    captured, while the speaker played hands' TTS."""
-    return each.desk and each.key == "up" and any(reference is not None for reference in each.cancelled.played)
+    captured, while the speaker played hands' TTS and its echo reached the microphone: in headphones, what the
+    microphone hears while hands plays is the room, or a person."""
+    return each.desk and each.key == "up" and any(reference is not None and reference.reached for reference in each.cancelled.played)
 
 
 class Recorder:

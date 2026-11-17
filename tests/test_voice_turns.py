@@ -228,7 +228,7 @@ class Rig:
         "dropped" throws it away; a clip it opens is opened by `by`. `captured` is the sound before the echo canceller,
         where the canceller changed it; `voices` hands' TTS played over every frame, nothing known of it for None."""
         syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
-        played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(sound) // 320))
+        played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses, True) for _ in range(len(sound) // 320))
         frames: list[KeyedAudio] = []
         for key in keys:
             match self.gate.key, key:

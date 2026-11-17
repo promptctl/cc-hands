@@ -156,7 +156,7 @@ def played_with(sound: bytes, voices: tuple[str, ...] = ()) -> tuple[Reference, 
     """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound,
     a sentence of hands' TTS in each of `voices`."""
     syntheses = tuple(Playhead(Synthesis(voice, "The parser is fixed.", begun(SYSTEM)), 0.0) for voice in voices)
-    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses) for start in range(0, len(sound), 320))
+    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses, True) for start in range(0, len(sound), 320))
 
 
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_clip_kept_from_before_it_included() -> None:

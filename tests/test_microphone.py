@@ -40,7 +40,7 @@ from hands.voice.synthesis import Ended, SpeakingIn, Synthesis, Syntheses, Taken
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 CLEANED = b"\x01\x00" * 320  # what the room's canceller makes of anything the microphone hears
-PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, (Playhead(Synthesis("alba", "Hands here.", begun(SYSTEM)), 0.0),)),) * 2  # what it matched each buffer's two frames with
+PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, (Playhead(Synthesis("alba", "Hands here.", begun(SYSTEM)), 0.0),), True),) * 2  # what it matched each buffer's two frames with
 
 
 def _phone() -> Phone:
@@ -387,7 +387,7 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     assert all(isinstance(event, WideEvent) for event in events)
     assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
         ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
-        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0}),
+        ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0}),
     ]
 
 

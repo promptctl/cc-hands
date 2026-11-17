@@ -1849,10 +1849,18 @@ holds what the speaker's device took, and each 10 ms of microphone takes the nex
 of it, or silence when there is none. How much is held is how far the reference lags its
 echo: the speaker starts before the microphone at a reopen, and its clock may run fast,
 and reference held through a whole second that no microphone frame needed, but for one
-spare buffer, is slipped. Each microphone stream let go of is one `microphone.let_go`
-wide event, carrying how many frames its canceller heard, how many of those had nothing
-playing, how many it dropped unheard because the microphone had stopped taking them, and
-how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
+spare buffer, is slipped. Whether hands' voice reaches the microphone at all is the
+canceller's to read too (`EchoPath`), off the last 2 s of capture against reference, once a
+second: in headphones, or with the speaker muted, nothing does, and AEC3 still ducks a
+person's voice 30 to 50 dB under hands', so there every buffer is passed on as captured,
+and each reference says so (`Reference.reached`), which Whisper's rule of hands' words reads.
+It is taken to be there until a stretch of hands alone, the microphone quiet, reads none,
+and again after 3 s of hands playing nothing: under a person's voice, an echo well down
+reads like none. Each
+microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
+its canceller heard, how many of those had nothing playing, how many it dropped unheard
+because the microphone had stopped taking them, how many it slipped, and how many it
+passed on as captured; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS made, is one `speech`
 wide event once its end comes out of the device behind its last byte: how long of it the device played
@@ -1946,8 +1954,8 @@ captured. Through hands'
 canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
 person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by
 `scripts/record-double-talk.py`), so a person saying "No, the build is broken." over hands' "the
-build is green" is sent every word; `ClipHeard.cancelled` counts the words of hands' the canceller
-took out. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
+build is green" is sent every word; `ClipHeard.unheard` counts the words of hands' the canceller
+took out, or no echo of which reached the microphone. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
 person who says a word hands said within 1.5 s of it loses that word. A clip hands played nothing
 over, or one the canceller took all of hands' voice out of, is decoded without its words timed,
 which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
