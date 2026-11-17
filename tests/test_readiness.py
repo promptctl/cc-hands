@@ -716,13 +716,14 @@ def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot
     assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
-@pytest.mark.outside
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def refused(_pids: object) -> dict[int, float]:
         raise OSError(1, "sysctl refused")
 
+    home = Home(root / "home")
+    joined(home, "running", os.getpid(), None)
     monkeypatch.setattr(liveness, "process_starts", refused)
-    found = readiness.sessions(Home(root / "home"), installed(root), untmuxed)
+    found = readiness.sessions(home, "/nowhere", untmuxed)
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
 
