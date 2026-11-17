@@ -13,7 +13,7 @@ import queue
 import struct
 import threading
 from pathlib import Path
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -58,7 +58,7 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
-from hands.voice.clips import Clip, Reference
+from hands.voice.clips import Clip, Identified, Reference
 from hands.voice.voiceprints import Embed, Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
 from hands.voice import clipowner, desk, shortcut, streaming, voiceprints
@@ -318,7 +318,7 @@ async def rigged(
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None) -> ClipHeard:
+    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None, _identified: Awaitable[Identified]) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
         heard.append(audio)
         return ClipHeard(clip, await texts.get() or None, ())

@@ -4,7 +4,7 @@
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.clips import Cleared, Clip, Settle
+from hands.voice.clips import NOBODY, Cleared, Clip, Settle
 from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
@@ -32,7 +32,7 @@ class Unidentifying:
         pass
 
     def ended(self, clip: Clip, voiced: tuple[Voiced, ...], settle: Settle) -> None:
-        settle(None)
+        settle(NOBODY)
 
 
 unidentified = Unidentifying()

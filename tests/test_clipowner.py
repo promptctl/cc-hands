@@ -4,7 +4,7 @@ every clip and every hearing however it ends."""
 
 import asyncio
 import threading
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import IDENTIFIED_SECONDS, ClipOwner
-from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Recording, Reference, Settle, Sound
+from hands.voice.clips import NOBODY, Clip, Cleared, Echo, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -71,8 +71,11 @@ class Scripted:
     """A transcriber that says, for each clip in turn, what it was given: words, nothing, a failure, or to wait."""
 
     said: list[str | None | Exception | asyncio.Event] = field(default_factory=list[str | None | Exception | asyncio.Event])
+    # The last identification each clip's transcription was given, to hear only the people in it by.
+    identified: list[Awaitable[Identified]] = field(default_factory=list[Awaitable[Identified]])
 
-    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
+    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+        self.identified.append(identified)
         match self.said.pop(0):
             case asyncio.Event() as go:
                 await go.wait()
@@ -419,9 +422,10 @@ async def test_hearings_still_to_run_as_the_pipeline_stops_end_cancelled() -> No
     assert [(event.outcome, event.facts["listener"], event.facts["clip"]) for event in rig.events("hearing")] == [("cancelled", "stuck", 1)] * 2
 
 
-def settling(first: float | None) -> Callable[[Settle], None]:
-    """A clip's last identification coming to `first`, told from the voiceprints' lane, a thread of its own."""
-    return lambda settle: elsewhere(lambda: settle(first))
+def settling(first: float | None, echo: Echo = ()) -> Callable[[Settle], None]:
+    """A clip's last identification coming to `first`, hands' own echo heard alone over `echo`, told from the
+    voiceprints' lane, a thread of its own."""
+    return lambda settle: elsewhere(lambda: settle(Identified(first, echo)))
 
 
 def hands_words(_clip: Clip, _sound: Sound) -> Hearings:
@@ -437,15 +441,33 @@ def barge_ins(rig: Rig) -> list[tuple[object, ...]]:
     return [seen for seen in rig.seen.seen if seen[0] == "barge_in"]
 
 
-async def test_hands_own_echo_over_a_reading_cuts_nothing_while_its_clip_is_open_or_as_it_closes() -> None:
-    echo = Heeding("streaming", hearings=hands_words, settling=settling(None))
-    async with rigged(Scripted(["the parser is fixed"]), (echo,)) as rig:
+async def test_hands_own_echo_over_a_reading_cuts_nothing_and_its_words_are_heard_as_hands_own() -> None:
+    # The whole clip hands' own reading, come back through the microphone: the transcriber, told so, hears nobody in it.
+    heard = (range(0, 960), range(960, 1920))
+    transcriber = Scripted([None])
+    async with rigged(transcriber, (Heeding("streaming", hearings=hands_words, settling=settling(None, heard)),)) as rig:
         await rig.clip([frame_of(3), frame_of(3)], voices=("charles",))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
         assert barge_ins(rig) == []
+        assert [seen for seen in rig.seen.seen if seen[0] == "words"] == []
         assert {event.facts["barge_in"] for event in rig.events("hearing")} == {False}
+        [identified] = transcriber.identified
+        assert await identified == Identified(None, heard)
+        # [LAW:nothing-unseen] a turn of hands' own words alone says so: no words, nobody, and how long hands' echo was.
         [clip] = rig.events("clip")
-        assert (clip.facts["transcript"], clip.facts["identified"]) == ("words", "nobody")
+        assert (clip.facts["transcript"], clip.facts["identified"], clip.facts["echo_seconds"]) == ("none", "nobody", 0.12)
+
+
+async def test_a_clip_hands_played_nothing_over_is_transcribed_without_waiting_on_any_identification() -> None:
+    # A listener that never settles the clip's end: nothing of hands can be in it, so nothing waits on that.
+    transcriber = Scripted(["create a ticket"])
+    async with rigged(transcriber, (Heeding("streaming"),)) as rig:
+        await rig.clip([frame_of(3)])
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        [identified] = transcriber.identified
+        assert await asyncio.wait_for(identified, 0.1) == NOBODY
+        [clip] = rig.events("clip")
+        assert (clip.facts["transcript"], "identified" in clip.facts) == ("words", False)
 
 
 async def test_a_person_over_hands_cuts_it_off_while_their_clip_is_open_and_never_once_it_has_closed() -> None:
@@ -491,11 +513,10 @@ async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_t
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
 
 
-async def test_a_clip_that_cut_while_it_was_open_resolves_without_waiting_on_its_last_identification() -> None:
-    clock = VirtualClock()
-    listener = Heeding("streaming")
-    # Nothing settles the clip's end, and the clock is never advanced: a wait on it would never end.
-    async with rigged(Scripted(["stop there"]), (listener,), clock) as rig:
+async def test_a_clip_that_cut_while_it_was_open_is_not_cut_again_as_it_closes() -> None:
+    # Its last identification finds the person again, first heard at 0.4 s, and hands' echo before them.
+    listener = Heeding("streaming", settling=settling(0.4, (range(0, 960),)))
+    async with rigged(Scripted(["stop there"]), (listener,)) as rig:
         down = rig.gate.after("start", "engaged conversation")
         await rig.frame(down, frame_of(3), ("charles",))
         await rig.until(lambda: listener.cleared is not None)
@@ -506,7 +527,7 @@ async def test_a_clip_that_cut_while_it_was_open_resolves_without_waiting_on_its
         await rig.frame(down.after("stop", "engaged conversation"), frame_of(0), ("charles",))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
         assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.4), ("words", "stop there"), ("resolved", 1)]
-        assert "identified" not in rig.events("clip")[0].facts
+        assert (rig.events("clip")[0].facts["identified"], rig.events("clip")[0].facts["echo_seconds"]) == ("a person", 0.06)
 
 
 async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint() -> None:
@@ -519,11 +540,15 @@ async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_a
         assert ["identified" in event.facts for event in rig.events("clip")] == [False, False]
 
 
-async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_waits_on_no_voiceprint() -> None:
-    async with rigged(Scripted(["stop there"]), (Heeding("streaming"),)) as rig:
+async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_nothing_whoever_it_heard() -> None:
+    transcriber = Scripted(["stop there"])
+    async with rigged(transcriber, (Heeding("streaming", settling=settling(0.4)),)) as rig:
         await rig.clip([frame_of(3)], by="shortcut", voices=("charles",))
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
-        assert barge_ins(rig) == [] and "identified" not in rig.events("clip")[0].facts
+        assert barge_ins(rig) == []
+        # Hands played over it, so its words are still heard as only the people in it.
+        [identified] = transcriber.identified
+        assert await identified == Identified(0.4, ())
 
 
 async def test_a_clip_whose_last_identification_misses_its_bound_cuts_nothing_and_says_so() -> None:

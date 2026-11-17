@@ -1,6 +1,7 @@
 """Whisper on MLX: each clip transcribed in hands' own process, with mlx_whisper's transcription standing in for the
 model, and what hands takes as said from the segments it answers with."""
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -13,7 +14,7 @@ from speech import spoken
 from hands.clock import SYSTEM
 from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
-from hands.voice.clips import Clip
+from hands.voice.clips import Clip, Echo, Identified
 from hands.voice.whisper import Whisper
 
 
@@ -63,12 +64,19 @@ def clip(number: int) -> Clip:
     return Clip(number, "shortcut")
 
 
+def identified(echo: Echo = ()) -> "asyncio.Future[Identified]":
+    """A clip's last identification, already come: hands' own echo heard alone over `echo`, nowhere for none."""
+    done: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
+    done.set_result(Identified(None, echo))
+    return done
+
+
 async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first clip pays for
     no load only if the one done at construction asked for exactly what a clip's transcription asks for."""
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
-    await whisper.transcribed(clip(1), SILENCE)
+    await whisper.transcribed(clip(1), SILENCE, identified())
 
     [(_, loaded), (_, transcribed)] = model.asked
     assert loaded == transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
@@ -82,7 +90,7 @@ async def test_each_clip_is_transcribed_from_its_samples_primed_with_the_vocabul
     samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
 
     for number in (1, 2, 3):
-        await whisper.transcribed(clip(number), samples.tobytes())
+        await whisper.transcribed(clip(number), samples.tobytes(), identified())
 
     transcribed = model.asked[1:]
     # The clip's own samples, then the silence a segment is heard with after its last word.
@@ -104,7 +112,7 @@ async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_sa
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(*["authMiddleware"] * 5), record=recorded.append)
 
-    said = [await whisper.transcribed(clip(number), SPOKEN) for number in range(1, 6)]
+    said = [await whisper.transcribed(clip(number), SPOKEN, identified()) for number in range(1, 6)]
 
     assert said == [None, None, None, None, "Okay."]
     # Each clip is recorded with what was dropped from it and why, so a clip that sent nothing can be looked into.
@@ -126,7 +134,7 @@ async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
-    assert [await whisper.transcribed(clip(number), audio) for number, audio in ((1, SILENCE), (2, SPOKEN))] == [None, "Thank you."]
+    assert [await whisper.transcribed(clip(number), audio, identified()) for number, audio in ((1, SILENCE), (2, SPOKEN))] == [None, "Thank you."]
     # Recorded with how sure Silero was that anyone spoke, so a turn that sent nothing says why.
     [[unsaid], []] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
@@ -144,9 +152,41 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
 
     monkeypatch.setattr(transcription, "segments", segments)
 
-    assert await whisper.transcribed(clip(1), SPOKEN + SILENCE * 40) == "Create a ticket."
+    assert await whisper.transcribed(clip(1), SPOKEN + SILENCE * 40, identified()) == "Create a ticket."
     [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
+
+
+async def test_words_heard_only_in_hands_own_echo_are_not_said_and_a_persons_in_the_same_clip_are(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
+    # A person, then hands' own voice come back through the microphone, each a segment of their own.
+    spoke = len(SPOKEN) // 2
+    heard = [transcription.Segment("Create a ticket.", 0.0, spoke / 16_000, 0.8, -0.3), transcription.Segment("The parser is fixed.", spoke / 16_000, 2 * spoke / 16_000, 0.8, -0.3)]
+
+    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+        return heard
+
+    monkeypatch.setattr(transcription, "segments", segments)
+
+    assert await whisper.transcribed(clip(1), SPOKEN * 2, identified((range(spoke, 2 * spoke),))) == "Create a ticket."
+    # Recorded as dropped where Silero, hearing the clip with hands' echo silenced, heard nobody speak.
+    [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
+    assert (unsaid.text, unsaid.voiced < 0.1) == ("The parser is fixed.", True)
+
+
+async def test_whisper_hears_a_clip_while_its_speakers_are_still_being_identified(model: Model) -> None:
+    model.answers += [[], [("Okay.", 0.38, -0.5)]]
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    pending: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
+
+    transcribing = asyncio.create_task(whisper.transcribed(clip(1), SPOKEN, pending))
+    async with asyncio.timeout(10):
+        while len(model.asked) < 2:
+            await asyncio.sleep(0.01)
+    assert not transcribing.done()
+    pending.set_result(Identified(None, ()))
+    assert await transcribing == "Okay."
 
 
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
@@ -155,7 +195,7 @@ async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(mo
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
     with pytest.raises(RuntimeError, match="Metal ran out of memory"):
-        await whisper.transcribed(clip(7), SPOKEN)
+        await whisper.transcribed(clip(7), SPOKEN, identified())
 
-    assert await whisper.transcribed(clip(8), SPOKEN) == "Okay."
+    assert await whisper.transcribed(clip(8), SPOKEN, identified()) == "Okay."
     assert [entry.clip for entry in recorded if isinstance(entry, ClipHeard)] == [8]
