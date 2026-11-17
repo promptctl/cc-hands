@@ -22,7 +22,6 @@ from pathlib import Path
 import httpx
 import huggingface_hub.constants
 import pytest
-from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
 from huggingface_hub.errors import RevisionResolutionError
 from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
@@ -54,20 +53,20 @@ def loaded_by_mlx_audio(repo: str, revision: str) -> Weights:
 
 
 # [LAW:one-source-of-truth] every speech weight a test loads, the one list the run fetches and CI keys its cache of the
-# hub on (hub_key): each weight's `what` is made of what its fetch is called with.
+# hub on (hub_key): each weight's `what` names the pins its fetch reads.
 WEIGHTS = (
     loaded_by_mlx_audio(streaming.MODEL, streaming.REVISION),
     loaded_by_mlx_audio(streaming.DIARIZATION, streaming.DIARIZATION_REVISION),
     loaded_by_mlx_audio(engaged.SMART_TURN, engaged.SMART_TURN_REVISION),
     Weights(f"{transcription.MODEL} at {transcription.REVISION}", transcription.weights),
-    # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
-    Weights(f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION}", partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION)),
+    # The voiceprint model is one file of a repository of many, so only it is fetched.
+    Weights(f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION}", voiceprints.weights),
 )
 
 
 def hub_key() -> str:
-    """What CI keys its cache of the hub on: a digest of what of each weight WEIGHTS fetches, so a weight added, moved
-    or narrowed is a new key."""
+    """What CI keys its cache of the hub on: a digest of what of each weight WEIGHTS fetches, so a weight added, or moved
+    to another repository, revision or file, is a new key."""
     return hashlib.sha256("\n".join(weights.what for weights in WEIGHTS).encode()).hexdigest()[:16]
 
 

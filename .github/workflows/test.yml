@@ -90,9 +90,8 @@ jobs:
       - name: The speech models' cache key
         if: matrix.fetches
         id: speech
-        run: |
-          key=$(uv run --locked python -c 'import sys; sys.path.insert(0, "tests"); from fetches import hub_key; print(hub_key())')
-          echo "key=$key" >> "$GITHUB_OUTPUT"
+        # Python writes the output itself: whatever an import prints on stdout cannot become part of the key.
+        run: uv run --locked python -c 'import os, sys; sys.path.insert(0, "tests"); from fetches import hub_key; open(os.environ["GITHUB_OUTPUT"], "a").write(f"key={hub_key()}\n")'
       - uses: actions/cache@v4
         if: matrix.fetches
         with:
