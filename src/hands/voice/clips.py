@@ -122,6 +122,23 @@ def said(sound: Sound) -> tuple[tuple[Sentence, ...], ...]:
     return tuple(() if reference is None else reference.sentences for reference in sound.played or ())
 
 
+@dataclass(frozen=True)
+class Play:
+    """One sentence of hands' TTS playing over a sound, from its 10 ms `start` up to `stop`, not included."""
+
+    sentence: Sentence
+    start: int
+    stop: int
+
+
+def plays(sound: Sound) -> tuple[Play, ...]:
+    """Each sentence of hands' TTS played over `sound`, once for each time it began to play, in the order begun: a sentence
+    hands said twice is two plays, as its echo is two."""
+    over = said(sound)
+    begun = [(sentence, at) for at, slot in enumerate(over) for sentence in slot if at == 0 or sentence not in over[at - 1]]
+    return tuple(Play(sentence, at, next((later for later in range(at, len(over)) if sentence not in over[later]), len(over))) for sentence, at in begun)
+
+
 def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
     """The voices of hands' TTS over each 10 ms of `sound`, none where it played none, and none known at the phone."""
     return tuple(tuple(dict.fromkeys(sentence.voice for sentence in slot)) for slot in said(sound))

@@ -13,6 +13,7 @@ from hands.voice.clips import Clip, Played, Reference, Sentence, Sound
 from hands.voice.whisper import Whisper
 from speech import RATE, quiet, spoken
 from test_streaming import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, fixture_clips, pcm
+from test_whisper import alone
 
 pytestmark = pytest.mark.outside
 
@@ -70,11 +71,6 @@ def whisper(prompt: str | None) -> Whisper:
         return prompt
 
     return Whisper(clock=VirtualClock(), prompt=primed, record=lambda _: None)
-
-
-def alone(audio: bytes) -> Sound:
-    """A held key's clip of `audio` hands played nothing over: nothing of it is hands' own."""
-    return Sound(audio, audio, (None,) * (len(audio) // 320))
 
 
 def words(text: str) -> list[str]:

@@ -79,6 +79,8 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
         "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"],
+        # Each sentence as it played, so which of the clip's words were hands' can be decided again on it.
+        "said": [{"voice": "alba", "text": ALBA.text, "start": 0.0, "stop": 0.02}, {"voice": "mary", "text": MARY.text, "start": 0.01, "stop": 0.02}],
     }
     # [LAW:nothing-unseen] where it went, how long, whether what was played went with it, and in which voices.
     assert (event.facts["kept"], event.facts["seconds"], event.facts["played"], event.facts["voices"]) == (directory / "7.heard.wav", 0.03, True, ("alba", "mary"))
@@ -210,6 +212,7 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
     assert read(tmp_path / "run" / "echo-1.played.wav")[2] == tone(-2, 2) + tone(-3, 2)
     assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
         "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"],
+        "said": [{"voice": "alba", "text": "said in alba", "start": 0.0, "stop": 0.04}, {"voice": "mary", "text": "said in mary", "start": 0.02, "stop": 0.04}],
     }
     assert read(tmp_path / "run" / "echo-2.heard.wav")[2] == tone(5, 2)
     assert read(tmp_path / "run" / "echo-3.heard.wav")[2] == tone(7, 2)

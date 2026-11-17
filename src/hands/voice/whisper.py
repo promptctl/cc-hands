@@ -18,7 +18,7 @@ from hands.sessions.audit import ClipHeard, Record, Unsaid
 from hands.sessions.wide import annotate
 from hands.threads import SerialThread
 from hands.voice import loads, transcription
-from hands.voice.clips import RATE, SECOND, Clip, Sentence, Sound, decoded, said
+from hands.voice.clips import RATE, SECOND, Clip, Play, Sentence, Sound, decoded, plays
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -48,14 +48,17 @@ _VOICED = 0.25
 _TRAILING_SILENCE = bytes(SECOND // 2)
 
 
-# How long before a segment hands' sentence may have been played and still be heard in it: hands' echo reaches the
+# How far either side of a segment hands' sentence may have played and still be heard in it: hands' echo reaches the
 # microphone up to about 0.2 s after its TTS slot (zoj, promptctl-voice-i15t.99s.zoj), and Whisper places a segment's
-# start up to about half a second off the words in it.
+# ends up to about half a second off the words in it.
 _ECHO_SECONDS = 1.0
 
-# The fewest words in a row of hands' sentences that make a run of a segment hands' own, short of all hands said: one
-# word alone ("the", "yes") is as likely a person's.
-_RUN = 2
+# The fewest words in a row of hands' sentence that make a run of a segment hands' own, short of a whole clause of it. A
+# person shares two or three with hands as often as not ("run the tests" in answer to "Should I run the tests?", "look
+# at the" over "I'll look at the file"), and the canceller takes most of hands' echo out before Whisper hears any of it,
+# so such a run is far likelier a person's; hands' echo, where it comes through, comes as its clauses whole
+# (hands_and_another.flac: "Turn ended," a segment of its own).
+_RUN = 4
 
 # How alike, letter for letter, words Whisper heard in place of hands' must be to hands' to be them, spelled its own way:
 # "diariser" for "diarizer" (0.88), "Macalbox" for "macklebox" (0.82), "Phosphine" for "Phosphene" (0.89). A person's
@@ -103,14 +106,14 @@ class Whisper:
             scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(decoded(sound.heard + _TRAILING_SILENCE), prompt))
         finally:
             given_up.set()
-        sentences = said(sound)
+        played = plays(sound)
         spoken: list[str] = []
         dropped: list[Unsaid] = []
         echo: list[str] = []
         for segment, unsaid in scored:
             worded = any(character.isalnum() for character in segment.text)
             if worded and unsaid.voiced >= _VOICED and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
-                theirs, hands = _theirs(segment.text, _played_over(sentences, segment))
+                theirs, hands = _theirs(segment.text, _played_over(played, segment))
                 spoken += [theirs] if theirs else []
                 echo += [hands] if hands else []
             else:
@@ -138,11 +141,10 @@ class Whisper:
         return surest
 
 
-def _played_over(sentences: Sequence[tuple[Sentence, ...]], segment: transcription.Segment) -> tuple[Sentence, ...]:
-    """Each sentence hands played over a segment, or in the `_ECHO_SECONDS` before it, from `sentences`, those of each
-    10 ms of the clip; in the order first played."""
-    start, end = max(0, math.floor((segment.start - _ECHO_SECONDS) * 100)), math.ceil(segment.end * 100)
-    return tuple(dict.fromkeys(sentence for slot in sentences[start:end] for sentence in slot))
+def _played_over(played: Sequence[Play], segment: transcription.Segment) -> tuple[Sentence, ...]:
+    """The sentence of each of `played` that played over a segment, or within `_ECHO_SECONDS` of it, in the order begun."""
+    start, end = math.floor((segment.start - _ECHO_SECONDS) * 100), math.ceil((segment.end + _ECHO_SECONDS) * 100)
+    return tuple(play.sentence for play in played if play.start < end and play.stop > start)
 
 
 def _words(text: str) -> list[tuple[int, str]]:
@@ -155,24 +157,35 @@ def _theirs(text: str, played: tuple[Sentence, ...]) -> tuple[str, str]:
     """`text`, a segment Whisper heard, split into what a person said in it and what was hands' own echo.
 
     [LAW:single-enforcer] the one rule of which words are hands'. hands knows what it said over the segment, `played`,
-    so its words are those of the segment that say it: every run of `_RUN` or more in a row, in order, that the sentences
-    say, or one that is all the sentences say, as a one-word "Done." is. A word the alignment of the two puts in place of
-    one of hands' says it where it is spelled as Whisper spells what it heard (`_RESPELLED`). What is left is a person's,
-    so a person speaking over the tail of hands' sentence keeps their words, whichever speaker the diarizer took either
-    for."""
+    so its words are those of the segment that say it: every stretch the two say alike, word for word in a row of both,
+    of `_RUN` words or more, or of a whole clause of hands', as Whisper hears hands' sentences, split at their
+    punctuation: "Turn ended," and a one-word "Done." alike. A word the alignment of the two puts in place of one of
+    hands' says it where it is spelled as Whisper spells what it heard (`_RESPELLED`). What is left is a person's, so a
+    person speaking over the tail of hands' sentence keeps their words, and so does one who answers in a few of them,
+    whichever speaker the diarizer took either for."""
     tokens = text.split()
     words = _words(text)
     owners, heard = [owner for owner, _ in words], [word for _, word in words]
-    spoken = [word for _, word in _words(" ".join(sentence.text for sentence in played))]
+    clauses = [[word for _, word in _words(clause)] for sentence in played for clause in re.split(r"(?<=[,.;:?!])\s+", sentence.text)]
+    spoken = [word for clause in clauses for word in clause]
+    # Where each worded clause lies in `spoken`, from its first word up to its last.
+    bounds = [(sum(map(len, clauses[:at])), sum(map(len, clauses[: at + 1]))) for at, clause in enumerate(clauses) if clause]
+
+    def says(kind: str, start: int, end: int, said_from: int, said_to: int) -> bool:
+        return kind == "equal" or kind == "replace" and SequenceMatcher(None, " ".join(heard[start:end]), " ".join(spoken[said_from:said_to])).ratio() >= _RESPELLED
+
     # [LAW:domain-language] the alignment word error rate is counted on: words equal, substituted, inserted or deleted.
-    saying = {
+    # Its blocks tile both texts, so blocks that say alike side by side are a stretch in a row of both, and any other
+    # block, a deletion of hands' words included, ends it.
+    stretches = [list(blocks) for alike, blocks in groupby(SequenceMatcher(None, heard, spoken, autojunk=False).get_opcodes(), key=lambda block: says(*block)) if alike]
+    # Each stretch as where it lies in the heard words, and in hands'.
+    spans = [(stretch[0][1], stretch[-1][2], stretch[0][3], stretch[-1][4]) for stretch in stretches]
+    hands = {
         at
-        for kind, start, end, said_from, said_to in SequenceMatcher(None, heard, spoken, autojunk=False).get_opcodes()
-        if kind == "equal" or kind == "replace" and SequenceMatcher(None, " ".join(heard[start:end]), " ".join(spoken[said_from:said_to])).ratio() >= _RESPELLED
+        for start, end, said_from, said_to in spans
+        if end - start >= _RUN or any(said_from <= first and last <= said_to for first, last in bounds)
         for at in range(start, end)
     }
-    stretches = [list(stretch) for says, stretch in groupby(range(len(heard)), key=saying.__contains__) if says]
-    hands = {at for stretch in stretches if len(stretch) >= min(_RUN, len(spoken)) for at in stretch}
     # A token is hands' where every word in it is; punctuation alone is nobody's, and goes with the person's.
     echo = {owner for owner in owners if all(at in hands for at, other in enumerate(owners) if other == owner)}
     theirs = " ".join(token for at, token in enumerate(tokens) if at not in echo)

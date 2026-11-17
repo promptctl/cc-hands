@@ -214,6 +214,52 @@ async def test_one_word_a_person_shares_with_hands_sentence_is_theirs(model: Mod
     assert await whisper.transcribed(clip(1), read_over(PERSON_THEN_HANDS, "Say yes or no.")) == "Yes."
 
 
+async def test_a_person_answering_in_words_hands_just_asked_with_keeps_them(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A press as hands' question ends: the person's answer repeats three of its words, no echo of it.
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    answering(monkeypatch, ("Yes, run the tests.", 0.0, SPOKE), ("No, look at the other one in the config.", SPOKE, 2 * SPOKE))
+
+    sound = read_over(PERSON_THEN_HANDS, "Should I run the tests?", "I'll look at the file in the repo.")
+    assert await whisper.transcribed(clip(1), sound) == "Yes, run the tests. No, look at the other one in the config."
+
+
+async def test_words_hands_said_apart_are_no_run_of_hands_where_a_person_says_them_together(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    # Side by side in what the person said, four of hands' words; apart in hands' sentence, one and then three.
+    answering(monkeypatch, ("Please stop the build.", 0.0, SPOKE))
+
+    assert await whisper.transcribed(clip(1), read_over(PERSON_THEN_HANDS, "Please wait while I stop the build.")) == "Please stop the build."
+
+
+async def test_a_one_word_sentence_of_hands_heard_on_its_own_is_hands(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    answering(monkeypatch, ("Done.", 0.0, SPOKE / 2), ("The tests pass.", SPOKE / 2, SPOKE))
+
+    assert await whisper.transcribed(clip(1), read_over(PERSON_THEN_HANDS, "Done.", "The tests pass.")) is None
+
+
+def playing(audio: bytes, *plays: tuple[str, float, float]) -> Sound:
+    """A clip of `audio` hands said each of `plays` over: its text, and from and to when, in seconds."""
+    slots = len(audio) // 320
+    over = [tuple(Sentence("charles", text) for text, start, stop in plays if start * 100 <= at < stop * 100) for at in range(slots)]
+    return Sound(audio, audio, tuple(Reference(bytes(320), 16_000, 1, sentences) if sentences else None for sentences in over))
+
+
+async def test_a_sentence_hands_said_twice_is_heard_twice(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    answering(monkeypatch, ("Okay. Okay.", 0.0, SPOKE))
+
+    assert await whisper.transcribed(clip(1), playing(PERSON_THEN_HANDS, ("Okay.", 0.0, 0.3), ("Okay.", 0.5, 0.8))) is None
+
+
+async def test_a_sentence_hands_began_just_after_whisper_ended_a_segment_is_heard_in_it(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Whisper ends a segment up to half a second before the last words in it.
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
+    answering(monkeypatch, ("Create a ticket. The parser is fixed.", 0.0, SPOKE))
+
+    assert await whisper.transcribed(clip(1), playing(PERSON_THEN_HANDS, ("The parser is fixed.", SPOKE + 0.3, 2 * SPOKE))) == "Create a ticket."
+
+
 async def test_a_sentence_hands_played_long_before_a_segment_is_not_heard_in_it(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
     # hands said it over the clip's first 10 ms, and stopped: a person saying the same a second and more later is heard.
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)

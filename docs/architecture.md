@@ -1928,14 +1928,17 @@ path, nobody cleared where the identification failed.
 Which of a clip's words reach the brain is decided by what hands said, not by whose voice the
 voiceprints heard: under overlap a diarizer speaker is not one voice, and a verdict on a window
 two voices share scores hands' own sentence as a person's (promptctl-voice-i15t.8vg.06g). Each
-10 ms of a clip carries the sentences hands' TTS was playing then (`clips.said`). Whisper decodes
-the clip as it ends, waiting on no identification, and aligns each segment's words to the
-sentences played over it or in the second before it, the alignment word error rate is counted
-on. A run of two or more words in a row that say hands' sentences, spelled as Whisper spells
-them or close to it, is hands' echo and is not sent; the rest is the person's, so a person over
-the tail of hands' sentence keeps their words, and one word they share with it stays theirs
-(`hands.voice.whisper`). A turn of hands' echo alone sends nothing, and its `ClipHeard`
-entry keeps the words it dropped as echo.
+10 ms of a clip carries the sentences hands' TTS was playing then, and each time a sentence
+begins to play is a play of it (`clips.plays`). Whisper decodes the clip as it ends, waiting on
+no identification, and aligns each segment's words to the sentences played over it or within a
+second of it, the alignment word error rate is counted on. A stretch that says hands' words in a
+row of both, spelled as Whisper spells them or close to it, is hands' echo and is not sent where
+it is four words or more, or a whole clause of hands' sentence, as Whisper splits them at their
+punctuation ("Turn ended," a segment of its own); the rest is the person's. So a person over the
+tail of hands' sentence keeps their words, and so does one answering in a few of its words, "run
+the tests" to "Should I run the tests?" (`hands.voice.whisper`). A turn of hands' echo alone
+sends nothing, and its `ClipHeard` entry keeps the words it dropped as echo. Each recorded clip
+keeps its plays, so the split can be made again on it (`hands.voice.recorder`).
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print

@@ -5,8 +5,9 @@ nothing here loads Pipecat, and nothing here plays a sound.
 It is one listener on the clip owner (`hands.voice.clipowner`), given each clip whole as it ends, and writes it off the
 event loop into its run's own directory: `<clip>.heard.wav`, mono 16-bit at RATE; `<clip>.played.wav`, what the desk's
 speaker played over it, the echo canceller's reference, put in the clip's format so the two line up sample for sample,
-which the phone has none of; and `<clip>.json`, what opened it, what the gate did with it, and every voice of hands'
-own TTS played over it.
+which the phone has none of; and `<clip>.json`, what opened it, what the gate did with it, every voice of hands' own
+TTS played over it, and each sentence it said, and when, so which of a clip's words were hands' can be decided again on
+it (`hands.voice.whisper`).
 
 It keeps hands' own echo too, labelled. While the desk is at the off level, where only the shortcut opens a clip, with
 no press arming or held, and the speaker is playing hands' TTS, what the desk's microphone hears is nobody's but
@@ -33,7 +34,7 @@ import soxr
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.clips import RATE, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, voices
+from hands.voice.clips import RATE, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, plays, voices
 from hands.voice.echo import Cancelled
 from hands.voice.voiceprints import WINDOW, Voiced
 
@@ -80,7 +81,8 @@ def written(path: Path, audio: bytes) -> int:
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
     """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was and
-    every voice of hands' TTS over it; how many bytes they are."""
+    every voice of hands' TTS over it, and each sentence it played, from and to when, in seconds; how many bytes they
+    are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)
     match sound.played:
         case tuple() as played:
@@ -88,7 +90,8 @@ def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]
         case None:
             pass
     described = directory / f"{name}.json"
-    described.write_text(json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound)}) + "\n")
+    said = [{"voice": play.sentence.voice, "text": play.sentence.text, "start": play.start / 100, "stop": play.stop / 100} for play in plays(sound)]
+    described.write_text(json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound), "said": said}) + "\n")
     return size + described.stat().st_size
 
 
