@@ -13,7 +13,7 @@ import queue
 import struct
 import threading
 from pathlib import Path
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -42,7 +42,7 @@ from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
 from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import transcription
-from hands.sessions.wide import Fact, WideEvent
+from hands.sessions.wide import Fact, WideEvent, begun
 from hands.voice import pipeline as built
 from hands.voice.conversation import AssistantTurns, UserTurns, UserWords, cue_receipt, record_turns
 from hands.voice.floor import Floor
@@ -58,7 +58,7 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
-from hands.voice.clips import Clip, Identified, Reference
+from hands.voice.clips import Clip, Reference, Sound, Synthesis
 from hands.voice.voiceprints import Embed, Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
 from hands.voice import clipowner, desk, shortcut, streaming, voiceprints
@@ -227,7 +227,8 @@ class Rig:
         for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
         "dropped" throws it away; a clip it opens is opened by `by`. `captured` is the sound before the echo canceller,
         where the canceller changed it; `voices` hands' TTS played over every frame, nothing known of it for None."""
-        played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, voices) for _ in range(len(sound) // 320))
+        syntheses = () if voices is None else tuple(Synthesis(voice, "Hands here.", begun(SYSTEM)) for voice in voices)
+        played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(sound) // 320))
         frames: list[KeyedAudio] = []
         for key in keys:
             match self.gate.key, key:
@@ -318,10 +319,10 @@ async def rigged(
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None, _identified: Awaitable[Identified]) -> ClipHeard:
+    async def transcribe(_self: Whisper, clip: int, sound: Sound, _prompt: str | None) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
-        heard.append(audio)
-        return ClipHeard(clip, await texts.get() or None, ())
+        heard.append(sound.heard)
+        return ClipHeard(clip, await texts.get() or None, (), ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between the clip owner and the user aggregator.
@@ -363,7 +364,7 @@ async def test_a_clips_event_says_how_loud_it_was_before_and_after_the_echo_canc
     await rig.until(lambda: len(clips_told(rig)) == 1)
     [told] = clips_told(rig)
     assert (told.facts["clip"], told.facts["fate"], told.facts["levels"], told.facts["transcript"]) == (1, "sent", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0), "words")
-    assert clips_heard(rig) == [ClipHeard(1, "run", ())]
+    assert clips_heard(rig) == [ClipHeard(1, "run", (), ())]
     # The event is of the audio Whisper was given: the three frames from the press on.
     assert rig.heard[0] == residual * 3
 

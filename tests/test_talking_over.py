@@ -9,7 +9,7 @@ longer has Whisper's overhearing."""
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,7 +31,7 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Cleared, Fate, Hearings, Identified, Settle, Sound
+from hands.voice.clips import RATE, Clip, Cleared, Fate, Hearings, Settle, Sound
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears
 from hands.voice.ptt import PushToTalk
@@ -159,7 +159,7 @@ class Downstream(FrameProcessor):
 class Unheard:
     """A transcriber that says nothing of any clip: what the cut is, not what the clip held, is heard here."""
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         return None
 
 

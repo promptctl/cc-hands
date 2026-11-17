@@ -382,9 +382,9 @@ class ClipOwner(FrameProcessor):
                             # the identification alone is not held behind it, hands speaking over the user all the while.
                             async with asyncio.TaskGroup() as group:
                                 # [LAW:single-enforcer] one wait on the clip's last identification, bounded once, which
-                                # both the cut and the words are decided on.
+                                # the cut is decided on; the words are the transcriber's alone.
                                 identification = group.create_task(self._identification(sound, identified, facts))
-                                transcription = group.create_task(self._transcribed(clip, sound, identification, facts))
+                                transcription = group.create_task(self._transcribed(clip, sound, facts))
                                 # The cut lands ahead of the words it came with, as one while the clip was open would have.
                                 match await self._closing(clip, sound, identification, transcription, facts):
                                     case None:
@@ -449,10 +449,9 @@ class ClipOwner(FrameProcessor):
                     facts["identified"] = f"nothing after {IDENTIFIED_SECONDS:g} s"
                     return NOBODY
                 facts["identified"] = "nobody" if last.first is None else "a person"
-                facts["echo_seconds"] = last.echo_seconds
                 return last
 
-    async def _transcribed(self, clip: Clip, sound: Sound, identification: "asyncio.Task[Identified]", facts: dict[str, Fact]) -> tuple[Words, ...]:
+    async def _transcribed(self, clip: Clip, sound: Sound, facts: dict[str, Fact]) -> tuple[Words, ...]:
         """What a sent clip's transcription came to: its words, to be pushed, and on its event, why it had none, an error
         queued where it failed.
 
@@ -463,8 +462,7 @@ class ClipOwner(FrameProcessor):
         bound = self._clock.timeout(seconds)
         try:
             async with bound:
-                # Shielded: a transcriber that gives up on the identification leaves the cut's wait on it whole.
-                said = await self._transcriber.transcribed(clip, sound.heard, asyncio.shield(identification))
+                said = await self._transcriber.transcribed(clip, sound)
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from here aloud.
             why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"

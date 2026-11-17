@@ -1925,21 +1925,17 @@ person it finds over hands while their clip is open, from its own thread; the ow
 the event loop and cuts only while that clip is still open. Each clip's end is settled on every
 path, nobody cleared where the identification failed.
 
-The same last identification decides which of a clip's words reach the brain. Where a clip
-holds only speakers heard as hands' echo (`voiceprints.echo`: ones hands played over whose
-voiceprint found hands, `Hands` or `Unsure`), and no one else was heard in the same frames, those
-stretches are hands' own.
-Whisper decodes the whole clip while the lane is still working. It then scores each segment with
-Silero, on a thread of its own, over the clip with those stretches silenced, so a segment heard only in hands' voice is
-dropped by the same floor that drops one nobody spoke in (`hands.voice.whisper`). A turn of hands'
-echo alone sends nothing, and its `clip` event says `transcript` none with `echo_seconds`. A
-frame a person shares with hands is the person's, so what they say over hands goes. A clip hands
-played nothing over waits on no identification. One that misses `IDENTIFIED_SECONDS` keeps every
-word, because losing a person's words costs more than one turn of hands' echo. On the recorded
-echo, seven of eight sentences ended `Unsure` rather than `Hands`, which is why `Unsure`
-counts, though people over hands have scored in that band too (the table's notes in
-`hands.voice.voiceprints`). A speaker heard too briefly to score, or not scored at all, could be
-anyone, so their words go, though they cut nothing (`tests/test_streaming.py`).
+Which of a clip's words reach the brain is decided by text, not by voiceprint
+(`hands.voice.whisper`). Under overlap the diarizer gives one label stretches of both voices, so a
+verdict per label put hands' sentences into the person's turn (promptctl-voice-i15t.8vg.06g).
+Whisper hears hands' voice come back as whole segments of what hands said, a clause or a sentence,
+and on the recorded holds never in one segment with a person's. So a segment is hands' echo where
+every word Whisper heard in it is a word of a sentence hands played within `_ECHO_SECONDS` of it,
+in order, as said or spelled Whisper's own way; one word that is not hands' sends it whole. Each
+word of a sentence played is placed by its characters between the sentence's start and stop, as
+Whisper's word timestamps would double the decode. The transcription waits on no identification,
+and its `ClipHeard` names each segment dropped as hands' echo beside those dropped as noise. A
+person saying only words of hands', within a second of hands saying them, is taken for hands.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
@@ -1966,7 +1962,7 @@ second never share one. Each clip is kept as the pipeline heard it, after the ca
 what the desk's speaker played over it. That is the canceller's own reference, kept as the
 speaker played it and put in the clip's format only as the clip is written, so the two line up
 sample for sample; the phone has none. Beside them go what opened the clip, what the gate did
-with it, and every voice hands played over it.
+with it, every voice hands played over it, and each sentence it said over it, with when.
 
 The recorder also keeps hands' echo as labelled data. A buffer counts as hands' echo when all
 three hold as it is captured: the desk is at the off level with no press (the gate's key is up,

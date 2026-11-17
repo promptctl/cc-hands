@@ -17,7 +17,7 @@ CLOCK = VirtualClock()
 
 
 def _synthesis(voice: str = "alba") -> Synthesis:
-    return Synthesis(voice, begun(CLOCK))
+    return Synthesis(voice, "Hands here.", begun(CLOCK))
 
 
 def _audio(length: int, context: str = "reply") -> TTSAudioRawFrame:
