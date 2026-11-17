@@ -1858,8 +1858,9 @@ callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS 
 wide event once its end comes out of the device behind its last byte: how long of it the device played
 and the phone was handed; the gaps inside it, how many and how long the device found nothing written
 between two of its bytes, which a listener hears as crackle; the callbacks PortAudio said came late
-inside it; and how it ended, `made` with its `rtf` (how long the TTS took to make it over how long it
-plays) or `cut`. A gap under an rtf above 1 is a TTS that fell behind; a gap under a low one is
+inside it; and how its making ended, `made` with its `rtf` (how long the TTS took to make it over how
+long it plays), or `cut` before the TTS was done. A sentence made whole and cut by a barge-in as it
+played is `made`, with less of it played than made; one the TTS said it failed is a failed event. A gap under an rtf above 1 is a TTS that fell behind; a gap under a low one is
 delivery. Every frame the microphone pushes carries the same sound as it
 was captured, before the canceller (`KeyedAudio.captured`), and the clip owner keeps it for the
 frames a clip is made of, so each clip's `clip` event says its mean power in dBFS

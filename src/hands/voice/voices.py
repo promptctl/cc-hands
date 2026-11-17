@@ -14,7 +14,7 @@ from typing import Any, NewType, cast
 import numpy as np
 import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
-from pipecat.frames.frames import AggregatedTextFrame, Frame, TTSAudioRawFrame, TTSSpeakFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import AggregatedTextFrame, ErrorFrame, Frame, TTSAudioRawFrame, TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
@@ -32,7 +32,7 @@ from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import begun
 from hands.voice.clips import RATE, Samples
-from hands.voice.echo import SAMPLE_BYTES
+from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
@@ -271,18 +271,21 @@ class SaidInTTS(PocketTTSService):
         # audio context; a barge-in may drop either, and the speaker ends what it opened (`hands.voice.synthesis`).
         synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), begun(self._clock))
         yield SpeakingIn(synthesis)
-        made = 0.0
+        made, failure = 0.0, None
         # Pipecat's tracing decorator leaves the method untyped.
         said = cast(Callable[[str, str], AsyncGenerator[Frame | None, None]], super().run_tts)  # pyright: ignore[reportUnknownMemberType]
         async for frame in said(text, context_id):
             match frame:
                 case TTSAudioRawFrame(audio=audio, sample_rate=rate, num_channels=channels):
-                    made += len(audio) / (rate * channels * SAMPLE_BYTES)
+                    made += seconds(len(audio), rate, channels)
+                case ErrorFrame(error=error):
+                    # Pipecat's Pocket TTS catches what its model raises, says so here, and returns as if done.
+                    failure = error
                 case _:
                     pass
             yield frame
         # [LAW:nothing-unseen] how long the TTS took to make it, beside how long it plays: its real-time factor.
-        yield Made(synthesis, self._clock.now() - synthesis.begun.began, made)
+        yield Made(synthesis, self._clock.now() - synthesis.begun.began, made, failure)
 
 
 def pocket() -> Synthesize:

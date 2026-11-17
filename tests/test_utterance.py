@@ -40,7 +40,7 @@ AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_cha
 def synthesized(frames: int) -> list[Frame]:
     """One synthesis of hands' TTS as it reaches the speaker: `frames` frames of 100 ms of sound, led on and made."""
     synthesis = Synthesis("alba", begun(SYSTEM))
-    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * 0.1)]
+    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * 0.1, None)]
 
 
 @dataclass
@@ -290,7 +290,7 @@ def _synthesis(voice: str) -> Synthesis:
 
 
 def _synthesized(synthesis: Synthesis, frames: int, length: int) -> list[Frame]:
-    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * (length // 2), 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * length / 32_000)]
+    return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * (length // 2), 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * length / 32_000, None)]
 
 
 async def _events(recorded: list[Entry], count: int) -> list[dict[str, object]]:

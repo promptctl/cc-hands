@@ -55,7 +55,7 @@ from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, I
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
-from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes
+from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes, seconds
 from hands.voice.phone import Phone
 from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
 from hands.voice.ptt import Key, PushToTalk
@@ -207,14 +207,16 @@ class Playout:
             self._room.notify_all()
         played = taken + bytes(size - len(taken))
         try:
-            self._echo.played(played, self._rate, self._channels, tuple(dict.fromkeys(synthesis.voice for synthesis, _ in pieces if synthesis is not None)))
+            self._echo.played(played, self._rate, self._channels, tuple(dict.fromkeys(synthesis.voice for synthesis, _ in pieces)))
             # [LAW:dataflow-not-control-flow] a gap is before the sound it delays: what went missing and late since the
-            # last report is reported with the next sound taken, and a callback that takes none reports nothing.
+            # device last took any of hands' speech is reported with the next of it taken, and a callback that takes
+            # none of it, and lets out no end, reports nothing.
             self._late += bool(status & pyaudio.paOutputUnderflow)
             if pieces or ends:
                 self._report(Taken(pieces, ends, self._missing, self._late))
+            if pieces:
                 self._missing, self._late = 0.0, 0
-            self._missing += self._seconds(size - len(taken))
+            self._missing += seconds(size - len(taken), self._rate, self._channels)
         except Exception as error:
             # [LAW:no-silent-failure] PyAudio would abort the stream and say so only on stderr, leaving hands mute.
             self._failed(error)
@@ -224,13 +226,10 @@ class Playout:
         self._counts["underflowed"] += bool(status & pyaudio.paOutputUnderflow)
         return played, pyaudio.paContinue
 
-    def _seconds(self, length: int) -> float:
-        return length / (self._rate * self._channels * SAMPLE_BYTES)
-
     def _taken(self, taken: int) -> tuple[tuple[Piece, ...], tuple[Ended, ...]]:
-        """Whose the `taken` bytes just taken from what is waiting are, let go of from its runs, and the ends of syntheses
-        now behind every byte taken; under the condition."""
-        pieces: list[Piece] = []
+        """Which syntheses the `taken` bytes just taken from what is waiting are of, let go of from its runs, and the ends
+        of syntheses now behind every byte taken; under the condition."""
+        runs: list[tuple[Synthesis | None, float]] = []
         ends: list[Ended] = []
         while self._voiced and (taken or isinstance(self._voiced[0], Ended)):
             match self._voiced.popleft():
@@ -238,11 +237,11 @@ class Playout:
                     ends.append(end)
                 case (length, synthesis):
                     piece = min(length, taken)
-                    pieces.append((synthesis, self._seconds(piece)))
+                    runs.append((synthesis, seconds(piece, self._rate, self._channels)))
                     if length > piece:
                         self._voiced.appendleft((length - piece, synthesis))
                     taken -= piece
-        return tuple(pieces), tuple(ends)
+        return tuple((synthesis, length) for synthesis, length in runs if synthesis is not None), tuple(ends)
 
 
 class NoInput:
@@ -275,7 +274,8 @@ class NoOutput:
     def __init__(self, clock: Clock, sample_rate: int, channels: int, report: Callable[[Taken], None]) -> None:
         self._clock = clock
         self._report = report
-        self._bytes_per_second = sample_rate * channels * SAMPLE_BYTES
+        self._rate = sample_rate
+        self._channels = channels
         self._plays_until = clock.now()
         self._stopped = False
         self._stop = queue.SimpleQueue[None]()
@@ -285,7 +285,7 @@ class NoOutput:
         if self._stopped:
             raise OSError("the speaker stream is stopped")
         now = self._clock.now()
-        self._plays_until = max(self._plays_until, now) + len(audio) / self._bytes_per_second
+        self._plays_until = max(self._plays_until, now) + seconds(len(audio), self._rate, self._channels)
         try:
             self._clock.take(self._stop, max(0.0, self._plays_until - WRITE_AHEAD_SECS - now))
         except queue.Empty:
@@ -560,7 +560,7 @@ class Speaker(LocalAudioOutputTransport):
             case "phone":
                 if frame.audio.count(0) != len(frame.audio):
                     self.sounded_at = self._clock.now()
-                self.syntheses.phoned(synthesis, len(frame.audio) / (frame.sample_rate * frame.num_channels * SAMPLE_BYTES))
+                self.syntheses.phoned(synthesis, seconds(len(frame.audio), frame.sample_rate, frame.num_channels))
                 await self._phone.play(frame.audio)
                 return True
             case "desk":

@@ -42,14 +42,17 @@ class SpeakingIn(DataFrame):
 
 @dataclass
 class Made(DataFrame):
-    """Behind a synthesis's last audio, from the TTS: it took `making` seconds to make `made` seconds of speech."""
+    """Behind a synthesis's last audio, from the TTS: it took `making` seconds to make `made` seconds of speech, and
+    stopped with the `failure` it said, or None once it had made all of it."""
 
     synthesis: Synthesis
     making: float
     made: float
+    failure: str | None
 
 
-# How a synthesis ended: made whole, as the TTS said; or cut, by a barge-in, a new synthesis, or the speaker shutting.
+# How a synthesis's making ended: as the TTS said; or cut before it said, by a barge-in or the speaker shutting. What of
+# it played is the device's to say, behind it.
 How = Made | Literal["cut"]
 
 
@@ -82,7 +85,8 @@ class Cutter:
     _held: TTSAudioRawFrame | None = None
 
     def speaking_in(self, speaking: SpeakingIn, chunking: Chunking) -> list[Frame]:
-        # [LAW:dataflow-not-control-flow] a synthesis still open as the next opens was cut short: one whose TTS raised.
+        # [LAW:dataflow-not-control-flow] a synthesis still open as the next opens was cut short: one whose making was
+        # cancelled before the TTS said it was done.
         ending = self._end("cut", self._padded(chunking))
         self._open = speaking.synthesis
         return [*ending, speaking]
@@ -123,15 +127,16 @@ def _carrying(frame: TTSAudioRawFrame, audio: bytes) -> TTSAudioRawFrame:
     return carried
 
 
-# Seconds of sound of one synthesis, or of none: the transport's own silence and padding, a cue.
-Piece = tuple[Synthesis | None, float]
+# Seconds of sound of one synthesis. The sound of none, the transport's own silence and a cue, is no piece of hands'
+# speech: a cue inside a synthesis does not end its run.
+Piece = tuple[Synthesis, float]
 
 
 @dataclass(frozen=True)
 class Taken:
-    """What one of the device's callbacks took, in order: `pieces` of sound, and the `ends` of syntheses whose every byte
-    had then been taken or let go of; after `missing` seconds the device found nothing written for since it last took
-    any, over which PortAudio said `late` callbacks came too late."""
+    """What one of the device's callbacks took, in order: `pieces` of hands' speech, and the `ends` of syntheses whose
+    every byte had then been taken or let go of; after `missing` seconds the device found nothing written for since it
+    last took any of hands' speech, over which PortAudio said `late` callbacks came too late."""
 
     pieces: tuple[Piece, ...]
     ends: tuple[Ended, ...]
@@ -158,30 +163,27 @@ class Syntheses:
     # [LAW:no-silent-failure] each synthesis from its opening to its event: a byte or an end of one not followed is a
     # fault in the order its markers travel, and raises rather than starting it again.
     _followed: dict[Synthesis, _Followed] = field(default_factory=dict[Synthesis, _Followed])
-    # The synthesis the device last took bytes of, and what it found missing, and how late, since: a gap if it takes
-    # more of the same synthesis next.
+    # The synthesis the device last took bytes of: what it found missing since is a gap if it takes more of the same
+    # synthesis next.
     _last: Synthesis | None = None
-    _missing: float = 0.0
-    _late: int = 0
 
     def opened(self, synthesis: Synthesis) -> None:
         # [LAW:nothing-unseen] followed from its opening, so one whose every marker is lost is still emitted at close.
         self._followed[synthesis] = _Followed()
 
     def took(self, taken: Taken) -> None:
-        self._missing += taken.missing
-        self._late += taken.late
+        # One callback's pieces run on with nothing missing between them: what went missing is before the first.
+        missing, late = taken.missing, taken.late
         for synthesis, length in taken.pieces:
-            if synthesis is not None:
-                followed = self._followed[synthesis]
-                # [LAW:dataflow-not-control-flow] what went missing since the last byte taken is a gap of a synthesis
-                # only between two bytes of it; otherwise it is the silence between two.
-                inside = synthesis is self._last
-                followed.gaps += inside and self._missing > 0
-                followed.gap += inside * self._missing
-                followed.late += inside * self._late
-                followed.played += length
-            self._last, self._missing, self._late = synthesis, 0, 0
+            followed = self._followed[synthesis]
+            # [LAW:dataflow-not-control-flow] what went missing since the last byte taken is a gap of a synthesis only
+            # between two bytes of it; otherwise it is the silence between two.
+            inside = synthesis is self._last
+            followed.gaps += inside and missing > 0
+            followed.gap += inside * missing
+            followed.late += inside * late
+            followed.played += length
+            self._last, missing, late = synthesis, 0.0, 0
         for end in taken.ends:
             self.finished(end)
 
@@ -199,7 +201,7 @@ class Syntheses:
             self.emit,
             end.synthesis.begun,
             None,
-            None,
+            _failure(end.how),
             voice=end.synthesis.voice,
             played_s=followed.played,
             phone_s=followed.phone,
@@ -216,9 +218,19 @@ class Syntheses:
 
 
 def _how(how: How) -> dict[str, Fact]:
-    """How a synthesis ended, as facts of its event: made, with how long the TTS took over how long it plays, or cut."""
+    """How a synthesis's making ended, as facts of its event: made, with how long the TTS took over how long what it
+    made plays, a ratio of nothing for no sound made; or cut."""
     match how:
         case Made(making=making, made=made):
-            return {"how": "made", "made_s": made, "rtf": making / made}
+            return {"how": "made", "made_s": made, "rtf": making / made if made else None}
         case "cut":
             return {"how": "cut", "made_s": None, "rtf": None}
+
+
+def _failure(how: How) -> str | None:
+    """[LAW:no-silent-failure] the TTS's own failure, as the event's: Pipecat's catches what its model raises and says so."""
+    match how:
+        case Made(failure=failure):
+            return failure
+        case "cut":
+            return None

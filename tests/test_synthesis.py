@@ -43,7 +43,7 @@ def _said(frame: Frame) -> object:
 
 def test_the_cutter_passes_whole_chunks_of_one_synthesis_each_and_ends_each_behind_its_tail_padded_with_silence() -> None:
     cutter, alba, mary = Cutter(), _synthesis("alba"), _synthesis("mary")
-    made = Made(alba, 0.01, 0.1)
+    made = Made(alba, 0.01, 0.1, None)
     passed = [
         *cutter.speaking_in(SpeakingIn(alba), CHUNKING),
         *cutter.heard(_audio(5), CHUNKING),
@@ -78,7 +78,7 @@ def test_a_barge_in_drops_what_the_cutter_holds_and_ends_the_open_synthesis_once
     assert _shape(cutter.interrupted()) == [("ended", alba, "cut")]
     # The barge-in's stragglers: alba's audio and its Made, already behind the interruption.
     assert cutter.heard(_audio(8), CHUNKING) == []
-    assert cutter.made(Made(alba, 0.01, 0.1), CHUNKING) == []
+    assert cutter.made(Made(alba, 0.01, 0.1, None), CHUNKING) == []
     assert cutter.interrupted() == []
     assert _shape(cutter.speaking_in(SpeakingIn(mary), CHUNKING)) == [("speaking in", mary)]
 
@@ -110,12 +110,39 @@ def test_what_goes_missing_between_two_bytes_of_one_synthesis_is_a_gap_and_betwe
     syntheses.opened(mary)
     syntheses.took(Taken(((alba, 0.04),), (), missing=0.5, late=2))  # the device ran dry before alba began: no gap
     syntheses.took(Taken(((alba, 0.04),), (), missing=0.02, late=1))  # ran dry inside alba: a gap
-    syntheses.took(Taken(((mary, 0.04),), (Ended(alba, Made(alba, 0.5, 2.0)),), missing=0.3, late=0))  # between the two
+    syntheses.took(Taken(((mary, 0.04),), (Ended(alba, Made(alba, 0.5, 2.0, None)),), missing=0.3, late=0))  # between the two
     syntheses.took(Taken(((mary, 0.04),), (Ended(mary, "cut"),), missing=0, late=0))
     assert speech(events) == [
         {"voice": "alba", "played_s": 0.08, "phone_s": 0.0, "gaps": 1, "gap_s": 0.02, "late": 1, "how": "made", "made_s": 2.0, "rtf": 0.25},
         {"voice": "mary", "played_s": 0.08, "phone_s": 0.0, "gaps": 0, "gap_s": 0.0, "late": 0, "how": "cut", "made_s": None, "rtf": None},
     ]
+
+
+def test_a_synthesis_the_tts_said_it_failed_is_a_failed_event_and_one_that_made_no_sound_has_no_real_time_factor() -> None:
+    events: list[WideEvent] = []
+    syntheses, alba = Syntheses(events.append), _synthesis()
+    syntheses.opened(alba)
+    syntheses.took(Taken((), (Ended(alba, Made(alba, 0.3, 0.0, "Unknown error occurred: no voice state")),), 0, 0))
+    [event] = events
+    assert (event.outcome, event.error, event.facts["how"], event.facts["made_s"], event.facts["rtf"]) == ("failed", "Unknown error occurred: no voice state", "made", 0.0, None)
+
+
+def test_a_cue_inside_a_synthesis_does_not_hide_the_gap_after_it() -> None:
+    events: list[WideEvent] = []
+    syntheses, alba = Syntheses(events.append), _synthesis()
+    device = Device()
+    playout = Playout(device.open, Room(), 16_000, 1, _unfailing, syntheses.took)
+    syntheses.opened(alba)
+    playout.write(b"\x01" * 640, alba)
+    device.take()
+    playout.write(b"\x02" * 640, None)  # the talk key's cue, written between two chunks of alba
+    device.take()
+    device.take()  # nothing written: the device ran dry inside alba
+    playout.write(b"\x01" * 640, alba)
+    playout.end(Ended(alba, "cut"))
+    device.take()
+    [spoken] = speech(events)
+    assert (spoken["played_s"], spoken["gaps"], spoken["gap_s"]) == (0.04, 1, 0.02)
 
 
 def test_a_sentence_carried_on_at_the_phone_and_back_has_no_gap_for_its_stretch_on_the_phone() -> None:
