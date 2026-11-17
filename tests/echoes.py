@@ -85,15 +85,6 @@ def cut_in(fixture: Path) -> float:
 CANCELLED_ALONE = cut_in(CANCELLED)
 
 
-def cancelled() -> Sound:
-    """hands_cancelled_and_another.flac as the desk heard it, and what the speaker played over each 10 ms of it."""
-    described = json.loads(CANCELLED.with_suffix(".json").read_text())
-    said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
-    samples, _ = audio(CANCELLED.with_suffix(".flac"))
-    played = tuple(None if slot is None else Reference(bytes(2 * SLOT), RATE, 1, (Playhead(said[int(slot[0])], float(slot[1])),), True) for slot in described["played"])
-    return Sound(samples[: len(played) * SLOT, 0].tobytes(), samples[: len(played) * SLOT, 1].tobytes(), played)
-
-
 def take(fixture: Path) -> tuple[np.ndarray, np.ndarray, tuple[tuple[Playhead, ...], ...]]:
     """A take of scripts/record-double-talk.py as the microphone captured it and as the speaker played it, and the
     playheads of hands' sentence over each 10 ms of it."""

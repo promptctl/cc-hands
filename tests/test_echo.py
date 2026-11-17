@@ -7,7 +7,7 @@ from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import SLOT, Reference, Playhead, Sound, Synthesis
 from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, Reading, echo_path
-from echoes import CANCELLED, NO_ECHO, replayed, take
+from echoes import CANCELLED, NO_ECHO, OPENING, replayed, take
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
@@ -88,7 +88,7 @@ def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had
     canceller.heard(bytes(640), HEARD_RATE, 1)  # two frames, nothing played
     canceller.played(bytes(320 * 102), HEARD_RATE, 1, ())  # 102 frames played to a microphone that takes none
     canceller.heard(bytes(320), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0, "unread": 3}
+    assert canceller.counts() == {"heard": 3, "unplayed": 2, "dropped": 2, "slipped": 0, "unreached": 0, "unread": 0}
 
 
 def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_but_for_one_buffer() -> None:
@@ -98,11 +98,11 @@ def test_reference_held_through_a_whole_second_that_never_needed_it_is_slipped_b
     for _ in range(50):  # one second of 20 ms buffers
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 100}
+    assert canceller.counts() == {"heard": 100, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 0}
     for _ in range(50):  # the next second holds only the spare buffer, and slips nothing more
         canceller.played(bytes(640), HEARD_RATE, 1, ())
         canceller.heard(bytes(640), HEARD_RATE, 1)
-    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 200}
+    assert canceller.counts() == {"heard": 200, "unplayed": 0, "dropped": 0, "slipped": 28, "unreached": 0, "unread": 0}
 
 
 def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_of_its_frames_as_it_was_played() -> None:
@@ -242,9 +242,20 @@ def test_hands_through_the_desks_speaker_never_reads_as_reaching_nothing_and_is_
     assert _unreached(sound) == 0
     # Unread until a stretch says there is an echo path: hands' first sentence, at 1.24 s, is heard uncancelled to 1.5 s,
     # and cancelled from then on.
-    slot = 2 * SLOT
-    differs = [sound.heard[at : at + slot] != sound.captured[at : at + slot] for at in range(0, len(sound.heard), slot)]
-    assert not any(differs[:150]) and all(differs[150:400])
+    cancelled = _cancelled(sound)
+    assert not any(cancelled[:75]) and all(cancelled[75:200])
+
+
+def test_a_reply_at_the_desk_after_a_pause_is_heard_uncancelled_only_for_its_first_quarter_second() -> None:
+    # Unread again over the 4 s pause, the path is read there 0.21 s into the next reply, at 9.54 s, a person over it.
+    cancelled = _cancelled(replayed(*take(OPENING)))
+    assert not any(cancelled[477:487]) and all(cancelled[488:])
+
+
+def _cancelled(sound: Sound) -> list[bool]:
+    """Whether each 20 ms buffer of `sound` was heard through AEC3, not as the microphone captured it."""
+    buffer = 4 * SLOT
+    return [sound.heard[at : at + buffer] != sound.captured[at : at + buffer] for at in range(0, len(sound.heard), buffer)]
 
 
 def test_hands_echo_20_db_down_under_a_person_never_reads_as_reaching_nothing() -> None:

@@ -46,7 +46,8 @@ _PATH_HOP = 25
 
 # The shortest stretch read, in 10 ms frames, as a canceller starts: 1 s, the most the reference and its echo may be
 # apart (`_PATH_LAG`). It can say there is an echo path, 0.28 s into a canceller's first reply at the desk where a whole
-# stretch took 0.78 s; only a whole stretch, as fitted, says there is none.
+# stretch took 0.78 s; only a whole stretch, as fitted, says there is none. A canceller made mid-reply, at a reopen,
+# hears that reply uncancelled for this second at least.
 _LEAST_FRAMES = 100
 
 # The reading at least, where hands' voice reached the microphone: the GCC-PHAT of what the microphone captured against
@@ -76,8 +77,8 @@ type Reading = Literal["unread", "there", "none"]
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
 # playing, matched with silence; frames the speaker's device took, silence included, dropped unheard because the
 # microphone had stopped taking them (how much of the device's sound was silence is the speaker's own `unwritten`);
-# frames slipped, held through a whole window that never needed them; and frames passed on as captured, with the echo
-# path read as none, or unread.
+# frames slipped, held through a whole window that never needed them; and frames hands' TTS played in that were passed on
+# as captured, with the echo path read as none, or unread: hands' voice heard uncancelled, if it reached the microphone.
 COUNTS = ("heard", "unplayed", "dropped", "slipped", "unreached", "unread")
 
 
@@ -280,8 +281,8 @@ class EchoCanceller:
             # under hands', 30 to 50 dB on hands_no_echo_and_another.flac, and a person cutting in over a reply's opening
             # in headphones keeps the path unread: what the microphone captured is heard as it was.
             cleaned += frame.data.cast("B") if reading == "there" else captured
-            self._counts["unreached"] += reading == "none"
-            self._counts["unread"] += reading == "unread"
+            self._counts["unreached"] += tts is not None and reading == "none"
+            self._counts["unread"] += tts is not None and reading == "unread"
         self._counts["heard"] += len(audio) // size
         return Cancelled(bytes(cleaned), tuple(played))
 

@@ -1859,8 +1859,8 @@ nothing, there once a stretch carries hands' echo, and none once a whole stretch
 alone, the microphone quiet, reads none: under a person's voice, an echo well down reads
 like none, and says nothing. Only a path read there has AEC3's output heard; unread or
 none, every buffer is passed on as captured, so a person cutting into a reply's opening in
-headphones is heard unducked, and at the desk hands' first quarter second is heard
-uncancelled. Each reference says whether hands' voice may be in it (`Reference.reached`),
+headphones is heard unducked, and at the desk a reply's first quarter second is heard
+uncancelled, a second or more where the microphone or speaker opened mid-reply. Each reference says whether hands' voice may be in it (`Reference.reached`),
 false only where the path read none, which Whisper's rule of hands' words and the cut
 (`clips.slots`) read. Each
 microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
