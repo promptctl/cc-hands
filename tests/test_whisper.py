@@ -1,8 +1,6 @@
 """Whisper on MLX: each clip transcribed in hands' own process, with mlx_whisper's transcription standing in for the
 model, and what hands takes as said from the segments it answers with."""
 
-import asyncio
-import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
@@ -15,7 +13,9 @@ from speech import spoken
 from hands.clock import SYSTEM
 from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
-from hands.voice.clips import Clip, Echo, Identified
+from hands.sessions.wide import begun
+from hands.virtualclock import VirtualClock
+from hands.voice.clips import Clip, Played, Reference, Sound, Synthesis
 from hands.voice.whisper import Whisper
 
 
@@ -65,11 +65,62 @@ def clip(number: int) -> Clip:
     return Clip(number, "shortcut")
 
 
-def identified(echo: Echo = ()) -> "asyncio.Future[Identified]":
-    """A clip's last identification, already come: hands' own echo heard alone over `echo`, nowhere for none."""
-    done: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
-    done.set_result(Identified(None, echo))
-    return done
+def as_heard(audio: bytes, played: Played = None) -> Sound:
+    """A clip's sound as it was heard, and what hands played over it: nothing known of it for None."""
+    return Sound(audio, audio, played)
+
+
+def saying(seconds: float, *sentences: tuple[str, float, float]) -> Sound:
+    """`seconds` of a clip, hands saying each of `sentences` over it, its text from its start to its stop in seconds, one
+    synthesis each, as the canceller hands what was played on: one reference for each 10 ms."""
+    said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
+
+    def at(slot: int) -> Reference | None:
+        playing = tuple(synthesis for synthesis, start, stop in said if start <= slot / 100 < stop)
+        return Reference(bytes(320), 16_000, 1, playing) if playing else None
+
+    return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
+
+
+@dataclass
+class Timed:
+    """Whisper as these tests answer it with timed words: each segment it hears in the next clip, a word to each
+    (text, start, end), each spoken in as Silero hears it; and whether each clip asked for its words timed."""
+
+    segments: list[list[tuple[str, float, float]]] = field(default_factory=list[list[tuple[str, float, float]]])
+    asked: list[bool] = field(default_factory=list[bool])
+
+    def heard(self, _samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
+        self.asked.append(words)
+        return [
+            transcription.Segment("".join(text for text, _, _ in each).strip(), each[0][1], each[-1][2], 0.8, -0.3, tuple(transcription.Word(*word) for word in each) if words else ())
+            for each in self.segments
+        ]
+
+
+@pytest.fixture
+def timed(model: Model, monkeypatch: pytest.MonkeyPatch) -> Timed:
+    timed = Timed()
+
+    def voiced(_whisper: Whisper, _samples: np.ndarray) -> float:
+        return 1.0
+
+    monkeypatch.setattr(transcription, "segments", timed.heard)
+    monkeypatch.setattr(Whisper, "_voiced", voiced)
+    return timed
+
+
+def spaced(text: str, start: float, step: float) -> list[tuple[str, float, float]]:
+    """`text` as Whisper writes its words, from `start`, a word every `step` seconds."""
+    return [(f" {word}", start + index * step, start + (index + 1) * step) for index, word in enumerate(text.split())]
+
+
+async def told(sound: Sound) -> ClipHeard:
+    """What Whisper made of a clip of `sound`, as it records it."""
+    recorded: list[Entry] = []
+    await Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append).transcribed(clip(1), sound)
+    [clip_heard] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
+    return clip_heard
 
 
 async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
@@ -77,10 +128,10 @@ async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built
     no load only if the one done at construction asked for exactly what a clip's transcription asks for."""
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
-    await whisper.transcribed(clip(1), SILENCE, identified())
+    await whisper.transcribed(clip(1), as_heard(SILENCE))
 
     [(_, loaded), (_, transcribed)] = model.asked
-    assert loaded == transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
+    assert loaded == transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False, "word_timestamps": False}
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert (event.outcome, model_facts(event)) == ("ok", {"model": transcription.MODEL, "revision": transcription.REVISION})
@@ -91,7 +142,7 @@ async def test_each_clip_is_transcribed_from_its_samples_primed_with_the_vocabul
     samples = np.array([0, 16384, -16384, 32767], dtype=np.int16)
 
     for number in (1, 2, 3):
-        await whisper.transcribed(clip(number), samples.tobytes(), identified())
+        await whisper.transcribed(clip(number), as_heard(samples.tobytes()))
 
     transcribed = model.asked[1:]
     # The clip's own samples, then the silence a segment is heard with after its last word.
@@ -113,7 +164,7 @@ async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_sa
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(*["authMiddleware"] * 5), record=recorded.append)
 
-    said = [await whisper.transcribed(clip(number), SPOKEN, identified()) for number in range(1, 6)]
+    said = [await whisper.transcribed(clip(number), as_heard(SPOKEN)) for number in range(1, 6)]
 
     assert said == [None, None, None, None, "Okay."]
     # Each clip is recorded with what was dropped from it and why, so a clip that sent nothing can be looked into.
@@ -135,7 +186,7 @@ async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
-    assert [await whisper.transcribed(clip(number), audio, identified()) for number, audio in ((1, SILENCE), (2, SPOKEN))] == [None, "Thank you."]
+    assert [await whisper.transcribed(clip(number), as_heard(audio)) for number, audio in ((1, SILENCE), (2, SPOKEN))] == [None, "Thank you."]
     # Recorded with how sure Silero was that anyone spoke, so a turn that sent nothing says why.
     [[unsaid], []] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
@@ -146,74 +197,16 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     # Spoken in, then held on in silence: Whisper's "Thank you." heard from 30 s on (promptctl-voice-i15t.a5s.x48).
     spoke = len(SPOKEN) / 2 / 16_000
-    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3), transcription.Segment("Thank you.", 30.0, 40.0, 0.56, -0.28)]
+    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3, ()), transcription.Segment("Thank you.", 30.0, 40.0, 0.56, -0.28, ())]
 
-    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+    def segments(_samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
         return heard
 
     monkeypatch.setattr(transcription, "segments", segments)
 
-    assert await whisper.transcribed(clip(1), SPOKEN + SILENCE * 40, identified()) == "Create a ticket."
+    assert await whisper.transcribed(clip(1), as_heard(SPOKEN + SILENCE * 40)) == "Create a ticket."
     [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
-
-
-async def test_words_heard_only_in_hands_own_echo_are_not_said_and_a_persons_in_the_same_clip_are(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: list[Entry] = []
-    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
-    # A person, then hands' own voice come back through the microphone, each a segment of their own.
-    spoke = len(SPOKEN) // 2
-    heard = [transcription.Segment("Create a ticket.", 0.0, spoke / 16_000, 0.8, -0.3), transcription.Segment("The parser is fixed.", spoke / 16_000, 2 * spoke / 16_000, 0.8, -0.3)]
-
-    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
-        return heard
-
-    monkeypatch.setattr(transcription, "segments", segments)
-
-    assert await whisper.transcribed(clip(1), SPOKEN * 2, identified((range(spoke, 2 * spoke),))) == "Create a ticket."
-    # Recorded as dropped where Silero, hearing the clip with hands' echo silenced, heard nobody speak.
-    [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
-    assert (unsaid.text, unsaid.voiced < 0.1) == ("The parser is fixed.", True)
-
-
-async def test_whisper_hears_a_clip_while_its_speakers_are_still_being_identified(model: Model) -> None:
-    model.answers += [[], [("Okay.", 0.38, -0.5)]]
-    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=lambda _: None)
-    pending: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
-
-    transcribing = asyncio.create_task(whisper.transcribed(clip(1), SPOKEN, pending))
-    async with asyncio.timeout(10):
-        while len(model.asked) < 2:
-            await asyncio.sleep(0.01)
-    assert not transcribing.done()
-    pending.set_result(Identified(None, ()))
-    assert await transcribing == "Okay."
-
-
-async def test_a_clips_words_wait_on_its_identification_and_not_behind_the_next_clips_decode(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
-    decoding, released = threading.Event(), threading.Event()
-    decoded: list[int] = []
-
-    def segments(samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
-        decoded.append(len(decoded))
-        if len(decoded) == 2:
-            # The second clip's decode holds the model's thread until the test lets it go.
-            decoding.set()
-            released.wait(10)
-        return [transcription.Segment("Okay.", 0.0, len(samples) / 16_000, 0.8, -0.3)]
-
-    monkeypatch.setattr(transcription, "segments", segments)
-    whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=lambda _: None)
-    pending: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
-    first = asyncio.create_task(whisper.transcribed(clip(1), SPOKEN, pending))
-    second = asyncio.create_task(whisper.transcribed(clip(2), SPOKEN, identified()))
-    await asyncio.to_thread(decoding.wait, 10)
-    pending.set_result(Identified(None, ()))
-    try:
-        assert await asyncio.wait_for(first, 5) == "Okay."
-    finally:
-        released.set()
-    assert await second == "Okay."
 
 
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
@@ -222,7 +215,51 @@ async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(mo
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
     with pytest.raises(RuntimeError, match="Metal ran out of memory"):
-        await whisper.transcribed(clip(7), SPOKEN, identified())
+        await whisper.transcribed(clip(7), as_heard(SPOKEN))
 
-    assert await whisper.transcribed(clip(8), SPOKEN, identified()) == "Okay."
+    assert await whisper.transcribed(clip(8), as_heard(SPOKEN)) == "Okay."
     assert [entry.clip for entry in recorded if isinstance(entry, ClipHeard)] == [8]
+
+
+async def test_a_persons_words_heard_in_one_segment_with_hands_sentence_are_said_and_hands_are_not(timed: Timed) -> None:
+    # Primed, Whisper hears both voices in one segment, their words interleaved: the person asking over hands' sentence.
+    timed.segments.append([(" Can", 0.1, 0.2), (" starting", 0.3, 0.4), (" you", 0.6, 0.7), (" the", 0.8, 0.9), (" hear", 1.0, 1.1), (" build", 1.2, 1.3), (" me?", 1.4, 1.5), (" now.", 1.7, 1.8)])
+    clip_heard = await told(saying(2.5, ("Starting the build now.", 0.0, 2.0)))
+    # [LAW:nothing-unseen] hands' own words are said apart from noise: dropped as hands' echo, not as nobody's.
+    assert (clip_heard.said, clip_heard.echo, clip_heard.dropped) == ("Can you hear me?", ("starting", "the", "build", "now."), ())
+
+
+async def test_a_word_of_hands_said_long_after_hands_said_it_is_the_persons(timed: Timed) -> None:
+    # A lone "No." 2 s into hands' sentence: its "no" played 2 s before, and nothing played near it is "no".
+    timed.segments.append([(" No.", 2.0, 2.4)])
+    clip_heard = await told(saying(3.0, ("No, I won't delete the branch.", 0.0, 2.5)))
+    assert (clip_heard.said, clip_heard.echo) == ("No.", ())
+
+
+async def test_hands_sentence_heard_with_a_word_the_canceller_took_out_is_still_hands(timed: Timed) -> None:
+    timed.segments.append(spaced("Should I the tests?", 0.1, 0.3))
+    clip_heard = await told(saying(2.0, ("Should I run the tests?", 0.0, 1.5)))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("Should", "I", "the", "tests?"))
+
+
+async def test_each_word_of_hands_is_taken_once_so_a_sentence_said_once_and_heard_twice_is_a_persons_the_second_time(timed: Timed) -> None:
+    timed.segments += [[(" Okay.", 0.1, 0.5)], [(" Okay.", 1.1, 1.5)]]
+    assert (await told(saying(2.0, ("Okay.", 0.0, 0.5), ("Okay.", 1.0, 1.5)))).echo == ("Okay.", "Okay.")
+    # Said once, at the start: the second, 1 s on and within reach of it, is someone answering it.
+    clip_heard = await told(saying(2.0, ("Okay.", 0.0, 0.5)))
+    assert (clip_heard.said, clip_heard.echo) == ("Okay.", ("Okay.",))
+
+
+async def test_a_one_word_sentence_of_hands_heard_alone_and_one_spelled_whispers_way_are_hands(timed: Timed) -> None:
+    timed.segments += [[(" Done.", 0.05, 0.45)], spaced("The diariser reports one speaker.", 1.1, 0.4)]
+    clip_heard = await told(saying(3.5, ("Done.", 0.0, 0.4), ("The diarizer reports one speaker.", 1.0, 3.0)))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("Done.", "The", "diariser", "reports", "one", "speaker."))
+
+
+async def test_a_clip_hands_played_nothing_over_is_decoded_without_its_words_timed_and_nothing_of_it_is_hands(timed: Timed) -> None:
+    timed.segments.append(spaced("The parser is fixed.", 0.1, 0.3))
+    # At the phone, whose own canceller is told what it plays, and hands is not; and at the desk, with nothing played.
+    for sound in (as_heard(bytes(64_000)), as_heard(bytes(64_000), (None,) * 200)):
+        assert ((await told(sound)).said, timed.asked[-1]) == ("The parser is fixed.", False)
+    await told(saying(2.0, ("Done.", 0.0, 0.4)))
+    assert timed.asked[-1]

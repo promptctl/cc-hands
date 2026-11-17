@@ -207,7 +207,7 @@ class Playout:
             self._room.notify_all()
         played = taken + bytes(size - len(taken))
         try:
-            self._echo.played(played, self._rate, self._channels, tuple(dict.fromkeys(synthesis.voice for synthesis, _ in pieces)))
+            self._echo.played(played, self._rate, self._channels, tuple(dict.fromkeys(synthesis for synthesis, _ in pieces)))
             # [LAW:dataflow-not-control-flow] a gap is before the sound it delays: what went missing and late since the
             # device last took any of hands' speech is reported with the next of it taken, and a callback that takes
             # none of it, and lets out no end, reports nothing.

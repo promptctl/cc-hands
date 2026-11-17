@@ -3,7 +3,7 @@
 import asyncio
 import os
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -49,7 +49,7 @@ from hands.voice.system import (
     system_text,
 )
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import Clip, Identified
+from hands.voice.clips import Clip, Sound
 from hands.voice.devicechoice import Instead, Missing, Off
 from hands.voice.microphone import Devices
 from hands.voice.ptt import Gate
@@ -361,7 +361,7 @@ class Said:
     def __init__(self, *said: str | None | Exception) -> None:
         self.said = list(said)
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         match self.said.pop(0):
             case Exception() as error:
                 raise error

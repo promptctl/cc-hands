@@ -269,7 +269,7 @@ class SaidInTTS(PocketTTSService):
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         # [LAW:no-ambient-temporal-coupling] yielded, never pushed, so each keeps its place among the audio in Pipecat's
         # audio context; a barge-in may drop either, and the speaker ends what it opened (`hands.voice.synthesis`).
-        synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), begun(self._clock))
+        synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), text, begun(self._clock))
         yield SpeakingIn(synthesis)
         made, failure = 0.0, None
         # Pipecat's tracing decorator leaves the method untyped.

@@ -64,11 +64,11 @@ def stop(session: SessionId) -> Line:
 
 def test_a_clip_is_heard_once_whisper_took_words_from_it() -> None:
     assert proof("heard", [], SESSION) is None
-    assert proof("heard", [as_logged(ClipHeard(2, "tell the smoke session", ()))], SESSION) == "heard 'tell the smoke session'"
+    assert proof("heard", [as_logged(ClipHeard(2, "tell the smoke session", (), ()))], SESSION) == "heard 'tell the smoke session'"
 
 
 def test_a_clip_whisper_took_no_words_from_is_never_heard_and_says_so() -> None:
-    nothing = as_logged(ClipHeard(1, None, (Unsaid("Thank you.", 2.9, -1.2, 0.02),)))
+    nothing = as_logged(ClipHeard(1, None, (Unsaid("Thank you.", 2.9, -1.2, 0.02),), ()))
     with pytest.raises(NotReached) as raised:
         proof("heard", [nothing], SESSION)
     assert (raised.value.stage, raised.value.why) == ("heard", "Whisper took no words from the clip; it dropped 1 segment(s)")
