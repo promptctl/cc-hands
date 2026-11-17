@@ -8,7 +8,7 @@ A clip's speaker is the speaker who said most of its words; a clip with no words
 - One person for an hour: The Invisible Man, chapters 1-3, read solo for LibriVox (public domain), cut into clips at
   its pauses. One speaker, nothing of it given to anyone else, is the pass.
 - Two meetings of four people: AMI Meeting Corpus ES2004a and IS1009a (CC BY 4.0), test meetings, which the model was
-  not trained on, cut into clips at each speaker's own turns where nobody else speaks, per pyannote's AMI-diarization-setup
+  not trained on, cut into clips at each speaker's own turns where nobody else is heard, per pyannote's AMI-diarization-setup
   references. People and speakers are paired one to one, as many clips as possible on their pair (the optimal
   assignment); a clip is right where its speaker is its own person's pair, so two people heard as one speaker count one of
   them wrong.
@@ -22,7 +22,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from hands.voice import streaming
-from measuring import AMI_AUDIO, RATE, Live, fetched, mono, referenced, turns
+from measuring import AMI_AUDIO, RATE, Live, fetched, meeting_turns, mono
 
 LIBRIVOX = "https://archive.org/download/invisibleman_1209_librivox_cb/invisibleman_{:02d}_wells_64kb.mp3"
 MEETINGS = ("ES2004a", "IS1009a")
@@ -68,9 +68,8 @@ def one_person(directory: Path) -> None:
 
 def meeting(directory: Path, name: str) -> None:
     audio = mono(fetched(directory, AMI_AUDIO.format(name)))
-    # Their words alone, as both what each person said and every sound heard.
-    segments = referenced(directory, name, "only_words")
-    alone = turns(segments, segments, len(audio) / RATE)
+    # Their words, in turns no one else is heard in: not a word of theirs, nor a laugh, cough or other sound.
+    alone = meeting_turns(directory, name, len(audio) / RATE)
     run, heard = Live(streaming.load(streaming.GATING)), list[tuple[str, int | None, float]]()
     for turn in alone:
         said = spoken(run, audio[int(turn.start * RATE) : int(turn.end * RATE)])

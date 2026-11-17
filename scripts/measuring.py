@@ -6,7 +6,6 @@ feed is the real-pair tests' own (tests/listening.py), so what a test asserts is
 
 import sys
 import urllib.request
-from dataclasses import dataclass
 from math import gcd
 from pathlib import Path
 from typing import Literal
@@ -20,6 +19,7 @@ from hands.voice import streaming
 # Last on the path, so nothing in tests/ stands in for a module of the same name installed.
 sys.path.append(str(Path(__file__).resolve().parent.parent / "tests"))
 from listening import LEAD, SHAPES, Live, turn  # noqa: E402
+from turntaking import Stretch, turns  # noqa: E402
 
 RATE = streaming.RATE
 AMI_AUDIO = "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/{0}/audio/{0}.Mix-Headset.wav"
@@ -29,9 +29,6 @@ AMI_REFERENCES = "https://raw.githubusercontent.com/pyannote/AMI-diarization-set
 type Marked = Literal["only_words", "word_and_vocalsounds"]
 # AMI's sixteen test meetings, which the models were not trained on.
 AMI_TEST = tuple(f"{series}{part}" for series in ("EN2002", "ES2004", "IS1009", "TS3003") for part in "abcd")
-# A turn: one person's speech with no gap of GAP or more inside it, at least SHORTEST long.
-GAP = 0.5
-SHORTEST = 0.8
 
 
 def fetched(directory: Path, url: str) -> Path:
@@ -50,17 +47,6 @@ def mono(path: Path) -> np.ndarray:
     return resample_poly(audio.mean(axis=1), RATE // common, rate // common).astype(np.float32)
 
 
-@dataclass(frozen=True)
-class Stretch:
-    """A stretch of a meeting, in seconds, one person is heard in, with the words said in it where the annotation has
-    them."""
-
-    start: float
-    end: float
-    person: str
-    words: tuple[str, ...] = ()
-
-
 def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
     """Who sounds when in AMI meeting `name`, as pyannote's references mark it, fetched into `directory` once."""
     (directory / marked).mkdir(exist_ok=True)
@@ -68,24 +54,8 @@ def referenced(directory: Path, name: str, marked: Marked) -> list[Stretch]:
     return [Stretch(float(f[3]), float(f[3]) + float(f[4]), f[7]) for f in (line.split() for line in path.read_text().splitlines())]
 
 
-def turns(spoken: list[Stretch], sounds: list[Stretch], recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
-    """Each person's spoken stretches, merged across gaps under GAP, that are at least SHORTEST long, that nobody else
-    sounds in, and that nobody sounds in the `before` ahead of or the `after` past, the recording, `recorded` seconds
-    long, holding both silences: a turn that ends in `after` of silence."""
-    merged: list[Stretch] = []
-    for stretch in sorted(spoken, key=lambda stretch: (stretch.start, stretch.end)):
-        if merged and merged[-1].person == stretch.person and stretch.start - merged[-1].end < GAP:
-            last = merged[-1]
-            merged[-1] = Stretch(last.start, max(last.end, stretch.end), last.person, last.words + stretch.words)
-        else:
-            merged.append(stretch)
-
-    def heard_over(turn: Stretch, sound: Stretch) -> bool:
-        # The turn's own person, heard within it, is the turn; anyone heard around it, or them before or after it, a laugh
-        # that runs on past its last word included, is not.
-        inside = sound.person == turn.person and turn.start <= sound.start and sound.end <= turn.end
-        return sound.start < turn.end + after and sound.end > turn.start - before and not inside
-
-    # A transcript says nothing outside the recording, so a turn at either end of it is not known to be set in silence.
-    held = [turn for turn in merged if turn.end - turn.start >= SHORTEST and 0 <= turn.start - before and turn.end + after <= recorded]
-    return [turn for turn in held if not any(heard_over(turn, sound) for sound in sounds)]
+def meeting_turns(directory: Path, name: str, recorded: float, before: float = 0.0, after: float = 0.0) -> list[Stretch]:
+    """`turns` of AMI meeting `name`, `recorded` seconds long: what each person says is their words, and what is heard is
+    every word, laugh, cough and other sound, per pyannote's references."""
+    spoken, sounds = referenced(directory, name, "only_words"), referenced(directory, name, "word_and_vocalsounds")
+    return turns(spoken, sounds, recorded, before, after)
