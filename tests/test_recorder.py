@@ -6,7 +6,7 @@ and anything that cannot be written failing its own unit with why."""
 import contextlib
 import json
 import wave
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +18,7 @@ from hands.virtualclock import VirtualClock
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Reference, Sound
+from hands.voice.clips import RATE, Clip, Identified, Reference, Sound
 from hands.voice.echo import Cancelled
 from hands.voice import recorder as recorders
 from hands.voice.recorder import Recorder, track
@@ -28,7 +28,7 @@ from hands.voice.voiceprints import Voiced
 class Unused:
     """A transcriber no test here gives a clip to."""
 
-    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
+    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
         raise AssertionError("nothing here transcribes")
 
 

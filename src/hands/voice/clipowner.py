@@ -26,7 +26,7 @@ from hands.core.place import Place
 from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, Fact, annotate, begun, continuing, ended, unit
 from hands.threads import tell
-from hands.voice.clips import LANGUAGE, RATE, Clip, Cleared, Fate, Hearing, Hearings, Listener, Recording, Sound, Transcriber, voices
+from hands.voice.clips import LANGUAGE, NOBODY, RATE, Clip, Cleared, Fate, Hearing, Hearings, Identified, Listener, Recording, Sound, Transcriber, voices
 from hands.voice.ptt import Key, KeyedAudio
 from hands.voice.trigger import turn_start
 from hands.voice.turnstop import ClipDiscarded, ClipSent, KeyOpened, SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -68,7 +68,7 @@ class _Spoken:
     fate: Fate
     sound: Sound
     began: Begun
-    identified: "asyncio.Future[float | None]"
+    identified: "asyncio.Future[Identified]"
 
 
 @dataclass(frozen=True)
@@ -95,14 +95,14 @@ class _Unstarted:
     """No lane runs: the pipeline has not started, or has stopped."""
 
 
-def _settled(identified: "asyncio.Future[float | None]", first: float | None) -> None:
+def _settled(identified: "asyncio.Future[Identified]", last: Identified) -> None:
     """A clip's last identification, on the event loop: one the owner gave up waiting on, which cancelled the future,
     goes unheard, as the clip's event already says."""
     match identified.done():
         case True:
             pass
         case False:
-            identified.set_result(first)
+            identified.set_result(last)
 
 
 def _facts(ending: "_Spoken | _Written") -> dict[str, Fact]:
@@ -309,10 +309,10 @@ class ClipOwner(FrameProcessor):
         self._key = "up"
         self._recording.clear()
         loop = asyncio.get_running_loop()
-        identified: asyncio.Future[float | None] = loop.create_future()
+        identified: asyncio.Future[Identified] = loop.create_future()
 
-        def settle(first: float | None) -> None:
-            tell(loop, _settled, identified, first)
+        def settle(last: Identified) -> None:
+            tell(loop, _settled, identified, last)
 
         self._tell(clip, lambda listener: listener.ended(clip, fate, sound, settle))
         match fate:
@@ -381,9 +381,12 @@ class ClipOwner(FrameProcessor):
                             # [LAW:no-ambient-temporal-coupling] the transcription runs while the cut is decided: a cut on
                             # the identification alone is not held behind it, hands speaking over the user all the while.
                             async with asyncio.TaskGroup() as group:
-                                transcription = group.create_task(self._transcribed(clip, sound, facts))
+                                # [LAW:single-enforcer] one wait on the clip's last identification, bounded once, which
+                                # both the cut and the words are decided on.
+                                identification = group.create_task(self._identification(sound, identified, facts))
+                                transcription = group.create_task(self._transcribed(clip, sound, identification, facts))
                                 # The cut lands ahead of the words it came with, as one while the clip was open would have.
-                                match await self._closing(clip, sound, identified, transcription, facts):
+                                match await self._closing(clip, sound, identification, transcription, facts):
                                     case None:
                                         pass
                                     case first:
@@ -402,7 +405,7 @@ class ClipOwner(FrameProcessor):
         self,
         clip: Clip,
         sound: Sound,
-        identified: "asyncio.Future[float | None]",
+        identification: "asyncio.Task[Identified]",
         transcription: "asyncio.Task[tuple[Words, ...]]",
         facts: dict[str, Fact],
     ) -> float | None:
@@ -427,24 +430,29 @@ class ClipOwner(FrameProcessor):
                     case _:
                         return None
             case "on a person", _, False:
-                return await self._identified(identified, facts)
+                return (await identification).first
 
-    async def _identified(self, identified: "asyncio.Future[float | None]", facts: dict[str, Fact]) -> float | None:
-        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most.
+    async def _identification(self, sound: Sound, identified: "asyncio.Future[Identified]", facts: dict[str, Fact]) -> Identified:
+        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip hands played
+        nothing over has no echo of hands in it, so it waits on nothing.
 
-        [LAW:no-silent-failure] one that misses the bound cuts nothing, which the clip's event says, as it says what one
-        in time came to."""
-        bound = self._clock.timeout(IDENTIFIED_SECONDS)
-        try:
-            async with bound:
-                first = await identified
-        except TimeoutError:
-            facts["identified"] = f"nothing after {IDENTIFIED_SECONDS:g} s"
-            return None
-        facts["identified"] = "nobody" if first is None else "a person"
-        return first
+        [LAW:no-silent-failure] one that misses the bound cuts nothing and keeps every word, which the clip's event says,
+        as it says what one in time came to: a person's words lost to a slow lane cost more than a turn of hands' echo."""
+        match voices(sound):
+            case ():
+                return NOBODY
+            case _:
+                try:
+                    async with self._clock.timeout(IDENTIFIED_SECONDS):
+                        last = await identified
+                except TimeoutError:
+                    facts["identified"] = f"nothing after {IDENTIFIED_SECONDS:g} s"
+                    return NOBODY
+                facts["identified"] = "nobody" if last.first is None else "a person"
+                facts["echo_seconds"] = last.echo_seconds
+                return last
 
-    async def _transcribed(self, clip: Clip, sound: Sound, facts: dict[str, Fact]) -> tuple[Words, ...]:
+    async def _transcribed(self, clip: Clip, sound: Sound, identification: "asyncio.Task[Identified]", facts: dict[str, Fact]) -> tuple[Words, ...]:
         """What a sent clip's transcription came to: its words, to be pushed, and on its event, why it had none, an error
         queued where it failed.
 
@@ -455,7 +463,8 @@ class ClipOwner(FrameProcessor):
         bound = self._clock.timeout(seconds)
         try:
             async with bound:
-                said = await self._transcriber.transcribed(clip, sound.heard)
+                # Shielded: a transcriber that gives up on the identification leaves the cut's wait on it whole.
+                said = await self._transcriber.transcribed(clip, sound.heard, asyncio.shield(identification))
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from here aloud.
             why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"

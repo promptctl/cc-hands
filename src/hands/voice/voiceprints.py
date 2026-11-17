@@ -30,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
-from hands.voice.clips import RATE, Cleared, Clip, Samples, Settle
+from hands.voice.clips import NOBODY, RATE, Cleared, Clip, Echo, Identified, Samples, Settle
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
 MODEL = "csukuangfj/speaker-embedding-models"
@@ -178,12 +178,28 @@ def cleared(who: Who, played: bool, said: bool) -> bool:
             return False
 
 
+def echo(who: Who, played: bool) -> bool:
+    """Whether a speaker, `played` over by hands or not, is heard as hands' own voice come back through the microphone,
+    whose words are not sent.
+
+    [LAW:single-enforcer] the one rule of whose words are hands'. Only a speaker hands played over whose voiceprint
+    found hands' voice: hands, or one in hands' range short of it, as seven of eight of zoj's recorded echo sentences
+    ended. One heard too briefly to score, or not scored at all (the model loading, a print being made), could be
+    anyone, and a person's words lost cost more than a turn of hands' echo, so theirs go, though they cut nothing."""
+    match played, who:
+        case True, Hands() | Unsure():
+            return True
+        case _:
+            return False
+
+
 @dataclass(frozen=True)
 class Voiced:
     """One speaker in a clip, as the stream heard them: their number in the run, the latest WINDOW of their voice in
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
     every voice of hands' TTS played over any of them, how many seconds after the clip opened they were first heard,
-    under none in what it kept from before, and whether the stream has decoded any words of theirs."""
+    under none in what it kept from before, whether the stream has decoded any words of theirs, and where in the clip's
+    audio the diarizer heard them while hands played, a range of samples to each frame."""
 
     speaker: int
     voice: Samples
@@ -192,6 +208,7 @@ class Voiced:
     played: tuple[str, ...]
     first: float
     said: bool
+    over: tuple[range, ...]
 
 
 @dataclass(frozen=True)
@@ -212,6 +229,15 @@ def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced, thresholds: 
             voiceprint = embed(voiced.voice)
             window = Window(round(len(voiced.voice) / RATE, 3), round(voiced.shared, 3))
             return decided(max(score(voiceprint, each) for each in prints), voiced.seconds, window, thresholds)
+
+
+def echoed(judged: tuple[tuple[Voiced, Speaker], ...]) -> Echo:
+    """Where in a clip only speakers who may be hands' echo (`echo`) were heard: each frame of theirs no other speaker was
+    heard in, in the order of the clip. A frame a person shares with hands is the person's, so their words over hands go."""
+    hands, others = set[range](), set[range]()
+    for each, speaker in judged:
+        (hands if echo(speaker.who, bool(each.played)) else others).update(each.over)
+    return tuple(sorted(hands - others, key=lambda at: at.start))
 
 
 class Identifier(Protocol):
@@ -404,7 +430,7 @@ class Voiceprints:
         began = begun(self._clock)
 
         def identified() -> None:
-            match self._identified(clip, voiced, THRESHOLDS, began):
+            match self._identified(clip, voiced, THRESHOLDS, began).first:
                 case None:
                     pass
                 case first:
@@ -421,12 +447,12 @@ class Voiceprints:
         began = begun(self._clock)
 
         def last() -> None:
-            first: float | None = None
+            identified = NOBODY
             try:
-                first = self._identified(clip, voiced, ENDING, began)
+                identified = self._identified(clip, voiced, ENDING, began)
             finally:
                 self._people.pop(clip.number, None)
-                settle(first)
+                settle(identified)
 
         self._lane.give(last)
 
@@ -445,20 +471,23 @@ class Voiceprints:
 
         self._lane.give(identified)
 
-    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], thresholds: tuple[Threshold, ...], began: Begun) -> float | None:
-        """Who each speaker in `voiced` is, by `thresholds`, told as one unit: when the first of them cleared to cut hands
-        off was first heard, None for none, and for none where identifying them failed."""
+    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], thresholds: tuple[Threshold, ...], began: Begun) -> Identified:
+        """Who each speaker in `voiced` is, by `thresholds`, told as one unit, and what that came to: `NOBODY` where
+        there was nobody to identify, or identifying them failed."""
         if not voiced:
-            return None
+            return NOBODY
         try:
             speakers = tuple(Speaker(each.speaker, self._who(clip, each, thresholds)) for each in voiced)
         except Exception as error:
             ended("voiceprints.identified", self._record, began, error, clip=clip.number)
-            return None
-        first = min((each.first for each, speaker in zip(voiced, speakers, strict=True) if cleared(speaker.who, bool(each.played), each.said)), default=None)
-        # [LAW:nothing-unseen] who each speaker is, and when the first of them who cuts hands off was first heard.
-        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first)
-        return first
+            return NOBODY
+        judged = tuple(zip(voiced, speakers, strict=True))
+        first = min((each.first for each, speaker in judged if cleared(speaker.who, bool(each.played), each.said)), default=None)
+        identified = Identified(first, echoed(judged))
+        # [LAW:nothing-unseen] who each speaker is, when the first of them who cuts hands off was first heard, and how
+        # much of the clip only hands' own echo was heard in.
+        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first, echo_seconds=identified.echo_seconds)
+        return identified
 
     def _who(self, clip: Clip, voiced: Voiced, thresholds: tuple[Threshold, ...]) -> Who:
         """[LAW:single-enforcer] once a person in a clip, a speaker is one for the rest of it."""

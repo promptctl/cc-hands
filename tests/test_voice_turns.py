@@ -13,7 +13,7 @@ import queue
 import struct
 import threading
 from pathlib import Path
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -58,7 +58,7 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
-from hands.voice.clips import Clip, Reference
+from hands.voice.clips import Clip, Identified, Reference
 from hands.voice.voiceprints import Embed, Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
 from hands.voice import clipowner, desk, shortcut, streaming, voiceprints
@@ -318,7 +318,7 @@ async def rigged(
     texts: asyncio.Queue[str] = asyncio.Queue()
     heard: list[bytes] = []
 
-    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None) -> ClipHeard:
+    async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None, _identified: Awaitable[Identified]) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
         heard.append(audio)
         return ClipHeard(clip, await texts.get() or None, ())
@@ -529,7 +529,8 @@ async def test_a_clip_the_voice_opened_that_heard_no_words_cuts_nothing_off_and_
     async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         await rig.clip(OPENED_BY_THE_VOICE, by="engaged conversation")
         await rig.texts.put("")
-        await rig.until(lambda: user_turns(rig) == [("on a person", False)])
+        # The line is recorded as Pipecat stops the turn, ahead of the stop reaching the end of the pipeline.
+        await rig.until(lambda: user_turns(rig) == [("on a person", False)] and rig.out.stopped == 1)
         # The turn took the floor and nothing over: nothing behind it heard the user start, so the model's reply streams
         # on and runs on a tool's result, the reading plays on, and the line waits.
         assert (rig.out.started, rig.out.stopped, rig.out.interrupted, cut, line.done()) == (0, 1, 0, [], False)

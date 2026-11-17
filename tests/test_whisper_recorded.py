@@ -1,6 +1,7 @@
 """Whisper as hands runs it, on speech recorded once and committed (tests/speech.py): the real model at its pinned weights,
 primed with a vocabulary of the shape hands primes with, given each clip a held key sends."""
 
+import asyncio
 import re
 from difflib import SequenceMatcher
 
@@ -9,7 +10,7 @@ import pytest
 
 from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
-from hands.voice.clips import Clip
+from hands.voice.clips import NOBODY, Clip, Identified
 from hands.voice.whisper import Whisper
 from speech import RATE, quiet, spoken
 
@@ -71,6 +72,13 @@ def whisper(prompt: str | None) -> Whisper:
     return Whisper(clock=VirtualClock(), prompt=primed, record=lambda _: None)
 
 
+def nobody() -> "asyncio.Future[Identified]":
+    """A held key's clip hands played nothing over: nothing of it is hands' own."""
+    done: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
+    done.set_result(NOBODY)
+    return done
+
+
 def words(text: str) -> list[str]:
     return re.findall(r"[\w'-]+", text.lower())
 
@@ -83,7 +91,7 @@ def room(seconds: float, dbfs: float) -> bytes:
 
 @pytest.mark.parametrize("text", NAMED)
 async def test_a_name_dictated_comes_back_spelled_as_the_vocabulary_spells_it(text: str) -> None:
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), spoken(text))
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), spoken(text), nobody())
 
     assert said is not None and NAMED[text] <= set(words(said)), said
 
@@ -93,14 +101,14 @@ async def test_a_name_dictated_comes_back_spelled_as_the_vocabulary_spells_it(te
 @pytest.mark.parametrize("prompt", [None, VOCABULARY], ids=["unprimed", "primed"])
 async def test_a_hold_nobody_spoke_in_sends_nothing(audio: bytes, prompt: str | None) -> None:
     # Whisper heard "Thank you." in each unprimed, and primed, read back the vocabulary's last words.
-    assert await whisper(prompt).transcribed(Clip(1, "shortcut"), audio) is None
+    assert await whisper(prompt).transcribed(Clip(1, "shortcut"), audio, nobody()) is None
 
 
 async def test_a_hold_held_on_after_the_words_sends_only_the_words() -> None:
     # Whisper heard "Thank you." in the silent window after the sentence, from 30 s to 60 s.
     text = "Switch to macklebox and run the tests again."
 
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), spoken(text) + quiet(35))
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), spoken(text) + quiet(35), nobody())
 
     assert said is not None and words(said) == words(text), said
 
@@ -110,7 +118,7 @@ async def test_a_long_dictation_comes_back_whole() -> None:
     sentences = [*NAMED, *PROSE]
     audio = b"".join(spoken(text) + quiet(PAUSES[index % len(PAUSES)]) for index, text in enumerate(sentences))
 
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), audio)
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), audio, nobody())
 
     assert said is not None
     # Every sentence is there, in order, near enough word for word: a window lost loses whole sentences, while Whisper

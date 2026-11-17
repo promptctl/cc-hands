@@ -175,9 +175,30 @@ class Heard:
 # many seconds after the clip opened they were first heard, under none for one heard in what it kept from before.
 type Cleared = Callable[[float], None]
 
-# A clip's last identification, at its end, told to the clip owner from whichever thread made it: when the first speaker
-# it cleared to cut hands off was first heard, as `Cleared` tells it, None where it cleared nobody.
-type Settle = Callable[[float | None], None]
+# Where in a clip's audio hands' own voice was heard and nobody else's, in samples from its first, as the transcriber is
+# given it.
+type Echo = tuple[range, ...]
+
+
+@dataclass(frozen=True)
+class Identified:
+    """What a clip's last identification came to: when the first speaker it cleared to cut hands off was first heard, as
+    `Cleared` tells it, None where it cleared nobody; and where in the clip only hands' own echo was heard."""
+
+    first: float | None
+    echo: Echo
+
+    @property
+    def echo_seconds(self) -> float:
+        """How many seconds of the clip only hands' own echo was heard in, as its events say."""
+        return round(sum(map(len, self.echo)) / RATE, 3)
+
+
+# An identification that found nobody: nothing cuts, and nothing of the clip is hands'.
+NOBODY = Identified(None, ())
+
+# A clip's last identification, at its end, told to the clip owner from whichever thread made it.
+type Settle = Callable[[Identified], None]
 
 
 # A hearing: a listener's slow work on a clip, while it is open or after it closed, which the owner runs off the audio
@@ -225,6 +246,7 @@ class Listener(Protocol):
 class Transcriber(Protocol):
     """The model whose words a turn sends: given each clip the key sent, whole, as mono 16-bit samples at RATE."""
 
-    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
-        """The words said in `clip`, None where nothing was; it raises where it cannot say."""
+    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+        """The words a person said in `clip`, None where nobody did: none of hands' own, heard where the clip's last
+        identification, once it comes, found only hands' echo. It raises where it cannot say."""
         ...

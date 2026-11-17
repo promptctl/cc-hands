@@ -1,9 +1,9 @@
 """Whisper, the transcriber on the clip owner (`hands.voice.clipowner`): it transcribes each clip the key sent, whole, as it
-ends (hands.voice.transcription), and those are the words a turn sends. A clip still open is heard by the streaming
-recognizer (`hands.voice.streaming`), whose words only cut."""
+ends (hands.voice.transcription), and those are the words a turn sends, none of them hands' own. A clip still open is
+heard by the streaming recognizer (`hands.voice.streaming`), whose words only cut."""
 
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from importlib.resources import files
 
 import numpy as np
@@ -15,7 +15,7 @@ from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice import transcription
-from hands.voice.clips import RATE, SECOND, Clip, decoded
+from hands.voice.clips import RATE, SECOND, Clip, Echo, Identified, decoded
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -52,7 +52,7 @@ class Whisper:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
-            # Silero, which says how sure it is that anyone spoke in a segment; run on the model's thread alone.
+            # Silero, which says how sure it is that anyone spoke in a segment; run on its own thread alone.
             self._silero = SileroOnnxModel(str(_SILERO))
             annotate(model=transcription.MODEL, revision=transcription.REVISION)
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
@@ -61,26 +61,36 @@ class Whisper:
         # [LAW:single-enforcer] the one thread the model runs on: a transcription given up on is still running, and the
         # next must not run beside it.
         self._model = SerialThread("Whisper")
+        # Silero's pass over a clip, a few milliseconds, on a thread of its own: it waits on the clip's identification,
+        # and must not then wait behind the next clip's decode.
+        self._voicing = SerialThread("Silero")
 
-    async def transcribed(self, clip: Clip, audio: bytes) -> str | None:
-        """The words said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke and nothing
-        happened" can be looked into."""
-        heard = await self._heard(clip.number, audio, await self._prompt())
+    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+        """The words a person said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke
+        and nothing happened" can be looked into."""
+        heard = await self._heard(clip.number, audio, await self._prompt(), identified)
         self._record(heard)
         return heard.said
 
-    async def _heard(self, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
-        """What was said in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the vocabulary.
+    async def _heard(self, clip: int, audio: bytes, prompt: str | None, identified: Awaitable[Identified]) -> ClipHeard:
+        """What a person said in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the
+        vocabulary.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
-        and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. A clip with
-        nothing said in it comes back with no segment.
+        and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Silero hears the
+        clip with hands' own echo silenced, as the clip's last identification found it, so a segment heard only in
+        hands' voice is nobody's, and is dropped with them. A clip with nothing said in it comes back with no segment.
         """
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
-            # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
-            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(decoded(audio + _TRAILING_SILENCE), prompt))
+            # Off the loop, the clip's decoding with it: the model runs for a third of a second a clip, and the speaker and
+            # the key go on meanwhile.
+            # [LAW:no-ambient-temporal-coupling] Whisper hears the clip while its speakers are still being identified;
+            # only Silero's pass, a few milliseconds, waits on who they were.
+            samples, segments = await self._model.run(lambda: _UNHEARD if given_up.is_set() else _segments(audio, prompt))
+            echo = (await identified).echo
+            scored = await self._voicing.run(lambda: [] if given_up.is_set() else self._scored(segments, _silenced(samples, echo)))
         finally:
             given_up.set()
         said: list[str] = []
@@ -93,12 +103,12 @@ class Whisper:
                 dropped.append(segment)
         return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped))
 
-    def _scored(self, samples: np.ndarray, prompt: str | None) -> list[Unsaid]:
-        """Each segment Whisper hears in `samples`, primed with `prompt`, with the scores it is dropped for, Silero's over
-        the stretch of `samples` Whisper heard it in."""
+    def _scored(self, segments: Sequence[transcription.Segment], people: np.ndarray) -> list[Unsaid]:
+        """Each segment Whisper heard with the scores it is dropped for, Silero's over the stretch of `people`, the clip
+        with hands' echo silenced, that Whisper heard it in."""
         return [
-            Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)]))
-            for segment in transcription.segments(samples, prompt)
+            Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(people[round(segment.start * RATE) : round(segment.end * RATE)]))
+            for segment in segments
         ]
 
     def _voiced(self, samples: np.ndarray) -> float:
@@ -112,3 +122,22 @@ class Whisper:
             if surest >= _VOICED:
                 break
         return surest
+
+
+# A clip given up on before the model reached it: no samples, and no segment heard in them.
+_UNHEARD: tuple[np.ndarray, list[transcription.Segment]] = (np.zeros(0, np.float32), [])
+
+
+def _segments(audio: bytes, prompt: str | None) -> tuple[np.ndarray, list[transcription.Segment]]:
+    """A clip's audio as samples, heard with `_TRAILING_SILENCE` after it, and each segment Whisper hears in them, primed
+    with `prompt`. It blocks while the model runs."""
+    samples = decoded(audio + _TRAILING_SILENCE)
+    return samples, transcription.segments(samples, prompt)
+
+
+def _silenced(samples: np.ndarray, echo: Echo) -> np.ndarray:
+    """`samples` with each stretch of `echo`, where only hands' own voice was heard, made silence: what people said."""
+    people = samples.copy()
+    for at in echo:
+        people[at.start : at.stop] = 0
+    return people
