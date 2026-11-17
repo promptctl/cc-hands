@@ -5,7 +5,7 @@ every clip and every hearing however it ends."""
 import asyncio
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 
 import pytest
@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import IDENTIFIED_SECONDS, ClipOwner
-from hands.voice.clips import NOBODY, Clip, Cleared, Echo, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound
+from hands.voice.clips import NOBODY, Clip, Cleared, Echo, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Transcriber
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -140,7 +140,7 @@ class Rig:
 
 
 @asynccontextmanager
-async def rigged(transcriber: Scripted, listeners: Sequence[Heeding] = (), clock: Clock = SYSTEM) -> AsyncGenerator[Rig]:
+async def rigged(transcriber: Transcriber, listeners: Sequence[Heeding] = (), clock: Clock = SYSTEM) -> AsyncGenerator[Rig]:
     recorded: list[Entry] = []
     owner, seen = ClipOwner(clock, transcriber, listeners, recorded.append), Seen()
     async with running([owner, seen]) as run:
@@ -511,6 +511,27 @@ async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_t
         assert ("resolved", 1) not in rig.seen.seen
         transcribing.set()
         await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+
+
+@dataclass
+class GivingUp:
+    """A transcriber that will not wait on who was speaking: it gives up on the clip's last identification at once."""
+
+    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+        with suppress(TimeoutError):
+            await asyncio.wait_for(identified, 0)
+        return "stop there"
+
+
+async def test_a_transcriber_that_gives_up_on_the_identification_leaves_the_cut_waiting_on_it() -> None:
+    held: list[Settle] = []
+    async with rigged(GivingUp(), (Heeding("streaming", settling=held.append),)) as rig:
+        await rig.clip([frame_of(3)], by="wake word", voices=("charles",))
+        await rig.until(lambda: len(held) == 1 and ("words", "stop there") not in rig.seen.seen)
+        [settle] = held
+        elsewhere(lambda: settle(Identified(0.4, ())))
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.4), ("words", "stop there"), ("resolved", 1)]
 
 
 async def test_a_clip_that_cut_while_it_was_open_is_not_cut_again_as_it_closes() -> None:

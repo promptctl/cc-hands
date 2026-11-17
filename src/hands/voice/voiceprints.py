@@ -161,29 +161,36 @@ def decided(scored: float, seconds: float, window: Window, thresholds: tuple[Thr
             return Unsure(scored, seconds, window)
 
 
-def echo(who: Who, played: bool) -> bool:
-    """Whether a speaker, `played` over by hands or not, may be hands' own voice come back through the microphone.
+def cleared(who: Who, played: bool, said: bool) -> bool:
+    """Whether a speaker, `played` over by hands or not, who has `said` words or not, clears hands to be cut off.
 
-    [LAW:single-enforcer] the one rule of who may be hands. A speaker hands played nothing over has no echo of hands in
-    them. One hands played over may be, so only a person is not: hands, a speaker in hands' range, one heard too briefly,
-    and one who could not be scored at all (the model loading, a print being made) may be, and their
-    `voiceprints.identified` unit says why. On zoj's recorded echo, a clip to each of hands' sentences, seven of eight
-    ended in hands' range short of being called hands, so hands alone would let most of its echo through."""
+    [LAW:single-enforcer] the one rule of who cuts hands off. A speaker hands played nothing over has no echo of hands
+    in them, so whoever they are, their words clear them, before any voiceprint, and a sound the diarizer took for a
+    speaker with no words in it, a cough, clears nothing. One hands played over may be hands' own echo, so only a person
+    clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not be scored at all (the model
+    loading, a print being made) cut nothing, and their `voiceprints.identified` unit says why."""
     match played, who:
         case False, _:
-            return False
+            return said
         case True, Person():
-            return False
-        case True, Hands() | Unsure() | Unheard() | Unidentified():
             return True
+        case True, Hands() | Unsure() | Unheard() | Unidentified():
+            return False
 
 
-def cleared(who: Who, played: bool, said: bool) -> bool:
-    """Whether a speaker, `played` over by hands or not, who has `said` words or not, clears hands to be cut off: one who
-    is not hands' echo, by their words where hands played nothing over them, before any voiceprint, so a sound the
-    diarizer took for a speaker with no words in it, a cough, clears nothing; by their voiceprint, a person, where it
-    played over them."""
-    return (said or played) and not echo(who, played)
+def echo(who: Who, played: bool) -> bool:
+    """Whether a speaker, `played` over by hands or not, is heard as hands' own voice come back through the microphone,
+    whose words are not sent.
+
+    [LAW:single-enforcer] the one rule of whose words are hands'. Only a speaker hands played over whose voiceprint
+    found hands' voice: hands, or one in hands' range short of it, as seven of eight of zoj's recorded echo sentences
+    ended. One heard too briefly to score, or not scored at all (the model loading, a print being made), could be
+    anyone, and a person's words lost cost more than a turn of hands' echo, so theirs go, though they cut nothing."""
+    match played, who:
+        case True, Hands() | Unsure():
+            return True
+        case _:
+            return False
 
 
 @dataclass(frozen=True)
@@ -192,7 +199,7 @@ class Voiced:
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
     every voice of hands' TTS played over any of them, how many seconds after the clip opened they were first heard,
     under none in what it kept from before, whether the stream has decoded any words of theirs, and where in the clip's
-    audio the diarizer heard them."""
+    audio the diarizer heard them, a range of samples to each frame."""
 
     speaker: int
     voice: Samples
@@ -201,7 +208,7 @@ class Voiced:
     played: tuple[str, ...]
     first: float
     said: bool
-    heard: Echo
+    heard: tuple[range, ...]
 
 
 @dataclass(frozen=True)
@@ -476,11 +483,11 @@ class Voiceprints:
             return NOBODY
         judged = tuple(zip(voiced, speakers, strict=True))
         first = min((each.first for each, speaker in judged if cleared(speaker.who, bool(each.played), each.said)), default=None)
-        heard = echoed(judged)
+        identified = Identified(first, echoed(judged))
         # [LAW:nothing-unseen] who each speaker is, when the first of them who cuts hands off was first heard, and how
         # much of the clip only hands' own echo was heard in.
-        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first, echo_seconds=round(sum(map(len, heard)) / RATE, 3))
-        return Identified(first, heard)
+        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first, echo_seconds=identified.echo_seconds)
+        return identified
 
     def _who(self, clip: Clip, voiced: Voiced, thresholds: tuple[Threshold, ...]) -> Who:
         """[LAW:single-enforcer] once a person in a clip, a speaker is one for the rest of it."""

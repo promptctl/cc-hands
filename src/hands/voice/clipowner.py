@@ -449,7 +449,7 @@ class ClipOwner(FrameProcessor):
                     facts["identified"] = f"nothing after {IDENTIFIED_SECONDS:g} s"
                     return NOBODY
                 facts["identified"] = "nobody" if last.first is None else "a person"
-                facts["echo_seconds"] = round(sum(map(len, last.echo)) / RATE, 3)
+                facts["echo_seconds"] = last.echo_seconds
                 return last
 
     async def _transcribed(self, clip: Clip, sound: Sound, identification: "asyncio.Task[Identified]", facts: dict[str, Fact]) -> tuple[Words, ...]:
@@ -463,7 +463,8 @@ class ClipOwner(FrameProcessor):
         bound = self._clock.timeout(seconds)
         try:
             async with bound:
-                said = await self._transcriber.transcribed(clip, sound.heard, identification)
+                # Shielded: a transcriber that gives up on the identification leaves the cut's wait on it whole.
+                said = await self._transcriber.transcribed(clip, sound.heard, asyncio.shield(identification))
         except Exception as error:
             # [LAW:no-silent-failure] a failed transcription is heard: the pipeline says an ErrorFrame from here aloud.
             why = f"nothing after {seconds:g} s" if bound.expired() else f"{type(error).__name__}: {error}"

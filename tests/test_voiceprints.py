@@ -99,9 +99,10 @@ def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_
     [Person(0.0, 3.0, NONE), Hands(1.0, 3.0, NONE), Unsure(0.4, 1.2, NONE), Unheard(0.4), Unidentified(3.0, "no print yet of charles")],
     ids=["person", "hands", "unsure", "unheard", "unidentified"],
 )
-def test_a_speaker_hands_played_nothing_over_is_never_its_echo_and_one_it_played_over_is_unless_a_person(who: Who) -> None:
+def test_a_speaker_hands_played_nothing_over_is_never_its_echo_and_one_it_played_over_is_where_its_voiceprint_found_hands(who: Who) -> None:
     assert not echo(who, played=False)
-    assert echo(who, played=True) == (not isinstance(who, Person))
+    # One too brief to score, or not scored at all, could be anyone: their words go, though they cut nothing.
+    assert echo(who, played=True) == isinstance(who, Hands | Unsure)
 
 
 def test_only_hands_echo_is_where_no_one_else_was_heard_and_a_frame_a_person_shares_with_it_is_theirs() -> None:

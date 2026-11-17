@@ -188,6 +188,11 @@ class Identified:
     first: float | None
     echo: Echo
 
+    @property
+    def echo_seconds(self) -> float:
+        """How many seconds of the clip only hands' own echo was heard in, as its events say."""
+        return round(sum(map(len, self.echo)) / RATE, 3)
+
 
 # An identification that found nobody: nothing cuts, and nothing of the clip is hands'.
 NOBODY = Identified(None, ())
