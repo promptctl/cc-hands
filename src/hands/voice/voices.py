@@ -25,13 +25,16 @@ from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
 from pocket_tts.utils.utils import download_if_necessary, get_predefined_voice
 
+from hands.clock import Clock
 from hands.core.playback import Line, hands_says
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
+from hands.sessions.wide import begun
 from hands.voice.clips import RATE, Samples
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
+from hands.voice.synthesis import Made, Synthesis
 from hands.voice.voiceprints import Synthesize
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
@@ -217,11 +220,10 @@ class Voices:
 
 @dataclass
 class SpeakingIn(DataFrame):
-    """The voice the audio behind it, to the next of these, was made in, as the TTS service was handed it (`source`):
-    sent by hands' TTS ahead of each utterance, and queued by Pipecat's sender in line with the audio, so the speaker
-    knows the voice of each chunk it plays."""
+    """The synthesis the audio behind it, to its `Made`, is of, in the voice the TTS service was handed (`source`): sent
+    by hands' TTS ahead of each, so the speaker knows whose each byte it plays is."""
 
-    voice: str
+    synthesis: Synthesis
 
 
 class SaidInTTS(PocketTTSService):
@@ -238,6 +240,10 @@ class SaidInTTS(PocketTTSService):
     # The line whose LineFrame is being made into speech, for the one call that makes it (`_push_tts_frames`): None while
     # the model's text is.
     _making: Line | None = None
+
+    def __init__(self, clock: Clock, **settings: Any) -> None:
+        super().__init__(**settings)  # pyright: ignore[reportUnknownMemberType]  (Pipecat leaves its kwargs untyped)
+        self._clock = clock
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         match frame:
@@ -268,11 +274,14 @@ class SaidInTTS(PocketTTSService):
                     await self.push_frame(Unsaid(line))
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
-        yield SpeakingIn(require_given(self._settings.voice, "Pocket TTS voice"))
+        synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), begun(self._clock))
+        yield SpeakingIn(synthesis)
         # Pipecat's tracing decorator leaves the method untyped.
         said = cast(Callable[[str, str], AsyncGenerator[Frame | None, None]], super().run_tts)  # pyright: ignore[reportUnknownMemberType]
         async for frame in said(text, context_id):
             yield frame
+        # [LAW:nothing-unseen] how long the TTS took to make it, beside how long it plays: its real-time factor.
+        yield Made(synthesis, self._clock.now() - synthesis.begun.began)
 
 
 def pocket() -> Synthesize:

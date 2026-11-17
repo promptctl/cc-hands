@@ -41,6 +41,7 @@ from hands.voice import phonepage
 from hands.voice.phoneaddress import RENEW_DAYS, Tailnet, Untailed, own_certificate, phone_key
 from hands.voice.phonepage import phone_app
 from hands.voice.ptt import KeyedAudio, PushToTalk
+from hands.voice.synthesis import Piece
 from hands.voice.summaries import SummaryStore
 from hands.voice.gallerypage import Gallery
 from hands.voice.wakeword import Pretrained
@@ -536,7 +537,7 @@ class Desk:
     def __init__(self) -> None:
         self.written: list[bytes] = []
 
-    def write(self, audio: bytes, voices: tuple[str, ...]) -> None:
+    def write(self, audio: bytes, pieces: tuple[Piece, ...]) -> None:
         self.written.append(audio)
 
     def get_output_latency(self) -> float:
