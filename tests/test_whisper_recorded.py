@@ -12,7 +12,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import Clip, Sound
 from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, HANDS_ALONE, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, played
+from echoes import ANOTHER, ANOTHER_STOPPED, HANDS_ALONE, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played
 from speech import RATE, audio, quiet, spoken
 
 pytestmark = pytest.mark.outside
@@ -175,8 +175,15 @@ async def test_a_person_talking_over_hands_is_sent_and_hands_own_voice_is_not(wi
     assert all(kept(line, said) >= 0.75 for line in heard), (said, [(line, kept(line, said)) for line in heard])
 
 
-async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
+async def test_hands_heard_alone_after_the_person_sends_nothing() -> None:
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_and_another.flac", *HANDS_ALONE, ANOTHER, ANOTHER_STOPPED)) is None
+
+
+async def test_a_person_saying_hands_words_over_hands_through_the_canceller_is_sent_every_word() -> None:
+    # "the build is" and "Say the next step", said where hands says them: by text and time alone, they are hands'.
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), cancelled())
+
+    assert said is not None and words(said) == words(" ".join(OVER_CANCELLED)), said
 
 
 @pytest.mark.parametrize("sentence", range(len(SENTENCES)), ids=READ)

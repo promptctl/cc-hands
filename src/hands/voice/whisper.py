@@ -5,7 +5,8 @@ heard by the streaming recognizer (`hands.voice.streaming`), whose words only cu
 hands' own words are known by their text and their time: each word Whisper heard is hands' where it is a word
 hands played near when it was heard. A Whisper segment is no voice boundary: primed with hands' vocabulary, Whisper
 heard a person's lines and hands' sentences in one segment (tests/fixtures/hands_and_another.flac, 8.2 s to 24 s), so
-only a word, timed, is one voice's.
+only a word, timed, is one voice's. Text and time alone cannot tell a person repeating hands' words from hands' echo,
+so a word of hands' counts only where the echo canceller left hands' voice in what Whisper hears.
 """
 
 import re
@@ -56,6 +57,18 @@ _ECHO_SECONDS = 1.5
 # tests/fixtures/hands_echo_uncancelled.flac, every word of hands' Whisper heard was within 0.8 s of its characters at
 # this rate from its sentence's start, later where the sentence pauses at its punctuation.
 _CHARACTERS_PER_SECOND = 16.0
+
+# The echo return loss enhancement (ERLE), in dB, at which the echo canceller is taking hands' voice out: how far below
+# what the microphone captured it brings what Whisper hears. On tests/fixtures/hands_cancelled_and_another.flac, through
+# hands' canceller at the desk, 29 to 47 dB in every 0.2 s hands spoke alone, and 0 to 10 dB where a second voice spoke
+# over it; heard through no canceller, as on the uncancelled recordings, 0.
+_CANCELLING = 20.0
+
+# How far either side of where a word of hands' is placed, in seconds, the canceller is looked for taking hands' voice
+# out: a word is placed up to 0.8 s from where it played (`_CHARACTERS_PER_SECOND`), and while a person speaks over
+# hands only the slots between their words show the canceller at work, as the person's own words come through it at
+# 0 to 10 dB.
+_CANCELLED_SECONDS = 1.0
 
 # The least likeness of a word Whisper heard to a word hands said, by difflib's ratio, at which it is that word spelled
 # Whisper's own way: "diariser" for "diarizer" and "maclbox" for "macklebox" are 0.875, while "hear" and "here", two
@@ -109,10 +122,11 @@ class Whisper:
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
         and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Of the rest, each
         word that is hands' own voice come back (`_parted`) goes too. A clip with nothing said in it comes back with no
-        segment. A clip hands played over is decoded with its words timed, which one hands played nothing over has no
-        need of, and does not wait on.
+        segment. A clip hands' voice was left in is decoded with its words timed, which one hands played nothing over, or
+        one the canceller took all of hands' voice out of, has no need of, and does not wait on.
         """
-        placed = _placed(plays(sound))
+        played = _placed(plays(sound))
+        placed = _left(played, sound)
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
@@ -129,7 +143,7 @@ class Whisper:
             else:
                 dropped.append(Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, voiced))
         said, echo = _parted(kept, placed)
-        return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo)
+        return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo, len(played) - len(placed))
 
     def _scored(self, audio: bytes, prompt: str | None, timed: bool) -> list[tuple[transcription.Segment, float]]:
         """Each segment Whisper hears in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, its
@@ -169,6 +183,22 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
         for into in ((word.start() + word.end()) / 2 / _CHARACTERS_PER_SECOND,)
         if into - play.into <= (play.stop - play.start) * SLOT / RATE + _ECHO_SECONDS
     )
+
+
+def _left(placed: Placed, sound: Sound) -> Placed:
+    """The words of hands' placed over `sound` that the echo canceller left in what Whisper hears: none placed in a
+    10 ms slot within `_CANCELLED_SECONDS` of one it took hands' voice out of, where, while hands played, what it heard
+    was `_CANCELLING` dB or more below what the microphone captured. A person's word heard there is theirs, whatever
+    hands said."""
+    slots = len(sound.heard) // (2 * SLOT)
+    power = [(decoded(audio[: 2 * SLOT * slots]).astype(np.float64).reshape(slots, SLOT) ** 2).mean(axis=1) for audio in (sound.captured, sound.heard)]
+    # The smallest power a 16-bit sample holds, so digital silence on either side is a level and not a division by zero.
+    least = (1 / 32768) ** 2
+    # At the phone, where what was played is not known, nothing was taken out, as nothing of hands' is placed.
+    playing = np.array([reference is not None for reference in sound.played or (None,) * slots][:slots], dtype=bool)
+    taking = playing & (10 * np.log10((power[0] + least) / (power[1] + least)) >= _CANCELLING)
+    reach = round(_CANCELLED_SECONDS * RATE / SLOT)
+    return tuple((word, when) for word, when in placed if not taking[max(round(when * RATE / SLOT) - reach, 0) : round(when * RATE / SLOT) + reach + 1].any())
 
 
 def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list[str], tuple[str, ...]]:

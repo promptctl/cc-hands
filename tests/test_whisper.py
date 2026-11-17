@@ -82,6 +82,18 @@ def saying(seconds: float, *sentences: tuple[str, float, float]) -> Sound:
     return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
 
 
+def cancelling(sound: Sound, start: float, stop: float) -> Sound:
+    """`sound` with the echo canceller taking hands' voice out from `start` to `stop` s: the microphone captured hands at
+    -20 dBFS there, and what was heard after the canceller is 40 dB below it."""
+    rng = np.random.default_rng(0)
+    captured = np.frombuffer(sound.captured, np.int16).copy()
+    heard = np.frombuffer(sound.heard, np.int16).copy()
+    span = slice(round(start * 16_000), round(stop * 16_000))
+    noise = rng.normal(0, 3_277, span.stop - span.start)
+    captured[span], heard[span] = noise.astype(np.int16), (noise / 100).astype(np.int16)
+    return Sound(heard.tobytes(), captured.tobytes(), sound.played)
+
+
 @dataclass
 class Timed:
     """Whisper as these tests answer it with timed words: each segment it hears in the next clip, a word to each
@@ -308,3 +320,19 @@ async def test_a_clip_hands_played_nothing_over_is_decoded_without_its_words_tim
         assert ((await told(sound)).said, timed.asked[-1]) == ("The parser is fixed.", False)
     await told(saying(2.0, ("Done.", 0.0, 0.4)))
     assert timed.asked[-1]
+
+
+async def test_a_persons_words_that_hands_said_too_are_sent_where_the_canceller_took_hands_voice_out(timed: Timed) -> None:
+    # Over hands' "the build is green", a person says "No, the build is broken.", their "the build is" where hands said
+    # it: through a canceller taking hands' voice out, nothing Whisper heard is hands'.
+    timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
+    clip_heard = await told(cancelling(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4)), 0.0, 3.5))
+    # [LAW:nothing-unseen] every word hands played was taken out, and the clip was decoded with no word timed.
+    assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
+
+
+async def test_hands_words_the_canceller_left_in_are_hands_beside_a_stretch_it_took_hands_voice_out_of(timed: Timed) -> None:
+    # The canceller took hands' first sentence out, and left its second, 2 s on, as it came through the room.
+    timed.segments += [spaced("Okay, run the tests.", 0.1, 0.3), spaced("The build is green.", 2.6, 0.3)]
+    clip_heard = await told(cancelling(saying(4.0, ("Okay, run the tests.", 0.0, 1.5), ("The build is green.", 2.5, 3.8)), 0.0, 1.5))
+    assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled) == ("Okay, run the tests.", ("The", "build", "is", "green."), 4)

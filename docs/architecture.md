@@ -1938,8 +1938,17 @@ reference carries it (`clips.Playhead`). A Whisper segment is no voice boundary:
 primed with hands' vocabulary, Whisper heard a person's lines and hands' sentences in one segment,
 their words interleaved (`tests/fixtures/hands_and_another.flac`), so only a word, timed, is one
 voice's. A turn of hands' echo alone sends nothing: its `clip` event says `transcript` none, and
-its `ClipHeard` record holds each word taken as hands' under `echo`. A person who says a word
-hands said within 1.5 s of it loses that word. A clip hands played nothing over is decoded without its words timed,
+its `ClipHeard` record holds each word taken as hands' under `echo`. Text and time cannot tell a
+person repeating hands' words from hands' echo, so a word of hands' is placed only where the echo
+canceller left hands' voice in what Whisper hears: none within 1 s of a 10 ms slot where, while
+hands played, the heard audio is 20 dB or more below what the microphone captured. Through hands'
+canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
+person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by
+`scripts/record-double-talk.py`), so a person saying "No, the build is broken." over hands' "the
+build is green" is sent every word; `ClipHeard.cancelled` counts the words of hands' the canceller
+took out. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
+person who says a word hands said within 1.5 s of it loses that word. A clip hands played nothing
+over, or one the canceller took all of hands' voice out of, is decoded without its words timed,
 which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
 canceller is told what it plays, nothing is hands'.
 
