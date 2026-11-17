@@ -80,7 +80,7 @@ class Whisper:
         given_up = threading.Event()
         try:
             # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
-            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(audio + _TRAILING_SILENCE, prompt))
+            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(decoded(audio + _TRAILING_SILENCE), prompt))
         finally:
             given_up.set()
         said: list[str] = []
@@ -93,13 +93,12 @@ class Whisper:
                 dropped.append(segment)
         return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped))
 
-    def _scored(self, audio: bytes, prompt: str | None) -> list[Unsaid]:
-        """Each segment Whisper hears in `audio`, primed with `prompt`, with the scores it is dropped for, Silero's over
-        the stretch of `audio` Whisper heard it in."""
-        samples = decoded(audio)
+    def _scored(self, samples: np.ndarray, prompt: str | None) -> list[Unsaid]:
+        """Each segment Whisper hears in `samples`, primed with `prompt`, with the scores it is dropped for, Silero's over
+        the stretch of `samples` Whisper heard it in."""
         return [
             Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)]))
-            for segment in transcription.segments(audio, prompt)
+            for segment in transcription.segments(samples, prompt)
         ]
 
     def _voiced(self, samples: np.ndarray) -> float:

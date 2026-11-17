@@ -132,6 +132,23 @@ async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
 
 
+async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: list[Entry] = []
+    whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
+    # Spoken in, then held on in silence: Whisper's "Thank you." heard from 30 s on (promptctl-voice-i15t.a5s.x48).
+    spoke = len(SPOKEN) / 2 / 16_000
+    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3), transcription.Segment("Thank you.", 30.0, 40.0, 0.56, -0.28)]
+
+    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
+        return heard
+
+    monkeypatch.setattr(transcription, "segments", segments)
+
+    assert await whisper.transcribed(clip(1), SPOKEN + SILENCE * 40) == "Create a ticket."
+    [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
+    assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
+
+
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:
     model.answers += [[], RuntimeError("Metal ran out of memory"), [("Okay.", 0.38, -0.5)]]
     recorded: list[Entry] = []
