@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
-from huggingface_hub import snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
+from huggingface_hub import is_offline_mode, snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
 from huggingface_hub.errors import LocalEntryNotFoundError
 
 from hands.voice.clips import LANGUAGE, RATE
@@ -65,11 +65,15 @@ def weights() -> str:
     hub is not asked again once they are, since a commit names its files for good. Asked for a commit, the hub's client
     lists its files from the hub unless it kept the list, offline or not, so the cache is looked in first.
 
-    The client keeps the list before it fetches a file, and the cache holds a snapshot only with every file on it: one a
-    fetch cut short is fetched whole here, and offline fails naming what it is missing."""
+    The client keeps the list before it fetches a file, and the cache refuses a snapshot the list names a file it lacks
+    with an IncompleteSnapshotError naming each one: one a fetch cut short is fetched whole here, and offline that error
+    is what is raised, since the fetch could only fail on the first file it asked the hub for. A snapshot with no list
+    kept, fetched by a client older than the list, is taken as whole [LAW:single-enforcer]."""
     try:
         return snapshot_download(MODEL, revision=REVISION, local_files_only=True)
     except LocalEntryNotFoundError:
+        if is_offline_mode():
+            raise
         return snapshot_download(MODEL, revision=REVISION)
 
 

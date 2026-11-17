@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pipecat-ai[local,pocket-tts]>=1.9.0,<2",
     "mlx-whisper>=0.4.3,<0.5",  # hands.voice.transcription calls it, and its tokenizer, directly
+    "huggingface-hub>=1.31,<2",  # hands.voice.transcription fetches Whisper with it, and its cache refuses a cut-short snapshot by the commit's file list it keeps
     "aiohttp>=3.11",  # ClientConnectorDNSError
     "loguru>=0.7",
     "pyobjc-framework-cocoa>=11",
