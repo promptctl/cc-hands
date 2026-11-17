@@ -61,9 +61,12 @@ def segments(samples: np.ndarray, prompt: str | None) -> list[Segment]:
 
 @cache
 def weights() -> str:
-    """The directory MODEL's weights are in at REVISION, fetched into the hub's cache if they are not there yet; the hub
-    is not asked again once they are, since a commit names its files for good. Asked for a commit, the hub's client lists
-    its files from the hub unless it kept the list, offline or not, so the cache is looked in first."""
+    """The directory MODEL's weights are in at REVISION, fetched into the hub's cache if they are not all there yet; the
+    hub is not asked again once they are, since a commit names its files for good. Asked for a commit, the hub's client
+    lists its files from the hub unless it kept the list, offline or not, so the cache is looked in first.
+
+    The client keeps the list before it fetches a file, and the cache holds a snapshot only with every file on it: one a
+    fetch cut short is fetched whole here, and offline fails naming what it is missing."""
     try:
         return snapshot_download(MODEL, revision=REVISION, local_files_only=True)
     except LocalEntryNotFoundError:
