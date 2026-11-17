@@ -37,8 +37,8 @@ from test_clock_boundary import offenders, reached, written
 # reach it: their reaches are the adapter's, not a test's.
 CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 
-# Test modules whose run still reaches the machine's time, struck off as each moves onto a VirtualClock it advances; one
-# held for a library's own reach, under a module already on one, says so in its docstring. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
+# Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
+# advances. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
