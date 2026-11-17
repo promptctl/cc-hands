@@ -503,17 +503,24 @@ class Voiceprints:
         return tuple(voiceprint for voiceprint in self._prints.values() if isinstance(voiceprint, np.ndarray))
 
 
+def weights() -> str:
+    """The path of the model's FILE at REVISION, in the Hugging Face cache, fetched there if it never was."""
+    # The hub's download types one argument incompletely.
+    from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
+
+    return hf_hub_download(MODEL, FILE, revision=REVISION)
+
+
 def load() -> Embed:
-    """The model, from the Hugging Face cache, fetched there if it never was.
+    """The model, from weights.
 
     [LAW:no-silent-failure] a model that does not load raises naming the file: without it hands cannot tell its own voice
     from a person's."""
-    # sherpa-onnx ships no types, and the hub's download types one argument incompletely.
+    # sherpa-onnx ships no types.
     import sherpa_onnx  # pyright: ignore[reportMissingTypeStubs]
-    from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
 
     try:
-        path = hf_hub_download(MODEL, FILE, revision=REVISION)
+        path = weights()
         extractor = cast(Any, sherpa_onnx).SpeakerEmbeddingExtractor(cast(Any, sherpa_onnx).SpeakerEmbeddingExtractorConfig(model=path, num_threads=2))
     except Exception as error:
         raise RuntimeError(f"the voiceprint model {FILE} from {MODEL} at {REVISION} did not load: {failure(error)}") from error

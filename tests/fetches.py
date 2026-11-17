@@ -7,6 +7,7 @@ Warm, each fetch is a look at what is already there. The process reads its Fetch
 fetch, and fails naming what it could not fetch and why."""
 
 import asyncio
+import hashlib
 import json
 import os
 import signal
@@ -21,13 +22,12 @@ from pathlib import Path
 import httpx
 import huggingface_hub.constants
 import pytest
-from huggingface_hub import hf_hub_download  # pyright: ignore[reportUnknownVariableType]
 from huggingface_hub.errors import RevisionResolutionError
 from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
-from hands.voice import engaged, streaming, voiceprints
+from hands.voice import engaged, streaming, transcription, voiceprints
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
@@ -38,8 +38,37 @@ from sentences import INSTALL_FAILURES, PUNKT_TAB, install
 MOCK_MODULE = "github.com/promptctl/mock-anthropic"
 MOCK_RELEASE = "v0.1.0"
 
-# Every speech weight a test loads, each at the revision hands pins it to.
-WEIGHTS = ((streaming.MODEL, streaming.REVISION), (streaming.DIARIZATION, streaming.DIARIZATION_REVISION), (engaged.SMART_TURN, engaged.SMART_TURN_REVISION))
+
+@dataclass(frozen=True)
+class Weights:
+    """A model's weights on the Hugging Face hub, at the revision hands pins it to: `what` of them is fetched, and
+    `fetch` is the call its load makes to fetch them, so the run fetches what a load would."""
+
+    what: str
+    fetch: Callable[[], object]
+
+
+def loaded_by_mlx_audio(repo: str, revision: str) -> Weights:
+    return Weights(f"{repo} at {revision}", partial(get_model_path, repo, revision=revision))
+
+
+# [LAW:one-source-of-truth] every speech weight a test loads, the one list the run fetches and CI keys its cache of the
+# hub on (hub_key): each weight's `what` names the pins its fetch reads.
+WEIGHTS = (
+    loaded_by_mlx_audio(streaming.MODEL, streaming.REVISION),
+    loaded_by_mlx_audio(streaming.DIARIZATION, streaming.DIARIZATION_REVISION),
+    loaded_by_mlx_audio(engaged.SMART_TURN, engaged.SMART_TURN_REVISION),
+    Weights(f"{transcription.MODEL} at {transcription.REVISION}", transcription.weights),
+    # The voiceprint model is one file of a repository of many, so only it is fetched.
+    Weights(f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION}", voiceprints.weights),
+)
+
+
+def hub_key() -> str:
+    """What CI keys its cache of the hub on: a digest of what of each weight WEIGHTS fetches, so a weight added, or moved
+    to another repository, revision or file, is a new key."""
+    return hashlib.sha256("\n".join(weights.what for weights in WEIGHTS).encode()).hexdigest()[:16]
+
 
 # The wake words whose models a switch to the wake word loads.
 WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
@@ -105,12 +134,9 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
     if fetches.unit:
         return
-    for repo, revision in WEIGHTS:
-        # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
-        # its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
-        fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(get_model_path, repo, revision=revision))
-    # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
-    fetching(write, f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION))
+    for weights in WEIGHTS:
+        # The hub's failures are its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
+        fetching(write, f"{weights.what} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), weights.fetch)
     for word in WAKE_WORDS:
         fetching(write, f"the {word.phrase} wake word's models", (*pinned.DOWNLOAD_FAILURES, OSError), partial(asyncio.run, fetched(fetches.wake_word, word)))
     fetching(write, f"Claude Code {pinned.VERSION} from npm", (pinned.Uninstallable,), partial(asyncio.run, pinned.install(fetches.claude_code, REGISTRY)))

@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import pytest
 
-from hands.clock import SYSTEM
+from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import Clip
 from hands.voice.whisper import Whisper
@@ -68,7 +68,7 @@ def whisper(prompt: str | None) -> Whisper:
     async def primed() -> str | None:
         return prompt
 
-    return Whisper(clock=SYSTEM, prompt=primed, record=lambda _: None)
+    return Whisper(clock=VirtualClock(), prompt=primed, record=lambda _: None)
 
 
 def words(text: str) -> list[str]:
