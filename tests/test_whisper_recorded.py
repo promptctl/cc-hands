@@ -96,6 +96,15 @@ async def test_a_hold_nobody_spoke_in_sends_nothing(audio: bytes, prompt: str | 
     assert await whisper(prompt).transcribed(Clip(1, "shortcut"), audio) is None
 
 
+async def test_a_hold_held_on_after_the_words_sends_only_the_words() -> None:
+    # Whisper heard "Thank you." in the silent window after the sentence, from 30 s to 60 s.
+    text = "Switch to macklebox and run the tests again."
+
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), spoken(text) + quiet(35))
+
+    assert said is not None and words(said) == words(text), said
+
+
 async def test_a_long_dictation_comes_back_whole() -> None:
     # Two minutes held, past four of Whisper's 30 s windows, each decoded on its own.
     sentences = [*NAMED, *PROSE]

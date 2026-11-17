@@ -1,5 +1,5 @@
-"""Whisper on MLX, in hands' own process: the segments a clip's WAV is heard as, each with Whisper's two scores for
-dropping it; nothing here loads Pipecat.
+"""Whisper on MLX, in hands' own process: the segments a clip's WAV is heard as, each with the stretch of it it was heard
+in and Whisper's two scores for dropping it; nothing here loads Pipecat.
 
 The voice transcribes every clip through it, and `hands smoke` judges what hands said aloud with it, so what the smoke
 test hears is what the voice would have heard. LowTalker serves the same large-v3-turbo weights from the Neural Engine,
@@ -7,14 +7,15 @@ and hands measured it slower: key release to transcript 613 to 724 ms through Lo
 the same six spoken turns, by upload and by its Realtime socket alike (hands-dictation-2bs.kpm, 2026-10-04).
 """
 
+from dataclasses import dataclass
 from functools import cache
 from typing import Any, cast
 
 import mlx_whisper
 import numpy as np
 from huggingface_hub import snapshot_download  # pyright: ignore[reportUnknownVariableType]  (partly untyped in huggingface_hub)
+from huggingface_hub.errors import LocalEntryNotFoundError
 
-from hands.sessions.audit import Unsaid
 from hands.voice.clips import LANGUAGE, RATE, decoded
 
 # The model every clip is transcribed with, fetched from the Hugging Face hub into its cache on the first load, at the
@@ -32,16 +33,28 @@ def load() -> None:
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
     fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched, loading takes
     0.5 s and the first run after it 1.3 s against 0.3 s for every later one. The model is kept for the process, keyed
-    on its name, so silence transcribed here through the call every clip makes leaves every clip finding it loaded and
+    on the directory `weights` names, so silence transcribed here through the call every clip makes leaves every clip finding it loaded and
     run [LAW:no-ambient-temporal-coupling].
     """
     _transcribe(_SILENCE, None)
 
 
-def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
+@dataclass(frozen=True)
+class Segment:
+    """What Whisper heard in one stretch of a clip, from `start` to `end` seconds into it, with its two scores for dropping
+    it."""
+
+    text: str
+    start: float
+    end: float
+    compression_ratio: float
+    avg_logprob: float
+
+
+def segments(audio: bytes, prompt: str | None) -> list[Segment]:
     """The segments Whisper hears in mono 16-bit `audio` at RATE, primed with `prompt`. It blocks while the model runs."""
     return [
-        Unsaid(str(segment["text"]).strip(), float(segment["compression_ratio"]), float(segment["avg_logprob"]))
+        Segment(str(segment["text"]).strip(), float(segment["start"]), float(segment["end"]), float(segment["compression_ratio"]), float(segment["avg_logprob"]))
         for segment in _transcribe(decoded(audio), prompt)
     ]
 
@@ -49,8 +62,12 @@ def segments(audio: bytes, prompt: str | None) -> list[Unsaid]:
 @cache
 def weights() -> str:
     """The directory MODEL's weights are in at REVISION, fetched into the hub's cache if they are not there yet; the hub
-    is not asked again once they are, since a commit names its files for good."""
-    return snapshot_download(MODEL, revision=REVISION)
+    is not asked again once they are, since a commit names its files for good. Asked for a commit, the hub's client lists
+    its files from the hub unless it kept the list, offline or not, so the cache is looked in first."""
+    try:
+        return snapshot_download(MODEL, revision=REVISION, local_files_only=True)
+    except LocalEntryNotFoundError:
+        return snapshot_download(MODEL, revision=REVISION)
 
 
 def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:

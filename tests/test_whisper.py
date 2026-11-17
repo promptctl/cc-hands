@@ -11,7 +11,7 @@ import pytest
 from conftest import events, model_facts
 from speech import spoken
 from hands.clock import SYSTEM
-from hands.sessions.audit import ClipHeard, Entry, Unsaid
+from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
 from hands.voice.clips import Clip
 from hands.voice.whisper import Whisper
@@ -19,7 +19,8 @@ from hands.voice.whisper import Whisper
 
 @dataclass
 class Model:
-    """mlx_whisper's transcription as these tests answer it: what it was asked, and the segments it gives, oldest first."""
+    """mlx_whisper's transcription as these tests answer it: what it was asked, and the segments it gives, oldest first,
+    each heard over the whole of the audio."""
 
     answers: list[list[tuple[str, float, float]] | Exception] = field(default_factory=list[list[tuple[str, float, float]] | Exception])
     asked: list[tuple[np.ndarray, dict[str, object]]] = field(default_factory=list[tuple[np.ndarray, dict[str, object]]])
@@ -30,7 +31,7 @@ class Model:
             case Exception() as error:
                 raise error
             case segments:
-                return {"segments": [{"text": text, "compression_ratio": ratio, "avg_logprob": logprob} for text, ratio, logprob in segments]}
+                return {"segments": [{"text": text, "start": 0.0, "end": len(audio) / 16_000, "compression_ratio": ratio, "avg_logprob": logprob} for text, ratio, logprob in segments]}
 
 
 @pytest.fixture
@@ -89,7 +90,7 @@ async def test_each_clip_is_transcribed_from_its_samples_primed_with_the_vocabul
     assert [options["initial_prompt"] for _, options in transcribed] == ["authMiddleware", None, "sessionStore"]
 
 
-async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) -> None:
+async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_said(model: Model) -> None:
     # What Whisper answered, primed: room noise, Gaussian noise read as a guess and as a loop, and "okay" said quietly
     # at -25 dBFS (hands-dictation-2bs.1xq, hands-dictation-d7i).
     model.answers += [
@@ -107,27 +108,28 @@ async def test_what_a_primed_whisper_makes_of_noise_is_not_said(model: Model) ->
 
     assert said == [None, None, None, None, "Okay."]
     # Each clip is recorded with what was dropped from it and why, so a clip that sent nothing can be looked into.
+    # Spoken in, as Silero hears each: dropped for Whisper's scores alone.
     heard = [entry for entry in recorded if isinstance(entry, ClipHeard)]
-    assert [(entry.clip, entry.said, entry.dropped) for entry in heard] == [
-        (1, None, ()),
-        (2, None, (Unsaid(".", 0.11, -0.5),)),
-        (3, None, (Unsaid("and slow-talking.", 0.68, -2.84),)),
-        (4, None, (Unsaid(("and turnstop, " * 12).strip(), 17.1, -0.24),)),
-        (5, "Okay.", ()),
+    assert [(entry.clip, entry.said, [(unsaid.text, unsaid.compression_ratio, unsaid.avg_logprob) for unsaid in entry.dropped]) for entry in heard] == [
+        (1, None, []),
+        (2, None, [(".", 0.11, -0.5)]),
+        (3, None, [("and slow-talking.", 0.68, -2.84)]),
+        (4, None, [(("and turnstop, " * 12).strip(), 17.1, -0.24)]),
+        (5, "Okay.", []),
     ]
-    assert all(entry.voiced > 0.9 for entry in heard)
+    assert all(unsaid.voiced >= 0.25 for entry in heard for unsaid in entry.dropped)
 
 
-async def test_what_whisper_hears_in_a_clip_nobody_spoke_in_is_not_said(model: Model) -> None:
+async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -> None:
     # What Whisper answered unprimed for each of the user's silent holds, sure of it (promptctl-voice-i15t.a5s.x48).
     model.answers += [[], [("Thank you.", 0.56, -0.21)], [("Thank you.", 0.56, -0.21)]]
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None, None), record=recorded.append)
 
     assert [await whisper.transcribed(clip(number), audio) for number, audio in ((1, SILENCE), (2, SPOKEN))] == [None, "Thank you."]
-    [silent, spoke] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
     # Recorded with how sure Silero was that anyone spoke, so a turn that sent nothing says why.
-    assert (silent.dropped, silent.voiced < 0.1, spoke.voiced > 0.9) == ((Unsaid("Thank you.", 0.56, -0.21),), True, True)
+    [[unsaid], []] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
+    assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
 
 
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:

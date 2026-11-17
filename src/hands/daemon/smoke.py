@@ -321,7 +321,7 @@ async def _stages(smoked: Run, folder: Path, environment: Mapping[str, str]) -> 
             raise NotReached("up", f"{heartbeat.describe(verdict, smoked.clock.wall())}; start it with `hands run`")
     # The test's own ear, no part of hands, loaded before the session joins: its failure is the test's, raised, never named
     # as a stage, and no stage's time goes on the load.
-    annotate(model=transcription.MODEL)
+    annotate(model=transcription.MODEL, revision=transcription.REVISION)
     await asyncio.to_thread(transcription.load)
     claude = shutil.which("claude", path=environment.get("PATH"))
     if claude is None:

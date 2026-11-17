@@ -40,7 +40,7 @@ from conftest import events, model_facts, patiently, running, stood_in, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
-from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, Unsaid, UserTurn
+from hands.sessions.audit import BargeIn, ClipHeard, Entry, Levels, Replied, Transcribed, TurnStart, UserTurn
 from hands.voice import transcription
 from hands.sessions.wide import Fact, WideEvent
 from hands.voice import pipeline as built
@@ -321,7 +321,7 @@ async def rigged(
     async def transcribe(_self: Whisper, clip: int, audio: bytes, _prompt: str | None) -> ClipHeard:
         # The samples the model would be given: what the microphone heard.
         heard.append(audio)
-        return ClipHeard(clip, await texts.get() or None, (), 1.0)
+        return ClipHeard(clip, await texts.get() or None, ())
 
     monkeypatch.setattr(Whisper, "_heard", transcribe)
     # The floor sits where build_voice puts it, between the clip owner and the user aggregator.
@@ -363,7 +363,7 @@ async def test_a_clips_event_says_how_loud_it_was_before_and_after_the_echo_canc
     await rig.until(lambda: len(clips_told(rig)) == 1)
     [told] = clips_told(rig)
     assert (told.facts["clip"], told.facts["fate"], told.facts["levels"], told.facts["transcript"]) == (1, "sent", Levels(captured_dbfs=-6.0, heard_dbfs=-26.0), "words")
-    assert clips_heard(rig) == [ClipHeard(1, "run", (), 1.0)]
+    assert clips_heard(rig) == [ClipHeard(1, "run", ())]
     # The event is of the audio Whisper was given: the three frames from the press on.
     assert rig.heard[0] == residual * 3
 
@@ -1043,7 +1043,7 @@ async def test_a_long_turn_has_as_long_as_it_ran_to_be_transcribed(rig: Rig, mon
 async def test_a_transcription_given_up_on_is_not_run_beside_the_next(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     returns, begun = threading.Event(), list[None]()
 
-    def stuck(samples: bytes, prompt: str | None) -> list[Unsaid]:
+    def stuck(samples: bytes, prompt: str | None) -> list[transcription.Segment]:
         begun.append(None)
         returns.wait()
         return []

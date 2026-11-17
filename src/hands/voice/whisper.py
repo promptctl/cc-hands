@@ -6,6 +6,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from importlib.resources import files
 
+import numpy as np
 from pipecat.audio.vad.silero import SileroOnnxModel
 
 from hands.clock import Clock
@@ -30,12 +31,13 @@ _GUESSED = -1.5
 _SILERO = files("pipecat.audio.vad.data") / "silero_vad.onnx"
 _FRAME = 512
 
-# The least confidence Silero has in its surest frame of a clip anyone spoke in. Whisper hears words in a clip nobody spoke
-# in, sure of them, whatever it is primed with: unprimed, each of the user's 26 silent holds came back "Thank you." at
-# -0.21 to -0.61, and primed with file names, the last of the names read back. Over the user's holds, every one Silero was
-# at most 0.23 sure of came back as a stock phrase ("Thank you.", "you", "Okay.", "I'm going to go ahead and do it.") or
-# nothing, and speech was 0.31 or more: distant voices 0.31 to 0.49, the quiet LibriVox reader 0.98, `say` 0.996
-# (promptctl-voice-i15t.a5s.x48).
+# The least confidence Silero has in its surest frame of a segment anyone spoke in. Whisper hears words where nobody spoke,
+# sure of them, whatever it is primed with: unprimed, each of the user's 26 silent holds came back "Thank you." at -0.21 to
+# -0.61, and primed with file names, the last of the names read back; a hold spoken in for 2 s and held silent for 35 s more
+# came back with "Thank you." heard from 30 s to 60 s, a stretch Silero was 0.024 sure of. Over the user's holds, every one
+# Silero was at most 0.23 sure of came back as a stock phrase ("Thank you.", "you", "Okay.", "I'm going to go ahead and do
+# it.") or nothing, and speech was 0.31 or more: distant voices 0.31 to 0.49, the quiet LibriVox reader 0.98, `say` 0.996
+# at any level down to -55 dBFS (promptctl-voice-i15t.a5s.x48).
 _VOICED = 0.25
 
 # Silence after a clip's last sample: a segment that ends right where the speech stopped has its last word dropped or
@@ -50,7 +52,7 @@ class Whisper:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
-            # Silero, which says how sure it is that anyone spoke in a clip; run on the model's thread alone.
+            # Silero, which says how sure it is that anyone spoke in a segment; run on the model's thread alone.
             self._silero = SileroOnnxModel(str(_SILERO))
             annotate(model=transcription.MODEL, revision=transcription.REVISION)
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
@@ -71,29 +73,43 @@ class Whisper:
         """What was said in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the vocabulary.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
-        and every one of a clip Silero heard no speech in: that is what Whisper makes of silence and noise. A clip with
+        and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. A clip with
         nothing said in it comes back with no segment.
         """
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
             # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
-            scored, voiced = await self._model.run(lambda: (list[Unsaid](), 0.0) if given_up.is_set() else (transcription.segments(audio + _TRAILING_SILENCE, prompt), self._voiced(audio)))
+            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(audio + _TRAILING_SILENCE, prompt))
         finally:
             given_up.set()
         said: list[str] = []
         dropped: list[Unsaid] = []
         for segment in scored:
             worded = any(character.isalnum() for character in segment.text)
-            if worded and voiced >= _VOICED and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
+            if worded and segment.voiced >= _VOICED and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
                 said.append(segment.text)
             else:
                 dropped.append(segment)
-        return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped), round(voiced, 3))
+        return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped))
 
-    def _voiced(self, audio: bytes) -> float:
-        """How sure Silero is that anyone spoke in `audio`: its confidence in the surest of its frames, from a fresh state.
-        A frame is 32 ms, and a clip is scored at 2.4 ms a second of it."""
+    def _scored(self, audio: bytes, prompt: str | None) -> list[Unsaid]:
+        """Each segment Whisper hears in `audio`, primed with `prompt`, with the scores it is dropped for, Silero's over
+        the stretch of `audio` Whisper heard it in."""
         samples = decoded(audio)
+        return [
+            Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)]))
+            for segment in transcription.segments(audio, prompt)
+        ]
+
+    def _voiced(self, samples: np.ndarray) -> float:
+        """How sure Silero is that anyone spoke in `samples`: its confidence in the surest of its 32 ms frames, from a fresh
+        state, read only until one is `_VOICED` sure, all a segment is kept for. Speech is that sure within a few frames,
+        so a segment someone spoke in costs next to nothing; one nobody did is read through, at 2.4 ms a second of it."""
         self._silero.reset_states()
-        return max((float(self._silero(samples[start : start + _FRAME], RATE)[0, 0]) for start in range(0, len(samples) - _FRAME + 1, _FRAME)), default=0.0)
+        surest = 0.0
+        for start in range(0, len(samples) - _FRAME + 1, _FRAME):
+            surest = max(surest, float(self._silero(samples[start : start + _FRAME], RATE)[0, 0]))
+            if surest >= _VOICED:
+                break
+        return surest

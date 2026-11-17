@@ -263,7 +263,11 @@ Need 2.
   and what Whisper made of it, with each segment dropped as not said, a `ClipHeard` line;
   how loud the clip was before and after the echo canceller is on its `clip` event. Primed, Whisper turns
   noise into "." or a guess ("and slow-talking.", average log probability -2.8) or a loop
-  (compression ratio 17), which are dropped. Measured
+  (compression ratio 17), which are dropped. Primed or not, Whisper hears words where
+  nobody spoke ("Thank you." in every silent hold, and in the silent window of a hold
+  held on after its words), so a segment is dropped too where Silero is less than
+  0.25 sure anyone spoke in the stretch it was heard in; each dropped segment on the
+  `ClipHeard` line carries that `voiced` score beside Whisper's two. Measured
   2026-10-03 through that code, ten sentences said by `say` in a repository with
   `authMiddleware.ts` among thirty files: `authMiddleware` 8/10 primed, 0/10
   unprimed; both misses were a voice saying "middle way". Built:
