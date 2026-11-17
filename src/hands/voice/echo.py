@@ -58,10 +58,6 @@ _PATH_LAG = 1.0
 # reads 7 to 9, as low as none, so a stretch a person spoke in says nothing either way.
 _QUIET = -45.0
 
-# How long, in 10 ms frames, hands plays nothing before the echo path is taken to be there again, as it is when the
-# canceller is made: 3 s, so a speaker unmuted or turned up between replies is read afresh, not taken for headphones.
-_FORGET_FRAMES = 300
-
 # What a canceller counts over its life: microphone frames heard through it; of those, the ones heard with nothing
 # playing, matched with silence; frames the speaker's device took, silence included, dropped unheard because the
 # microphone had stopped taking them (how much of the device's sound was silence is the speaker's own `unwritten`);
@@ -144,8 +140,9 @@ class EchoPath:
     costs are: a path taken for none sends hands' own words as a person's, one taken for there costs a person's words.
     So any stretch hands played in that reads `_ECHO_PATH` or more says there is one, and only hands alone says there
     is none: a stretch hands played at least half of reading under it, the microphone under `_QUIET` over it. Any other,
-    a person speaking over hands, says nothing. `_FORGET_FRAMES` with hands playing nothing and it is taken to be there
-    again. A path that comes while it is read as none, a speaker unmuted mid-reply, is read at the next hop, up to
+    a person speaking over hands, says nothing. A reading outlasts the pauses between replies, so a person who cuts into
+    a reply as it opens is heard as they were in the last; a change of device opens a new canceller, read afresh. A path
+    that comes while it is read as none, a speaker unmuted mid-reply or between replies, is read at the next hop, up to
     `_PATH_HOP` of hands heard as captured. The capture thread alone touches it."""
 
     def __init__(self) -> None:
@@ -154,7 +151,6 @@ class EchoPath:
         # Each frame the speaker played TTS in; None where it played none, made silence at the TTS's rate when read.
         self._played: deque[np.ndarray | None] = deque(maxlen=_PATH_FRAMES)
         self._frames = 0
-        self._unplayed = 0
 
     def heard(self, captured: np.ndarray, played: np.ndarray | None) -> None:
         """Take one 10 ms frame of the microphone, mono, and what the speaker played of hands' TTS with it, mono, or None
@@ -162,11 +158,9 @@ class EchoPath:
         self._captured.append(captured)
         self._played.append(played)
         self._frames += 1
-        self._unplayed = 0 if played is not None else self._unplayed + 1
         # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played none of reads as saying nothing.
         if self._frames % _PATH_HOP == 0 and len(self._captured) == _PATH_FRAMES:
             self.reached = _verdict(self.reached, *self._read())
-        self.reached = self.reached or self._unplayed >= _FORGET_FRAMES
 
     def _read(self) -> tuple[float, bool]:
         """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:

@@ -412,8 +412,9 @@ class ClipOwner(FrameProcessor):
         """When the speaker who cuts hands off as `clip` closes was first heard, None for no cut: a turn the voice opened
         is cut here where nothing cut it while the clip was open.
 
-        A clip hands played nothing over has no echo of hands in it, so its words cut, their speaker heard from its
-        opening, and nothing waits on a voiceprint. One it played over cuts on its last identification, which judges a
+        A clip none of hands' voice reached (`hands.voice.clips.slots`), hands playing nothing or playing into
+        headphones, has no echo of hands in it, so its words cut, their speaker heard from its opening, and nothing waits
+        on a voiceprint. One it reached cuts on its last identification, which judges a
         speaker heard under a second too (`hands.voice.voiceprints.CLOSING`): a wake phrase said alone over hands, then
         silence. A clip the user's hand opened cut as it opened, and one that cut while it was open has no cut left to
         wait on."""

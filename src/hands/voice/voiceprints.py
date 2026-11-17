@@ -164,8 +164,8 @@ def decided(scored: float, seconds: float, window: Window, thresholds: tuple[Thr
 def cleared(who: Who, played: bool, said: bool) -> bool:
     """Whether a speaker, `played` over by hands or not, who has `said` words or not, clears hands to be cut off.
 
-    [LAW:single-enforcer] the one rule of who cuts hands off. A speaker hands played nothing over has no echo of hands
-    in them, so whoever they are, their words clear them, before any voiceprint, and a sound the diarizer took for a
+    [LAW:single-enforcer] the one rule of who cuts hands off. A speaker none of hands' voice reached the microphone
+    over, hands playing nothing or playing into headphones, has no echo of hands in them, so whoever they are, their words clear them, before any voiceprint, and a sound the diarizer took for a
     speaker with no words in it, a cough, clears nothing. One hands played over may be hands' own echo, so only a person
     clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not be scored at all (the model
     loading, a print being made) cut nothing, and their `voiceprints.identified` unit says why."""

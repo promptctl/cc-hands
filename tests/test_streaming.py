@@ -5,6 +5,7 @@ conversation would close, none in noise, and each word from the speaker who said
 import asyncio
 import contextlib
 import itertools
+import json
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -19,7 +20,8 @@ import soundfile
 from loguru import logger
 
 import recordings
-from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES
+import echoes
+from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed, take
 from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
@@ -27,7 +29,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice import engaged, streaming, voiceprints
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis
+from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis, decoded, slots
 from hands.voice.voiceprints import Identifier, Voiced
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -953,13 +955,15 @@ class Overheard:
         """Who each identification found, and when the first speaker it cleared was first heard."""
         return [(entry.facts.get("speakers"), entry.facts.get("barge_in")) for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == "voiceprints.identified"]
 
-    async def held(self, number: int, clip: Samples) -> Identified:
-        """A clip of `clip`, heard to its end: what its last identification came to."""
-        held, stream, over = Clip(number, "wake word"), self.fed.stream, ("charles",)
+    async def held(self, number: int, clip: Samples, over: tuple[tuple[str, ...], ...] | None = None) -> Identified:
+        """A clip of `clip`, heard to its end, `over` the voices hands played over each 10 ms of it, 'charles' over all of
+        it by default: what its last identification came to."""
+        held, stream = Clip(number, "wake word"), self.fed.stream
+        over = (("charles",),) * (len(clip) // SLOT) if over is None else over
         stream.opened(np.zeros(0, np.float32), self.fed.samples, ())
         for start in range(0, len(clip), FRAME_SAMPLES):
             piece = clip[start : start + FRAME_SAMPLES]
-            stream.heard(piece, (over,) * (len(piece) // SLOT))
+            stream.heard(piece, over[start // SLOT : (start + len(piece)) // SLOT])
             self.fed.samples += len(piece)
             if steps(self.fed.samples) > steps(self.fed.samples - len(piece)):
                 asked, since = (start + len(piece)) / streaming.RATE, stream.said()
@@ -1034,3 +1038,24 @@ async def test_a_person_too_brief_over_hands_to_cut_while_heard_cuts_it_off_as_t
     closed = (await overheard.held(1, phrase)).first
     assert overheard.barge_ins == [], overheard.identified()
     assert closed is not None and closed > 3.0, overheard.identified()
+
+
+async def cut_after(overheard: Overheard, number: int, fixture: Path) -> float:
+    """How long after the second voice first speaks on a take of scripts/record-double-talk.py its words cut hands off,
+    the take heard again through the canceller as one clip, hands over it where the canceller says hands reached the
+    microphone."""
+    sound = replayed(*take(fixture))
+    overheard.barge_ins.clear()
+    await overheard.held(number, decoded(sound.heard), slots(sound))
+    assert overheard.barge_ins, overheard.identified()
+    return overheard.barge_ins[0][0] - json.loads(fixture.with_suffix(".json").read_text())["other"][0]["start"]
+
+
+@pytest.mark.outside
+@pytest.mark.parametrize(("desk", "headphones"), [(echoes.CANCELLED, echoes.NO_ECHO), (echoes.OPENING, echoes.NO_ECHO_OPENING)], ids=["over its middle", "over its opening"])
+async def test_a_person_over_a_reply_in_headphones_cuts_it_off_as_soon_as_over_it_on_the_desks_speaker(overheard: Overheard, desk: Path, headphones: Path) -> None:
+    # In headphones nothing of hands' reaches the microphone: the person is heard as captured and their words cut, where
+    # at the desk they wait on a voiceprint. Measured: over a reply's middle 1.85 s at the desk, 1.33 s in headphones;
+    # over its opening, after a pause, 1.84 s and 0.96 s, where the canceller once ducked the person and nothing cut.
+    at_the_desk = await cut_after(overheard, 1, desk)
+    assert await cut_after(overheard, 2, headphones) <= min(at_the_desk, CUT_SECONDS), overheard.identified()

@@ -1,13 +1,15 @@
 """The echo canceller, run for real on WebRTC's AEC3 against a room made of arithmetic."""
 
+import json
+
 import numpy as np
 import pytest
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import Reference, Playhead, Sound, Synthesis
+from hands.voice.clips import RATE, SLOT, Reference, Playhead, Sound, Synthesis
 from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, echo_path
-from echoes import CANCELLED, NO_ECHO, replayed, take
+from echoes import CANCELLED, NO_ECHO, NO_ECHO_OPENING, OPENING, replayed, take
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
@@ -204,11 +206,22 @@ def test_short_replies_through_the_room_say_there_is_an_echo_path_though_too_sho
     assert _path_over(path, _room(short, 0.3), short) == [False] + [True] * 5
 
 
-def test_the_echo_path_is_taken_to_be_there_again_after_hands_plays_nothing_for_three_seconds() -> None:
+def test_no_echo_path_is_still_read_after_a_pause_and_one_is_read_once_the_next_reply_carries_hands_through_the_room() -> None:
     played = _noise(3.0, PLAYED_RATE, seed=3).astype(np.float64)
     path = EchoPath()
     _path_over(path, _dbfs(-62, 3.0, seed=6), played)
-    assert _path_over(path, _dbfs(-62, 4.0, seed=6), None) == [False, False, True, True]
+    # A pause between replies changes nothing of the speaker or the room.
+    assert _path_over(path, _dbfs(-62, 10.0, seed=6), None) == [False] * 10
+    # The speaker unmuted in the pause: the next reply's first hop says so.
+    assert _path_over(path, _room(played, 0.3), played) == [True] * 3
+
+
+def test_hands_in_headphones_is_heard_as_captured_from_the_opening_of_a_reply_after_a_pause() -> None:
+    sound = replayed(*take(NO_ECHO_OPENING))
+    opening = json.loads(NO_ECHO_OPENING.with_suffix(".json").read_text())["other"][0]["start"]
+    reached = [reference.reached for at, reference in enumerate(sound.played or ()) if reference is not None and at * SLOT / RATE >= opening]
+    assert reached and not any(reached)
+    assert _unreached(replayed(*take(OPENING))) == 0
 
 
 def test_with_no_echo_path_the_microphone_is_heard_as_it_captured_and_each_reference_says_so() -> None:

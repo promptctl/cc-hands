@@ -12,7 +12,7 @@ Each hearing hands each speaker's voice in the clip, the frames the diarizer hea
 hands' own (`hands.voice.voiceprints`), after its words have gone out: only a speaker who is not hands cuts hands off.
 
 It is one listener on the clip owner (`hands.voice.clipowner`), which cuts hands off as a speaker in a clip still open is
-cleared to: on their first words where hands played nothing over them, and once they are identified as a person where it
+cleared to: on their first words where none of hands' voice reached the microphone over them, and once they are identified as a person where it
 did, so a turn the voice opened cuts while the user is still speaking over hands, not once they stop.
 Its words are never sent: the model is weak on conversational speech (about 20% WER on AMI, against 6 to 8% for the
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each clip held.
@@ -322,7 +322,7 @@ class Stream:
                 voice.reached = rows
                 reached.append(voice.voiced(speaker, bool(clip.said.get(speaker))))
         # Their words, ahead of any voiceprint of them: a speaker unheard by it, who clears hands to be cut off only
-        # where hands played nothing over them.
+        # where none of hands' voice reached the microphone over them.
         voiced = (clip.voices[said.speaker] for said in added if said.speaker in clip.voices)
         barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.played), True)), default=None)
         return Since(tuple(added), tuple(reached), barge_in_at)

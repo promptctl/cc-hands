@@ -6,7 +6,7 @@ import asyncio
 import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 from pipecat.frames.frames import Frame, InputAudioRawFrame
@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import IDENTIFIED_SECONDS, ClipOwner
-from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Playhead, Synthesis, Transcriber, voices
+from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Playhead, Synthesis, Transcriber, slots, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -500,6 +500,15 @@ async def test_a_wake_phrase_said_alone_over_hands_cuts_it_off_as_its_clip_close
         assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, -0.3), ("words", "hey hands"), ("resolved", 1)]
         [clip] = rig.events("clip")
         assert clip.facts["identified"] == "a person"
+
+
+def test_hands_played_over_a_sound_where_nothing_of_it_reached_the_microphone_is_no_voice_of_hands_in_it() -> None:
+    # In headphones: the canceller read no echo path, so the clip is cut on its words, as one hands played nothing over.
+    audio = frame_of(3)
+    reached = played_with(audio, ("charles",))
+    unreached = tuple(replace(reference, reached=False) for reference in reached)
+    assert (slots(Sound(audio, audio, reached)), voices(Sound(audio, audio, reached))) == ((("charles",),) * 2, ("charles",))
+    assert (slots(Sound(audio, audio, unreached)), voices(Sound(audio, audio, unreached))) == (((),) * 2, ())
 
 
 async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_transcription_is_still_running() -> None:
