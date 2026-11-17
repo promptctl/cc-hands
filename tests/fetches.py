@@ -27,7 +27,7 @@ from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
-from hands.voice import engaged, streaming, voiceprints
+from hands.voice import engaged, streaming, transcription, voiceprints
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
@@ -109,6 +109,8 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
         # What mlx_audio's loads call with these arguments, so the run fetches what a load would. The hub's failures are
         # its client's, its own OSErrors, and a revision it could not resolve with nothing in the cache.
         fetching(write, f"{repo} at {revision} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(get_model_path, repo, revision=revision))
+    # Whisper's weights, by the call its load makes, so the release pass's recorded tests find them offline.
+    fetching(write, f"{transcription.MODEL} at {transcription.REVISION} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), transcription.weights)
     # The voiceprint model is one file of a repository of many, so only it is fetched, as voiceprints.load fetches it.
     fetching(write, f"{voiceprints.FILE} from {voiceprints.MODEL} at {voiceprints.REVISION} from the Hugging Face hub", (httpx.HTTPError, OSError, RevisionResolutionError), partial(hf_hub_download, voiceprints.MODEL, voiceprints.FILE, revision=voiceprints.REVISION))
     for word in WAKE_WORDS:
