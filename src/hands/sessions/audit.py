@@ -102,8 +102,9 @@ class Levels:
 class ClipHeard:
     """What Whisper made of one clip: what it took as said, None where nothing was, each segment it dropped as noise, and
     each word it dropped as hands' own voice come back through the microphone, in order; and how many of the words hands
-    played over it the echo canceller took out, which no word it heard was taken for. How loud the clip was is on its
-    `clip` event, beside it."""
+    played over it were not in what it heard, which no word it heard was taken for: the echo canceller took them out, or
+    no echo of them reached the microphone (`Reference.reached`, and the `microphone.let_go` event's `unreached`). How
+    loud the clip was is on its `clip` event, beside it."""
 
     clip: int
     said: str | None

@@ -140,11 +140,13 @@ class EchoPath:
     speaker played, every `_PATH_HOP`: a fact of the speaker and the room, not of any clip, so it is read wherever hands
     plays, not only in the stretch a clip holds.
 
-    An echo path is taken to be there until a stretch shows none, the canceller's way, which can only cost a person's
-    words, never let hands' through: a stretch hands played at least half of reading `_ECHO_PATH` or more says there is
-    one; one reading under it, with the microphone under `_QUIET` over it, says there is none; any other, a person
-    speaking over hands, says nothing. `_FORGET_FRAMES` with hands playing nothing and it is taken to be there again.
-    The capture thread alone touches it."""
+    An echo path is taken to be there until a stretch shows none, the canceller's way. The evidence is asymmetric as the
+    costs are: a path taken for none sends hands' own words as a person's, one taken for there costs a person's words.
+    So any stretch hands played in that reads `_ECHO_PATH` or more says there is one, and only hands alone says there
+    is none: a stretch hands played at least half of reading under it, the microphone under `_QUIET` over it. Any other,
+    a person speaking over hands, says nothing. `_FORGET_FRAMES` with hands playing nothing and it is taken to be there
+    again. A path that comes while it is read as none, a speaker unmuted mid-reply, is read at the next hop, up to
+    `_PATH_HOP` of hands heard as captured. The capture thread alone touches it."""
 
     def __init__(self) -> None:
         self.reached = True
@@ -161,31 +163,32 @@ class EchoPath:
         self._played.append(played)
         self._frames += 1
         self._unplayed = 0 if played is not None else self._unplayed + 1
-        # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played too little of reads as saying nothing.
+        # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played none of reads as saying nothing.
         if self._frames % _PATH_HOP == 0 and len(self._captured) == _PATH_FRAMES:
             self.reached = _verdict(self.reached, *self._read())
         self.reached = self.reached or self._unplayed >= _FORGET_FRAMES
 
     def _read(self) -> tuple[float | None, bool]:
-        """The stretch's reading, None where hands played less than half of it, and whether the microphone was quiet."""
+        """The stretch's reading, None where hands played none of it, and whether it was hands alone: hands played at
+        least half of it, and the microphone was quiet over it."""
         captured = np.concatenate(self._captured)
-        quiet = float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
         tts = [frame for frame in self._played if frame is not None]
-        if 2 * len(tts) < _PATH_FRAMES:
-            return None, quiet
+        alone = 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
+        if not tts:
+            return None, alone
         silence = np.zeros(len(tts[0]))
         played = np.concatenate([silence if frame is None else frame for frame in self._played])
-        return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), quiet
+        return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), alone
 
 
-def _verdict(reached: bool, reading: float | None, quiet: bool) -> bool:
+def _verdict(reached: bool, reading: float | None, alone: bool) -> bool:
     """Whether there is an echo path, given whether there was and a stretch's reading: one at `_ECHO_PATH` says there
-    is; one under it over a quiet microphone says there is not; none, or one a person spoke over, leaves it as it was."""
+    is; one under it over hands alone says there is not; none, or one a person spoke over, leaves it as it was."""
     match reading:
         case None:
             return reached
         case _:
-            return reading >= _ECHO_PATH or (reached and not quiet)
+            return reading >= _ECHO_PATH or (reached and not alone)
 
 
 class EchoCanceller:

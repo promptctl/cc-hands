@@ -146,10 +146,11 @@ def _dbfs(level: float, seconds: float, seed: int) -> np.ndarray:
 
 def _path_over(path: EchoPath, captured: np.ndarray, played: np.ndarray | None) -> list[bool]:
     """Each 10 ms of `captured` at HEARD_RATE and `played` at PLAYED_RATE, None for no TTS, through `path`, and whether
-    it read an echo path after each second."""
+    it read an echo path after each second. A frame of `played` that is all silence is no TTS, as `referenced` has it."""
     after: list[bool] = []
     for frame in range(len(captured) // 160):
-        path.heard(captured[frame * 160 : (frame + 1) * 160] / 32768, None if played is None else played[frame * 240 : (frame + 1) * 240] / 32768)
+        tts = None if played is None else played[frame * 240 : (frame + 1) * 240] / 32768
+        path.heard(captured[frame * 160 : (frame + 1) * 160] / 32768, None if tts is None or not tts.any() else tts)
         if frame % 100 == 99:
             after.append(path.reached)
     return after
@@ -190,6 +191,17 @@ def test_the_echo_path_is_read_again_when_hands_is_heard_through_the_room_again(
     assert not path.reached
     # The headphones come off mid-reply: the first stretch the room carries hands in says so.
     assert _path_over(path, _room(played, 0.3), played)[1:] == [True] * 5
+
+
+def test_short_replies_through_the_room_say_there_is_an_echo_path_though_too_short_to_say_there_is_none() -> None:
+    played = _noise(6.0, PLAYED_RATE, seed=3).astype(np.float64)
+    path = EchoPath()
+    _path_over(path, _dbfs(-62, 3.0, seed=6), played[: 3 * PLAYED_RATE])
+    assert not path.reached
+    # The speaker unmuted, and hands says the last half second of each two, never three seconds apart: no stretch is
+    # half hands, but each carries it through the room.
+    short = np.where(np.arange(len(played)) % (2 * PLAYED_RATE) >= 3 * PLAYED_RATE // 2, played, 0)
+    assert _path_over(path, _room(short, 0.3), short) == [False] + [True] * 5
 
 
 def test_the_echo_path_is_taken_to_be_there_again_after_hands_plays_nothing_for_three_seconds() -> None:
