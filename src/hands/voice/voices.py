@@ -31,7 +31,7 @@ from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import begun
-from hands.voice.clips import RATE, Samples
+from hands.voice.clips import RATE, Samples, Sentence
 from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
@@ -269,7 +269,7 @@ class SaidInTTS(PocketTTSService):
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         # [LAW:no-ambient-temporal-coupling] yielded, never pushed, so each keeps its place among the audio in Pipecat's
         # audio context; a barge-in may drop either, and the speaker ends what it opened (`hands.voice.synthesis`).
-        synthesis = Synthesis(require_given(self._settings.voice, "Pocket TTS voice"), begun(self._clock))
+        synthesis = Synthesis(Sentence(require_given(self._settings.voice, "Pocket TTS voice"), text), begun(self._clock))
         yield SpeakingIn(synthesis)
         made, failure = 0.0, None
         # Pipecat's tracing decorator leaves the method untyped.

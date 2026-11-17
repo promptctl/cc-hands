@@ -19,6 +19,7 @@ from hands.core.effects import SessionGone
 from hands.core.session import SessionId
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
+from hands.voice.clips import Sentence
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
 from test_synthesis import speech
 from hands.voice.utterance import Audible, Resumed, Utterance, Utterances, Uttered, Uttering, uttering
@@ -39,7 +40,7 @@ AUDIO = OutputAudioRawFrame(audio=b"\x00\x00" * 160, sample_rate=16_000, num_cha
 
 def synthesized(frames: int) -> list[Frame]:
     """One synthesis of hands' TTS as it reaches the speaker: `frames` frames of 100 ms of sound, led on and made."""
-    synthesis = Synthesis("alba", begun(SYSTEM))
+    synthesis = Synthesis(Sentence("alba", "said in alba"), begun(SYSTEM))
     return [SpeakingIn(synthesis), *(TTSAudioRawFrame(b"\x01\x00" * 1600, 16_000, 1) for _ in range(frames)), Made(synthesis, 0.01, frames * 0.1, None)]
 
 
@@ -286,7 +287,7 @@ def _speaker(speakers: Speakers, recorded: list[Entry]) -> KeyedAudioTransport:
 
 
 def _synthesis(voice: str) -> Synthesis:
-    return Synthesis(voice, begun(SYSTEM))
+    return Synthesis(Sentence(voice, f"said in {voice}"), begun(SYSTEM))
 
 
 def _synthesized(synthesis: Synthesis, frames: int, length: int) -> list[Frame]:

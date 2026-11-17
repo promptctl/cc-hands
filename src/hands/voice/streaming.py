@@ -185,7 +185,7 @@ class _Tape:
     def frame(self, frame: int) -> tuple[Samples, tuple[str, ...], range]:
         """The samples of the run's encoder frame `frame` that are the clip's, none for a frame before it opened or in
         the silence after it, every voice hands played over them, and where they are in the clip's audio, counted from
-        its first sample, what it kept from before it opened: the audio the clip owner's transcriber is given."""
+        its first sample, what it kept from before it opened."""
         start = min(max(frame * FRAME - self.start, 0), self.length)
         end = min(max((frame + 1) * FRAME - self.start, 0), self.length)
         voices = dict.fromkeys(voice for slot in self._played[start // SLOT : -(-end // SLOT)] for voice in slot)
@@ -196,12 +196,10 @@ class _Tape:
 class _Voice:
     """One speaker of the clip open: how many seconds after it opened they were first heard; the latest WINDOW of where
     the diarizer heard them, overlap included, each frame of it with whether another speaker was heard in it too; how
-    many seconds of them in all; where in the clip's audio each of their frames hands played over is; every voice hands
-    played over them;
-    and how many rows of the table they have been handed to be identified at."""
+    many seconds of them in all; every voice hands played over them; and how many rows of the table they have been
+    handed to be identified at."""
 
     first: float
-    over: list[range] = field(default_factory=list[range])
     latest: deque[tuple[Samples, bool]] = field(default_factory=deque[tuple[Samples, bool]])
     # How many samples `latest` holds, kept as it changes.
     held: int = 0
@@ -209,10 +207,8 @@ class _Voice:
     played: dict[str, None] = field(default_factory=dict[str, None])
     reached: int = 0
 
-    def add(self, heard: Samples, shared: bool, played: tuple[str, ...], at: range) -> None:
+    def add(self, heard: Samples, shared: bool, played: tuple[str, ...]) -> None:
         self.latest.append((heard, shared))
-        # Only a frame hands played over can hold its echo: one it played nothing over is never silenced.
-        self.over += [at] if played else []
         self.held += len(heard)
         # The oldest frame let go of while the window is whole without it.
         while self.held - len(self.latest[0][0]) >= round(WINDOW * RATE):
@@ -227,7 +223,7 @@ class _Voice:
         # The oldest frame kept is cut to the window, and its share with it.
         cut = max(0, self.held - round(WINDOW * RATE))
         shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
-        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played), self.first, said, tuple(self.over))
+        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played), self.first, said)
 
 
 @dataclass
@@ -313,7 +309,7 @@ class Stream:
         before the clip or in the silence after it, is none of anyone's voice."""
         heard, played, at = self._open.tape.frame(active.frame)
         if len(heard):
-            self._open.voices.setdefault(active.speaker, _Voice((at.start - self._open.tape.kept) / RATE)).add(heard, shared, played, at)
+            self._open.voices.setdefault(active.speaker, _Voice((at.start - self._open.tape.kept) / RATE)).add(heard, shared, played)
 
     def said(self) -> Since:
         """The words each speaker added to the clip open since this was last asked, each speaker who has reached a row of

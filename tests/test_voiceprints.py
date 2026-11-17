@@ -20,7 +20,7 @@ from hands.voice import voiceprints
 from hands.voice.clips import NOBODY, RATE, Clip, Identified, Samples
 from hands.voice.voiceprints import (
     ALONE, CLOSING, ENDING, THRESHOLDS, HANDS, PERSON, Embed, Hands, Person, Print, Speaker, Synthesize, Unheard, Unidentified, Unsure, Voiced,
-    Voiceprints, Who, Window, cleared, decided, echo, echoed, scored,
+    Voiceprints, Who, Window, cleared, decided, scored,
 )
 
 NONE = Window(1.0, 0.0)
@@ -50,9 +50,9 @@ def by_length(prints: dict[int, Print]) -> Embed:
 
 
 def voiced(
-    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True, over: tuple[range, ...] = ()
+    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True
 ) -> Voiced:
-    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said, over)
+    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said)
 
 
 def rounded(who: Who) -> Who:
@@ -92,30 +92,6 @@ def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_
     assert not cleared(who, played=False, said=False)
     # Hands' own echo, and anyone not yet told from it, the model loading or a print being made included, cuts nothing.
     assert cleared(who, played=True, said=True) == cleared(who, played=True, said=False) == isinstance(who, Person)
-
-
-@pytest.mark.parametrize(
-    "who",
-    [Person(0.0, 3.0, NONE), Hands(1.0, 3.0, NONE), Unsure(0.4, 1.2, NONE), Unheard(0.4), Unidentified(3.0, "no print yet of charles")],
-    ids=["person", "hands", "unsure", "unheard", "unidentified"],
-)
-def test_a_speaker_hands_played_nothing_over_is_never_its_echo_and_one_it_played_over_is_where_its_voiceprint_found_hands(who: Who) -> None:
-    assert not echo(who, played=False)
-    # One too brief to score, or not scored at all, could be anyone: their words go, though they cut nothing.
-    assert echo(who, played=True) == isinstance(who, Hands | Unsure)
-
-
-def test_only_hands_echo_is_where_no_one_else_was_heard_and_a_frame_a_person_shares_with_it_is_theirs() -> None:
-    over, person, hands = ("charles",), Person(0.1, 3.0, NONE), Unsure(0.6, 1.4, NONE)
-    frames = [range(start, start + 1280) for start in range(0, 6 * 1280, 1280)]
-    judged = (
-        # hands' echo through the first four frames, a person over its last two and on alone after it,
-        (voiced(1, 1.4, played=over, over=tuple(frames[:4])), Speaker(0, hands)),
-        (voiced(1, 3.0, speaker=1, played=over, over=tuple(frames[2:])), Speaker(1, person)),
-        # and one too brief to score in the first frame, who could be anyone, so the frame is theirs.
-        (voiced(1, 0.1, speaker=2, played=over, over=(frames[0],)), Speaker(2, Unheard(0.1))),
-    )
-    assert echoed(judged) == (frames[1],)
 
 
 def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end_and_by_nothing_before() -> None:
@@ -165,15 +141,13 @@ async def test_the_lane_tells_each_person_it_clears_over_hands_and_settles_each_
     # hands' echo alone cuts nothing.
     prints.identify(SECOND, (voiced(7, 3.0, played=over),), cleared_at.append)
     settled: list[Identified] = []
-    # A wake phrase said alone over hands, 0.8 s from 0.3 s, after a frame of hands' echo: told at the end by the
-    # closing row, the echo's frame hands' alone.
-    echoed_frame, phrase = range(0, 1280), range(1280, 2560)
-    ending = (voiced(5, 0.8, speaker=2, played=over, first=0.3, over=(phrase,)), voiced(7, 3.0, played=over, over=(echoed_frame,)))
+    # A wake phrase said alone over hands, 0.8 s from 0.3 s, after hands' echo: told at the end by the closing row.
+    ending = (voiced(5, 0.8, speaker=2, played=over, first=0.3), voiced(7, 3.0, played=over))
     prints.ended(CLIP, ending, settled.append)
     # Nobody heard; and an identification that fails: both settle, with nobody.
     prints.ended(SECOND, (), settled.append)
     prints.ended(Clip(3, "wake word"), (voiced(9, 3.0, played=over),), settled.append)
-    assert await appeared(settled, 3) == [Identified(0.3, (echoed_frame,)), NOBODY, NOBODY]
+    assert await appeared(settled, 3) == [Identified(0.3), NOBODY, NOBODY]
     assert cleared_at == [0.9]
     failed = entries(recorded, "voiceprints.identified")[-1]
     assert (failed.outcome, failed.facts["clip"]) == ("failed", 3)

@@ -6,6 +6,7 @@ from pipecat.frames.frames import Frame, TTSAudioRawFrame
 
 from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
+from hands.voice.clips import Sentence
 from hands.voice.microphone import Playout
 from hands.voice.synthesis import Chunking, Cutter, Ended, Made, SpeakingIn, Synthesis, Syntheses, Taken
 from test_microphone import Device, Room, _unfailing  # pyright: ignore[reportPrivateUsage]
@@ -17,7 +18,7 @@ CLOCK = VirtualClock()
 
 
 def _synthesis(voice: str = "alba") -> Synthesis:
-    return Synthesis(voice, begun(CLOCK))
+    return Synthesis(Sentence(voice, f"said in {voice}"), begun(CLOCK))
 
 
 def _audio(length: int, context: str = "reply") -> TTSAudioRawFrame:

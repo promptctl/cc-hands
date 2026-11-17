@@ -2,8 +2,12 @@
 ends (hands.voice.transcription), and those are the words a turn sends, none of them hands' own. A clip still open is
 heard by the streaming recognizer (`hands.voice.streaming`), whose words only cut."""
 
+import math
+import re
 import threading
 from collections.abc import Awaitable, Callable, Sequence
+from difflib import SequenceMatcher
+from itertools import groupby
 from importlib.resources import files
 
 import numpy as np
@@ -12,10 +16,9 @@ from pipecat.audio.vad.silero import SileroOnnxModel
 from hands.clock import Clock
 from hands.sessions.audit import ClipHeard, Record, Unsaid
 from hands.sessions.wide import annotate
-from hands.voice import loads
 from hands.threads import SerialThread
-from hands.voice import transcription
-from hands.voice.clips import RATE, SECOND, Clip, Echo, Identified, decoded
+from hands.voice import loads, transcription
+from hands.voice.clips import RATE, SECOND, Clip, Sentence, Sound, decoded, said
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -45,6 +48,21 @@ _VOICED = 0.25
 _TRAILING_SILENCE = bytes(SECOND // 2)
 
 
+# How long before a segment hands' sentence may have been played and still be heard in it: hands' echo reaches the
+# microphone up to about 0.2 s after its TTS slot (zoj, promptctl-voice-i15t.99s.zoj), and Whisper places a segment's
+# start up to about half a second off the words in it.
+_ECHO_SECONDS = 1.0
+
+# The fewest words in a row of hands' sentences that make a run of a segment hands' own, short of all hands said: one
+# word alone ("the", "yes") is as likely a person's.
+_RUN = 2
+
+# How alike, letter for letter, words Whisper heard in place of hands' must be to hands' to be them, spelled its own way:
+# "diariser" for "diarizer" (0.88), "Macalbox" for "macklebox" (0.82), "Phosphine" for "Phosphene" (0.89). A person's
+# words over hands' are nothing like the words they cover.
+_RESPELLED = 0.75
+
+
 class Whisper:
     """Whisper large-v3-turbo on MLX: the clip owner's transcriber."""
 
@@ -52,7 +70,7 @@ class Whisper:
         # [LAW:nothing-unseen] the load is a unit of work of its own: how long the start waited on it, and on what model.
         with loads.loading(clock, "whisper.loaded", record):
             transcription.load()
-            # Silero, which says how sure it is that anyone spoke in a segment; run on its own thread alone.
+            # Silero, which says how sure it is that anyone spoke in a segment; run on the model's thread, after it.
             self._silero = SileroOnnxModel(str(_SILERO))
             annotate(model=transcription.MODEL, revision=transcription.REVISION)
         # The vocabulary each clip is transcribed with, read as it is: see hands.voice.vocabulary.
@@ -61,54 +79,50 @@ class Whisper:
         # [LAW:single-enforcer] the one thread the model runs on: a transcription given up on is still running, and the
         # next must not run beside it.
         self._model = SerialThread("Whisper")
-        # Silero's pass over a clip, a few milliseconds, on a thread of its own: it waits on the clip's identification,
-        # and must not then wait behind the next clip's decode.
-        self._voicing = SerialThread("Silero")
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         """The words a person said in a clip of the key's, primed with the vocabulary as it is now; recorded, so "I spoke
         and nothing happened" can be looked into."""
-        heard = await self._heard(clip.number, audio, await self._prompt(), identified)
+        heard = await self._heard(clip.number, sound, await self._prompt())
         self._record(heard)
         return heard.said
 
-    async def _heard(self, clip: int, audio: bytes, prompt: str | None, identified: Awaitable[Identified]) -> ClipHeard:
+    async def _heard(self, clip: int, sound: Sound, prompt: str | None) -> ClipHeard:
         """What a person said in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, the
         vocabulary.
 
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
-        and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Silero hears the
-        clip with hands' own echo silenced, as the clip's last identification found it, so a segment heard only in
-        hands' voice is nobody's, and is dropped with them. A clip with nothing said in it comes back with no segment.
+        and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Of the rest, the
+        words hands' own sentences say (`_theirs`) are hands' echo, and are dropped too. A clip with nothing said in it
+        comes back with no segment.
         """
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
-            # Off the loop, the clip's decoding with it: the model runs for a third of a second a clip, and the speaker and
-            # the key go on meanwhile.
-            # [LAW:no-ambient-temporal-coupling] Whisper hears the clip while its speakers are still being identified;
-            # only Silero's pass, a few milliseconds, waits on who they were.
-            samples, segments = await self._model.run(lambda: _UNHEARD if given_up.is_set() else _segments(audio, prompt))
-            echo = (await identified).echo
-            scored = await self._voicing.run(lambda: [] if given_up.is_set() else self._scored(segments, _silenced(samples, echo)))
+            # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
+            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(decoded(sound.heard + _TRAILING_SILENCE), prompt))
         finally:
             given_up.set()
-        said: list[str] = []
+        sentences = said(sound)
+        spoken: list[str] = []
         dropped: list[Unsaid] = []
-        for segment in scored:
+        echo: list[str] = []
+        for segment, unsaid in scored:
             worded = any(character.isalnum() for character in segment.text)
-            if worded and segment.voiced >= _VOICED and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
-                said.append(segment.text)
+            if worded and unsaid.voiced >= _VOICED and segment.compression_ratio <= _REPEATING and segment.avg_logprob >= _GUESSED:
+                theirs, hands = _theirs(segment.text, _played_over(sentences, segment))
+                spoken += [theirs] if theirs else []
+                echo += [hands] if hands else []
             else:
-                dropped.append(segment)
-        return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped))
+                dropped.append(unsaid)
+        return ClipHeard(clip, " ".join(spoken).strip() or None, tuple(dropped), tuple(echo))
 
-    def _scored(self, segments: Sequence[transcription.Segment], people: np.ndarray) -> list[Unsaid]:
-        """Each segment Whisper heard with the scores it is dropped for, Silero's over the stretch of `people`, the clip
-        with hands' echo silenced, that Whisper heard it in."""
+    def _scored(self, samples: np.ndarray, prompt: str | None) -> list[tuple[transcription.Segment, Unsaid]]:
+        """Each segment Whisper hears in `samples`, primed with `prompt`, with the scores it is dropped for, Silero's over
+        the stretch it heard it in. It blocks while the models run."""
         return [
-            Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(people[round(segment.start * RATE) : round(segment.end * RATE)]))
-            for segment in segments
+            (segment, Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])))
+            for segment in transcription.segments(samples, prompt)
         ]
 
     def _voiced(self, samples: np.ndarray) -> float:
@@ -124,20 +138,42 @@ class Whisper:
         return surest
 
 
-# A clip given up on before the model reached it: no samples, and no segment heard in them.
-_UNHEARD: tuple[np.ndarray, list[transcription.Segment]] = (np.zeros(0, np.float32), [])
+def _played_over(sentences: Sequence[tuple[Sentence, ...]], segment: transcription.Segment) -> tuple[Sentence, ...]:
+    """Each sentence hands played over a segment, or in the `_ECHO_SECONDS` before it, from `sentences`, those of each
+    10 ms of the clip; in the order first played."""
+    start, end = max(0, math.floor((segment.start - _ECHO_SECONDS) * 100)), math.ceil(segment.end * 100)
+    return tuple(dict.fromkeys(sentence for slot in sentences[start:end] for sentence in slot))
 
 
-def _segments(audio: bytes, prompt: str | None) -> tuple[np.ndarray, list[transcription.Segment]]:
-    """A clip's audio as samples, heard with `_TRAILING_SILENCE` after it, and each segment Whisper hears in them, primed
-    with `prompt`. It blocks while the model runs."""
-    samples = decoded(audio + _TRAILING_SILENCE)
-    return samples, transcription.segments(samples, prompt)
+def _words(text: str) -> list[tuple[int, str]]:
+    """Each word of `text` to match, with the place of the whitespace-separated token it is in: lower case, its letters,
+    digits and apostrophes, so "Hold," and "hold" are one word, "houdini-mcp" two, as "Houdini MCP" is, and a dash none."""
+    return [(at, word.lower()) for at, token in enumerate(text.split()) for word in re.findall(r"[\w']+", token)]
 
 
-def _silenced(samples: np.ndarray, echo: Echo) -> np.ndarray:
-    """`samples` with each stretch of `echo`, where only hands' own voice was heard, made silence: what people said."""
-    people = samples.copy()
-    for at in echo:
-        people[at.start : at.stop] = 0
-    return people
+def _theirs(text: str, played: tuple[Sentence, ...]) -> tuple[str, str]:
+    """`text`, a segment Whisper heard, split into what a person said in it and what was hands' own echo.
+
+    [LAW:single-enforcer] the one rule of which words are hands'. hands knows what it said over the segment, `played`,
+    so its words are those of the segment that say it: every run of `_RUN` or more in a row, in order, that the sentences
+    say, or one that is all the sentences say, as a one-word "Done." is. A word the alignment of the two puts in place of
+    one of hands' says it where it is spelled as Whisper spells what it heard (`_RESPELLED`). What is left is a person's,
+    so a person speaking over the tail of hands' sentence keeps their words, whichever speaker the diarizer took either
+    for."""
+    tokens = text.split()
+    words = _words(text)
+    owners, heard = [owner for owner, _ in words], [word for _, word in words]
+    spoken = [word for _, word in _words(" ".join(sentence.text for sentence in played))]
+    # [LAW:domain-language] the alignment word error rate is counted on: words equal, substituted, inserted or deleted.
+    saying = {
+        at
+        for kind, start, end, said_from, said_to in SequenceMatcher(None, heard, spoken, autojunk=False).get_opcodes()
+        if kind == "equal" or kind == "replace" and SequenceMatcher(None, " ".join(heard[start:end]), " ".join(spoken[said_from:said_to])).ratio() >= _RESPELLED
+        for at in range(start, end)
+    }
+    stretches = [list(stretch) for says, stretch in groupby(range(len(heard)), key=saying.__contains__) if says]
+    hands = {at for stretch in stretches if len(stretch) >= min(_RUN, len(spoken)) for at in stretch}
+    # A token is hands' where every word in it is; punctuation alone is nobody's, and goes with the person's.
+    echo = {owner for owner in owners if all(at in hands for at, other in enumerate(owners) if other == owner)}
+    theirs = " ".join(token for at, token in enumerate(tokens) if at not in echo)
+    return theirs if _words(theirs) else "", " ".join(tokens[at] for at in sorted(echo))

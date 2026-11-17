@@ -74,14 +74,22 @@ def decoded(audio: bytes) -> Samples:
 
 
 @dataclass(frozen=True)
+class Sentence:
+    """One sentence hands' TTS said: the voice it was made in, and its text."""
+
+    voice: str
+    text: str
+
+
+@dataclass(frozen=True)
 class Reference:
     """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
-    speaker's own rate and channels, which are not a clip's; and each voice of the TTS in it, as the TTS made it."""
+    speaker's own rate and channels, which are not a clip's; and each sentence of the TTS in it, as the TTS made it."""
 
     audio: bytes
     rate: int
     channels: int
-    voices: tuple[str, ...]
+    sentences: tuple[Sentence, ...]
 
 
 # What the desk's speaker played over each 10 ms of a sound: hands' TTS, or None where it played no TTS, silence or a
@@ -109,9 +117,14 @@ class Sound:
         return Levels(dbfs(self.captured), dbfs(self.heard))
 
 
+def said(sound: Sound) -> tuple[tuple[Sentence, ...], ...]:
+    """The sentences of hands' TTS over each 10 ms of `sound`, none where it played none, and none known at the phone."""
+    return tuple(() if reference is None else reference.sentences for reference in sound.played or ())
+
+
 def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
     """The voices of hands' TTS over each 10 ms of `sound`, none where it played none, and none known at the phone."""
-    return tuple(() if reference is None else reference.voices for reference in sound.played or ())
+    return tuple(tuple(dict.fromkeys(sentence.voice for sentence in slot)) for slot in said(sound))
 
 
 def voices(sound: Sound) -> tuple[str, ...]:
@@ -175,27 +188,17 @@ class Heard:
 # many seconds after the clip opened they were first heard, under none for one heard in what it kept from before.
 type Cleared = Callable[[float], None]
 
-# Where in a clip's audio hands' own voice was heard and nobody else's, in samples from its first, as the transcriber is
-# given it.
-type Echo = tuple[range, ...]
-
 
 @dataclass(frozen=True)
 class Identified:
     """What a clip's last identification came to: when the first speaker it cleared to cut hands off was first heard, as
-    `Cleared` tells it, None where it cleared nobody; and where in the clip only hands' own echo was heard."""
+    `Cleared` tells it, None where it cleared nobody."""
 
     first: float | None
-    echo: Echo
-
-    @property
-    def echo_seconds(self) -> float:
-        """How many seconds of the clip only hands' own echo was heard in, as its events say."""
-        return round(sum(map(len, self.echo)) / RATE, 3)
 
 
-# An identification that found nobody: nothing cuts, and nothing of the clip is hands'.
-NOBODY = Identified(None, ())
+# An identification that found nobody: nothing cuts.
+NOBODY = Identified(None)
 
 # A clip's last identification, at its end, told to the clip owner from whichever thread made it.
 type Settle = Callable[[Identified], None]
@@ -244,9 +247,10 @@ class Listener(Protocol):
 
 
 class Transcriber(Protocol):
-    """The model whose words a turn sends: given each clip the key sent, whole, as mono 16-bit samples at RATE."""
+    """The model whose words a turn sends: given each clip the key sent, whole, as it was heard and with what hands played
+    over it."""
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
-        """The words a person said in `clip`, None where nobody did: none of hands' own, heard where the clip's last
-        identification, once it comes, found only hands' echo. It raises where it cannot say."""
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
+        """The words a person said in `clip`, None where nobody did: none of hands' own, which are the words of the
+        sentences hands played over them. It raises where it cannot say."""
         ...
