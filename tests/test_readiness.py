@@ -28,7 +28,7 @@ from hands.core.tmux import Behind, Keyboard, NotInTmux, Pane, PaneUnread
 from hands.daemon import readiness
 from hands.daemon.cli import VERBOSE_HINT, main
 from hands.daemon.readiness import Missing, Ready, Unknown
-from hands.sessions import audit, heartbeat, liveness, terminals, wrapper
+from hands.sessions import audit, heartbeat, liveness, processes, terminals, wrapper
 from hands.sessions.hookconfig import PLUGIN_ID
 from hands.sessions.home import Home
 from hands.sessions.membership import write_membership
@@ -716,14 +716,16 @@ def test_sessions_that_cannot_be_looked_for_are_said_beside_the_ones_that_cannot
     assert isinstance(found, Missing) and "bad.json names no session" in found.said and "cannot be found: why" in found.said
 
 
-@pytest.mark.outside
 def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def refused(_pids: object) -> dict[int, float]:
-        raise OSError(1, "sysctl refused")
+    def refused(pid: int) -> float | None:
+        raise OSError(1, f"sysctl refused pid {pid}")
 
-    monkeypatch.setattr(readiness, "process_starts", refused)
-    found = readiness.sessions(Home(root / "home"), installed(root), untmuxed)
-    assert isinstance(found, Unknown) and "sysctl refused" in found.said
+    home = Home(root / "home")
+    joined(home, "running", os.getpid(), None)
+    # The one place the sysctl is made, so the refusal comes for the session's pid, whichever caller asks.
+    monkeypatch.setattr(processes, "_process_start", refused)
+    found = readiness.sessions(home, "/nowhere", untmuxed)
+    assert isinstance(found, Unknown) and found.said == f"cannot look at the running sessions in {home.memberships}: [Errno 1] sysctl refused pid {os.getpid()}"
 
 
 def test_the_sessions_line_counts_sessions_and_unreadable_files_apart_with_the_fix_for_each() -> None:
