@@ -721,7 +721,7 @@ def test_sessions_that_cannot_be_looked_at_are_unknown(root: Path, monkeypatch: 
     def refused(_pids: object) -> dict[int, float]:
         raise OSError(1, "sysctl refused")
 
-    monkeypatch.setattr(readiness, "process_starts", refused)
+    monkeypatch.setattr(liveness, "process_starts", refused)
     found = readiness.sessions(Home(root / "home"), installed(root), untmuxed)
     assert isinstance(found, Unknown) and "sysctl refused" in found.said
 
