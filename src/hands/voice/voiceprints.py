@@ -161,15 +161,17 @@ def decided(scored: float, seconds: float, window: Window, thresholds: tuple[Thr
             return Unsure(scored, seconds, window)
 
 
-def cleared(who: Who, played: bool, said: bool) -> bool:
-    """Whether a speaker, `played` over by hands or not, who has `said` words or not, clears hands to be cut off.
+def cleared(who: Who, echoed: bool, said: bool) -> bool:
+    """Whether a speaker, `echoed` by hands' voice at the microphone or not, who has `said` words or not, clears hands
+    to be cut off.
 
     [LAW:single-enforcer] the one rule of who cuts hands off. A speaker none of hands' voice reached the microphone
-    over, hands playing nothing or playing into headphones, has no echo of hands in them, so whoever they are, their words clear them, before any voiceprint, and a sound the diarizer took for a
-    speaker with no words in it, a cough, clears nothing. One hands played over may be hands' own echo, so only a person
+    over, hands playing nothing or playing into headphones, has no echo of hands in them, so whoever they are, their
+    words clear them, before any voiceprint, and a sound the diarizer took for a speaker with no words in it, a cough,
+    clears nothing. One it reached may be hands' own echo, so only a person
     clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not be scored at all (the model
     loading, a print being made) cut nothing, and their `voiceprints.identified` unit says why."""
-    match played, who:
+    match echoed, who:
         case False, _:
             return said
         case True, Person():
@@ -182,14 +184,14 @@ def cleared(who: Who, played: bool, said: bool) -> bool:
 class Voiced:
     """One speaker in a clip, as the stream heard them: their number in the run, the latest WINDOW of their voice in
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
-    every voice of hands' TTS played over any of them, how many seconds after the clip opened they were first heard,
+    every voice of hands' TTS that reached the microphone over any of them, how many seconds after the clip opened they were first heard,
     under none in what it kept from before, and whether the stream has decoded any words of theirs."""
 
     speaker: int
     voice: Samples
     seconds: float
     shared: float
-    played: tuple[str, ...]
+    echoed: tuple[str, ...]
     first: float
     said: bool
 
@@ -456,7 +458,7 @@ class Voiceprints:
             ended("voiceprints.identified", self._record, began, error, clip=clip.number)
             return NOBODY
         judged = tuple(zip(voiced, speakers, strict=True))
-        first = min((each.first for each, speaker in judged if cleared(speaker.who, bool(each.played), each.said)), default=None)
+        first = min((each.first for each, speaker in judged if cleared(speaker.who, bool(each.echoed), each.said)), default=None)
         # [LAW:nothing-unseen] who each speaker is, and when the first of them who cuts hands off was first heard.
         ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first)
         return Identified(first)
@@ -477,7 +479,7 @@ class Voiceprints:
                 return who
 
     def _judged(self, voiced: Voiced, thresholds: tuple[Threshold, ...]) -> Who:
-        match self._embed, self._against(voiced.played):
+        match self._embed, self._against(voiced.echoed):
             case Unloaded(why=why), _:
                 return Unidentified(voiced.seconds, why)
             case _, Unprinted(why=why):
@@ -485,10 +487,10 @@ class Voiceprints:
             case embed, tuple() as prints:
                 return scored(embed, prints, voiced, thresholds)
 
-    def _against(self, played: tuple[str, ...]) -> tuple[Print, ...] | Unprinted:
-        """Every voiceprint hands holds, so long as it holds the one of the voice it speaks in now and of each voice it
-        played over the speaker: a speaker is never scored against prints that leave out a voice they may be."""
-        needed = tuple(dict.fromkeys((*self._speaking[-1:], *played)))
+    def _against(self, echoed: tuple[str, ...]) -> tuple[Print, ...] | Unprinted:
+        """Every voiceprint hands holds, so long as it holds the one of the voice it speaks in now and of each voice of
+        it that reached the microphone over the speaker: a speaker is never scored against prints that leave out a voice they may be."""
+        needed = tuple(dict.fromkeys((*self._speaking[-1:], *echoed)))
         if not needed:
             return Unprinted("hands speaks in no voice yet")
         for voice in needed:

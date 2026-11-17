@@ -75,8 +75,14 @@ NO_ECHO_OPENING = Path(__file__).parent / "fixtures" / "hands_no_echo_over_an_op
 # The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
 # says them.
 OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
-# When the second voice first speaks on it, in seconds.
-CANCELLED_ALONE = json.loads(CANCELLED.with_suffix(".json").read_text())["other"][0]["start"]
+
+
+def cut_in(fixture: Path) -> float:
+    """When the second voice first speaks on a take of scripts/record-double-talk.py, in seconds."""
+    return json.loads(fixture.with_suffix(".json").read_text())["other"][0]["start"]
+
+
+CANCELLED_ALONE = cut_in(CANCELLED)
 
 
 def cancelled() -> Sound:

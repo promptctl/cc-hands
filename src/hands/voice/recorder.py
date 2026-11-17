@@ -76,7 +76,7 @@ def written(path: Path, audio: bytes) -> int:
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
     """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was, every
-    voice of hands' TTS over it, each sentence it said over it, with when, so whose words were whose can be told from
+    voice of hands' TTS that reached the microphone in it (`hands.voice.clips.voices`), each sentence it said over it, with when, so whose words were whose can be told from
     the recording alone, and how much of hands' TTS over it, in seconds, played with no echo path to the microphone; how
     many bytes they are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)
@@ -186,7 +186,7 @@ class Recorder:
 
     def ended(self, clip: Clip, fate: Fate, sound: Sound, settle: Settle) -> Hearings:
         async def keep() -> Heard:
-            # [LAW:nothing-unseen] how long the clip was, whether what hands played over it went with it, and in which voices.
+            # [LAW:nothing-unseen] how long the clip was, whether what hands played over it went with it, and which of hands' voices reached it.
             annotate(seconds=round(sound.seconds, 3), played=sound.played is not None, voices=voices(sound))
             facts: dict[str, object] = dict(clip=clip.number, opener=clip.opener, fate=fate)
             directory = await asyncio.to_thread(self._written, str(clip.number), sound, facts)

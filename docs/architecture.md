@@ -1794,8 +1794,8 @@ speakers, 14 of 33 voice barge-ins on a reading held no words for Whisper. The s
 (`hands.voice.streaming`, NVIDIA's Nemotron Speech Streaming paired with Nemotron 3 Diarization
 on MLX, one session for the run, fed only the clips) decodes silence, hiss and clicks to no
 words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech, and
-it hears that as words, so words alone cut only where hands played nothing over the speaker
-who said them. Where it did, the speaker cuts once their voiceprint says a person, about a
+it hears that as words, so words alone cut only where none of hands' voice reached the
+microphone over the speaker who said them, hands playing nothing or playing into headphones. Where it did, the speaker cuts once their voiceprint says a person, about a
 second of them in, while the clip is open (`SpeakerCleared`, pushed by the clip owner alone, and only for
 the clip still open); a speaker too brief for that, a wake phrase said alone over hands, is
 judged at the clip's close, which waits up to `IDENTIFIED_SECONDS` for it. Hands' own voice cuts
@@ -1853,10 +1853,11 @@ spare buffer, is slipped. Whether hands' voice reaches the microphone at all is 
 canceller's to read too (`EchoPath`), off the last 2 s of capture against reference, once a
 second: in headphones, or with the speaker muted, nothing does, and AEC3 still ducks a
 person's voice 30 to 50 dB under hands', so there every buffer is passed on as captured,
-and each reference says so (`Reference.reached`), which Whisper's rule of hands' words reads.
-It is taken to be there until a stretch of hands alone, the microphone quiet, reads none,
-and again after 3 s of hands playing nothing: under a person's voice, an echo well down
-reads like none. Each
+and each reference says so (`Reference.reached`), which Whisper's rule of hands' words and the
+rule of who cuts hands off read. It is taken to be there until a stretch of hands alone, the
+microphone quiet, reads none: under a person's voice, an echo well down reads like none. A
+reading outlasts the pauses between replies, so a person cutting into a reply's opening in
+headphones is heard unducked; a change of device opens a new canceller, read afresh. Each
 microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
 its canceller heard, how many of those had nothing playing, how many it dropped unheard
 because the microphone had stopped taking them, how many it slipped, and how many it

@@ -151,22 +151,23 @@ def joined(texts: Iterable[str | None]) -> str | None:
     return " ".join(text for text in texts if text) or None
 
 
-# The voices of hands' TTS played over each 10 ms of a stretch of a clip, in order (`hands.voice.clips.slots`).
-type Played = tuple[tuple[str, ...], ...]
+# The voices of hands' TTS that reached the microphone in each 10 ms of a stretch of a clip, in order
+# (`hands.voice.clips.slots`).
+type Echoed = tuple[tuple[str, ...], ...]
 
 
 class _Tape:
     """The clip open's samples, from where the run was when it opened, the first `kept` of them what it kept from before
-    it opened, and the voices hands played over each 10 ms of them: grown in place, so a frame of it is a slice."""
+    it opened, and the voices of hands' that reached the microphone in each 10 ms of them: grown in place, so a frame of it is a slice."""
 
     def __init__(self, start: int, kept: int) -> None:
         self.start = start
         self.kept = kept
         self._samples = np.zeros(RATE, np.float32)
-        self._played = list[tuple[str, ...]]()
+        self._echoed = list[tuple[str, ...]]()
         self.length = 0
 
-    def add(self, samples: Samples, played: Played) -> None:
+    def add(self, samples: Samples, echoed: Echoed) -> None:
         wanted = self.length + len(samples)
         if wanted > len(self._samples):
             # Doubled as it fills: a clip of any length is copied a few times, not at every frame.
@@ -174,18 +175,18 @@ class _Tape:
             grown[: self.length] = self._samples[: self.length]
             self._samples = grown
         self._samples[self.length : wanted] = samples
-        # One slot for each 10 ms, none played over where nothing says what was.
+        # One slot for each 10 ms, none echoed where nothing says what was.
         slots = -(-len(samples) // SLOT)
-        self._played += [*played[:slots], *[()] * (slots - len(played))]
+        self._echoed += [*echoed[:slots], *[()] * (slots - len(echoed))]
         self.length = wanted
 
     def frame(self, frame: int) -> tuple[Samples, tuple[str, ...], int]:
         """The samples of the run's encoder frame `frame` that are the clip's, none for a frame before it opened or in
-        the silence after it, every voice hands played over them, and the sample of the clip's audio they begin at,
+        the silence after it, every voice of hands' that reached the microphone over them, and the sample of the clip's audio they begin at,
         counted from its first, what it kept from before it opened."""
         start = min(max(frame * FRAME - self.start, 0), self.length)
         end = min(max((frame + 1) * FRAME - self.start, 0), self.length)
-        voices = dict.fromkeys(voice for slot in self._played[start // SLOT : -(-end // SLOT)] for voice in slot)
+        voices = dict.fromkeys(voice for slot in self._echoed[start // SLOT : -(-end // SLOT)] for voice in slot)
         return self._samples[start:end], tuple(voices), start
 
 
@@ -193,24 +194,24 @@ class _Tape:
 class _Voice:
     """One speaker of the clip open: how many seconds after it opened they were first heard; the latest WINDOW of where
     the diarizer heard them, overlap included, each frame of it with whether another speaker was heard in it too; how
-    many seconds of them in all; every voice hands played over them; and how many rows of the table they have been handed to be identified at."""
+    many seconds of them in all; every voice of hands' that reached the microphone over them; and how many rows of the table they have been handed to be identified at."""
 
     first: float
     latest: deque[tuple[Samples, bool]] = field(default_factory=deque[tuple[Samples, bool]])
     # How many samples `latest` holds, kept as it changes.
     held: int = 0
     seconds: float = 0.0
-    played: dict[str, None] = field(default_factory=dict[str, None])
+    echoed: dict[str, None] = field(default_factory=dict[str, None])
     reached: int = 0
 
-    def add(self, heard: Samples, shared: bool, played: tuple[str, ...]) -> None:
+    def add(self, heard: Samples, shared: bool, echoed: tuple[str, ...]) -> None:
         self.latest.append((heard, shared))
         self.held += len(heard)
         # The oldest frame let go of while the window is whole without it.
         while self.held - len(self.latest[0][0]) >= round(WINDOW * RATE):
             self.held -= len(self.latest.popleft()[0])
         self.seconds += len(heard) / RATE
-        self.played |= dict.fromkeys(played)
+        self.echoed |= dict.fromkeys(echoed)
 
     def voiced(self, speaker: int, said: bool) -> Voiced:
         """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared; `said` whether any
@@ -219,7 +220,7 @@ class _Voice:
         # The oldest frame kept is cut to the window, and its share with it.
         cut = max(0, self.held - round(WINDOW * RATE))
         shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
-        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.played), self.first, said)
+        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.echoed), self.first, said)
 
 
 @dataclass
@@ -271,15 +272,15 @@ class Stream:
         self._session = session
         self._open = _OpenClip(_Tape(0, 0))
 
-    def opened(self, samples: Samples, start: int, played: Played) -> None:
+    def opened(self, samples: Samples, start: int, echoed: Echoed) -> None:
         """A clip opens, `start` samples into the run, with `samples`, what it kept from before it opened: its words start
         with what they decode to."""
         self._open = _OpenClip(_Tape(start, len(samples)))
-        self.heard(samples, played)
+        self.heard(samples, echoed)
 
-    def heard(self, samples: Samples, played: Played) -> None:
-        """More of the clip open, and the voices hands played over it."""
-        self._open.tape.add(samples, played)
+    def heard(self, samples: Samples, echoed: Echoed) -> None:
+        """More of the clip open, and the voices of hands' that reached the microphone over it."""
+        self._open.tape.add(samples, echoed)
         self._decoded(samples)
 
     def silence(self, samples: int) -> None:
@@ -303,9 +304,9 @@ class Stream:
     def _voiced(self, active: Active, shared: bool) -> None:
         """A frame more of a speaker's voice, where it falls in the clip: a frame with none of the clip's samples in it,
         before the clip or in the silence after it, is none of anyone's voice."""
-        heard, played, at = self._open.tape.frame(active.frame)
+        heard, echoed, at = self._open.tape.frame(active.frame)
         if len(heard):
-            self._open.voices.setdefault(active.speaker, _Voice((at - self._open.tape.kept) / RATE)).add(heard, shared, played)
+            self._open.voices.setdefault(active.speaker, _Voice((at - self._open.tape.kept) / RATE)).add(heard, shared, echoed)
 
     def said(self) -> Since:
         """The words each speaker added to the clip open since this was last asked, each speaker who has reached a row of
@@ -324,7 +325,7 @@ class Stream:
         # Their words, ahead of any voiceprint of them: a speaker unheard by it, who clears hands to be cut off only
         # where none of hands' voice reached the microphone over them.
         voiced = (clip.voices[said.speaker] for said in added if said.speaker in clip.voices)
-        barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.played), True)), default=None)
+        barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.echoed), True)), default=None)
         return Since(tuple(added), tuple(reached), barge_in_at)
 
     def ended(self) -> Ended:
@@ -344,10 +345,10 @@ class Broken:
 
     error: str
 
-    def opened(self, samples: Samples, start: int, played: Played) -> None:
+    def opened(self, samples: Samples, start: int, echoed: Echoed) -> None:
         """A clip no model hears."""
 
-    def heard(self, samples: Samples, played: Played) -> None:
+    def heard(self, samples: Samples, echoed: Echoed) -> None:
         """Samples no model hears."""
 
     def silence(self, samples: int) -> None:

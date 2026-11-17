@@ -434,8 +434,8 @@ class ClipOwner(FrameProcessor):
                 return (await identification).first
 
     async def _identification(self, sound: Sound, identified: "asyncio.Future[Identified]", facts: dict[str, Fact]) -> Identified:
-        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip hands played
-        nothing over has no echo of hands in it, so it waits on nothing.
+        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip none of
+        hands' voice reached (`hands.voice.clips.slots`) has no echo of hands in it, so it waits on nothing.
 
         [LAW:no-silent-failure] one that misses the bound cuts nothing, which the clip's event says, as it says what one in
         time came to; the clip's words never wait on it."""

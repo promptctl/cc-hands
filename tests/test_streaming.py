@@ -5,7 +5,6 @@ conversation would close, none in noise, and each word from the speaker who said
 import asyncio
 import contextlib
 import itertools
-import json
 import re
 import threading
 from collections.abc import Callable, Iterator
@@ -314,7 +313,7 @@ async def test_each_speaker_is_handed_on_as_their_clip_ends_with_the_clips_own_s
     heard = decoded_as_captured(clip)
     [(of, voiced)] = told.ended_with
     assert of == CLIP
-    assert [(each.speaker, each.voice.tobytes(), each.seconds, each.shared, each.played) for each in voiced] == [
+    assert [(each.speaker, each.voice.tobytes(), each.seconds, each.shared, each.echoed) for each in voiced] == [
         (0, np.concatenate([heard[: 2 * frame], heard[3 * frame : 4 * frame]]).tobytes(), 3 * frame / streaming.RATE, frame / streaming.RATE, ()),
         (1, heard[3 * frame : 5 * frame].tobytes(), 2 * frame / streaming.RATE, frame / streaming.RATE, ()),
     ]
@@ -391,7 +390,7 @@ async def test_each_speaker_carries_the_voices_hands_played_over_the_frames_they
     await rig.heard(CLIP, sound(seconds(STEPPED)), voices=())
     await rig.ended(CLIP, "sent")
     [(_, voiced)] = told.ended_with
-    assert [(each.speaker, each.played) for each in voiced] == [(0, ("alba",)), (1, ())]
+    assert [(each.speaker, each.echoed) for each in voiced] == [(0, ("alba",)), (1, ())]
 
 
 @pytest.mark.parametrize(("over", "cuts"), [((), 0.06), (("charles",), None)], ids=["nothing played", "hands played"])
@@ -1048,7 +1047,7 @@ async def cut_after(overheard: Overheard, number: int, fixture: Path) -> float:
     overheard.barge_ins.clear()
     await overheard.held(number, decoded(sound.heard), slots(sound))
     assert overheard.barge_ins, overheard.identified()
-    return overheard.barge_ins[0][0] - json.loads(fixture.with_suffix(".json").read_text())["other"][0]["start"]
+    return overheard.barge_ins[0][0] - echoes.cut_in(fixture)
 
 
 @pytest.mark.outside

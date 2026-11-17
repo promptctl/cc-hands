@@ -231,7 +231,7 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
         ("ok", 1, ("alba", "mary")), ("ok", 2, ("mary",)), ("ok", 3, ("mary",)),
     ]
     # Each span is one voice, hands', identified against its prints once it has ended, with every voice it played.
-    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.played) for span, voiced in identified] == [
+    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.echoed) for span, voiced in identified] == [
         (1, 0, 0.04, ("alba", "mary")), (2, 0, 0.02, ("mary",)), (3, 0, 0.02, ("mary",)),
     ]
     assert np.array_equal(identified[1][1].voice, np.full(320, 5 / 32768, np.float32))

@@ -142,8 +142,10 @@ class EchoPath:
     is none: a stretch hands played at least half of reading under it, the microphone under `_QUIET` over it. Any other,
     a person speaking over hands, says nothing. A reading outlasts the pauses between replies, so a person who cuts into
     a reply as it opens is heard as they were in the last; a change of device opens a new canceller, read afresh. A path
-    that comes while it is read as none, a speaker unmuted mid-reply or between replies, is read at the next hop, up to
-    `_PATH_HOP` of hands heard as captured. The capture thread alone touches it."""
+    that comes while it is read as none, a speaker unmuted mid-reply or between replies, is read at the first hop whose
+    stretch carries enough of hands through the room: a stretch with a few frames of hands in it can read under
+    `_ECHO_PATH`, so up to `_PATH_FRAMES` and a `_PATH_HOP` of hands are heard as captured. The capture thread alone
+    touches it."""
 
     def __init__(self) -> None:
         self.reached = True

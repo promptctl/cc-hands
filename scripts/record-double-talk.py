@@ -43,29 +43,29 @@ FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 @dataclass(frozen=True)
 class Script:
-    """What a take plays: hands' sentences, the pause before each after the first, and each line of the other voice:
-    what it says, over which of hands' sentences, and which of hands' words in it it says where hands says them, none
-    for a line begun as the sentence begins."""
+    """What a take plays: hands' first sentence, each after it with the pause before it, and each line of the other
+    voice: what it says, over which of hands' sentences, and which of hands' words in it it says where hands says them,
+    none for a line begun as the sentence begins."""
 
-    hands: tuple[str, ...]
-    pauses: tuple[float, ...]
+    first: str
+    then: tuple[tuple[float, str], ...]
     other: tuple[tuple[str, int, str], ...]
+
+    @property
+    def hands(self) -> tuple[str, ...]:
+        return (self.first, *(sentence for _, sentence in self.then))
 
 
 DOUBLE_TALK = Script(
-    (
-        "Hands here. Starting houdini-mcp and opening macklebox now.",
-        "Phosphene finished its render, and the build is green.",
-        "I can hear you. Say the next step when you are ready.",
-    ),
-    (0.3, 0.3),
+    "Hands here. Starting houdini-mcp and opening macklebox now.",
+    ((0.3, "Phosphene finished its render, and the build is green."), (0.3, "I can hear you. Say the next step when you are ready.")),
     (("No, the build is broken.", 1, "the build is"), ("Say the next step again.", 2, "Say the next step")),
 )
 # A reply hands says alone, and after a pause longer than any between sentences of one reply, another a person cuts
 # into as it opens.
 OPENING = Script(
-    ("Hands here. Starting houdini-mcp and opening macklebox now.", "Checking the speech models before we continue with the release."),
-    (4.0,),
+    "Hands here. Starting houdini-mcp and opening macklebox now.",
+    ((4.0, "Checking the speech models before we continue with the release."),),
     (("Wait, stop, that is not what I asked.", 1, ""),),
 )
 TAKES = {
@@ -81,7 +81,7 @@ BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
 def main(fixture: Path, script: Script, gain: float) -> None:
     say = pocket()
     made = [say(source(DEFAULT), text) for text in script.hands]
-    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + pause for audio, pause in zip(made, script.pauses))]))
+    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + pause for audio, (pause, _) in zip(made[:-1], script.then, strict=True))]))
     length = round((onsets[-1] + len(made[-1]) / RATE + TAIL) * RATE)
     hands = np.zeros(length, np.float32)
     sentence = np.full(length, -1)

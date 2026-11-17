@@ -39,7 +39,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | the trigger that opened the clip | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a clip the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
-| a clip the voice opened, the wake word's or engaged conversation's, cuts once a speaker who is not hands is heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for a speaker its voiceprint tells from its own echo, or for words where it played nothing over them, so its own voice cuts nothing, and nor does a cough where it played nothing over it; one it played over, which a voiceprint alone decides, a sound the diarizer took for a speaker could still cut |
+| a clip the voice opened, the wake word's or engaged conversation's, cuts once a speaker who is not hands is heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for a speaker its voiceprint tells from its own echo, or for words where none of its voice reached the microphone over them, it playing nothing or playing into headphones, so its own voice cuts nothing, and nor does a cough there; one it played over, which a voiceprint alone decides, a sound the diarizer took for a speaker could still cut |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
 | the note | context carry-over: what the next turn is told about the one cut off |
@@ -79,7 +79,7 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | The clip was opened by | It cuts |
 |---|---|
 | the user's hand: the shortcut, the phone's button | as it opens |
-| the voice: the wake word, engaged conversation | once a speaker who is not hands is heard in it (`voiceprints.cleared`): one hands played nothing over, on their first words; one it played over, once their voiceprint says a person, about a second of them in, while the clip is open; one too brief for that, a wake phrase said alone over hands, as the clip closes, ahead of its words |
+| the voice: the wake word, engaged conversation | once a speaker who is not hands is heard in it (`voiceprints.cleared`): one none of hands' voice reached the microphone over, on their first words; one it played over, once their voiceprint says a person, about a second of them in, while the clip is open; one too brief for that, a wake phrase said alone over hands, as the clip closes, ahead of its words |
 | the voice, where only hands' own voice is heard, or nobody | nothing, so nothing has to be undone; hands' own saying of the wake phrase included |
 
 Who each speaker is decides the cut. A `voiceprints.identified` event says who each speaker the

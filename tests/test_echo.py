@@ -1,7 +1,5 @@
 """The echo canceller, run for real on WebRTC's AEC3 against a room made of arithmetic."""
 
-import json
-
 import numpy as np
 import pytest
 
@@ -9,7 +7,7 @@ from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Reference, Playhead, Sound, Synthesis
 from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, echo_path
-from echoes import CANCELLED, NO_ECHO, NO_ECHO_OPENING, OPENING, replayed, take
+from echoes import CANCELLED, NO_ECHO, NO_ECHO_OPENING, OPENING, cut_in, replayed, take
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
@@ -218,7 +216,7 @@ def test_no_echo_path_is_still_read_after_a_pause_and_one_is_read_once_the_next_
 
 def test_hands_in_headphones_is_heard_as_captured_from_the_opening_of_a_reply_after_a_pause() -> None:
     sound = replayed(*take(NO_ECHO_OPENING))
-    opening = json.loads(NO_ECHO_OPENING.with_suffix(".json").read_text())["other"][0]["start"]
+    opening = cut_in(NO_ECHO_OPENING)
     reached = [reference.reached for at, reference in enumerate(sound.played or ()) if reference is not None and at * SLOT / RATE >= opening]
     assert reached and not any(reached)
     assert _unreached(replayed(*take(OPENING))) == 0

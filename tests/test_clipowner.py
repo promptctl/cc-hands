@@ -6,7 +6,7 @@ import asyncio
 import threading
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import pytest
 from pipecat.frames.frames import Frame, InputAudioRawFrame
@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import IDENTIFIED_SECONDS, ClipOwner
-from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Playhead, Synthesis, Transcriber, slots, voices
+from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -117,18 +117,20 @@ class Rig:
     recorded: list[Entry]
     gate: Gate = field(default_factory=Gate)
 
-    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = ()) -> None:
-        """A frame captured under `gate`, hands playing in `voices` over it."""
+    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> None:
+        """A frame captured under `gate`, hands playing in `voices` over it, `reached` whether it reached the microphone."""
         self.gate = gate
-        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices), 16000, 1, "desk"))
+        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices, reached), 16000, 1, "desk"))
 
-    async def clip(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = ()) -> None:
-        """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it, then
-        sent or thrown away."""
+    async def clip(
+        self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = (), reached: bool = True
+    ) -> None:
+        """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it,
+        `reached` whether it reached the microphone, then sent or thrown away."""
         down = self.gate.after("start", by)
         for sound in sounds:
-            await self.frame(down, sound, voices)
-        await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices)
+            await self.frame(down, sound, voices, reached)
+        await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices, reached)
 
     def events(self, name: str) -> list[WideEvent]:
         return [entry for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == name]
@@ -152,11 +154,11 @@ def frame_of(n: int) -> bytes:
     return n.to_bytes(2, "little") * 320
 
 
-def played_with(sound: bytes, voices: tuple[str, ...] = ()) -> tuple[Reference, ...]:
+def played_with(sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> tuple[Reference, ...]:
     """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound,
-    a sentence of hands' TTS in each of `voices`."""
+    a sentence of hands' TTS in each of `voices`, `reached` whether the canceller read an echo path for it."""
     syntheses = tuple(Playhead(Synthesis(voice, "The parser is fixed.", begun(SYSTEM)), 0.0) for voice in voices)
-    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses, True) for start in range(0, len(sound), 320))
+    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses, reached) for start in range(0, len(sound), 320))
 
 
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_clip_kept_from_before_it_included() -> None:
@@ -502,15 +504,6 @@ async def test_a_wake_phrase_said_alone_over_hands_cuts_it_off_as_its_clip_close
         assert clip.facts["identified"] == "a person"
 
 
-def test_hands_played_over_a_sound_where_nothing_of_it_reached_the_microphone_is_no_voice_of_hands_in_it() -> None:
-    # In headphones: the canceller read no echo path, so the clip is cut on its words, as one hands played nothing over.
-    audio = frame_of(3)
-    reached = played_with(audio, ("charles",))
-    unreached = tuple(replace(reference, reached=False) for reference in reached)
-    assert (slots(Sound(audio, audio, reached)), voices(Sound(audio, audio, reached))) == ((("charles",),) * 2, ("charles",))
-    assert (slots(Sound(audio, audio, unreached)), voices(Sound(audio, audio, unreached))) == (((),) * 2, ())
-
-
 async def test_a_clip_hands_played_over_is_cut_on_its_identification_while_its_transcription_is_still_running() -> None:
     transcribing = asyncio.Event()
     async with rigged(Scripted([transcribing]), (Heeding("streaming", settling=settling(0.3)),)) as rig:
@@ -552,11 +545,13 @@ async def test_a_clip_that_cut_while_it_was_open_is_not_cut_again_as_it_closes()
         assert rig.events("clip")[0].facts["identified"] == "a person"
 
 
-async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint() -> None:
-    # Nothing settles its identification: a clip with no echo of hands in it never waits on one.
+@pytest.mark.parametrize("voices", [(), ("charles",)], ids=["hands playing nothing", "hands playing into headphones"])
+async def test_a_clip_none_of_hands_voice_reached_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint(voices: tuple[str, ...]) -> None:
+    # Nothing settles its identification: a clip with no echo of hands in it never waits on one. In headphones the
+    # canceller read no echo path, so hands playing over it is no echo either.
     async with rigged(Scripted(["stop there", None]), (Heeding("streaming"),)) as rig:
-        await rig.clip([frame_of(3)])
-        await rig.clip([frame_of(3)])
+        await rig.clip([frame_of(3)], voices=voices, reached=False)
+        await rig.clip([frame_of(3)], voices=voices, reached=False)
         await rig.until(lambda: ("resolved", 2) in rig.seen.seen)
         assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.0), ("words", "stop there"), ("resolved", 1), ("resolved", 2)]
         assert ["identified" in event.facts for event in rig.events("clip")] == [False, False]
