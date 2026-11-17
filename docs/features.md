@@ -322,9 +322,10 @@ So that in conversation hands can tell the owner from another person, and from i
   with each speaker's words (`hands.voice.streaming`). Measured 2026-10-28 through that code by
   `scripts/measure-diarization.py`, at GATING 1, a clip's speaker being whoever said most of its
   words: 73.7 min of one LibriVox reader in 1493 clips, all 12814 words one speaker and none
-  anyone else's, 5 clips with no words; AMI test meetings ES2004a, 4 speakers found of 4, 26 of
-  28 clips given their own speaker and the other 2 with no words, and IS1009a, 3 of 4, 27 of 29,
-  1 clip with no words and the miss one person's only clip given to another's speaker. On the
+  anyone else's, 5 clips with no words. On AMI test meetings, measured 2026-11-17 in clips of one
+  person's turns with no word, laugh, cough or other sound of anyone else's in them: ES2004a, 4
+  speakers found of 4, 20 of 21 clips given their own speaker and the miss one of MEE014's 3
+  given MEO015's; IS1009a, 3 of 3 (its fourth person has no such turn), 21 of 21. On the
   two-speaker AMI fixture, at GATING 4, every word's speaker matched what the transformers path
   on the CPU decided for the same audio, 663 of 663 over five phases of the grid. In a clip a
   newcomer shares with a voice the run knows, each is given their own speaker about 24 times in
