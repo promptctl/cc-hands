@@ -1849,10 +1849,18 @@ holds what the speaker's device took, and each 10 ms of microphone takes the nex
 of it, or silence when there is none. How much is held is how far the reference lags its
 echo: the speaker starts before the microphone at a reopen, and its clock may run fast,
 and reference held through a whole second that no microphone frame needed, but for one
-spare buffer, is slipped. Each microphone stream let go of is one `microphone.let_go`
-wide event, carrying how many frames its canceller heard, how many of those had nothing
-playing, how many it dropped unheard because the microphone had stopped taking them, and
-how many it slipped; each speaker stream let go of is one `speaker.let_go`, carrying how
+spare buffer, is slipped. Whether hands' voice reaches the microphone at all is the
+canceller's to read too (`EchoPath`), off the last 2 s of capture against reference, once a
+second: in headphones, or with the speaker muted, nothing does, and AEC3 still ducks a
+person's voice 30 to 50 dB under hands', so there every buffer is passed on as captured,
+and each reference says so (`Reference.reached`), which Whisper's rule of hands' words reads.
+It is taken to be there until a stretch of hands alone, the microphone quiet, reads none,
+and again after 3 s of hands playing nothing: under a person's voice, an echo well down
+reads like none. Each
+microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
+its canceller heard, how many of those had nothing playing, how many it dropped unheard
+because the microphone had stopped taking them, how many it slipped, and how many it
+passed on as captured; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS made, is one `speech`
 wide event once its end comes out of the device behind its last byte: how long of it the device played

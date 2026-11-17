@@ -70,14 +70,15 @@ def as_heard(audio: bytes, played: Played = None) -> Sound:
     return Sound(audio, audio, played)
 
 
-def saying(seconds: float, *sentences: tuple[str, float, float]) -> Sound:
+def saying(seconds: float, *sentences: tuple[str, float, float], reached: bool = True) -> Sound:
     """`seconds` of a clip, hands saying each of `sentences` over it, its text from its start to its stop in seconds, one
-    synthesis each, as the canceller hands what was played on: one reference for each 10 ms."""
+    synthesis each, as the canceller hands what was played on: one reference for each 10 ms, its echo reaching the
+    microphone or not."""
     said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
 
     def at(slot: int) -> Reference | None:
         playing = tuple(Playhead(synthesis, slot / 100 - start) for synthesis, start, stop in said if start <= slot / 100 < stop)
-        return Reference(bytes(320), 16_000, 1, playing) if playing else None
+        return Reference(bytes(320), 16_000, 1, playing, reached) if playing else None
 
     return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
 
@@ -328,6 +329,14 @@ async def test_a_persons_words_that_hands_said_too_are_sent_where_the_canceller_
     timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
     clip_heard = await told(cancelling(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4)), 0.0, 3.5))
     # [LAW:nothing-unseen] every word hands played was taken out, and the clip was decoded with no word timed.
+    assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
+
+
+async def test_a_persons_words_that_hands_said_too_are_sent_where_no_echo_of_hands_reached_the_microphone(timed: Timed) -> None:
+    # In headphones, a person says "No, the build is broken." over hands' "the build is green": nothing of hands' reached
+    # the microphone, so the canceller passed it on as captured, and nothing Whisper heard is hands'.
+    timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
+    clip_heard = await told(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4), reached=False))
     assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
 
 

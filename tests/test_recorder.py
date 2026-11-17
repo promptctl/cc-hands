@@ -72,7 +72,7 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     recorded: list[Entry] = []
     directory = tmp_path / "clips" / "run"
     clip = Clip(7, "engaged conversation")
-    played = (Reference(tone(-1), RATE, 1, (ALBA,)), Reference(tone(-2), RATE, 1, (ALBA, MARY)), None)
+    played = (Reference(tone(-1), RATE, 1, (ALBA,), True), Reference(tone(-2), RATE, 1, (ALBA, MARY), False), None)
     event = await kept(clock, Recorder(clock, tmp_path / "clips", "run", unidentified, recorded.append), clip, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
     assert event.outcome == "ok"
     # What it heard, and what the speaker played against each 10 ms of it, sample for sample: silence where no TTS.
@@ -80,7 +80,7 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert read(directory / "7.played.wav")[:2] == (1, RATE)
     assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
-        "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"],
+        "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"], "unreached": 0.01,
         # Each sentence hands said over it, from the 10 ms it began playing in, as far into it as it was, to the end of
         # the last.
         "said": [
@@ -98,7 +98,7 @@ def test_what_the_speaker_played_is_put_in_the_clips_format_a_run_at_a_time_slot
     wave_ = (8000 * np.sin(2 * np.pi * 440 * np.arange(played_rate // 2) / played_rate)).astype(np.int16)
     stereo = np.repeat(wave_, 2).tobytes()
     size = 4 * played_rate // 100
-    references = tuple(Reference(stereo[at : at + size], played_rate, 2, (ALBA,)) for at in range(0, len(stereo), size))
+    references = tuple(Reference(stereo[at : at + size], played_rate, 2, (ALBA,), True) for at in range(0, len(stereo), size))
     played = np.frombuffer(track((*references, None)), np.int16).astype(np.float64)
     # One slot for each reference, the last silent; and the same tone at the clip's rate, past the resampler's edges.
     assert len(played) == (len(references) + 1) * RATE // 100 and not played[-RATE // 100 :].any()
@@ -177,9 +177,10 @@ class Heard:
     key: str
 
 
-def buffer(level: int, syntheses: tuple[Playhead, ...], key: str = "up", desk: bool = True) -> Heard:
-    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS of `syntheses`, or none for no TTS."""
-    reference = Reference(tone(-level), RATE, 1, syntheses) if syntheses else None
+def buffer(level: int, syntheses: tuple[Playhead, ...], key: str = "up", desk: bool = True, reached: bool = True) -> Heard:
+    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS of `syntheses`, or none for no TTS, its echo reaching
+    the microphone or not."""
+    reference = Reference(tone(-level), RATE, 1, syntheses, reached) if syntheses else None
     return Heard(Cancelled(tone(level, 2), (reference, reference)), desk, key)
 
 
@@ -211,13 +212,14 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
             buffer(5, (MARY,)),  # a second span
             buffer(6, (MARY,), key="listening"),  # the wake word's level, where a voice can open a clip: it ends
             buffer(7, (MARY,)),  # a third
+            buffer(9, (MARY,), reached=False),  # in headphones: no echo of hands' reached the microphone, so it ends
             buffer(8, (MARY,), desk=False),  # hands at the phone: it ends
         ])
     )
     assert read(tmp_path / "run" / "echo-1.heard.wav")[2] == tone(2, 2) + tone(3, 2)
     assert read(tmp_path / "run" / "echo-1.played.wav")[2] == tone(-2, 2) + tone(-3, 2)
     assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
-        "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"],
+        "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"], "unreached": 0.0,
         "said": [
             {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.04},
             {"voice": "mary", "text": "Turn ended.", "start": 0.02, "into": 1.5, "stop": 0.04},

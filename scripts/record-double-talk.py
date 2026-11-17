@@ -1,19 +1,23 @@
-"""Record a person saying hands' own words over hands, through hands' echo canceller: tests/fixtures/hands_cancelled_and_another.flac
-and its .json, for promptctl-voice-i15t.8vg.csd.
+"""Record a person saying hands' own words over hands, through hands' echo canceller: a fixture's .flac and .json under
+tests/fixtures, hands_cancelled_and_another for promptctl-voice-i15t.8vg.csd, with hands out of the speaker, and
+hands_no_echo_and_another for promptctl-voice-i15t.8vg.0gs, with hands out of no speaker, as in headphones.
 
 Three of hands' sentences are made by hands' own TTS ('charles', its default voice) and played out of the default
 speaker, the canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says two lines
-over the second and third that repeat hands' words where hands says them, as a person contradicting hands does. The
+over the second and third that repeat hands' words where hands says them, as a person contradicting hands does. hands'
+voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The
 default microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard
 after the canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, which of
 hands' sentences each 10 ms was matched with and how far into it, and the lines of both voices with when each began.
 
 Run by hand at a quiet desk with the speaker up, never by a test: it plays about 16 s of speech aloud.
 
-    uv run python scripts/record-double-talk.py
+    uv run python scripts/record-double-talk.py hands_cancelled_and_another 1
+    uv run python scripts/record-double-talk.py hands_no_echo_and_another 0
 """
 
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -29,7 +33,7 @@ from hands.voice.echo import EchoCanceller
 from hands.voice.recorder import track
 from hands.voice.voices import DEFAULT, parse_voice, pocket, source
 
-FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "hands_cancelled_and_another"
+FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 HANDS = (
     "Hands here. Starting houdini-mcp and opening macklebox now.",
     "Phosphene finished its render, and the build is green.",
@@ -45,7 +49,7 @@ LEAD, GAP, TAIL = 1.0, 0.3, 2.0
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
 
 
-def main() -> None:
+def main(fixture: Path, gain: float) -> None:
     say = pocket()
     made = [say(source(DEFAULT), text) for text in HANDS]
     onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + GAP for audio in made[:-1])]))
@@ -66,7 +70,7 @@ def main() -> None:
         other[at : at + len(audio)] = audio[: length - at]
         lines.append((text, begins))
     syntheses = [Synthesis(DEFAULT, text, begun(VirtualClock())) for text in HANDS]
-    out = np.clip((hands + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
+    out = np.clip((hands * gain + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
     reference = np.clip(hands * 32767, -32768, 32767).astype(np.int16).tobytes()
 
     echo = EchoCanceller()
@@ -107,18 +111,18 @@ def main() -> None:
 
     as_float = lambda raw: np.frombuffer(bytes(raw), np.int16).astype(np.float32) / 32768  # noqa: E731
     channels = np.stack([as_float(heard), as_float(captured), as_float(track(tuple(played)))], axis=1)
-    soundfile.write(f"{FIXTURE}.flac", channels, RATE, subtype="PCM_16")
+    soundfile.write(f"{fixture}.flac", channels, RATE, subtype="PCM_16")
     # Where the speaker's timeline falls on the recording's, which began as the microphone opened: the first slot the
     # canceller matched with hands' speech, less how far into its sentence that was and when the sentence began: to
     # within a 20 ms buffer, and early by it, not late, as the buffer a sentence begins in is placed at its start.
     first = next(reference for reference in played if reference is not None)
     offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]
-    FIXTURE.with_suffix(".json").write_text(
+    fixture.with_suffix(".json").write_text(
         json.dumps({"hands": list(HANDS), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
     )
-    print(f"{FIXTURE}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
+    print(f"{fixture}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
 
 
 if __name__ == "__main__":
-    main()
+    main(FIXTURES / sys.argv[1], float(sys.argv[2]))

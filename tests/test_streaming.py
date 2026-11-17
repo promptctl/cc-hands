@@ -117,7 +117,7 @@ class Rig:
         syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
         for start in range(0, len(samples), frame):
             piece = pcm(samples[start : start + frame])
-            played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(piece) // 320))
+            played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses, True) for _ in range(len(piece) // 320))
             await self.run(clip, self.listener.heard(Sound(piece, piece, played)))
 
     async def ended(self, clip: Clip, fate: Fate) -> None:
