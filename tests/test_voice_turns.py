@@ -58,7 +58,7 @@ from hands.core.pending import Finished, News
 from hands.core.session import Held, Membership, Permission, RequestId, Running, Session, SessionId
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
-from hands.voice.clips import Clip, Reference, Sound, Synthesis
+from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.voiceprints import Embed, Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
 from hands.voice import clipowner, desk, shortcut, streaming, voiceprints
@@ -227,7 +227,7 @@ class Rig:
         for a rest, or for a press (one that finds the key down, its release gone by unseen), sends the turn, and for
         "dropped" throws it away; a clip it opens is opened by `by`. `captured` is the sound before the echo canceller,
         where the canceller changed it; `voices` hands' TTS played over every frame, nothing known of it for None."""
-        syntheses = () if voices is None else tuple(Synthesis(voice, "Hands here.", begun(SYSTEM)) for voice in voices)
+        syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
         played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(sound) // 320))
         frames: list[KeyedAudio] = []
         for key in keys:
@@ -1010,7 +1010,7 @@ async def test_a_clip_whisper_is_slow_to_transcribe_is_sent_with_its_own_turn(ri
 
 
 async def test_a_clip_whisper_could_not_transcribe_is_told_as_failed_and_not_as_no_words(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def refused(_self: Whisper, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
+    async def refused(_self: Whisper, clip: int, sound: Sound, prompt: str | None) -> ClipHeard:
         raise ConnectionError("LowTalker is not serving")
 
     monkeypatch.setattr(Whisper, "_heard", refused)
@@ -1020,7 +1020,7 @@ async def test_a_clip_whisper_could_not_transcribe_is_told_as_failed_and_not_as_
 
 
 async def test_a_clip_whisper_never_finishes_transcribing_fails_and_ends_its_turn(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def hung(_self: Whisper, clip: int, audio: bytes, prompt: str | None) -> ClipHeard:
+    async def hung(_self: Whisper, clip: int, sound: Sound, prompt: str | None) -> ClipHeard:
         await asyncio.Event().wait()
         raise AssertionError("a transcription that never returns returned")
 

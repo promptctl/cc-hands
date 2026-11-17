@@ -1927,14 +1927,19 @@ path, nobody cleared where the identification failed.
 
 hands' own words are kept from the brain by their text and their time, not by who the lane heard
 (`hands.voice.whisper`). Whisper decodes a clip hands played over with each word timed, and each
-word it heard is hands' where it is the next word, said or spelled Whisper's way, of hands'
-sentences played over the clip, within 1.5 s of when it was heard. A sentence's words are placed by
-their characters between when it began and stopped playing. A Whisper segment is no voice
-boundary: primed with hands' vocabulary, Whisper heard a person's lines and hands' sentences in one
-segment, their words interleaved (`tests/fixtures/hands_and_another.flac`), so only a word, timed,
-is one voice's. A turn of hands' echo alone sends nothing, and its `clip` event says `transcript`
-none with each word it took as hands' under `echo`. A person who says hands' next word as hands
-says it loses that word. A clip hands played nothing over is decoded without its words timed,
+word it heard is hands' where it takes a word of hands' sentences played over the clip, not yet
+taken, that it is, said or, in a word of five letters or more, spelled Whisper's way, played
+within 1.5 s of when it was heard, the nearest in time. A sentence's words are placed by their
+characters at Pocket TTS's speaking rate, 16 a second, from where the speaker was in the sentence
+as the clip heard it, so a sentence begun before the clip opened has its first words before the
+clip's start, and the rest of a sentence a barge-in cut off, placed more than 1.5 s past the cut, is
+not placed at all: the speaker counts what it has played of each synthesis, and each 10 ms of
+reference carries it (`clips.Playhead`). A Whisper segment is no voice boundary:
+primed with hands' vocabulary, Whisper heard a person's lines and hands' sentences in one segment,
+their words interleaved (`tests/fixtures/hands_and_another.flac`), so only a word, timed, is one
+voice's. A turn of hands' echo alone sends nothing: its `clip` event says `transcript` none, and
+its `ClipHeard` record holds each word taken as hands' under `echo`. A person who says a word
+hands said within 1.5 s of it loses that word. A clip hands played nothing over is decoded without its words timed,
 which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
 canceller is told what it plays, nothing is hands'.
 

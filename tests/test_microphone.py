@@ -27,7 +27,7 @@ from hands.sessions.audit import Entry, Record
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.cues import OPENED, sound
 from hands.voice.echo import Cancelled
-from hands.voice.clips import Played, Reference
+from hands.voice.clips import Played, Reference, Playhead
 from hands.voice.devicechoice import Auto, Choices, Closed, DefaultDevices, Hardware, Instead, Missing, Named, Off, OnDefault, OnNamed, Placement
 from hands.voice.microphone import WRITE_AHEAD_SECS, Attached, Devices, Input, KeyedAudioTransport, NoInput, NoOutput, Output, Playout, PortAudio, Pull
 from hands.voice.system import AudioMoved, system_text
@@ -40,7 +40,7 @@ from hands.voice.synthesis import Ended, SpeakingIn, Synthesis, Syntheses, Taken
 LOUD = b"\x7f\x7f" * 320
 QUIET = bytes(len(LOUD))
 CLEANED = b"\x01\x00" * 320  # what the room's canceller makes of anything the microphone hears
-PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, (Synthesis("alba", "Hands here.", begun(SYSTEM)),)),) * 2  # what it matched each buffer's two frames with
+PLAYED = (Reference(b"\x02\x00" * 480, 48_000, 1, (Playhead(Synthesis("alba", "Hands here.", begun(SYSTEM)), 0.0),)),) * 2  # what it matched each buffer's two frames with
 
 
 def _phone() -> Phone:
@@ -51,13 +51,13 @@ class Room:
     """An echo canceller that keeps what the speaker played and cleans every microphone buffer to CLEANED."""
 
     def __init__(self, log: list[str] | None = None, name: str = "canceller") -> None:
-        self.plays: list[tuple[bytes, int, int, tuple[Synthesis, ...]]] = []
+        self.plays: list[tuple[bytes, int, int, tuple[Playhead, ...]]] = []
         self.hears: list[bytes] = []
         self.log = [] if log is None else log
         self.name = name
 
-    def played(self, audio: bytes, sample_rate: int, channels: int, syntheses: tuple[Synthesis, ...]) -> None:
-        self.plays.append((audio, sample_rate, channels, syntheses))
+    def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None:
+        self.plays.append((audio, sample_rate, channels, playheads))
 
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled:
         self.hears.append(audio)
@@ -618,7 +618,7 @@ async def test_a_synthesis_s_end_goes_where_its_bytes_went_through_a_reopen_unti
     assert [event.facts["voice"] for event in events] == ["mary"]
 
 
-def test_the_canceller_is_given_the_syntheses_in_each_buffer_the_device_takes() -> None:
+def test_the_canceller_is_given_the_syntheses_in_each_buffer_the_device_takes_and_where_in_each_it_began() -> None:
     room, device = Room(), Device()
     playout = Playout(device.open, room, 16000, 1, _unfailing, _unreported)
     alba, mary = _synthesis("alba"), _synthesis("mary")
@@ -627,7 +627,7 @@ def test_the_canceller_is_given_the_syntheses_in_each_buffer_the_device_takes() 
     device.take()  # 640 bytes: all of alba's, and 240 of mary's
     device.take()  # the rest of mary's, then silence
     device.take()  # silence
-    assert [syntheses for *_, syntheses in room.plays] == [(alba, mary), (mary,), ()]
+    assert [playheads for *_, playheads in room.plays] == [(Playhead(alba, 0.0), Playhead(mary, 0.0)), (Playhead(mary, 0.0075),), ()]
 
 
 async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood(devices: Rig) -> None:
@@ -805,7 +805,7 @@ def test_writes_to_no_output_run_no_further_ahead_of_the_sound_than_a_device_let
 
 
 class Deafened(Room):
-    def played(self, audio: bytes, sample_rate: int, channels: int, syntheses: tuple[Synthesis, ...]) -> None:
+    def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None:
         raise RuntimeError("the audio processing module refused the frame")
 
 

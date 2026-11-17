@@ -2,7 +2,7 @@
 ends (hands.voice.transcription), and those are the words a turn sends, none of them hands' own. A clip still open is
 heard by the streaming recognizer (`hands.voice.streaming`), whose words only cut.
 
-hands' own words are known by their text and their time: each word Whisper heard is hands' where it is the next word
+hands' own words are known by their text and their time: each word Whisper heard is hands' where it is a word
 hands played near when it was heard. A Whisper segment is no voice boundary: primed with hands' vocabulary, Whisper
 heard a person's lines and hands' sentences in one segment (tests/fixtures/hands_and_another.flac, 8.2 s to 24 s), so
 only a word, timed, is one voice's.
@@ -48,15 +48,23 @@ _FRAME = 512
 # at any level down to -55 dBFS (promptctl-voice-i15t.a5s.x48).
 _VOICED = 0.25
 
-# How far from when Whisper heard a word, in seconds, the word of hands' it is may have played. No time is known for a
-# word of a sentence played, so it is placed by its characters (`_played`); on hands_and_another.flac, primed, every word
-# of hands' Whisper heard was placed within 1.1 s of where Whisper timed it.
+# How far from when Whisper heard a word, in seconds, the word of hands' it is may have played: no time is known for a
+# word of a sentence played, so it is placed by its characters (`_placed`).
 _ECHO_SECONDS = 1.5
+
+# How many characters of a sentence hands' TTS says a second, Pocket TTS's speaking rate: on
+# tests/fixtures/hands_echo_uncancelled.flac, every word of hands' Whisper heard was within 0.8 s of its characters at
+# this rate from its sentence's start, later where the sentence pauses at its punctuation.
+_CHARACTERS_PER_SECOND = 16.0
 
 # The least likeness of a word Whisper heard to a word hands said, by difflib's ratio, at which it is that word spelled
 # Whisper's own way: "diariser" for "diarizer" and "maclbox" for "macklebox" are 0.875, while "hear" and "here", two
 # words, are 0.75.
 _RESPELLED = 0.8
+
+# The fewest letters of a word Whisper spells its own way: in a shorter one, a letter off is another word ("they" for
+# "the", "its" for "it", "your" for "you").
+_SPELLED = 5
 
 # A word, as Whisper and hands' TTS both write one: letters and digits, with an apostrophe inside ("won't").
 _WORD = re.compile(r"\w+(?:'\w+)*")
@@ -65,8 +73,8 @@ _WORD = re.compile(r"\w+(?:'\w+)*")
 # garbled, so Whisper hears half a second of it past the end, as Pipecat padded every segment it gave a transcriber.
 _TRAILING_SILENCE = bytes(SECOND // 2)
 
-# Each word hands said over a clip, in lower case, with when it played, in seconds from the clip's start, earliest first.
-type Played = tuple[tuple[str, float], ...]
+# Words hands said over a clip, in lower case, each with when it played, in seconds from the clip's start.
+type Placed = tuple[tuple[str, float], ...]
 
 
 class Whisper:
@@ -103,13 +111,13 @@ class Whisper:
         segment. A clip hands played over is decoded with its words timed, which one hands played nothing over has no
         need of, and does not wait on.
         """
-        played = _played(plays(sound))
+        placed = _placed(plays(sound))
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
             # Off the loop, the clip's decoding with it: the model runs for a third of a second a clip, and the speaker and
             # the key go on meanwhile.
-            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(sound.heard, prompt, bool(played)))
+            scored = await self._model.run(lambda: [] if given_up.is_set() else self._scored(sound.heard, prompt, bool(placed)))
         finally:
             given_up.set()
         kept: list[transcription.Segment] = []
@@ -119,8 +127,8 @@ class Whisper:
                 kept.append(segment)
             else:
                 dropped.append(Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, voiced))
-        said, echo = _parted(kept, played)
-        return ClipHeard(clip, " ".join(said).strip() or None, tuple(dropped), echo)
+        said, echo = _parted(kept, placed)
+        return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo)
 
     def _scored(self, audio: bytes, prompt: str | None, timed: bool) -> list[tuple[transcription.Segment, float]]:
         """Each segment Whisper hears in a clip's audio, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, its
@@ -147,55 +155,61 @@ def _words(text: str) -> list[str]:
     return _WORD.findall(text.lower())
 
 
-def _played(plays: tuple[Play, ...]) -> Played:
-    """Each word hands said over a clip, placed by its characters between its play's start and stop."""
-    placed = (
-        (word.group(), (play.start + (play.stop - play.start) * (word.start() + word.end()) / 2 / len(text)) * SLOT / RATE)
+def _placed(plays: tuple[Play, ...]) -> Placed:
+    """Each word of the sentences hands played over a clip, placed in its sentence by its characters, at
+    `_CHARACTERS_PER_SECOND`, and in the clip by where the speaker was in the sentence as its play began, so a sentence
+    begun before the clip opened has its first words before the clip's start. A word placed further than
+    `_ECHO_SECONDS` past where its play stopped was never played over the clip, as the rest of a sentence a barge-in
+    cut off, and is not placed."""
+    return tuple(
+        (word.group(), play.start * SLOT / RATE + into - play.into)
         for play in plays
-        for text in (play.synthesis.text.lower(),)
-        for word in _WORD.finditer(text)
+        for word in _WORD.finditer(play.synthesis.text.lower())
+        for into in ((word.start() + word.end()) / 2 / _CHARACTERS_PER_SECOND,)
+        if into - play.into <= (play.stop - play.start) * SLOT / RATE + _ECHO_SECONDS
     )
-    return tuple(sorted(placed, key=lambda each: each[1]))
 
 
-def _parted(segments: list[transcription.Segment], played: Played) -> tuple[list[str], tuple[str, ...]]:
-    """The text of each segment as a person said it, and each word of hands' own echo in them, in order.
+def _parted(segments: list[transcription.Segment], placed: Placed) -> tuple[list[str], tuple[str, ...]]:
+    """The text of each segment as a person said it, none of a segment all hands', and each word of hands' own echo in
+    them, in order.
 
-    [LAW:single-enforcer] the one rule of whose words are hands'. Each word Whisper heard, in order through the clip, is
-    hands' where each word of it is, in turn, the next word of hands' not yet taken that it is, said or respelled, played
-    within `_ECHO_SECONDS` of it; a word of hands' the canceller took out is skipped over, never taken. A person's word
-    that is the next of hands' within that time is taken for hands': by text and time, the two are the same. A segment
-    none of whose words is hands' is sent as Whisper wrote it, as is every segment of a clip hands played nothing over,
-    whose words were never timed."""
-    taken = 0
+    [LAW:single-enforcer] the one rule of whose words are hands'. Each word Whisper heard is hands' where each word of it
+    takes a word of hands' not yet taken that it is, said or respelled, played within `_ECHO_SECONDS` of it, the nearest
+    in time; a word of hands' the canceller took out is never taken. A person's word that hands said within that time is
+    taken for hands': by text and time, the two are the same. A segment none of whose words is hands' is sent as Whisper
+    wrote it, as is every segment of a clip hands played nothing over, whose words were never timed."""
+    free = placed
     said: list[str] = []
     echo: list[str] = []
     for segment in segments:
         kept: list[str] = []
         for word in segment.words:
-            match _taking(_words(word.text), (word.start + word.end) / 2, played, taken):
+            match _taking(_words(word.text), (word.start + word.end) / 2, free):
                 case None:
                     kept.append(word.text)
-                case after:
-                    taken = after
+                case left:
+                    free = left
                     echo.append(word.text.strip())
         said.append(segment.text if len(kept) == len(segment.words) else "".join(kept).strip())
-    return said, tuple(echo)
+    return [text for text in said if text], tuple(echo)
 
 
-def _taking(heard: list[str], at: float, played: Played, taken: int) -> int | None:
-    """How far hands' words are taken once `heard`, one word Whisper heard at `at` s, is hands' own: each of its words, in
-    turn, the next of `played` from `taken` on that it is, played within `_ECHO_SECONDS` of `at`; None where any is not,
-    or it has none."""
+def _taking(heard: list[str], at: float, free: Placed) -> Placed | None:
+    """What is left of `free` once `heard`, one word Whisper heard at `at` s, is hands' own: each of its words takes the
+    nearest in time of `free` that it is, played within `_ECHO_SECONDS` of `at`; None where any takes none, or it has
+    none."""
     for each in heard:
-        match next((index for index in range(taken, len(played)) if abs(played[index][1] - at) <= _ECHO_SECONDS and _respelled(each, played[index][0])), None):
+        near = [index for index, (said, when) in enumerate(free) if abs(when - at) <= _ECHO_SECONDS and _respelled(each, said)]
+        match min(near, key=lambda index: abs(free[index][1] - at), default=None):
             case None:
                 return None
             case index:
-                taken = index + 1
-    return taken if heard else None
+                free = free[:index] + free[index + 1 :]
+    return free if heard else None
 
 
 def _respelled(heard: str, said: str) -> bool:
-    """Whether a word Whisper `heard` is a word hands `said`, as said or spelled Whisper's own way."""
-    return heard == said or SequenceMatcher(None, heard, said, autojunk=False).ratio() >= _RESPELLED
+    """Whether a word Whisper `heard` is a word hands `said`, as said or, in a word long enough, spelled Whisper's own
+    way."""
+    return heard == said or min(len(heard), len(said)) >= _SPELLED and SequenceMatcher(None, heard, said, autojunk=False).ratio() >= _RESPELLED

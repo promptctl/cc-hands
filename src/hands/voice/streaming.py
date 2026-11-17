@@ -179,14 +179,14 @@ class _Tape:
         self._played += [*played[:slots], *[()] * (slots - len(played))]
         self.length = wanted
 
-    def frame(self, frame: int) -> tuple[Samples, tuple[str, ...], range]:
+    def frame(self, frame: int) -> tuple[Samples, tuple[str, ...], int]:
         """The samples of the run's encoder frame `frame` that are the clip's, none for a frame before it opened or in
-        the silence after it, every voice hands played over them, and where they are in the clip's audio, counted from
-        its first sample, what it kept from before it opened: the audio the clip owner's transcriber is given."""
+        the silence after it, every voice hands played over them, and the sample of the clip's audio they begin at,
+        counted from its first, what it kept from before it opened."""
         start = min(max(frame * FRAME - self.start, 0), self.length)
         end = min(max((frame + 1) * FRAME - self.start, 0), self.length)
         voices = dict.fromkeys(voice for slot in self._played[start // SLOT : -(-end // SLOT)] for voice in slot)
-        return self._samples[start:end], tuple(voices), range(start, end)
+        return self._samples[start:end], tuple(voices), start
 
 
 @dataclass
@@ -305,7 +305,7 @@ class Stream:
         before the clip or in the silence after it, is none of anyone's voice."""
         heard, played, at = self._open.tape.frame(active.frame)
         if len(heard):
-            self._open.voices.setdefault(active.speaker, _Voice((at.start - self._open.tape.kept) / RATE)).add(heard, shared, played)
+            self._open.voices.setdefault(active.speaker, _Voice((at - self._open.tape.kept) / RATE)).add(heard, shared, played)
 
     def said(self) -> Since:
         """The words each speaker added to the clip open since this was last asked, each speaker who has reached a row of

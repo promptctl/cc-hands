@@ -27,7 +27,7 @@ where the user is.
 import asyncio
 import queue
 import threading
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
@@ -52,6 +52,7 @@ from pipecat.transports.local.audio import (
 from hands.clock import Clock
 from hands.voice import coreaudio
 from hands.voice.devicechoice import Auto, Choice, Choices, HeardOn, Hardware, Instead, Missing, Named, Off, PlayedOn, Placement, hears_nothing, lost_microphone, placed
+from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
@@ -146,6 +147,8 @@ class Playout:
         # What the device found missing, and how many callbacks came late, since it last took any of hands' speech.
         self._missing = 0.0
         self._late = 0
+        # How many seconds of each synthesis not yet ended the device has taken; its callback alone touches it.
+        self._into: defaultdict[Synthesis, float] = defaultdict(float)
         self._room = threading.Condition()
         self._stopped = False
         # [LAW:nothing-unseen] read onto the speaker's event as it is let go of; written by the device's callback alone.
@@ -207,7 +210,7 @@ class Playout:
             self._room.notify_all()
         played = taken + bytes(size - len(taken))
         try:
-            self._echo.played(played, self._rate, self._channels, tuple(dict.fromkeys(synthesis for synthesis, _ in pieces)))
+            self._echo.played(played, self._rate, self._channels, self._playheads(pieces, ends))
             # [LAW:dataflow-not-control-flow] a gap is before the sound it delays: what went missing and late since the
             # device last took any of hands' speech is reported with the next of it taken, and a callback that takes
             # none of it, and lets out no end, reports nothing.
@@ -225,6 +228,16 @@ class Playout:
         self._counts["unwritten"] += (size - len(taken)) // self._frame_bytes
         self._counts["underflowed"] += bool(status & pyaudio.paOutputUnderflow)
         return played, pyaudio.paContinue
+
+    def _playheads(self, pieces: tuple[Piece, ...], ends: tuple[Ended, ...]) -> tuple[Playhead, ...]:
+        """Each synthesis one callback took `pieces` of, where in it the first began, the ones that `ends` let go of."""
+        playheads: dict[Synthesis, Playhead] = {}
+        for synthesis, length in pieces:
+            playheads.setdefault(synthesis, Playhead(synthesis, self._into[synthesis]))
+            self._into[synthesis] += length
+        for end in ends:
+            self._into.pop(end.synthesis, None)
+        return tuple(playheads.values())
 
     def _taken(self, taken: int) -> tuple[tuple[Piece, ...], tuple[Ended, ...]]:
         """Which syntheses the `taken` bytes just taken from what is waiting are of, let go of from its runs, and the ends

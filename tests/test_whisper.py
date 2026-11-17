@@ -15,7 +15,7 @@ from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import Clip, Played, Reference, Sound, Synthesis
+from hands.voice.clips import Clip, Played, Reference, Sound, Playhead, Synthesis
 from hands.voice.whisper import Whisper
 
 
@@ -76,7 +76,7 @@ def saying(seconds: float, *sentences: tuple[str, float, float]) -> Sound:
     said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
 
     def at(slot: int) -> Reference | None:
-        playing = tuple(synthesis for synthesis, start, stop in said if start <= slot / 100 < stop)
+        playing = tuple(Playhead(synthesis, slot / 100 - start) for synthesis, start, stop in said if start <= slot / 100 < stop)
         return Reference(bytes(320), 16_000, 1, playing) if playing else None
 
     return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
@@ -254,6 +254,40 @@ async def test_a_one_word_sentence_of_hands_heard_alone_and_one_spelled_whispers
     timed.segments += [[(" Done.", 0.05, 0.45)], spaced("The diariser reports one speaker.", 1.1, 0.4)]
     clip_heard = await told(saying(3.5, ("Done.", 0.0, 0.4), ("The diarizer reports one speaker.", 1.0, 3.0)))
     assert (clip_heard.said, clip_heard.echo) == (None, ("Done.", "The", "diariser", "reports", "one", "speaker."))
+
+
+async def test_a_sentence_of_hands_begun_before_the_clip_opened_is_hands_where_the_clip_hears_its_end(timed: Timed) -> None:
+    # The clip opened 2.5 s into hands' sentence: it hears "continue with the release", and nothing before.
+    timed.segments.append([(" continue", 0.2, 0.5), (" with", 0.6, 0.8), (" the", 0.9, 1.0), (" release.", 1.1, 1.5)])
+    clip_heard = await told(saying(3.0, ("Checking the speech models before we continue with the release.", -2.5, 2.0)))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("continue", "with", "the", "release."))
+
+
+async def test_a_person_who_cut_hands_off_is_sent_the_words_hands_never_got_to(timed: Timed) -> None:
+    # Cut off 1 s in, hands never said "the release", which it would have 3 s in: the person saying it then is no echo.
+    timed.segments.append([(" Starting", 0.1, 0.3), (" the", 0.4, 0.5), (" build", 0.6, 0.9), (" Stop,", 1.2, 1.4), (" ship", 2.9, 3.1), (" the", 3.2, 3.3), (" release.", 3.4, 3.8)])
+    clip_heard = await told(saying(4.0, ("Starting the build now, and once it is green, the release.", 0.0, 1.0)))
+    assert (clip_heard.said, clip_heard.echo) == ("Stop, ship the release.", ("Starting", "the", "build"))
+
+
+async def test_a_short_word_of_a_persons_a_letter_off_one_of_hands_is_the_persons(timed: Timed) -> None:
+    # "they" is "the" a letter off, and the canceller took hands' "the" out: the person's "They" is theirs.
+    timed.segments += [[(" Check", 0.1, 0.2), (" logs.", 0.6, 0.8)], [(" They", 0.4, 0.5), (" said", 0.9, 1.0), (" no.", 1.1, 1.2)]]
+    clip_heard = await told(saying(2.0, ("Check the logs.", 0.0, 1.0)))
+    assert (clip_heard.said, clip_heard.echo) == ("They said no.", ("Check", "logs."))
+
+
+async def test_a_word_of_hands_heard_out_of_its_order_leaves_the_rest_of_hands_words_hands(timed: Timed) -> None:
+    # "build" heard before "the logs and": it takes hands' "build", and skips none of the words before it.
+    timed.segments.append([(" build", 0.2, 0.3), (" the", 0.4, 0.5), (" logs", 0.7, 0.8), (" and", 1.0, 1.1)])
+    clip_heard = await told(saying(2.5, ("Check the logs and the build.", 0.0, 2.0)))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("build", "the", "logs", "and"))
+
+
+async def test_a_segment_all_hands_between_two_of_a_persons_leaves_their_words_joined_as_said(timed: Timed) -> None:
+    timed.segments += [spaced("Run the tests.", 0.1, 0.2), spaced("Build is green.", 1.0, 0.2), spaced("Then deploy.", 2.6, 0.2)]
+    clip_heard = await told(saying(3.5, ("Build is green.", 0.9, 1.9)))
+    assert clip_heard.said == "Run the tests. Then deploy."
 
 
 async def test_a_clip_hands_played_nothing_over_is_decoded_without_its_words_timed_and_nothing_of_it_is_hands(timed: Timed) -> None:

@@ -144,12 +144,15 @@ async def test_a_hold_held_on_after_the_words_sends_only_the_words() -> None:
     assert said is not None and words(said) == words(text), said
 
 
-async def test_a_long_dictation_comes_back_whole() -> None:
-    # Two minutes held, past four of Whisper's 30 s windows, each decoded on its own.
+# Over a clip hands played over, Whisper times each word, which moves where each window after the first begins.
+@pytest.mark.parametrize("over", [0.0, 0.5], ids=["hands played nothing over it", "hands played over its start"])
+async def test_a_long_dictation_comes_back_whole(over: float) -> None:
+    # Two minutes held, past four of Whisper's 30 s windows, each decoded on its own; hands' first sentence played over
+    # its first `over` seconds.
     sentences = [*NAMED, *PROSE]
     audio = b"".join(spoken(text) + quiet(PAUSES[index % len(PAUSES)]) for index, text in enumerate(sentences))
 
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), held(audio))
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), Sound(audio, audio, played((0.0,), over, 0.0, len(audio) / (2 * RATE))))
 
     assert said is not None
     # Every sentence is there, in order, near enough word for word: a window lost loses whole sentences, while Whisper
@@ -174,6 +177,15 @@ async def test_a_person_talking_over_hands_is_sent_and_hands_own_voice_is_not(wi
 
 async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_and_another.flac", *HANDS_ALONE, ANOTHER, ANOTHER_STOPPED)) is None
+
+
+@pytest.mark.parametrize("sentence", range(len(SENTENCES)), ids=READ)
+async def test_each_of_hands_sentences_heard_uncancelled_from_partway_in_sends_nothing(sentence: int) -> None:
+    # A key pressed while hands talks opens its clip 1.5 s into the sentence: the clip hears only the sentence's end.
+    onsets = tuple(PLAYED + onset for onset in SENTENCES)
+    end = [*onsets[1:], STOPPED][sentence]
+
+    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_echo_uncancelled.flac", onsets[sentence] + 1.5, end, onsets, STOPPED)) is None
 
 
 @pytest.mark.parametrize("sentence", range(len(SENTENCES)), ids=READ)

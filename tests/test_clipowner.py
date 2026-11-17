@@ -19,7 +19,7 @@ from hands.sessions.wide import WideEvent, begun
 from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import IDENTIFIED_SECONDS, ClipOwner
-from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Synthesis, Transcriber, voices
+from hands.voice.clips import Clip, Cleared, Fate, Heard, Hearing, Hearings, Identified, Recording, Reference, Settle, Sound, Playhead, Synthesis, Transcriber, voices
 from hands.voice.ptt import Gate
 from hands.voice.trigger import Trigger
 from hands.voice.turnstop import SpeakerCleared, TurnOpened, TurnResolved, Typed, Words
@@ -155,7 +155,7 @@ def frame_of(n: int) -> bytes:
 def played_with(sound: bytes, voices: tuple[str, ...] = ()) -> tuple[Reference, ...]:
     """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound,
     a sentence of hands' TTS in each of `voices`."""
-    syntheses = tuple(Synthesis(voice, "The parser is fixed.", begun(SYSTEM)) for voice in voices)
+    syntheses = tuple(Playhead(Synthesis(voice, "The parser is fixed.", begun(SYSTEM)), 0.0) for voice in voices)
     return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses) for start in range(0, len(sound), 320))
 
 

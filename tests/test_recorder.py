@@ -18,7 +18,7 @@ from hands.virtualclock import VirtualClock
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Reference, Sound, Synthesis
+from hands.voice.clips import RATE, Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.echo import Cancelled
 from hands.voice import recorder as recorders
 from hands.voice.recorder import Recorder, track
@@ -32,9 +32,9 @@ class Unused:
         raise AssertionError("nothing here transcribes")
 
 
-# Two sentences of hands', in two voices.
-ALBA = Synthesis("alba", "Hands here.", begun(VirtualClock()))
-MARY = Synthesis("mary", "Turn ended.", begun(VirtualClock()))
+# Two sentences of hands', in two voices: the first from its start, the second 1.5 s into it.
+ALBA = Playhead(Synthesis("alba", "Hands here.", begun(VirtualClock())), 0.0)
+MARY = Playhead(Synthesis("mary", "Turn ended.", begun(VirtualClock())), 1.5)
 
 
 def tone(level: int, frames: int = 1) -> bytes:
@@ -81,10 +81,11 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
         "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"],
-        # Each sentence hands said over it, from the 10 ms it began playing in to the end of the last.
+        # Each sentence hands said over it, from the 10 ms it began playing in, as far into it as it was, to the end of
+        # the last.
         "said": [
-            {"voice": "alba", "text": "Hands here.", "start": 0.0, "stop": 0.02},
-            {"voice": "mary", "text": "Turn ended.", "start": 0.01, "stop": 0.02},
+            {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.02},
+            {"voice": "mary", "text": "Turn ended.", "start": 0.01, "into": 1.5, "stop": 0.02},
         ],
     }
     # [LAW:nothing-unseen] where it went, how long, whether what was played went with it, and in which voices.
@@ -176,7 +177,7 @@ class Heard:
     key: str
 
 
-def buffer(level: int, syntheses: tuple[Synthesis, ...], key: str = "up", desk: bool = True) -> Heard:
+def buffer(level: int, syntheses: tuple[Playhead, ...], key: str = "up", desk: bool = True) -> Heard:
     """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS of `syntheses`, or none for no TTS."""
     reference = Reference(tone(-level), RATE, 1, syntheses) if syntheses else None
     return Heard(Cancelled(tone(level, 2), (reference, reference)), desk, key)
@@ -218,8 +219,8 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
     assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
         "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"],
         "said": [
-            {"voice": "alba", "text": "Hands here.", "start": 0.0, "stop": 0.04},
-            {"voice": "mary", "text": "Turn ended.", "start": 0.02, "stop": 0.04},
+            {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.04},
+            {"voice": "mary", "text": "Turn ended.", "start": 0.02, "into": 1.5, "stop": 0.04},
         ],
     }
     assert read(tmp_path / "run" / "echo-2.heard.wav")[2] == tone(5, 2)

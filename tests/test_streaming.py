@@ -27,7 +27,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
 from hands.voice import engaged, streaming, voiceprints
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Synthesis
+from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis
 from hands.voice.voiceprints import Identifier, Voiced
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
@@ -114,7 +114,7 @@ class Rig:
     async def heard(self, clip: Clip, samples: Samples, frame: int = STEPPED, voices: tuple[str, ...] | None = None) -> None:
         """`samples` of `clip`, given in frames of `frame` samples, hands playing in `voices` over them, nothing known of
         what it played for None, and every hearing they bring run."""
-        syntheses = () if voices is None else tuple(Synthesis(voice, "Hands here.", begun(SYSTEM)) for voice in voices)
+        syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
         for start in range(0, len(samples), frame):
             piece = pcm(samples[start : start + frame])
             played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(piece) // 320))

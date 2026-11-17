@@ -16,7 +16,7 @@ clip changes for it.
 
 import math
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
 import numpy as np
@@ -88,19 +88,28 @@ class Synthesis:
 
 
 @dataclass(frozen=True)
+class Playhead:
+    """Where the desk's speaker was in a synthesis as it played it: `into` it by the seconds of it played before, which
+    a sentence begun before a clip opened is past its start by."""
+
+    synthesis: Synthesis
+    into: float
+
+
+@dataclass(frozen=True)
 class Reference:
     """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
-    speaker's own rate and channels, which are not a clip's; and each synthesis of the TTS in it."""
+    speaker's own rate and channels, which are not a clip's; and each synthesis of the TTS in it, where in it."""
 
     audio: bytes
     rate: int
     channels: int
-    syntheses: tuple[Synthesis, ...]
+    playheads: tuple[Playhead, ...]
 
     @property
     def voices(self) -> tuple[str, ...]:
         """Each voice of the TTS in it, as the TTS made it."""
-        return tuple(dict.fromkeys(synthesis.voice for synthesis in self.syntheses))
+        return tuple(dict.fromkeys(playhead.synthesis.voice for playhead in self.playheads))
 
 
 # What the desk's speaker played over each 10 ms of a sound: hands' TTS, or None where it played no TTS, silence or a
@@ -140,21 +149,22 @@ def voices(sound: Sound) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Play:
-    """One synthesis of hands' as the desk's speaker played it over a sound: from the 10 ms slot it began in to the
-    one after the last it played in."""
+    """One synthesis of hands' as the desk's speaker played it over a sound: from the 10 ms slot it began in, `into` it
+    by as many seconds as the speaker had played of it before, to the one after the last it played in."""
 
     synthesis: Synthesis
     start: int
+    into: float
     stop: int
 
 
 def plays(sound: Sound) -> tuple[Play, ...]:
     """Each synthesis hands played over `sound`, in the order it began; none at the phone, where none is known."""
-    found: dict[Synthesis, list[int]] = {}
+    found: dict[Synthesis, Play] = {}
     for at, reference in enumerate(sound.played or ()):
-        for synthesis in () if reference is None else reference.syntheses:
-            found.setdefault(synthesis, [at, at])[1] = at
-    return tuple(Play(synthesis, start, last + 1) for synthesis, (start, last) in found.items())
+        for playhead in () if reference is None else reference.playheads:
+            found[playhead.synthesis] = replace(found.get(playhead.synthesis, Play(playhead.synthesis, at, playhead.into, at)), stop=at + 1)
+    return tuple(found.values())
 
 
 class Recording:

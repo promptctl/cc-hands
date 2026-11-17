@@ -9,7 +9,7 @@ from was not kept, so when each sentence began is read off each recording."""
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import RATE, SLOT, Played, Reference, Synthesis
+from hands.voice.clips import RATE, SLOT, Played, Reference, Playhead, Synthesis
 
 # When each of hands' sentences began on hands_echo_uncancelled.flac, in seconds from PLAYED.
 PLAYED = 0.5
@@ -46,7 +46,7 @@ def played(onsets: tuple[float, ...], stopped: float, start: float, seconds: flo
     said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in READ)
 
     def at(moment: float) -> Reference | None:
-        playing = tuple(synthesis for onset, end, synthesis in zip(onsets, [*onsets[1:], stopped], said) if onset <= moment < end)
+        playing = tuple(Playhead(synthesis, moment - onset) for onset, end, synthesis in zip(onsets, [*onsets[1:], stopped], said) if onset <= moment < end)
         return Reference(bytes(2 * SLOT), RATE, 1, playing) if playing else None
 
     return tuple(at(start + slot * SLOT / RATE) for slot in range(round(seconds * RATE / SLOT)))

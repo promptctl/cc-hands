@@ -89,7 +89,7 @@ speaker it cleared was first heard (`voice/voiceprints.py`). A speaker hands pla
 cannot be scored yet, the model loading or a print being made, cuts nothing. A clip's close
 waits up to `IDENTIFIED_SECONDS` for its last identification, and its `clip` event says what it
 found, or that it came too late and cut nothing (`voice/clipowner.py`). The turn's words are
-decided apart from it: each word Whisper heard that is hands' next word played near when it was heard
+decided apart from it: each word Whisper heard that is a word hands played near when it was heard
 is not sent, so a clip of hands' echo alone sends nothing, and a person's words over hands are sent
 (`voice/whisper.py`). Each turn's `UserTurn`
 line says how long after the cutting speaker's first word the cut came (`barge_in_after_speech`), from the clip's opening where the cut is on its transcribed words, whose speaker no listener heard. The score

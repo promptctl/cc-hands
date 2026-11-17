@@ -5,14 +5,14 @@ import pytest
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import Reference, Synthesis
+from hands.voice.clips import Reference, Playhead, Synthesis
 from hands.voice.echo import EchoCanceller
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
-# Two sentences of hands', in two voices.
-ALBA = Synthesis("alba", "Hands here.", begun(VirtualClock()))
-MARY = Synthesis("mary", "Turn ended.", begun(VirtualClock()))
+# Two sentences of hands', in two voices, as the speaker played some of each.
+ALBA = Playhead(Synthesis("alba", "Hands here.", begun(VirtualClock())), 0.0)
+MARY = Playhead(Synthesis("mary", "Turn ended.", begun(VirtualClock())), 0.5)
 
 
 def _power_db(audio: bytes) -> float:
@@ -124,5 +124,5 @@ def test_a_frame_made_of_two_buffers_carries_the_syntheses_of_both() -> None:
     canceller.played(b"\x01\x00" * 150, HEARD_RATE, 1, (ALBA,))  # short of a frame: carried
     canceller.played(b"\x01\x00" * 170, HEARD_RATE, 1, (MARY,))  # completes it, and the next
     played = canceller.heard(bytes(640), HEARD_RATE, 1).played
-    assert [None if reference is None else reference.syntheses for reference in played] == [(ALBA, MARY), (MARY,)]
+    assert [None if reference is None else reference.playheads for reference in played] == [(ALBA, MARY), (MARY,)]
     assert [None if reference is None else reference.voices for reference in played] == [("alba", "mary"), ("mary",)]

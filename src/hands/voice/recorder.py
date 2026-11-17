@@ -90,9 +90,12 @@ def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]
 
 
 def said(sound: Sound) -> list[dict[str, object]]:
-    """Each sentence hands said over `sound`, in the order it began to play: its voice, its text, and from when to when
-    it played, in seconds from the sound's start."""
-    return [dict(voice=play.synthesis.voice, text=play.synthesis.text, start=play.start * SLOT / RATE, stop=play.stop * SLOT / RATE) for play in plays(sound)]
+    """Each sentence hands said over `sound`, in the order it began to play: its voice, its text, from when to when it
+    played, in seconds from the sound's start, and how many seconds of it had played before."""
+    return [
+        dict(voice=play.synthesis.voice, text=play.synthesis.text, start=play.start * SLOT / RATE, into=round(play.into, 3), stop=play.stop * SLOT / RATE)
+        for play in plays(sound)
+    ]
 
 
 def claimed(root: Path, named: str) -> Path:
