@@ -18,10 +18,10 @@ from hands.virtualclock import VirtualClock
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Reference, Sound, Playhead, Synthesis
+from hands.voice.clips import RATE, Clip, Reference, Sound, Playhead, Synthesis, track
 from hands.voice.echo import Cancelled
 from hands.voice import recorder as recorders
-from hands.voice.recorder import Recorder, track
+from hands.voice.recorder import Recorder
 from hands.voice.voiceprints import Voiced
 
 

@@ -23,17 +23,13 @@ import threading
 import wave
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
-from itertools import groupby
 from pathlib import Path
 from typing import Protocol
-
-import numpy as np
-import soxr
 
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.clips import RATE, SLOT, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, plays, voices
+from hands.voice.clips import RATE, SLOT, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, plays, track, voices
 from hands.voice.echo import Cancelled
 from hands.voice.voiceprints import WINDOW, Voiced
 
@@ -41,26 +37,6 @@ from hands.voice.voiceprints import WINDOW, Voiced
 # dataset the speaker check is fitted and checked on (promptctl-voice-i15t.8vg.xvr), kept as the most recent real use:
 # past this, whole runs go, oldest first.
 CLIPS_BYTES = 2 * 1024**3
-
-def track(played: tuple[Reference | None, ...]) -> bytes:
-    """What the speaker played, one 10 ms slot for each reference, in a recording's format: each run of references of
-    one format joined, mixed down to mono and resampled once, and silence where it played no TTS."""
-    out = list[bytes]()
-    for form, run in groupby(played, lambda reference: None if reference is None else (reference.rate, reference.channels)):
-        references = list(run)
-        wanted = len(references) * SLOT
-        match form:
-            case None:
-                out.append(bytes(2 * wanted))
-            case (rate, channels):
-                joined = b"".join(reference.audio for reference in references if reference is not None)
-                samples = np.frombuffer(joined, np.int16).reshape(-1, channels).mean(axis=1).astype(np.float32)
-                # The resampler's length is the run's to a sample or two: fitted to it, so every slot lines up.
-                fitted = np.zeros(wanted, np.float32)
-                resampled = soxr.resample(samples, rate, RATE)[:wanted]
-                fitted[: len(resampled)] = resampled
-                out.append(np.round(fitted).clip(-32768, 32767).astype(np.int16).tobytes())
-    return b"".join(out)
 
 
 def written(path: Path, audio: bytes) -> int:

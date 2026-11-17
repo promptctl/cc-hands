@@ -17,10 +17,12 @@ clip changes for it.
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from itertools import groupby
 from typing import Literal, Protocol
 
 import numpy as np
 import numpy.typing as npt
+import soxr
 
 from hands.sessions.audit import Levels
 from hands.sessions.wide import Begun
@@ -145,6 +147,27 @@ def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
 def voices(sound: Sound) -> tuple[str, ...]:
     """Every voice of hands' TTS played over `sound`, in the order first played."""
     return tuple(dict.fromkeys(voice for slot in slots(sound) for voice in slot))
+
+
+def track(played: tuple[Reference | None, ...]) -> bytes:
+    """What the speaker played, one 10 ms slot for each reference, in a recording's format: each run of references of
+    one format joined, mixed down to mono and resampled once, and silence where it played no TTS."""
+    out = list[bytes]()
+    for form, run in groupby(played, lambda reference: None if reference is None else (reference.rate, reference.channels)):
+        references = list(run)
+        wanted = len(references) * SLOT
+        match form:
+            case None:
+                out.append(bytes(2 * wanted))
+            case (rate, channels):
+                joined = b"".join(reference.audio for reference in references if reference is not None)
+                samples = np.frombuffer(joined, np.int16).reshape(-1, channels).mean(axis=1).astype(np.float32)
+                # The resampler's length is the run's to a sample or two: fitted to it, so every slot lines up.
+                fitted = np.zeros(wanted, np.float32)
+                resampled = soxr.resample(samples, rate, RATE)[:wanted]
+                fitted[: len(resampled)] = resampled
+                out.append(np.round(fitted).clip(-32768, 32767).astype(np.int16).tobytes())
+    return b"".join(out)
 
 
 @dataclass(frozen=True)

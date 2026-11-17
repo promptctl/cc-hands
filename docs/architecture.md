@@ -1946,10 +1946,18 @@ captured. Through hands'
 canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
 person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by
 `scripts/record-double-talk.py`), so a person saying "No, the build is broken." over hands' "the
-build is green" is sent every word; `ClipHeard.cancelled` counts the words of hands' the canceller
-took out. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
+build is green" is sent every word. Where no echo of hands' reached the microphone at all
+(headphones, or the speaker muted), the loss is 0 too, so the echo path is read first, once a
+clip: the GCC-PHAT of what the microphone captured against what the speaker played, over the
+stretch hands played, in 200 Hz to 4 kHz, within 0.5 s either way, its peak over its RMS. It is
+58 at the desk with the speaker on and 4.8, chance, with hands' voice in headphones
+(`tests/fixtures/hands_no_echo_and_another.flac`). Below 15, no word of hands' is placed, and
+Whisper hears the clip as the microphone captured it: with no echo to take out, the canceller
+still ducks a person's voice under hands' by 30 to 50 dB, and Whisper lost "the build is" in it.
+`ClipHeard.unheard` counts the words of hands' not in what Whisper heard, and `echo_path` is the
+reading. Heard through no canceller with an echo, the loss is 0 and the text rule decides alone, and there a
 person who says a word hands said within 1.5 s of it loses that word. A clip hands played nothing
-over, or one the canceller took all of hands' voice out of, is decoded without its words timed,
+over, one no echo of hands' reached, or one the canceller took all of hands' voice out of, is decoded without its words timed,
 which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
 canceller is told what it plays, nothing is hands'.
 

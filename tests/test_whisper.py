@@ -15,7 +15,7 @@ from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import Clip, Played, Reference, Sound, Playhead, Synthesis
+from hands.voice.clips import Clip, Played, Reference, Sound, Playhead, Synthesis, decoded, track
 from hands.voice.whisper import Whisper
 
 
@@ -72,37 +72,47 @@ def as_heard(audio: bytes, played: Played = None) -> Sound:
 
 def saying(seconds: float, *sentences: tuple[str, float, float]) -> Sound:
     """`seconds` of a clip, hands saying each of `sentences` over it, its text from its start to its stop in seconds, one
-    synthesis each, as the canceller hands what was played on: one reference for each 10 ms."""
+    synthesis each, as the canceller hands what was played on: one reference for each 10 ms, hands' voice as noise at
+    -20 dBFS. Its echo is what the microphone captured, and heard through no canceller."""
     said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
+    voice = np.random.default_rng(0).normal(0, 3_277, round(seconds * 16_000)).astype(np.int16)
 
     def at(slot: int) -> Reference | None:
         playing = tuple(Playhead(synthesis, slot / 100 - start) for synthesis, start, stop in said if start <= slot / 100 < stop)
-        return Reference(bytes(320), 16_000, 1, playing) if playing else None
+        return Reference(voice[160 * slot : 160 * (slot + 1)].tobytes(), 16_000, 1, playing) if playing else None
 
-    return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
+    played = tuple(at(slot) for slot in range(round(seconds * 100)))
+    return as_heard(track(played), played)
 
 
 def cancelling(sound: Sound, start: float, stop: float) -> Sound:
-    """`sound` with the echo canceller taking hands' voice out from `start` to `stop` s: the microphone captured hands at
-    -20 dBFS there, and what was heard after the canceller is 40 dB below it."""
-    rng = np.random.default_rng(0)
-    captured = np.frombuffer(sound.captured, np.int16).copy()
+    """`sound` with the echo canceller taking hands' voice out from `start` to `stop` s: what was heard after the
+    canceller there is 40 dB below what the microphone captured."""
     heard = np.frombuffer(sound.heard, np.int16).copy()
     span = slice(round(start * 16_000), round(stop * 16_000))
-    noise = rng.normal(0, 3_277, span.stop - span.start)
-    captured[span], heard[span] = noise.astype(np.int16), (noise / 100).astype(np.int16)
-    return Sound(heard.tobytes(), captured.tobytes(), sound.played)
+    heard[span] = (np.frombuffer(sound.captured, np.int16)[span] / 100).astype(np.int16)
+    return Sound(heard.tobytes(), sound.captured, sound.played)
+
+
+def headphones(sound: Sound) -> Sound:
+    """`sound` with hands' voice in headphones: none of what was played reached the microphone, which captured a quiet
+    room, and the canceller, with no echo to take out, ducked all of it to digital silence."""
+    room = np.random.default_rng(1).normal(0, 33, len(sound.captured) // 2).astype(np.int16).tobytes()
+    return Sound(bytes(len(room)), room, sound.played)
 
 
 @dataclass
 class Timed:
     """Whisper as these tests answer it with timed words: each segment it hears in the next clip, a word to each
-    (text, start, end), each spoken in as Silero hears it; and whether each clip asked for its words timed."""
+    (text, start, end), each spoken in as Silero hears it; and the samples each clip was heard as, and whether it asked
+    for its words timed."""
 
     segments: list[list[tuple[str, float, float]]] = field(default_factory=list[list[tuple[str, float, float]]])
+    samples: list[np.ndarray] = field(default_factory=list[np.ndarray])
     asked: list[bool] = field(default_factory=list[bool])
 
-    def heard(self, _samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
+    def heard(self, samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
+        self.samples.append(samples)
         self.asked.append(words)
         return [
             transcription.Segment("".join(text for text, _, _ in each).strip(), each[0][1], each[-1][2], 0.8, -0.3, tuple(transcription.Word(*word) for word in each) if words else ())
@@ -328,14 +338,14 @@ async def test_a_persons_words_that_hands_said_too_are_sent_where_the_canceller_
     timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
     clip_heard = await told(cancelling(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4)), 0.0, 3.5))
     # [LAW:nothing-unseen] every word hands played was taken out, and the clip was decoded with no word timed.
-    assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
+    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
 
 
 async def test_hands_words_the_canceller_left_in_are_hands_beside_a_stretch_it_took_hands_voice_out_of(timed: Timed) -> None:
     # The canceller took hands' first sentence out, and left its second, 2 s on, as it came through the room.
     timed.segments += [spaced("Okay, run the tests.", 0.1, 0.3), spaced("The build is green.", 2.6, 0.3)]
     clip_heard = await told(cancelling(saying(4.0, ("Okay, run the tests.", 0.0, 1.5), ("The build is green.", 2.5, 3.8)), 0.0, 1.5))
-    assert (clip_heard.said, clip_heard.echo, clip_heard.cancelled) == ("Okay, run the tests.", ("The", "build", "is", "green."), 4)
+    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard) == ("Okay, run the tests.", ("The", "build", "is", "green."), 4)
 
 
 async def test_a_word_hands_played_before_the_clip_opened_is_hands_where_the_canceller_took_out_only_what_came_later(timed: Timed) -> None:
@@ -350,8 +360,29 @@ async def test_hands_words_the_canceller_left_in_after_a_minute_of_loud_speech_a
     # 50 s at -10 dBFS, then hands' echo captured at -45 dBFS and heard at -55: the canceller took out 10 dB of it, short
     # of `_CANCELLING`, however long the loud stretch before it.
     timed.segments.append(spaced("The build is green.", 55.1, 0.3))
-    rng = np.random.default_rng(0)
-    loud = rng.normal(0, 10_362, 50 * 16_000)
-    captured, heard = (np.concatenate((loud, rng.normal(0, deviation, 10 * 16_000))).astype(np.int16).tobytes() for deviation in (184, 58))
-    clip_heard = await told(Sound(heard, captured, saying(60.0, ("The build is green.", 55.0, 56.5)).played))
-    assert (clip_heard.said, clip_heard.cancelled) == (None, 0), clip_heard
+    sound = saying(60.0, ("The build is green.", 55.0, 56.5))
+    loud = np.random.default_rng(0).normal(0, 10_362, 50 * 16_000)
+    echo = np.frombuffer(sound.captured, np.int16)[50 * 16_000 :].astype(np.float64)
+    captured, heard = (np.concatenate((loud, echo * deviation / 3_277)).astype(np.int16).tobytes() for deviation in (184, 58))
+    clip_heard = await told(Sound(heard, captured, sound.played))
+    assert (clip_heard.said, clip_heard.unheard) == (None, 0), clip_heard
+
+
+async def test_a_persons_words_that_hands_said_too_are_sent_where_no_echo_of_hands_reached_the_microphone(timed: Timed) -> None:
+    # The same person over the same sentence, with hands' voice in headphones: there was no echo for a canceller to take
+    # out, and none of hands' voice is in what Whisper heard.
+    timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
+    sound = headphones(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4)))
+    clip_heard = await told(sound)
+    # [LAW:nothing-unseen] every word hands played is unheard, and the echo path read no higher than chance.
+    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
+    assert clip_heard.echo_path is not None and clip_heard.echo_path < 10, clip_heard
+    # Whisper heard the clip as the microphone captured it, not as the canceller ducked it.
+    assert np.array_equal(timed.samples[-1][: len(sound.captured) // 2], decoded(sound.captured))
+
+
+async def test_the_echo_path_of_hands_voice_through_the_room_reads_far_above_chance_and_none_where_hands_played_nothing(timed: Timed) -> None:
+    timed.segments.append(spaced("Done.", 0.1, 0.3))
+    assert (await told(as_heard(SILENCE, (None,) * 100))).echo_path is None
+    echoed = await told(saying(2.0, ("Done.", 0.0, 1.0)))
+    assert echoed.echo_path is not None and echoed.echo_path > 50, echoed

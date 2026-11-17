@@ -48,31 +48,39 @@ READ = (
 )
 
 
-def played(onsets: tuple[float, ...], stopped: float, start: float, seconds: float) -> Played:
-    """What the speaker played over `seconds` of a recording from `start`, one reference for each 10 ms: each of hands'
+def played(onsets: tuple[float, ...], stopped: float, start: float, clip: bytes) -> Played:
+    """What the speaker played over `clip`, a recording from `start`, one reference for each 10 ms: each of hands'
     sentences, a synthesis of its own, from its onset in `onsets` to the next one's, and nothing once the play stopped at
-    `stopped`."""
+    `stopped`. What was played was not kept, so each reference's sound is the clip's own over its 10 ms: it is read for
+    whether hands' voice reached the microphone, and on these recordings it did."""
     said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in READ)
 
-    def at(moment: float) -> Reference | None:
+    def at(slot: int) -> Reference | None:
+        moment = start + slot * SLOT / RATE
         playing = tuple(Playhead(synthesis, moment - onset) for onset, end, synthesis in zip(onsets, [*onsets[1:], stopped], said) if onset <= moment < end)
-        return Reference(bytes(2 * SLOT), RATE, 1, playing) if playing else None
+        return Reference(clip[2 * SLOT * slot : 2 * SLOT * (slot + 1)], RATE, 1, playing) if playing else None
 
-    return tuple(at(start + slot * SLOT / RATE) for slot in range(round(seconds * RATE / SLOT)))
+    return tuple(at(slot) for slot in range(len(clip) // (2 * SLOT)))
 
 
-CANCELLED = Path(__file__).parent / "fixtures" / "hands_cancelled_and_another"
-# The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
-# says them.
+FIXTURES = Path(__file__).parent / "fixtures"
+CANCELLED = FIXTURES / "hands_cancelled_and_another"
+# hands_no_echo_and_another.flac: the same, recorded with hands' voice in headphones, none of it out of the speaker.
+NO_ECHO = FIXTURES / "hands_no_echo_and_another"
+# The second voice's lines on both, "the build is" and "Say the next step" said where hands says them.
 OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
-# When the second voice first speaks on it, in seconds.
+# When the second voice first speaks on hands_cancelled_and_another.flac, in seconds.
 CANCELLED_ALONE = json.loads(CANCELLED.with_suffix(".json").read_text())["other"][0]["start"]
 
 
-def cancelled() -> Sound:
-    """hands_cancelled_and_another.flac as the desk heard it, and what the speaker played over each 10 ms of it."""
-    described = json.loads(CANCELLED.with_suffix(".json").read_text())
+def take(fixture: Path) -> Sound:
+    """A take of scripts/record-double-talk.py as the desk heard it, and what the speaker played over each 10 ms of it."""
+    described = json.loads(fixture.with_suffix(".json").read_text())
     said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
-    samples, _ = audio(CANCELLED.with_suffix(".flac"))
-    played = tuple(None if slot is None else Reference(bytes(2 * SLOT), RATE, 1, (Playhead(said[int(slot[0])], float(slot[1])),)) for slot in described["played"])
+    samples, _ = audio(fixture.with_suffix(".flac"))
+    reference = samples[:, 2].tobytes()
+    played = tuple(
+        None if slot is None else Reference(reference[2 * SLOT * at : 2 * SLOT * (at + 1)], RATE, 1, (Playhead(said[int(slot[0])], float(slot[1])),))
+        for at, slot in enumerate(described["played"])
+    )
     return Sound(samples[: len(played) * SLOT, 0].tobytes(), samples[: len(played) * SLOT, 1].tobytes(), played)

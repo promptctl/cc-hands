@@ -101,15 +101,18 @@ class Levels:
 @dataclass(frozen=True)
 class ClipHeard:
     """What Whisper made of one clip: what it took as said, None where nothing was, each segment it dropped as noise, and
-    each word it dropped as hands' own voice come back through the microphone, in order; and how many of the words hands
-    played over it the echo canceller took out, which no word it heard was taken for. How loud the clip was is on its
-    `clip` event, beside it."""
+    each word it dropped as hands' own voice come back through the microphone, in order; how many of the words hands
+    played over it were not in what it heard, which no word it heard was taken for: none reached the microphone, or the
+    echo canceller took them out; and how far above chance the echo of what hands played was in what the microphone
+    captured, None where hands played nothing over it (`hands.voice.whisper`). How loud the clip was is on its `clip`
+    event, beside it."""
 
     clip: int
     said: str | None
     dropped: tuple[Unsaid, ...]
     echo: tuple[str, ...]
-    cancelled: int
+    unheard: int
+    echo_path: float | None
 
 
 @dataclass(frozen=True)

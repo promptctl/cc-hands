@@ -12,7 +12,7 @@ from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED_ALONE, HANDS_ALONE, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cancelled, played
+from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED, CANCELLED_ALONE, HANDS_ALONE, NO_ECHO, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, played, take
 from speech import RATE, audio, quiet, spoken
 
 pytestmark = pytest.mark.outside
@@ -94,7 +94,7 @@ def recorded(name: str, start: float, end: float, onsets: tuple[float, ...], sto
     `stopped`."""
     samples, rate = audio(FIXTURES / name)
     clip = samples[round(start * rate) : round(end * rate)].tobytes()
-    return Sound(clip, clip, played(onsets, stopped, start, end - start))
+    return Sound(clip, clip, played(onsets, stopped, start, clip))
 
 
 def hands_runs(said: str) -> list[str]:
@@ -152,7 +152,7 @@ async def test_a_long_dictation_comes_back_whole(over: float) -> None:
     sentences = [*NAMED, *PROSE]
     audio = b"".join(spoken(text) + quiet(PAUSES[index % len(PAUSES)]) for index, text in enumerate(sentences))
 
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), Sound(audio, audio, played((0.0,), over, 0.0, len(audio) / (2 * RATE))))
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), Sound(audio, audio, played((0.0,), over, 0.0, audio)))
 
     assert said is not None
     # Every sentence is there, in order, near enough word for word: a window lost loses whole sentences, while Whisper
@@ -181,7 +181,7 @@ async def test_hands_heard_alone_after_the_person_sends_nothing() -> None:
 
 async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
     # Up to where the second voice first speaks: no word of hands' is left to match.
-    sound, slots = cancelled(), round(CANCELLED_ALONE * 100)
+    sound, slots = take(CANCELLED), round(CANCELLED_ALONE * 100)
     alone = Sound(sound.heard[: 2 * SLOT * slots], sound.captured[: 2 * SLOT * slots], (sound.played or ())[:slots])
 
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), alone) is None
@@ -189,7 +189,15 @@ async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
 
 async def test_a_person_saying_hands_words_over_hands_through_the_canceller_is_sent_every_word() -> None:
     # "the build is" and "Say the next step", said where hands says them: by text and time alone, they are hands'.
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), cancelled())
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), take(CANCELLED))
+
+    assert said is not None and words(said) == words(" ".join(OVER_CANCELLED)), said
+
+
+async def test_a_person_saying_hands_words_over_hands_in_headphones_is_sent_every_word() -> None:
+    # No echo of hands' reached the microphone, so the canceller had none to take out: by text and time alone, the
+    # person's "the build is" and "Say the next step" are hands'.
+    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), take(NO_ECHO))
 
     assert said is not None and words(said) == words(" ".join(OVER_CANCELLED)), said
 

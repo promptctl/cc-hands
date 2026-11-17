@@ -6,7 +6,8 @@ hands' own words are known by their text and their time: each word Whisper heard
 hands played near when it was heard. A Whisper segment is no voice boundary: primed with hands' vocabulary, Whisper
 heard a person's lines and hands' sentences in one segment (tests/fixtures/hands_and_another.flac, 8.2 s to 24 s), so
 only a word, timed, is one voice's. Text and time alone cannot tell a person repeating hands' words from hands' echo,
-so a word of hands' counts only where the echo canceller left hands' voice in what Whisper hears.
+so a word of hands' counts only where hands' voice is in what Whisper hears: its echo reached the microphone, and the
+echo canceller left it in.
 """
 
 import re
@@ -24,7 +25,7 @@ from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice import transcription
-from hands.voice.clips import RATE, SECOND, SLOT, Clip, Play, Sound, decoded, plays
+from hands.voice.clips import RATE, SECOND, SLOT, Clip, Play, Sound, decoded, plays, track
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -67,6 +68,20 @@ _CANCELLING = 20.0
 # The stretch, in 10 ms slots, the canceller's ERLE is taken over: 0.2 s, as `_CANCELLING` was measured. A single slot's
 # is too unsteady to read, its power down to a phoneme.
 _ERLE_SLOTS = 20
+
+# How far above chance the echo path's peak is, at least, where hands' voice reached the microphone: the GCC-PHAT of what
+# the microphone captured against what the speaker played (`_echo_path`). Over the stretch hands played, at the desk with
+# its speaker on (tests/fixtures/hands_cancelled_and_another.flac) 58, and in every 1 s of it 16 to 58; with hands'
+# voice in headphones (hands_no_echo_and_another.flac) 4.8, chance, and in no 0.5 s of it above 13.8.
+_ECHO_PATH = 15.0
+
+# The band the echo path is looked for in, in Hz, where speech carries: above 4 kHz, two voices of hands' own TTS
+# correlate with nobody's echo between them, 12.5 over 100 Hz to 7 kHz with no echo at all.
+_ECHO_BAND = (200.0, 4000.0)
+
+# How far apart in time, in seconds, the speaker's reference and its echo are looked for, either way: 68 ms at the
+# desk, and the reference can reach the canceller after its echo (hands.voice.echo).
+_ECHO_LAG = 0.5
 
 # How far either side of where a word of hands' is placed, in seconds, the canceller is looked for taking hands' voice
 # out: a word is placed up to 0.8 s from where it played (`_CHARACTERS_PER_SECOND`), and while a person speaks over
@@ -126,20 +141,21 @@ class Whisper:
         A segment with no word in it is dropped, as are one the decoder repeated itself in, one Whisper only guessed at,
         and one heard where Silero heard nobody speak: that is what Whisper makes of silence and noise. Of the rest, each
         word that is hands' own voice come back (`_parted`) goes too. A clip with nothing said in it comes back with no
-        segment. A clip hands' voice was left in is decoded with its words timed, which one hands played nothing over, or
-        one the canceller took all of hands' voice out of, has no need of, and does not wait on.
+        segment. A clip hands' voice was left in is decoded with its words timed, which one hands played nothing over, one
+        no echo of hands' reached, or one the canceller took all of hands' voice out of, has no need of, and does not
+        wait on.
         """
         played = _placed(plays(sound))
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
 
-        def scored_unless_given_up() -> tuple[Placed, list[tuple[transcription.Segment, float]]]:
-            return ((), []) if given_up.is_set() else self._scored(sound, prompt, played)
+        def scored_unless_given_up() -> tuple[float | None, Placed, list[tuple[transcription.Segment, float]]]:
+            return (None, (), []) if given_up.is_set() else self._scored(sound, prompt, played)
 
         try:
             # Off the loop, the clip's decoding and its levels with it: the model runs for a third of a second a clip, and
             # the speaker and the key go on meanwhile.
-            placed, scored = await self._model.run(scored_unless_given_up)
+            echo_path, placed, scored = await self._model.run(scored_unless_given_up)
         finally:
             given_up.set()
         kept: list[transcription.Segment] = []
@@ -150,16 +166,25 @@ class Whisper:
             else:
                 dropped.append(Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, voiced))
         said, echo = _parted(kept, placed)
-        return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo, len(played) - len(placed))
+        return ClipHeard(clip, " ".join(said) or None, tuple(dropped), echo, len(played) - len(placed), echo_path)
 
-    def _scored(self, sound: Sound, prompt: str | None, played: Placed) -> tuple[Placed, list[tuple[transcription.Segment, float]]]:
-        """The words of hands' `played` over a clip that the canceller left in it (`_left`), and each segment Whisper hears
-        in it, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, its words timed where any of hands' were
-        left, and how sure Silero is that anyone spoke in the stretch it was heard in. It blocks while the model runs."""
-        placed = _left(played, sound)
-        samples = decoded(sound.heard + _TRAILING_SILENCE)
+    def _scored(self, sound: Sound, prompt: str | None, played: Placed) -> tuple[float | None, Placed, list[tuple[transcription.Segment, float]]]:
+        """The clip's echo path (`_echo_path`), the words of hands' `played` over it that are in what Whisper hears, and
+        each segment Whisper hears in it, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, its words timed
+        where any of hands' were left, and how sure Silero is that anyone spoke in the stretch it was heard in. It blocks
+        while the model runs.
+
+        Where hands played and no echo of it reached the microphone, an echo path short of `_ECHO_PATH` (headphones, or
+        the speaker muted), none of hands' words is in it, and Whisper hears the clip as the microphone captured it: the
+        canceller had nothing to take out, and still ducks a person's voice under hands', 30 to 50 dB under "the build
+        is" on tests/fixtures/hands_no_echo_and_another.flac, which Whisper then never hears. Elsewhere it hears the
+        clip through the canceller, and of hands' words, those the canceller left in (`_left`)."""
+        echo_path = _echo_path(sound)
+        unechoed = echo_path is not None and echo_path < _ECHO_PATH
+        heard, placed = (sound.captured, ()) if unechoed else (sound.heard, _left(played, sound))
+        samples = decoded(heard + _TRAILING_SILENCE)
         segments = transcription.segments(samples, prompt, words=bool(placed))
-        return placed, [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in segments]
+        return echo_path, placed, [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in segments]
 
     def _voiced(self, samples: np.ndarray) -> float:
         """How sure Silero is that anyone spoke in `samples`: its confidence in the surest of its 32 ms frames, from a fresh
@@ -192,6 +217,31 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
         for into in ((word.start() + word.end()) / 2 / _CHARACTERS_PER_SECOND,)
         if into - play.into <= (play.stop - play.start) * SLOT / RATE + _ECHO_SECONDS
     )
+
+
+def _echo_path(sound: Sound) -> float | None:
+    """How far above chance the echo of what the speaker played over `sound` is in what the microphone captured: the
+    GCC-PHAT of the two over the stretch hands played, in `_ECHO_BAND`, within `_ECHO_LAG` either way, its peak over its
+    RMS. None where hands played nothing over it, or what it played is not known, as at the phone. The phase transform
+    weighs every frequency alike, so the room's response, which spreads an echo over many lags, still leaves one peak."""
+    reference = decoded(track(sound.played or ()))
+    playing = np.flatnonzero(reference)
+    if not playing.size:
+        return None
+    span = slice(playing[0], playing[-1] + 1)
+    length = int(span.stop - span.start)
+    # No further than the span reaches: a lag past it pairs no sample with another.
+    lag = min(round(_ECHO_LAG * RATE), length - 1)
+    # Twice the span, and the correlation is linear: no lag wraps round onto another.
+    size = 1 << (2 * length - 1).bit_length()
+    cross = np.fft.rfft(decoded(sound.captured)[span], size) * np.conj(np.fft.rfft(reference[span], size))
+    frequency = np.fft.rfftfreq(size, 1 / RATE)
+    band = (frequency >= _ECHO_BAND[0]) & (frequency <= _ECHO_BAND[1]) & (np.abs(cross) > 0)
+    gcc = np.fft.irfft(np.where(band, cross / np.where(band, np.abs(cross), 1), 0), size)
+    lags = np.concatenate((gcc[: lag + 1], gcc[size - lag :]))
+    spread = float(np.sqrt(np.mean(lags**2)))
+    # Captured in digital silence while hands played holds no echo of it at all: no higher above chance than nothing.
+    return round(float(np.abs(lags).max()) / spread, 1) if spread else 0.0
 
 
 def _left(placed: Placed, sound: Sound) -> Placed:
