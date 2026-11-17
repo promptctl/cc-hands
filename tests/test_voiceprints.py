@@ -50,9 +50,9 @@ def by_length(prints: dict[int, Print]) -> Embed:
 
 
 def voiced(
-    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True, heard: tuple[range, ...] = ()
+    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, played: tuple[str, ...] = (), first: float = 0.0, said: bool = True, over: tuple[range, ...] = ()
 ) -> Voiced:
-    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said, heard)
+    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, played, first, said, over)
 
 
 def rounded(who: Who) -> Who:
@@ -110,10 +110,10 @@ def test_only_hands_echo_is_where_no_one_else_was_heard_and_a_frame_a_person_sha
     frames = [range(start, start + 1280) for start in range(0, 6 * 1280, 1280)]
     judged = (
         # hands' echo through the first four frames, a person over its last two and on alone after it,
-        (voiced(1, 1.4, played=over, heard=tuple(frames[:4])), Speaker(0, hands)),
-        (voiced(1, 3.0, speaker=1, played=over, heard=tuple(frames[2:])), Speaker(1, person)),
-        # and a speaker hands played nothing over, never its echo, in the first frame.
-        (voiced(1, 0.1, speaker=2, heard=(frames[0],)), Speaker(2, Unheard(0.1))),
+        (voiced(1, 1.4, played=over, over=tuple(frames[:4])), Speaker(0, hands)),
+        (voiced(1, 3.0, speaker=1, played=over, over=tuple(frames[2:])), Speaker(1, person)),
+        # and one too brief to score in the first frame, who could be anyone, so the frame is theirs.
+        (voiced(1, 0.1, speaker=2, played=over, over=(frames[0],)), Speaker(2, Unheard(0.1))),
     )
     assert echoed(judged) == (frames[1],)
 
@@ -168,7 +168,7 @@ async def test_the_lane_tells_each_person_it_clears_over_hands_and_settles_each_
     # A wake phrase said alone over hands, 0.8 s from 0.3 s, after a frame of hands' echo: told at the end by the
     # closing row, the echo's frame hands' alone.
     echoed_frame, phrase = range(0, 1280), range(1280, 2560)
-    ending = (voiced(5, 0.8, speaker=2, played=over, first=0.3, heard=(phrase,)), voiced(7, 3.0, played=over, heard=(echoed_frame,)))
+    ending = (voiced(5, 0.8, speaker=2, played=over, first=0.3, over=(phrase,)), voiced(7, 3.0, played=over, over=(echoed_frame,)))
     prints.ended(CLIP, ending, settled.append)
     # Nobody heard; and an identification that fails: both settle, with nobody.
     prints.ended(SECOND, (), settled.append)

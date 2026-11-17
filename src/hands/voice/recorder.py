@@ -231,5 +231,5 @@ class Recorder:
             directory = await asyncio.to_thread(self._written, f"echo-{span}", sound, facts)
             annotate(kept=directory / f"echo-{span}.heard.wav")
         voice = decoded(sound.heard)
-        # A span is no clip: its one voice is heard from its start.
+        # A span is no clip: its one voice is heard from its start, hands playing over all of it.
         self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound), 0.0, False, (range(len(voice)),)))

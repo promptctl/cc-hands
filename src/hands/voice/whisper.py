@@ -81,16 +81,16 @@ class Whisper:
         clip with hands' own echo silenced, as the clip's last identification found it, so a segment heard only in
         hands' voice is nobody's, and is dropped with them. A clip with nothing said in it comes back with no segment.
         """
-        samples = decoded(audio + _TRAILING_SILENCE)
         # Set once nobody waits for this clip's transcription any more: the model is not run on it if it has yet to be.
         given_up = threading.Event()
         try:
-            # Off the loop: the model runs for a third of a second a clip, and the speaker and the key go on meanwhile.
+            # Off the loop, the clip's decoding with it: the model runs for a third of a second a clip, and the speaker and
+            # the key go on meanwhile.
             # [LAW:no-ambient-temporal-coupling] Whisper hears the clip while its speakers are still being identified;
             # only Silero's pass, a few milliseconds, waits on who they were.
-            segments = await self._model.run(lambda: [] if given_up.is_set() else transcription.segments(samples, prompt))
-            people = _silenced(samples, (await identified).echo)
-            scored = await self._voicing.run(lambda: [] if given_up.is_set() else self._scored(segments, people))
+            samples, segments = await self._model.run(lambda: _UNHEARD if given_up.is_set() else _segments(audio, prompt))
+            echo = (await identified).echo
+            scored = await self._voicing.run(lambda: [] if given_up.is_set() else self._scored(segments, _silenced(samples, echo)))
         finally:
             given_up.set()
         said: list[str] = []
@@ -122,6 +122,17 @@ class Whisper:
             if surest >= _VOICED:
                 break
         return surest
+
+
+# A clip given up on before the model reached it: no samples, and no segment heard in them.
+_UNHEARD: tuple[np.ndarray, list[transcription.Segment]] = (np.zeros(0, np.float32), [])
+
+
+def _segments(audio: bytes, prompt: str | None) -> tuple[np.ndarray, list[transcription.Segment]]:
+    """A clip's audio as samples, heard with `_TRAILING_SILENCE` after it, and each segment Whisper hears in them, primed
+    with `prompt`. It blocks while the model runs."""
+    samples = decoded(audio + _TRAILING_SILENCE)
+    return samples, transcription.segments(samples, prompt)
 
 
 def _silenced(samples: np.ndarray, echo: Echo) -> np.ndarray:

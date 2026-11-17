@@ -199,7 +199,7 @@ class Voiced:
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
     every voice of hands' TTS played over any of them, how many seconds after the clip opened they were first heard,
     under none in what it kept from before, whether the stream has decoded any words of theirs, and where in the clip's
-    audio the diarizer heard them, a range of samples to each frame."""
+    audio the diarizer heard them while hands played, a range of samples to each frame."""
 
     speaker: int
     voice: Samples
@@ -208,7 +208,7 @@ class Voiced:
     played: tuple[str, ...]
     first: float
     said: bool
-    heard: tuple[range, ...]
+    over: tuple[range, ...]
 
 
 @dataclass(frozen=True)
@@ -236,7 +236,7 @@ def echoed(judged: tuple[tuple[Voiced, Speaker], ...]) -> Echo:
     heard in, in the order of the clip. A frame a person shares with hands is the person's, so their words over hands go."""
     hands, others = set[range](), set[range]()
     for each, speaker in judged:
-        (hands if echo(speaker.who, bool(each.played)) else others).update(each.heard)
+        (hands if echo(speaker.who, bool(each.played)) else others).update(each.over)
     return tuple(sorted(hands - others, key=lambda at: at.start))
 
 

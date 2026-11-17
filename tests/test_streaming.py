@@ -407,8 +407,9 @@ def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard_only_whe
     # And every voice of them is told from there.
     [voiced] = stream.ended().voices
     assert voiced.first == pytest.approx(0.06)
-    # Where in the clip's audio, counted from the first sample it kept, as its transcriber is given it.
-    assert voiced.heard == (range(7 * streaming.FRAME, 8 * streaming.FRAME), range(8 * streaming.FRAME, 9 * streaming.FRAME))
+    # Where in the clip's audio hands played over them, counted from the first sample it kept, as its transcriber is
+    # given it: nowhere, where it played nothing.
+    assert voiced.over == ((range(7 * streaming.FRAME, 8 * streaming.FRAME), range(8 * streaming.FRAME, 9 * streaming.FRAME)) if over else ())
 
 
 async def test_a_hearings_words_go_out_without_waiting_on_who_said_them(tmp_path: Path) -> None:
