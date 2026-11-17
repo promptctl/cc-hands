@@ -23,6 +23,7 @@ import numpy as np
 import numpy.typing as npt
 
 from hands.sessions.audit import Levels
+from hands.sessions.wide import Begun
 
 # What every clip is said in.
 LANGUAGE = "en"
@@ -32,6 +33,9 @@ RATE = 16_000
 
 # Bytes to a second of a clip's audio.
 SECOND = RATE * 2
+
+# A 10 ms slot of a clip, in samples at RATE: the unit the speaker's reference, and so what hands played, comes in.
+SLOT = RATE // 100
 
 
 # [LAW:domain-language] a trigger is what moves the gate (docs/architecture.md, "The gate has one owner and several
@@ -73,15 +77,39 @@ def decoded(audio: bytes) -> Samples:
     return np.frombuffer(audio, dtype=np.int16).astype(np.float32) / np.float32(32768)
 
 
+@dataclass(frozen=True, eq=False)
+class Synthesis:
+    """One sentence hands' TTS made into speech: its `text` as the TTS was handed it, in `voice`, `begun` as it was
+    handed it. Each making is one of its own, so a sentence said twice is two."""
+
+    voice: str
+    text: str
+    begun: Begun
+
+
+@dataclass(frozen=True)
+class Playhead:
+    """Where the desk's speaker was in a synthesis as it played it: `into` it by the seconds of it played before, which
+    a sentence begun before a clip opened is past its start by."""
+
+    synthesis: Synthesis
+    into: float
+
+
 @dataclass(frozen=True)
 class Reference:
     """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
-    speaker's own rate and channels, which are not a clip's; and each voice of the TTS in it, as the TTS made it."""
+    speaker's own rate and channels, which are not a clip's; and each synthesis of the TTS in it, where in it."""
 
     audio: bytes
     rate: int
     channels: int
-    voices: tuple[str, ...]
+    playheads: tuple[Playhead, ...]
+
+    @property
+    def voices(self) -> tuple[str, ...]:
+        """Each voice of the TTS in it, as the TTS made it."""
+        return tuple(dict.fromkeys(playhead.synthesis.voice for playhead in self.playheads))
 
 
 # What the desk's speaker played over each 10 ms of a sound: hands' TTS, or None where it played no TTS, silence or a
@@ -119,6 +147,30 @@ def voices(sound: Sound) -> tuple[str, ...]:
     return tuple(dict.fromkeys(voice for slot in slots(sound) for voice in slot))
 
 
+@dataclass(frozen=True)
+class Play:
+    """One synthesis of hands' as the desk's speaker played it over a sound: from the 10 ms slot it began in, `into` it
+    by as many seconds as the speaker had played of it before, to the one after the last it played in."""
+
+    synthesis: Synthesis
+    start: int
+    into: float
+    stop: int
+
+
+def plays(sound: Sound) -> tuple[Play, ...]:
+    """Each synthesis hands played over `sound`, in the order it began; none at the phone, where none is known."""
+    # Read on the event loop as a clip closes, once for each 10 ms of it: where each began is kept once, and where it
+    # stopped is moved on, and nothing more is made per slot.
+    began: dict[Synthesis, tuple[int, float]] = {}
+    last: dict[Synthesis, int] = {}
+    for at, reference in enumerate(sound.played or ()):
+        for playhead in () if reference is None else reference.playheads:
+            began.setdefault(playhead.synthesis, (at, playhead.into))
+            last[playhead.synthesis] = at
+    return tuple(Play(synthesis, start, into, last[synthesis] + 1) for synthesis, (start, into) in began.items())
+
+
 class Recording:
     """The audio of the clip being gathered, as the pipeline hears it, as the microphone captured it, before the echo
     canceller, and what the speaker played over it: appended and trimmed together, so a clip is measured on both sides
@@ -147,7 +199,7 @@ class Recording:
         match self._played:
             case list() as played:
                 # One reference for each 10 ms cut.
-                del played[: cut // (SECOND // 100)]
+                del played[: cut // (SLOT * 2)]
             case None:
                 pass
 
@@ -175,27 +227,16 @@ class Heard:
 # many seconds after the clip opened they were first heard, under none for one heard in what it kept from before.
 type Cleared = Callable[[float], None]
 
-# Where in a clip's audio hands' own voice was heard and nobody else's, in samples from its first, as the transcriber is
-# given it.
-type Echo = tuple[range, ...]
-
-
 @dataclass(frozen=True)
 class Identified:
     """What a clip's last identification came to: when the first speaker it cleared to cut hands off was first heard, as
-    `Cleared` tells it, None where it cleared nobody; and where in the clip only hands' own echo was heard."""
+    `Cleared` tells it, None where it cleared nobody."""
 
     first: float | None
-    echo: Echo
-
-    @property
-    def echo_seconds(self) -> float:
-        """How many seconds of the clip only hands' own echo was heard in, as its events say."""
-        return round(sum(map(len, self.echo)) / RATE, 3)
 
 
-# An identification that found nobody: nothing cuts, and nothing of the clip is hands'.
-NOBODY = Identified(None, ())
+# An identification that found nobody: nothing cuts.
+NOBODY = Identified(None)
 
 # A clip's last identification, at its end, told to the clip owner from whichever thread made it.
 type Settle = Callable[[Identified], None]
@@ -244,9 +285,10 @@ class Listener(Protocol):
 
 
 class Transcriber(Protocol):
-    """The model whose words a turn sends: given each clip the key sent, whole, as mono 16-bit samples at RATE."""
+    """The model whose words a turn sends: given each clip the key sent, whole, as it was heard and what hands played
+    over it."""
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
-        """The words a person said in `clip`, None where nobody did: none of hands' own, heard where the clip's last
-        identification, once it comes, found only hands' echo. It raises where it cannot say."""
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
+        """The words a person said in `clip`, None where nobody did: none of hands' own, which it knows by the text of
+        what hands played over it. It raises where it cannot say."""
         ...

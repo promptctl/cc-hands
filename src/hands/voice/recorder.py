@@ -33,7 +33,7 @@ import soxr
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.clips import RATE, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, voices
+from hands.voice.clips import RATE, SLOT, Clip, Cleared, Fate, Heard, Hearings, Reference, Settle, Sound, decoded, plays, voices
 from hands.voice.echo import Cancelled
 from hands.voice.voiceprints import WINDOW, Voiced
 
@@ -41,10 +41,6 @@ from hands.voice.voiceprints import WINDOW, Voiced
 # dataset the speaker check is fitted and checked on (promptctl-voice-i15t.8vg.xvr), kept as the most recent real use:
 # past this, whole runs go, oldest first.
 CLIPS_BYTES = 2 * 1024**3
-
-# A 10 ms slot of a recording, in samples at RATE: what the speaker's reference comes in.
-SLOT = RATE // 100
-
 
 def track(played: tuple[Reference | None, ...]) -> bytes:
     """What the speaker played, one 10 ms slot for each reference, in a recording's format: each run of references of
@@ -79,8 +75,9 @@ def written(path: Path, audio: bytes) -> int:
 
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
     """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
-    `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was and
-    every voice of hands' TTS over it; how many bytes they are."""
+    `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was, every
+    voice of hands' TTS over it, and each sentence it said over it, with when, so whose words were whose can be told
+    from the recording alone; how many bytes they are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)
     match sound.played:
         case tuple() as played:
@@ -88,8 +85,17 @@ def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]
         case None:
             pass
     described = directory / f"{name}.json"
-    described.write_text(json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound)}) + "\n")
+    described.write_text(json.dumps({**facts, "seconds": round(sound.seconds, 3), "played": sound.played is not None, "voices": voices(sound), "said": said(sound)}) + "\n")
     return size + described.stat().st_size
+
+
+def said(sound: Sound) -> list[dict[str, object]]:
+    """Each sentence hands said over `sound`, in the order it began to play: its voice, its text, from when to when it
+    played, in seconds from the sound's start, and how many seconds of it had played before."""
+    return [
+        dict(voice=play.synthesis.voice, text=play.synthesis.text, start=round(play.start * SLOT / RATE, 3), into=round(play.into, 3), stop=round(play.stop * SLOT / RATE, 3))
+        for play in plays(sound)
+    ]
 
 
 def claimed(root: Path, named: str) -> Path:
@@ -232,4 +238,4 @@ class Recorder:
             annotate(kept=directory / f"echo-{span}.heard.wav")
         voice = decoded(sound.heard)
         # A span is no clip: its one voice is heard from its start, hands playing over all of it.
-        self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound), 0.0, False, (range(len(voice)),)))
+        self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound), 0.0, False))

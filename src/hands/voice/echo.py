@@ -16,7 +16,7 @@ from typing import Protocol
 
 from livekit import rtc
 
-from hands.voice.clips import Reference
+from hands.voice.clips import Reference, Playhead
 
 # The canceller works on 10 ms frames, in both directions.
 _FRAMES_PER_SECOND = 100
@@ -64,21 +64,21 @@ class Cancelled:
 class Echo(Protocol):
     """What the transport asks of an echo canceller: told what the speaker plays, it cleans what the microphone hears."""
 
-    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None: ...
+    def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None: ...
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled: ...
     def counts(self) -> dict[str, int]: ...
     def close(self) -> None: ...
 
 
-def spoken(reference: rtc.AudioFrame, voices: tuple[str, ...]) -> Reference | None:
-    """The frame of reference as hands' TTS, kept as given, where it carries TTS audio: a voice the TTS made it in, and
-    sound; None for silence, a cue, or the speaker's own padding. Only a frame of TTS is copied, on the capture thread."""
-    match voices:
+def referenced(reference: rtc.AudioFrame, playheads: tuple[Playhead, ...]) -> Reference | None:
+    """The frame of reference as hands' TTS, kept as given, where it carries TTS audio: a synthesis it is of, and sound;
+    None for silence, a cue, or the speaker's own padding. Only a frame of TTS is copied, on the capture thread."""
+    match playheads:
         case ():
             return None
         case _:
             audio = bytes(reference.data.cast("B"))
-            return None if audio.count(0) == len(audio) else Reference(audio, reference.sample_rate, reference.num_channels, voices)
+            return None if audio.count(0) == len(audio) else Reference(audio, reference.sample_rate, reference.num_channels, playheads)
 
 
 class EchoCanceller:
@@ -97,13 +97,13 @@ class EchoCanceller:
 
     def __init__(self) -> None:
         self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
-        # The speaker's audio short of a whole frame, carried to its next buffer, with the voices in it. The speaker's
+        # The speaker's audio short of a whole frame, carried to its next buffer, with the syntheses in it. The speaker's
         # device callback alone touches them.
         self._unplayed = b""
-        self._unplayed_voices: tuple[str, ...] = ()
+        self._unplayed_playheads: tuple[Playhead, ...] = ()
         # [LAW:no-shared-mutable-globals] written by the speaker's device callback, taken by the microphone's capture
         # thread, under the one lock; a ring buffer, so the oldest goes first when nothing takes it.
-        self._held: deque[tuple[rtc.AudioFrame, tuple[str, ...]]] = deque(maxlen=_HELD_FRAMES)
+        self._held: deque[tuple[rtc.AudioFrame, tuple[Playhead, ...]]] = deque(maxlen=_HELD_FRAMES)
         self._holding = threading.Lock()
         # The fewest frames left held after a microphone frame took one, over the window so far, and the frames taken
         # in it. The capture thread alone touches them, under the lock.
@@ -115,19 +115,20 @@ class EchoCanceller:
         # Each is written by one thread: `heard` and `unplayed` by the capture thread, `dropped` and `slipped` under the lock.
         self._counts: dict[str, int] = dict.fromkeys(COUNTS, 0)
 
-    def played(self, audio: bytes, sample_rate: int, channels: int, voices: tuple[str, ...]) -> None:
+    def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None:
         """Hold sound as the speaker's device takes it, silence included, for the microphone frames that hear its echo,
-        each frame with the `voices` of hands' TTS in the buffer it came from, and the first with those carried into it."""
+        each frame with the `playheads` of hands' TTS in the buffer it came from, and the first with those carried into
+        it: each synthesis, where in it the buffer began, so a frame is placed in its synthesis to within one buffer."""
         size = frame_bytes(sample_rate, channels)
         pending = self._unplayed + audio
         whole = len(pending) - len(pending) % size
-        carried = tuple(dict.fromkeys((*self._unplayed_voices, *voices))) if self._unplayed else voices
+        carried = tuple(dict.fromkeys((*self._unplayed_playheads, *playheads))) if self._unplayed else playheads
         frames = [
-            (rtc.AudioFrame(pending[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND), carried if start == 0 else voices)
+            (rtc.AudioFrame(pending[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND), carried if start == 0 else playheads)
             for start in range(0, whole, size)
         ]
         self._unplayed = pending[whole:]
-        self._unplayed_voices = carried if whole == 0 else voices
+        self._unplayed_playheads = carried if whole == 0 else playheads
         with self._holding:
             self._counts["dropped"] += max(0, len(self._held) + len(frames) - _HELD_FRAMES)
             self._held.extend(frames)
@@ -143,9 +144,9 @@ class EchoCanceller:
         cleaned, played = bytearray(), list[Reference | None]()
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference.
-            reference, voices = self._next_played()
+            reference, playheads = self._next_played()
             self._apm.process_reverse_stream(reference)
-            played.append(spoken(reference, voices))
+            played.append(referenced(reference, playheads))
             frame = rtc.AudioFrame(audio[start : start + size], sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
             self._apm.process_stream(frame)  # in place
             cleaned += frame.data.cast("B")
@@ -164,7 +165,7 @@ class EchoCanceller:
         """
         self._apm._ffi_handle.dispose()  # pyright: ignore[reportPrivateUsage]  (LiveKit gives the module no close of its own)
 
-    def _next_played(self) -> tuple[rtc.AudioFrame, tuple[str, ...]]:
+    def _next_played(self) -> tuple[rtc.AudioFrame, tuple[Playhead, ...]]:
         with self._holding:
             taken = self._held.popleft() if self._held else None
             self._slip()

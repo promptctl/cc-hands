@@ -21,15 +21,8 @@ from typing import Literal
 
 from pipecat.frames.frames import DataFrame, Frame, TTSAudioRawFrame, UninterruptibleFrame
 
-from hands.sessions.wide import Begun, Fact, WideEvent, ended
-
-
-@dataclass(frozen=True, eq=False)
-class Synthesis:
-    """One sentence hands' TTS made into speech, in `voice`, `begun` as the TTS was handed it."""
-
-    voice: str
-    begun: Begun
+from hands.sessions.wide import Fact, WideEvent, ended
+from hands.voice.clips import Synthesis
 
 
 @dataclass

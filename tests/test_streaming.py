@@ -7,30 +7,28 @@ import contextlib
 import itertools
 import re
 import threading
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import mlx_whisper
 import numpy as np
 import pytest
 import soundfile
 from loguru import logger
 
 import recordings
+from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES
 from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, turn, unidentified
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
-from hands.virtualclock import VirtualClock
-from hands.voice import engaged, streaming, transcription, voiceprints
+from hands.voice import engaged, streaming, voiceprints
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import NOBODY, Clip, Cleared, Fate, Identified, Reference, Settle, Sound
+from hands.voice.clips import NOBODY, SLOT, Clip, Cleared, Fate, Identified, Reference, Settle, Sound, Playhead, Synthesis
 from hands.voice.voiceprints import Identifier, Voiced
-from hands.voice.whisper import Whisper
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
@@ -72,7 +70,7 @@ class Scripted:
 class Unused:
     """A transcriber no test here gives a clip to."""
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         raise AssertionError("nothing here transcribes")
 
 
@@ -116,9 +114,10 @@ class Rig:
     async def heard(self, clip: Clip, samples: Samples, frame: int = STEPPED, voices: tuple[str, ...] | None = None) -> None:
         """`samples` of `clip`, given in frames of `frame` samples, hands playing in `voices` over them, nothing known of
         what it played for None, and every hearing they bring run."""
+        syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
         for start in range(0, len(samples), frame):
             piece = pcm(samples[start : start + frame])
-            played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, voices) for _ in range(len(piece) // 320))
+            played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses) for _ in range(len(piece) // 320))
             await self.run(clip, self.listener.heard(Sound(piece, piece, played)))
 
     async def ended(self, clip: Clip, fate: Fate) -> None:
@@ -399,17 +398,14 @@ def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard_only_whe
     session = Scripted([(), said("stop")], active=[(), (Active(0, 7), Active(0, 8))])
     stream = streaming.Stream(session)
     kept = round(0.5 * streaming.RATE)
-    stream.opened(sound(0.5), 0, (over,) * (kept // streaming.SLOT))
-    stream.heard(sound(seconds(STEPPED)), (over,) * (STEPPED // streaming.SLOT))
+    stream.opened(sound(0.5), 0, (over,) * (kept // SLOT))
+    stream.heard(sound(seconds(STEPPED)), (over,) * (STEPPED // SLOT))
     since = stream.said()
     assert since.added == said("stop")
     assert since.barge_in_at == (None if cuts is None else pytest.approx(cuts))
     # And every voice of them is told from there.
     [voiced] = stream.ended().voices
     assert voiced.first == pytest.approx(0.06)
-    # Where in the clip's audio hands played over them, counted from the first sample it kept, as its transcriber is
-    # given it: nowhere, where it played nothing.
-    assert voiced.over == ((range(7 * streaming.FRAME, 8 * streaming.FRAME), range(8 * streaming.FRAME, 9 * streaming.FRAME)) if over else ())
 
 
 async def test_a_hearings_words_go_out_without_waiting_on_who_said_them(tmp_path: Path) -> None:
@@ -855,16 +851,6 @@ def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> N
     assert sum(stepped for _, stepped in moved) > 5
 
 
-# hands' own voice through the room, uncancelled, and a person over it, recorded at the desk for promptctl-voice-i15t.99s.zoj:
-# hands_echo_uncancelled.flac is the MacBook's microphone, no canceller, as hands said eight sentences ('charles', its
-# default voice) out of its speakers, play starting at PLAYED; hands_and_another.flac is the same with a second voice
-# ('alba') saying four lines over hands from 1 s in, until about 14.3 s, and hands alone after. hands_tts.flac is hands' own
-# TTS output in that voice, the first three sentences, which the print is made from as hands makes its own.
-PLAYED = 0.5
-SENTENCES = (0.0, 4.92, 8.56, 12.04, 15.68, 19.56, 23.36, 26.52)
-OVER_HANDS, HANDS_ALONE = (0.0, 14.6), (15.0, 24.0)
-
-
 @dataclass(frozen=True)
 class HandsPrint:
     """The real model, and hands' print made by it from hands' own TTS output."""
@@ -973,7 +959,7 @@ class Overheard:
         stream.opened(np.zeros(0, np.float32), self.fed.samples, ())
         for start in range(0, len(clip), FRAME_SAMPLES):
             piece = clip[start : start + FRAME_SAMPLES]
-            stream.heard(piece, (over,) * (len(piece) // streaming.SLOT))
+            stream.heard(piece, (over,) * (len(piece) // SLOT))
             self.fed.samples += len(piece)
             if steps(self.fed.samples) > steps(self.fed.samples - len(piece)):
                 asked, since = (start + len(piece)) / streaming.RATE, stream.said()
@@ -1048,47 +1034,3 @@ async def test_a_person_too_brief_over_hands_to_cut_while_heard_cuts_it_off_as_t
     closed = (await overheard.held(1, phrase)).first
     assert overheard.barge_ins == [], overheard.identified()
     assert closed is not None and closed > 3.0, overheard.identified()
-
-
-# Whisper as hands runs it, as this module found it before the suite's stand-in for the model (conftest's
-# no_whisper_weights) is put in its place for each test.
-TRANSCRIBE: Callable[..., dict[str, Any]] = mlx_whisper.transcribe  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
-WEIGHTS = transcription.weights
-
-
-@pytest.fixture
-def whisper(monkeypatch: pytest.MonkeyPatch) -> Whisper:
-    """The real model at its pinned weights, unprimed: the tests below are about whose words it is given to send."""
-    monkeypatch.setattr(mlx_whisper, "transcribe", TRANSCRIBE)
-    monkeypatch.setattr(transcription, "weights", WEIGHTS)
-
-    async def unprimed() -> str | None:
-        return None
-
-    return Whisper(clock=VirtualClock(), prompt=unprimed, record=lambda _: None)
-
-
-async def sent(overheard: Overheard, whisper: Whisper, number: int, clip: Samples) -> str | None:
-    """What a turn of `clip` sends: Whisper's words, given its last identification as the clip owner gives it."""
-    last: asyncio.Future[Identified] = asyncio.get_running_loop().create_future()
-    last.set_result(await overheard.held(number, clip))
-    return await whisper.transcribed(Clip(number, "wake word"), pcm(clip), last)
-
-
-@pytest.mark.outside
-async def test_a_clip_of_hands_own_echo_sends_no_words(overheard: Overheard, whisper: Whisper) -> None:
-    [echo] = fixture_clips("hands_echo_uncancelled.flac")
-    starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
-    # Each sentence a clip of its own, as the wake word or engaged conversation would open one on hands' own voice.
-    words = [await sent(overheard, whisper, number, echo[start:end]) for number, (start, end) in enumerate(zip(starts, [*starts[1:], len(echo)]), 1)]
-    assert words == [None] * len(SENTENCES), overheard.identified()
-
-
-@pytest.mark.outside
-async def test_a_person_over_hands_sends_their_words_and_hands_alone_after_them_sends_none(overheard: Overheard, whisper: Whisper) -> None:
-    [mic] = fixture_clips("hands_and_another.flac")
-    over, alone = (mic[round(start * streaming.RATE) : round(end * streaming.RATE)] for start, end in (OVER_HANDS, HANDS_ALONE))
-    # The second voice's lines each say who is speaking ("...the second speaker...").
-    theirs = await sent(overheard, whisper, 1, over)
-    assert theirs is not None and "second speaker" in theirs.lower(), (theirs, overheard.identified())
-    assert await sent(overheard, whisper, 2, alone) is None, overheard.identified()

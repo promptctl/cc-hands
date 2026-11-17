@@ -1925,21 +1925,23 @@ person it finds over hands while their clip is open, from its own thread; the ow
 the event loop and cuts only while that clip is still open. Each clip's end is settled on every
 path, nobody cleared where the identification failed.
 
-The same last identification decides which of a clip's words reach the brain. Where a clip
-holds only speakers heard as hands' echo (`voiceprints.echo`: ones hands played over whose
-voiceprint found hands, `Hands` or `Unsure`), and no one else was heard in the same frames, those
-stretches are hands' own.
-Whisper decodes the whole clip while the lane is still working. It then scores each segment with
-Silero, on a thread of its own, over the clip with those stretches silenced, so a segment heard only in hands' voice is
-dropped by the same floor that drops one nobody spoke in (`hands.voice.whisper`). A turn of hands'
-echo alone sends nothing, and its `clip` event says `transcript` none with `echo_seconds`. A
-frame a person shares with hands is the person's, so what they say over hands goes. A clip hands
-played nothing over waits on no identification. One that misses `IDENTIFIED_SECONDS` keeps every
-word, because losing a person's words costs more than one turn of hands' echo. On the recorded
-echo, seven of eight sentences ended `Unsure` rather than `Hands`, which is why `Unsure`
-counts, though people over hands have scored in that band too (the table's notes in
-`hands.voice.voiceprints`). A speaker heard too briefly to score, or not scored at all, could be
-anyone, so their words go, though they cut nothing (`tests/test_streaming.py`).
+hands' own words are kept from the brain by their text and their time, not by who the lane heard
+(`hands.voice.whisper`). Whisper decodes a clip hands played over with each word timed, and each
+word it heard is hands' where it takes a word of hands' sentences played over the clip, not yet
+taken, that it is, said or, in a word of five letters or more, spelled Whisper's way, played
+within 1.5 s of when it was heard, the nearest in time. A sentence's words are placed by their
+characters at Pocket TTS's speaking rate, 16 a second, from where the speaker was in the sentence
+as the clip heard it, so a sentence begun before the clip opened has its first words before the
+clip's start, and the rest of a sentence a barge-in cut off, placed more than 1.5 s past the cut, is
+not placed at all: the speaker counts what it has played of each synthesis, and each 10 ms of
+reference carries it (`clips.Playhead`). A Whisper segment is no voice boundary:
+primed with hands' vocabulary, Whisper heard a person's lines and hands' sentences in one segment,
+their words interleaved (`tests/fixtures/hands_and_another.flac`), so only a word, timed, is one
+voice's. A turn of hands' echo alone sends nothing: its `clip` event says `transcript` none, and
+its `ClipHeard` record holds each word taken as hands' under `echo`. A person who says a word
+hands said within 1.5 s of it loses that word. A clip hands played nothing over is decoded without its words timed,
+which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
+canceller is told what it plays, nothing is hands'.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
@@ -1949,7 +1951,7 @@ Choosing a voice passes at once. hands holds the print of the voice it speaks in
 one before the last change. The model loads on the lane as its first work (`voiceprints.loaded`),
 off the voice's build.
 
-hands knows which voice it played under each 10 ms of what the microphone heard. Its TTS
+hands knows which sentences, in which voice, it played under each 10 ms of what the microphone heard. Its TTS
 (`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each synthesis's audio and a
 `Made` behind it. The speaker cuts that audio into Pipecat's chunks itself, each of one synthesis, so
 the sender never joins two, and ends each synthesis it opened with one uninterruptible `Ended`
@@ -1966,7 +1968,7 @@ second never share one. Each clip is kept as the pipeline heard it, after the ca
 what the desk's speaker played over it. That is the canceller's own reference, kept as the
 speaker played it and put in the clip's format only as the clip is written, so the two line up
 sample for sample; the phone has none. Beside them go what opened the clip, what the gate did
-with it, and every voice hands played over it.
+with it, and each sentence hands said over it, in which voice, with when.
 
 The recorder also keeps hands' echo as labelled data. A buffer counts as hands' echo when all
 three hold as it is captured: the desk is at the off level with no press (the gate's key is up,

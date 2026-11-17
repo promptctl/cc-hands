@@ -6,7 +6,7 @@ and anything that cannot be written failing its own unit with why."""
 import contextlib
 import json
 import wave
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +18,7 @@ from hands.virtualclock import VirtualClock
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Identified, Reference, Sound
+from hands.voice.clips import RATE, Clip, Reference, Sound, Playhead, Synthesis
 from hands.voice.echo import Cancelled
 from hands.voice import recorder as recorders
 from hands.voice.recorder import Recorder, track
@@ -28,8 +28,13 @@ from hands.voice.voiceprints import Voiced
 class Unused:
     """A transcriber no test here gives a clip to."""
 
-    async def transcribed(self, clip: Clip, audio: bytes, identified: Awaitable[Identified]) -> str | None:
+    async def transcribed(self, clip: Clip, sound: Sound) -> str | None:
         raise AssertionError("nothing here transcribes")
+
+
+# Two sentences of hands', in two voices: the first from its start, the second 1.5 s into it.
+ALBA = Playhead(Synthesis("alba", "Hands here.", begun(VirtualClock())), 0.0)
+MARY = Playhead(Synthesis("mary", "Turn ended.", begun(VirtualClock())), 1.5)
 
 
 def tone(level: int, frames: int = 1) -> bytes:
@@ -67,7 +72,7 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     recorded: list[Entry] = []
     directory = tmp_path / "clips" / "run"
     clip = Clip(7, "engaged conversation")
-    played = (Reference(tone(-1), RATE, 1, ("alba",)), Reference(tone(-2), RATE, 1, ("alba", "mary")), None)
+    played = (Reference(tone(-1), RATE, 1, (ALBA,)), Reference(tone(-2), RATE, 1, (ALBA, MARY)), None)
     event = await kept(clock, Recorder(clock, tmp_path / "clips", "run", unidentified, recorded.append), clip, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
     assert event.outcome == "ok"
     # What it heard, and what the speaker played against each 10 ms of it, sample for sample: silence where no TTS.
@@ -76,6 +81,12 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
         "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"],
+        # Each sentence hands said over it, from the 10 ms it began playing in, as far into it as it was, to the end of
+        # the last.
+        "said": [
+            {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.02},
+            {"voice": "mary", "text": "Turn ended.", "start": 0.01, "into": 1.5, "stop": 0.02},
+        ],
     }
     # [LAW:nothing-unseen] where it went, how long, whether what was played went with it, and in which voices.
     assert (event.facts["kept"], event.facts["seconds"], event.facts["played"], event.facts["voices"]) == (directory / "7.heard.wav", 0.03, True, ("alba", "mary"))
@@ -87,7 +98,7 @@ def test_what_the_speaker_played_is_put_in_the_clips_format_a_run_at_a_time_slot
     wave_ = (8000 * np.sin(2 * np.pi * 440 * np.arange(played_rate // 2) / played_rate)).astype(np.int16)
     stereo = np.repeat(wave_, 2).tobytes()
     size = 4 * played_rate // 100
-    references = tuple(Reference(stereo[at : at + size], played_rate, 2, ("alba",)) for at in range(0, len(stereo), size))
+    references = tuple(Reference(stereo[at : at + size], played_rate, 2, (ALBA,)) for at in range(0, len(stereo), size))
     played = np.frombuffer(track((*references, None)), np.int16).astype(np.float64)
     # One slot for each reference, the last silent; and the same tone at the clip's rate, past the resampler's edges.
     assert len(played) == (len(references) + 1) * RATE // 100 and not played[-RATE // 100 :].any()
@@ -166,9 +177,9 @@ class Heard:
     key: str
 
 
-def buffer(level: int, voices: tuple[str, ...], key: str = "up", desk: bool = True) -> Heard:
-    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS in `voices`, or none for no voice."""
-    reference = Reference(tone(-level), RATE, 1, voices) if voices else None
+def buffer(level: int, syntheses: tuple[Playhead, ...], key: str = "up", desk: bool = True) -> Heard:
+    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS of `syntheses`, or none for no TTS."""
+    reference = Reference(tone(-level), RATE, 1, syntheses) if syntheses else None
     return Heard(Cancelled(tone(level, 2), (reference, reference)), desk, key)
 
 
@@ -194,19 +205,23 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
     await recorder.overhear(
         overheard([
             buffer(1, ()),  # no TTS played: hands not speaking, no span
-            buffer(2, ("alba",)),  # a span opens
-            buffer(3, ("alba", "mary")),
-            buffer(4, ("mary",), key="arming"),  # a press: the span ends there, and the press is the clip's
-            buffer(5, ("mary",)),  # a second span
-            buffer(6, ("mary",), key="listening"),  # the wake word's level, where a voice can open a clip: it ends
-            buffer(7, ("mary",)),  # a third
-            buffer(8, ("mary",), desk=False),  # hands at the phone: it ends
+            buffer(2, (ALBA,)),  # a span opens
+            buffer(3, (ALBA, MARY)),
+            buffer(4, (MARY,), key="arming"),  # a press: the span ends there, and the press is the clip's
+            buffer(5, (MARY,)),  # a second span
+            buffer(6, (MARY,), key="listening"),  # the wake word's level, where a voice can open a clip: it ends
+            buffer(7, (MARY,)),  # a third
+            buffer(8, (MARY,), desk=False),  # hands at the phone: it ends
         ])
     )
     assert read(tmp_path / "run" / "echo-1.heard.wav")[2] == tone(2, 2) + tone(3, 2)
     assert read(tmp_path / "run" / "echo-1.played.wav")[2] == tone(-2, 2) + tone(-3, 2)
     assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
         "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"],
+        "said": [
+            {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.04},
+            {"voice": "mary", "text": "Turn ended.", "start": 0.02, "into": 1.5, "stop": 0.04},
+        ],
     }
     assert read(tmp_path / "run" / "echo-2.heard.wav")[2] == tone(5, 2)
     assert read(tmp_path / "run" / "echo-3.heard.wav")[2] == tone(7, 2)
@@ -225,7 +240,7 @@ async def test_echo_spans_count_toward_the_stores_cap(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
     recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=10_500)
-    await recorder.overhear(overheard([buffer(1, ("alba",)), buffer(1, ())]))
+    await recorder.overhear(overheard([buffer(1, (ALBA,)), buffer(1, ())]))
     [pruned] = events(recorded, "clips.pruned")
     assert pruned.facts["runs"] == ("2026-10-01T00-00-00Z",)
 

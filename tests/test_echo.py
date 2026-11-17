@@ -3,10 +3,16 @@
 import numpy as np
 import pytest
 
-from hands.voice.clips import Reference
+from hands.sessions.wide import begun
+from hands.virtualclock import VirtualClock
+from hands.voice.clips import Reference, Playhead, Synthesis
 from hands.voice.echo import EchoCanceller
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
+
+# Two sentences of hands', in two voices, as the speaker played some of each.
+ALBA = Playhead(Synthesis("alba", "Hands here.", begun(VirtualClock())), 0.0)
+MARY = Playhead(Synthesis("mary", "Turn ended.", begun(VirtualClock())), 0.5)
 
 
 def _power_db(audio: bytes) -> float:
@@ -102,20 +108,21 @@ def test_each_microphone_buffer_comes_with_what_the_speaker_played_against_each_
     in the speaker's own format, untouched on the capture thread, where it was hands' TTS; None for anything else."""
     canceller = EchoCanceller()
     tone = (8000 * np.sin(2 * np.pi * 440 * np.arange(int(0.02 * PLAYED_RATE)) / PLAYED_RATE)).astype(np.int16).tobytes()
-    canceller.played(tone, PLAYED_RATE, 1, ("alba",))
+    canceller.played(tone, PLAYED_RATE, 1, (ALBA,))
     cancelled = canceller.heard(bytes(640), HEARD_RATE, 1)
     half = len(tone) // 2
-    assert cancelled.played == (Reference(tone[:half], PLAYED_RATE, 1, ("alba",)), Reference(tone[half:], PLAYED_RATE, 1, ("alba",)))
+    assert cancelled.played == (Reference(tone[:half], PLAYED_RATE, 1, (ALBA,)), Reference(tone[half:], PLAYED_RATE, 1, (ALBA,)))
     # Nothing more played: no TTS. Nor is a cue, nor silence the TTS's voice is on: none of it is hands speaking.
     assert canceller.heard(bytes(320), HEARD_RATE, 1).played == (None,)
     canceller.played(tone[:half], PLAYED_RATE, 1, ())
-    canceller.played(bytes(half), PLAYED_RATE, 1, ("alba",))
+    canceller.played(bytes(half), PLAYED_RATE, 1, (ALBA,))
     assert canceller.heard(bytes(640), HEARD_RATE, 1).played == (None, None)
 
 
-def test_a_frame_made_of_two_buffers_carries_the_voices_of_both() -> None:
+def test_a_frame_made_of_two_buffers_carries_the_syntheses_of_both() -> None:
     canceller = EchoCanceller()
-    canceller.played(b"\x01\x00" * 150, HEARD_RATE, 1, ("alba",))  # short of a frame: carried
-    canceller.played(b"\x01\x00" * 170, HEARD_RATE, 1, ("mary",))  # completes it, and the next
+    canceller.played(b"\x01\x00" * 150, HEARD_RATE, 1, (ALBA,))  # short of a frame: carried
+    canceller.played(b"\x01\x00" * 170, HEARD_RATE, 1, (MARY,))  # completes it, and the next
     played = canceller.heard(bytes(640), HEARD_RATE, 1).played
+    assert [None if reference is None else reference.playheads for reference in played] == [(ALBA, MARY), (MARY,)]
     assert [None if reference is None else reference.voices for reference in played] == [("alba", "mary"), ("mary",)]
