@@ -5,11 +5,20 @@ hands_echo_uncancelled.flac is the MacBook's microphone, no canceller, as hands 
 default voice) out of its speakers; hands_and_another.flac is another play of the same sentences, with a second voice
 ('alba') saying five lines over hands until about 14.3 s, and hands alone after. hands_tts.flac is hands' own TTS output
 in that voice, the first three sentences, which the print is made from as hands makes its own. The list hands played
-from was not kept, so when each sentence began is read off each recording."""
+from was not kept, so when each sentence began is read off each recording.
+
+hands_cancelled_and_another.flac is the desk heard through hands' echo canceller (scripts/record-double-talk.py): its
+channels as heard after the canceller, as captured before it, and the canceller's reference; three of hands' sentences
+in 'charles', and 'alba' saying two lines over them that repeat hands' words where hands says them. Its .json keeps
+which sentence each 10 ms was matched with, so what hands played over it is known, not read off."""
+
+import json
+from pathlib import Path
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import RATE, SLOT, Played, Reference, Playhead, Synthesis
+from hands.voice.clips import RATE, SLOT, Played, Reference, Playhead, Sound, Synthesis
+from speech import audio
 
 # When each of hands' sentences began on hands_echo_uncancelled.flac, in seconds from PLAYED.
 PLAYED = 0.5
@@ -50,3 +59,20 @@ def played(onsets: tuple[float, ...], stopped: float, start: float, seconds: flo
         return Reference(bytes(2 * SLOT), RATE, 1, playing) if playing else None
 
     return tuple(at(start + slot * SLOT / RATE) for slot in range(round(seconds * RATE / SLOT)))
+
+
+CANCELLED = Path(__file__).parent / "fixtures" / "hands_cancelled_and_another"
+# The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
+# says them.
+OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
+# When the second voice first speaks on it, in seconds.
+CANCELLED_ALONE = json.loads(CANCELLED.with_suffix(".json").read_text())["other"][0]["start"]
+
+
+def cancelled() -> Sound:
+    """hands_cancelled_and_another.flac as the desk heard it, and what the speaker played over each 10 ms of it."""
+    described = json.loads(CANCELLED.with_suffix(".json").read_text())
+    said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
+    samples, _ = audio(CANCELLED.with_suffix(".flac"))
+    played = tuple(None if slot is None else Reference(bytes(2 * SLOT), RATE, 1, (Playhead(said[int(slot[0])], float(slot[1])),)) for slot in described["played"])
+    return Sound(samples[: len(played) * SLOT, 0].tobytes(), samples[: len(played) * SLOT, 1].tobytes(), played)
