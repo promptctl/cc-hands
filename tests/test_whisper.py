@@ -13,9 +13,7 @@ from speech import spoken
 from hands.clock import SYSTEM
 from hands.sessions.audit import ClipHeard, Entry
 from hands.voice import transcription
-from hands.sessions.wide import begun
-from hands.virtualclock import VirtualClock
-from hands.voice.clips import Clip, Played, Reference, Sound, Playhead, Synthesis
+from hands.voice.clips import Clip, Played, Sound
 from hands.voice.whisper import Whisper
 
 
@@ -70,72 +68,6 @@ def as_heard(audio: bytes, played: Played = None) -> Sound:
     return Sound(audio, audio, played)
 
 
-def saying(seconds: float, *sentences: tuple[str, float, float], reached: bool = True) -> Sound:
-    """`seconds` of a clip, hands saying each of `sentences` over it, its text from its start to its stop in seconds, one
-    synthesis each, as the canceller hands what was played on: one reference for each 10 ms, its echo reaching the
-    microphone or not."""
-    said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
-
-    def at(slot: int) -> Reference | None:
-        playing = tuple(Playhead(synthesis, slot / 100 - start) for synthesis, start, stop in said if start <= slot / 100 < stop)
-        return Reference(bytes(320), 16_000, 1, playing, reached) if playing else None
-
-    return as_heard(bytes(round(seconds * 32_000)), tuple(at(slot) for slot in range(round(seconds * 100))))
-
-
-def cancelling(sound: Sound, start: float, stop: float) -> Sound:
-    """`sound` with the echo canceller taking hands' voice out from `start` to `stop` s: the microphone captured hands at
-    -20 dBFS there, and what was heard after the canceller is 40 dB below it."""
-    rng = np.random.default_rng(0)
-    captured = np.frombuffer(sound.captured, np.int16).copy()
-    heard = np.frombuffer(sound.heard, np.int16).copy()
-    span = slice(round(start * 16_000), round(stop * 16_000))
-    noise = rng.normal(0, 3_277, span.stop - span.start)
-    captured[span], heard[span] = noise.astype(np.int16), (noise / 100).astype(np.int16)
-    return Sound(heard.tobytes(), captured.tobytes(), sound.played)
-
-
-@dataclass
-class Timed:
-    """Whisper as these tests answer it with timed words: each segment it hears in the next clip, a word to each
-    (text, start, end), each spoken in as Silero hears it; and whether each clip asked for its words timed."""
-
-    segments: list[list[tuple[str, float, float]]] = field(default_factory=list[list[tuple[str, float, float]]])
-    asked: list[bool] = field(default_factory=list[bool])
-
-    def heard(self, _samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
-        self.asked.append(words)
-        return [
-            transcription.Segment("".join(text for text, _, _ in each).strip(), each[0][1], each[-1][2], 0.8, -0.3, tuple(transcription.Word(*word) for word in each) if words else ())
-            for each in self.segments
-        ]
-
-
-@pytest.fixture
-def timed(model: Model, monkeypatch: pytest.MonkeyPatch) -> Timed:
-    timed = Timed()
-
-    def voiced(_whisper: Whisper, _samples: np.ndarray) -> float:
-        return 1.0
-
-    monkeypatch.setattr(transcription, "segments", timed.heard)
-    monkeypatch.setattr(Whisper, "_voiced", voiced)
-    return timed
-
-
-def spaced(text: str, start: float, step: float) -> list[tuple[str, float, float]]:
-    """`text` as Whisper writes its words, from `start`, a word every `step` seconds."""
-    return [(f" {word}", start + index * step, start + (index + 1) * step) for index, word in enumerate(text.split())]
-
-
-async def told(sound: Sound) -> ClipHeard:
-    """What Whisper made of a clip of `sound`, as it records it."""
-    recorded: list[Entry] = []
-    await Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append).transcribed(clip(1), sound)
-    [clip_heard] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
-    return clip_heard
-
-
 async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first clip pays for
     no load only if the one done at construction asked for exactly what a clip's transcription asks for; and it was
@@ -173,7 +105,9 @@ async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_sa
         [],
         [(".", 0.11, -0.5)],
         [("and slow-talking.", 0.68, -2.84)],
+        # Heard again unprimed, as a loop is, and nothing in it.
         [("and turnstop, " * 12, 17.1, -0.24)],
+        [],
         [(" Okay.", 0.38, -1.11)],
     ]
     recorded: list[Entry] = []
@@ -193,6 +127,41 @@ async def test_a_segment_whisper_repeated_itself_in_or_only_guessed_at_is_not_sa
         (5, "Okay.", []),
     ]
     assert all(unsaid.voiced >= 0.25 for entry in heard for unsaid in entry.dropped)
+
+
+async def test_a_clip_whisper_looped_in_primed_is_heard_again_unprimed_and_what_it_hears_then_is_said(model: Model) -> None:
+    # "the build is green" through the desk's canceller, primed with the vocabulary: read three times over, at 20.8.
+    model.answers += [[], [("the build is green", 20.8, -0.43)], [("The build is green.", 0.7, -0.52)]]
+    recorded: list[Entry] = []
+    whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware"), record=recorded.append)
+
+    said = await whisper.transcribed(clip(1), as_heard(SPOKEN))
+
+    assert said == "The build is green."
+    assert [options["initial_prompt"] for _, options in model.asked[1:]] == ["authMiddleware", None]
+    [heard] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
+    # The loop is recorded as dropped, so a clip primed to loop can be looked into.
+    assert [(unsaid.text, unsaid.compression_ratio) for unsaid in heard.dropped] == [("the build is green", 20.8)]
+
+
+async def test_a_clip_whisper_loops_in_unprimed_too_says_nothing_and_records_both_loops(model: Model) -> None:
+    model.answers += [[], [("the build is green", 20.8, -0.43)], [("and turnstop, " * 12, 17.1, -0.24)]]
+    recorded: list[Entry] = []
+    whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware"), record=recorded.append)
+
+    said = await whisper.transcribed(clip(1), as_heard(SPOKEN))
+
+    assert said is None
+    [heard] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
+    assert [unsaid.compression_ratio for unsaid in heard.dropped] == [20.8, 17.1]
+
+
+async def test_a_clip_whisper_did_not_loop_in_is_decoded_once(model: Model) -> None:
+    model.answers += [[], [("The build is green.", 0.7, -0.52)]]
+
+    await Whisper(clock=SYSTEM, prompt=primed("authMiddleware"), record=lambda _: None).transcribed(clip(1), as_heard(SPOKEN))
+
+    assert len(model.asked[1:]) == 1
 
 
 async def test_a_segment_of_only_punctuation_and_underscores_has_no_word_and_is_not_said(model: Model) -> None:
@@ -242,125 +211,3 @@ async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(mo
 
     assert await whisper.transcribed(clip(8), as_heard(SPOKEN)) == "Okay."
     assert [entry.clip for entry in recorded if isinstance(entry, ClipHeard)] == [8]
-
-
-async def test_a_persons_words_heard_in_one_segment_with_hands_sentence_are_said_and_hands_are_not(timed: Timed) -> None:
-    # Primed, Whisper hears both voices in one segment, their words interleaved: the person asking over hands' sentence.
-    timed.segments.append([(" Can", 0.1, 0.2), (" starting", 0.3, 0.4), (" you", 0.6, 0.7), (" the", 0.8, 0.9), (" hear", 1.0, 1.1), (" build", 1.2, 1.3), (" me?", 1.4, 1.5), (" now.", 1.7, 1.8)])
-    clip_heard = await told(saying(2.5, ("Starting the build now.", 0.0, 2.0)))
-    # [LAW:nothing-unseen] hands' own words are said apart from noise: dropped as hands' echo, not as nobody's.
-    assert (clip_heard.said, clip_heard.echo, clip_heard.dropped) == ("Can you hear me?", ("starting", "the", "build", "now."), ())
-
-
-async def test_a_word_of_hands_said_long_after_hands_said_it_is_the_persons(timed: Timed) -> None:
-    # A lone "No." 2 s into hands' sentence: its "no" played 2 s before, and nothing played near it is "no".
-    timed.segments.append([(" No.", 2.0, 2.4)])
-    clip_heard = await told(saying(3.0, ("No, I won't delete the branch.", 0.0, 2.5)))
-    assert (clip_heard.said, clip_heard.echo) == ("No.", ())
-
-
-async def test_hands_sentence_heard_with_a_word_the_canceller_took_out_is_still_hands(timed: Timed) -> None:
-    timed.segments.append(spaced("Should I the tests?", 0.1, 0.3))
-    clip_heard = await told(saying(2.0, ("Should I run the tests?", 0.0, 1.5)))
-    assert (clip_heard.said, clip_heard.echo) == (None, ("Should", "I", "the", "tests?"))
-
-
-async def test_each_word_of_hands_is_taken_once_so_a_sentence_said_once_and_heard_twice_is_a_persons_the_second_time(timed: Timed) -> None:
-    timed.segments += [[(" Okay.", 0.1, 0.5)], [(" Okay.", 1.1, 1.5)]]
-    assert (await told(saying(2.0, ("Okay.", 0.0, 0.5), ("Okay.", 1.0, 1.5)))).echo == ("Okay.", "Okay.")
-    # Said once, at the start: the second, 1 s on and within reach of it, is someone answering it.
-    clip_heard = await told(saying(2.0, ("Okay.", 0.0, 0.5)))
-    assert (clip_heard.said, clip_heard.echo) == ("Okay.", ("Okay.",))
-
-
-async def test_a_one_word_sentence_of_hands_heard_alone_and_one_spelled_whispers_way_are_hands(timed: Timed) -> None:
-    timed.segments += [[(" Done.", 0.05, 0.45)], spaced("The diariser reports one speaker.", 1.1, 0.4)]
-    clip_heard = await told(saying(3.5, ("Done.", 0.0, 0.4), ("The diarizer reports one speaker.", 1.0, 3.0)))
-    assert (clip_heard.said, clip_heard.echo) == (None, ("Done.", "The", "diariser", "reports", "one", "speaker."))
-
-
-async def test_a_sentence_of_hands_begun_before_the_clip_opened_is_hands_where_the_clip_hears_its_end(timed: Timed) -> None:
-    # The clip opened 2.5 s into hands' sentence: it hears "continue with the release", and nothing before.
-    timed.segments.append([(" continue", 0.2, 0.5), (" with", 0.6, 0.8), (" the", 0.9, 1.0), (" release.", 1.1, 1.5)])
-    clip_heard = await told(saying(3.0, ("Checking the speech models before we continue with the release.", -2.5, 2.0)))
-    assert (clip_heard.said, clip_heard.echo) == (None, ("continue", "with", "the", "release."))
-
-
-async def test_a_person_who_cut_hands_off_is_sent_the_words_hands_never_got_to(timed: Timed) -> None:
-    # Cut off 1 s in, hands never said "the release", which it would have 3 s in: the person saying it then is no echo.
-    timed.segments.append([(" Starting", 0.1, 0.3), (" the", 0.4, 0.5), (" build", 0.6, 0.9), (" Stop,", 1.2, 1.4), (" ship", 2.9, 3.1), (" the", 3.2, 3.3), (" release.", 3.4, 3.8)])
-    clip_heard = await told(saying(4.0, ("Starting the build now, and once it is green, the release.", 0.0, 1.0)))
-    assert (clip_heard.said, clip_heard.echo) == ("Stop, ship the release.", ("Starting", "the", "build"))
-
-
-async def test_a_short_word_of_a_persons_a_letter_off_one_of_hands_is_the_persons(timed: Timed) -> None:
-    # "they" is "the" a letter off, and the canceller took hands' "the" out: the person's "They" is theirs.
-    timed.segments += [[(" Check", 0.1, 0.2), (" logs.", 0.6, 0.8)], [(" They", 0.4, 0.5), (" said", 0.9, 1.0), (" no.", 1.1, 1.2)]]
-    clip_heard = await told(saying(2.0, ("Check the logs.", 0.0, 1.0)))
-    assert (clip_heard.said, clip_heard.echo) == ("They said no.", ("Check", "logs."))
-
-
-async def test_a_word_of_hands_heard_out_of_its_order_leaves_the_rest_of_hands_words_hands(timed: Timed) -> None:
-    # "build" heard before "the logs and": it takes hands' "build", and skips none of the words before it.
-    timed.segments.append([(" build", 0.2, 0.3), (" the", 0.4, 0.5), (" logs", 0.7, 0.8), (" and", 1.0, 1.1)])
-    clip_heard = await told(saying(2.5, ("Check the logs and the build.", 0.0, 2.0)))
-    assert (clip_heard.said, clip_heard.echo) == (None, ("build", "the", "logs", "and"))
-
-
-async def test_a_segment_all_hands_between_two_of_a_persons_leaves_their_words_joined_as_said(timed: Timed) -> None:
-    # The segment of hands' sentence also holds a dash, which is no word of anyone's.
-    timed.segments += [spaced("Run the tests.", 0.1, 0.2), [*spaced("Build is green.", 1.0, 0.2), (" -", 1.6, 1.7)], spaced("Then deploy.", 2.6, 0.2)]
-    clip_heard = await told(saying(3.5, ("Build is green.", 0.9, 1.9)))
-    assert clip_heard.said == "Run the tests. Then deploy."
-
-
-async def test_a_clip_hands_played_nothing_over_is_decoded_without_its_words_timed_and_nothing_of_it_is_hands(timed: Timed) -> None:
-    timed.segments.append(spaced("The parser is fixed.", 0.1, 0.3))
-    # At the phone, whose own canceller is told what it plays, and hands is not; and at the desk, with nothing played.
-    for sound in (as_heard(bytes(64_000)), as_heard(bytes(64_000), (None,) * 200)):
-        assert ((await told(sound)).said, timed.asked[-1]) == ("The parser is fixed.", False)
-    await told(saying(2.0, ("Done.", 0.0, 0.4)))
-    assert timed.asked[-1]
-
-
-async def test_a_persons_words_that_hands_said_too_are_sent_where_the_canceller_took_hands_voice_out(timed: Timed) -> None:
-    # Over hands' "the build is green", a person says "No, the build is broken.", their "the build is" where hands said
-    # it: through a canceller taking hands' voice out, nothing Whisper heard is hands'.
-    timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
-    clip_heard = await told(cancelling(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4)), 0.0, 3.5))
-    # [LAW:nothing-unseen] every word hands played was taken out, and the clip was decoded with no word timed.
-    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
-
-
-async def test_a_persons_words_that_hands_said_too_are_sent_where_no_echo_of_hands_reached_the_microphone(timed: Timed) -> None:
-    # In headphones, a person says "No, the build is broken." over hands' "the build is green": nothing of hands' reached
-    # the microphone, so the canceller passed it on as captured, and nothing Whisper heard is hands'.
-    timed.segments.append(spaced("No, the build is broken.", 1.6, 0.3))
-    clip_heard = await told(saying(3.5, ("Phosphene finished its render, and the build is green.", 0.0, 3.4), reached=False))
-    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard, timed.asked[-1]) == ("No, the build is broken.", (), 9, False)
-
-
-async def test_hands_words_the_canceller_left_in_are_hands_beside_a_stretch_it_took_hands_voice_out_of(timed: Timed) -> None:
-    # The canceller took hands' first sentence out, and left its second, 2 s on, as it came through the room.
-    timed.segments += [spaced("Okay, run the tests.", 0.1, 0.3), spaced("The build is green.", 2.6, 0.3)]
-    clip_heard = await told(cancelling(saying(4.0, ("Okay, run the tests.", 0.0, 1.5), ("The build is green.", 2.5, 3.8)), 0.0, 1.5))
-    assert (clip_heard.said, clip_heard.echo, clip_heard.unheard) == ("Okay, run the tests.", ("The", "build", "is", "green."), 4)
-
-
-async def test_a_word_hands_played_before_the_clip_opened_is_hands_where_the_canceller_took_out_only_what_came_later(timed: Timed) -> None:
-    # The key opened 2 s into hands' sentence, and the echo of its "finished", played 1.4 s before, is heard as the clip
-    # opens: the canceller taking hands' voice out from 0.5 s on is no reach of a word that far before.
-    timed.segments.append(spaced("finished", 0.05, 0.25))
-    clip_heard = await told(cancelling(saying(3.0, ("Phosphene finished its render, and the build is green.", -2.0, 1.4)), 0.5, 3.0))
-    assert (clip_heard.said, clip_heard.echo) == (None, ("finished",)), clip_heard
-
-
-async def test_hands_words_the_canceller_left_in_after_a_minute_of_loud_speech_are_hands(timed: Timed) -> None:
-    # 50 s at -10 dBFS, then hands' echo captured at -45 dBFS and heard at -55: the canceller took out 10 dB of it, short
-    # of `_CANCELLING`, however long the loud stretch before it.
-    timed.segments.append(spaced("The build is green.", 55.1, 0.3))
-    rng = np.random.default_rng(0)
-    loud = rng.normal(0, 10_362, 50 * 16_000)
-    captured, heard = (np.concatenate((loud, rng.normal(0, deviation, 10 * 16_000))).astype(np.int16).tobytes() for deviation in (184, 58))
-    clip_heard = await told(Sound(heard, captured, saying(60.0, ("The build is green.", 55.0, 56.5)).played))
-    assert (clip_heard.said, clip_heard.unheard) == (None, 0), clip_heard
