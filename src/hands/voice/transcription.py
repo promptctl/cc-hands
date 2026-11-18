@@ -30,47 +30,32 @@ _HANDS_HERE = files("hands.voice") / "hands_here.wav"
 
 
 def load() -> None:
-    """Fetch the model, load it, and run it once, its words timed.
+    """Fetch the model, load it, and run it once.
 
     MLX Whisper loads its model inside the first transcription it is asked for, downloading it first if it was never
     fetched: the first turn of the first run waited 28 s on a 1.6 GB download (2026-09-26). Once fetched, loading takes
-    0.5 s and the first run after it 1.3 s against 0.3 s for every later one; and the first run that times its words
-    0.82 s against 0.43 s for every later one, on 8 s of hands' echo (2026-11-17), which silence, in which Whisper hears
-    no word to time, never reaches. The model is kept for the process, keyed on the directory `weights` names, so a
-    sentence transcribed here, its words timed, leaves every clip finding it loaded and run, whichever way it is
-    decoded [LAW:no-ambient-temporal-coupling].
+    0.5 s and the first run after it 1.3 s against 0.3 s for every later one. The model is kept for the process, keyed on
+    the directory `weights` names, so a sentence transcribed here leaves every clip finding it loaded and run, whichever
+    way it is decoded [LAW:no-ambient-temporal-coupling].
     """
     with wave.open(str(_HANDS_HERE)) as said:
-        _transcribe(decoded(said.readframes(said.getnframes())), None, True)
-
-
-@dataclass(frozen=True)
-class Word:
-    """One word Whisper heard, as it wrote it, its leading space and punctuation with it, from `start` to `end` seconds
-    into the clip."""
-
-    text: str
-    start: float
-    end: float
+        _transcribe(decoded(said.readframes(said.getnframes())), None)
 
 
 @dataclass(frozen=True)
 class Segment:
     """What Whisper heard in one stretch of a clip, from `start` to `end` seconds into it, with its two scores for dropping
-    it, and each word of it with when, where those were asked for."""
+    it."""
 
     text: str
     start: float
     end: float
     compression_ratio: float
     avg_logprob: float
-    words: tuple[Word, ...]
 
 
-def segments(samples: np.ndarray, prompt: str | None, *, words: bool) -> list[Segment]:
-    """The segments Whisper hears in mono `samples` at RATE, primed with `prompt`, each with its `words` timed where asked
-    for: Whisper aligns them in a pass of its own, which costs about as long again as the decode (0.33 s -> 0.55 s on
-    24 s of tests/fixtures/hands_and_another.flac). It blocks while the model runs."""
+def segments(samples: np.ndarray, prompt: str | None) -> list[Segment]:
+    """The segments Whisper hears in mono `samples` at RATE, primed with `prompt`. It blocks while the model runs."""
     return [
         Segment(
             str(segment["text"]).strip(),
@@ -78,9 +63,8 @@ def segments(samples: np.ndarray, prompt: str | None, *, words: bool) -> list[Se
             float(segment["end"]),
             float(segment["compression_ratio"]),
             float(segment["avg_logprob"]),
-            tuple(Word(str(word["word"]), float(word["start"]), float(word["end"])) for word in segment.get("words", ())),
         )
-        for segment in _transcribe(samples, prompt, words)
+        for segment in _transcribe(samples, prompt)
     ]
 
 
@@ -102,9 +86,8 @@ def weights() -> str:
         return snapshot_download(MODEL, revision=REVISION)
 
 
-def _transcribe(audio: np.ndarray, prompt: str | None, words: bool) -> list[dict[str, Any]]:
-    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`, its `words` timed where asked
-    for; what the load and every clip run.
+def _transcribe(audio: np.ndarray, prompt: str | None) -> list[dict[str, Any]]:
+    """The segments MLX Whisper heard in `audio`, greedily decoded, primed with `prompt`; what the load and every clip run.
 
     Each 30 s window is decoded on its own, not conditioned on the text of the one before: conditioned, a long clip fell
     into a loop ("$.h. $.h. ...") that carried from window to window, and the compression filter dropped every segment
@@ -112,6 +95,6 @@ def _transcribe(audio: np.ndarray, prompt: str | None, words: bool) -> list[dict
     (promptctl-voice-je8.d20). MLX Whisper then primes only the first window with `prompt`.
     """
     transcribed: dict[str, Any] = mlx_whisper.transcribe(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (untyped in mlx_whisper)
-        audio, path_or_hf_repo=weights(), temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False, word_timestamps=words
+        audio, path_or_hf_repo=weights(), temperature=0.0, language=LANGUAGE, initial_prompt=prompt, condition_on_previous_text=False
     )
     return cast("list[dict[str, Any]]", transcribed["segments"])

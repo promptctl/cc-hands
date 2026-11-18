@@ -479,7 +479,7 @@ async def _turns(smoked: Run, caller: Caller, session: SessionId, said: Sequence
 
 async def _transcribed(audio: bytes) -> str:
     """`audio`, as the Whisper hands transcribes with hears it, unprimed."""
-    heard = await asyncio.to_thread(lambda: transcription.segments(clips.decoded(audio), None, words=False))
+    heard = await asyncio.to_thread(lambda: transcription.segments(clips.decoded(audio), None))
     return " ".join(segment.text for segment in heard).strip()
 
 

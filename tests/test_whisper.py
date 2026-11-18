@@ -75,15 +75,14 @@ def as_heard(audio: bytes, played: Played = None) -> Sound:
 
 async def test_whisper_has_loaded_the_model_its_clips_transcribe_with_once_built(model: Model) -> None:
     """MLX Whisper keeps the model it loaded for the process, keyed on what it was asked for, so the first clip pays for
-    no load only if the one done at construction asked for exactly what a clip's transcription asks for; and it was
-    asked to time the words of speech, so the first clip hands played over pays for no first timing either."""
+    no load only if the one done at construction asked for exactly what a clip's transcription asks for."""
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     await whisper.transcribed(clip(1), as_heard(SILENCE))
 
     [(heard, loaded), (_, transcribed)] = model.asked
-    assert transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False, "word_timestamps": False}
-    assert (loaded, bool(np.abs(heard).max() > 0.1)) == ({**transcribed, "word_timestamps": True}, True)
+    assert transcribed == {"path_or_hf_repo": transcription.weights(), "temperature": 0.0, "language": "en", "initial_prompt": None, "condition_on_previous_text": False}
+    assert (loaded, bool(np.abs(heard).max() > 0.1)) == (transcribed, True)
     # The load is a unit of work of its own, saying which model the start waited on.
     [event] = events(recorded, "whisper.loaded")
     assert (event.outcome, model_facts(event)) == ("ok", {"model": transcription.MODEL, "revision": transcription.REVISION})
@@ -194,9 +193,9 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
     # Spoken in, then held on in silence: Whisper's "Thank you." heard after the speech (promptctl-voice-i15t.a5s.x48).
     spoke = len(SPOKEN) / 2 / 16_000
-    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3, ()), transcription.Segment("Thank you.", spoke + 0.1, spoke + 0.5, 0.56, -0.28, ())]
+    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3), transcription.Segment("Thank you.", spoke + 0.1, spoke + 0.5, 0.56, -0.28)]
 
-    def segments(_samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
+    def segments(_samples: np.ndarray, _prompt: str | None) -> list[transcription.Segment]:
         return heard
 
     monkeypatch.setattr(transcription, "segments", segments)
