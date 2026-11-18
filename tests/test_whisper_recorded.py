@@ -5,7 +5,6 @@ in tests/clockwatch.py though its own time is a VirtualClock's."""
 
 import re
 from difflib import SequenceMatcher
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,8 +13,8 @@ from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
 from hands.voice.clips import SLOT, Clip, Sound
 from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED, CANCELLED_ALONE, HANDS_ALONE, NO_ECHO, OPENING, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cut_in, played, replayed, take
-from speech import RATE, audio, quiet, spoken
+from echoes import CANCELLED, CANCELLED_ALONE, NO_ECHO, OPENING, OVER_CANCELLED, cut_in, played, replayed, take
+from speech import RATE, quiet, spoken
 
 pytestmark = pytest.mark.outside
 
@@ -67,18 +66,6 @@ PROSE = [
 # The pauses between a dictation's sentences, in seconds, in turn: a person stopping to think.
 PAUSES = [1.0, 3.0, 2.0, 5.0, 1.5, 4.0]
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
-# The second voice's lines on hands_and_another.flac, said over hands until about 14.3 s.
-OVER = (
-    "Can you hear the other voice clearly over that one?",
-    "Two people are talking at the same time now.",
-    "Keep going.",
-    "I want to see whether the second speaker is kept apart.",
-    "Now the first voice comes back on its own.",
-)
-
-
 def whisper(prompt: str | None) -> Whisper:
     async def primed() -> str | None:
         return prompt
@@ -89,27 +76,6 @@ def whisper(prompt: str | None) -> Whisper:
 def held(clip: bytes) -> Sound:
     """A held key's clip hands played nothing over: nothing of it is hands' own."""
     return Sound(clip, clip, (None,) * (len(clip) // 320))
-
-
-def recorded(name: str, start: float, end: float, onsets: tuple[float, ...], stopped: float) -> Sound:
-    """`start` to `end` seconds of tests/fixtures/`name`, and hands' sentences as they played over it, from `onsets` until
-    `stopped`."""
-    samples, rate = audio(FIXTURES / name)
-    clip = samples[round(start * rate) : round(end * rate)].tobytes()
-    return Sound(clip, clip, played(onsets, stopped, start, end - start))
-
-
-def hands_runs(said: str) -> list[str]:
-    """Each run of three of hands' words, in a row as one of its sentences has them, in what was sent: hands' own voice
-    sent as a person's."""
-    sent = words(said)
-    return [" ".join(sent[at : at + 3]) for at in range(len(sent) - 2) if any(" ".join(sent[at : at + 3]) in " ".join(words(text)) for text in READ)]
-
-
-def kept(line: str, said: str) -> float:
-    """How much of a person's `line` reached the brain, word for word in order."""
-    matcher = SequenceMatcher(None, words(line), words(said), autojunk=False)
-    return sum(block.size for block in matcher.get_matching_blocks()) / len(words(line))
 
 
 def words(text: str) -> list[str]:
@@ -166,21 +132,6 @@ async def test_a_long_dictation_comes_back_whole(over: float) -> None:
     assert min(kept) >= 0.75, (said, list(zip(sentences, kept)))
 
 
-# Primed, Whisper heard neither "Two people are talking at the same time now." nor, over the whole 24 s, "Keep going.":
-# they are not words lost to hands' echo, but words never heard.
-@pytest.mark.parametrize(("window", "heard"), [((0.0, 24.0), (OVER[0], OVER[3], OVER[4])), (OVER_HANDS, (OVER[0], OVER[2], OVER[3], OVER[4]))], ids=["0 to 24 s", "the person over hands"])
-async def test_a_person_talking_over_hands_is_sent_and_hands_own_voice_is_not(window: tuple[float, float], heard: tuple[str, ...]) -> None:
-    # Primed, Whisper heard the person's lines and hands' sentences in the same segments, their words interleaved.
-    said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_and_another.flac", *window, ANOTHER, ANOTHER_STOPPED))
-
-    assert said is not None and not hands_runs(said), said
-    assert all(kept(line, said) >= 0.75 for line in heard), (said, [(line, kept(line, said)) for line in heard])
-
-
-async def test_hands_heard_alone_after_the_person_sends_nothing() -> None:
-    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_and_another.flac", *HANDS_ALONE, ANOTHER, ANOTHER_STOPPED)) is None
-
-
 async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
     # Up to where the second voice first speaks: no word of hands' is left to match.
     sound, slots = replayed(*take(CANCELLED)), round(CANCELLED_ALONE * 100)
@@ -190,7 +141,7 @@ async def test_hands_heard_alone_through_the_canceller_sends_nothing() -> None:
 
 
 async def test_a_person_saying_hands_words_over_hands_through_the_canceller_is_sent_every_word() -> None:
-    # "the build is" and "Say the next step", said where hands says them: by text and time alone, they are hands'.
+    # "the build is" and "Say the next step", said where hands says them: the person's, whatever hands says.
     said = await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), replayed(*take(CANCELLED)))
 
     assert said is not None and words(said) == words(" ".join(OVER_CANCELLED)), said
@@ -203,26 +154,9 @@ async def test_a_person_saying_hands_words_over_hands_in_headphones_is_sent_ever
     assert said is not None and words(said) == words(" ".join(OVER_CANCELLED)), said
 
 
-@pytest.mark.parametrize("sentence", range(len(SENTENCES)), ids=READ)
-async def test_each_of_hands_sentences_heard_uncancelled_from_partway_in_sends_nothing(sentence: int) -> None:
-    # A key pressed while hands talks opens its clip 1.5 s into the sentence: the clip hears only the sentence's end.
-    onsets = tuple(PLAYED + onset for onset in SENTENCES)
-    end = [*onsets[1:], STOPPED][sentence]
-
-    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_echo_uncancelled.flac", onsets[sentence] + 1.5, end, onsets, STOPPED)) is None
-
-
-@pytest.mark.parametrize("sentence", range(len(SENTENCES)), ids=READ)
-async def test_each_of_hands_sentences_heard_uncancelled_sends_nothing(sentence: int) -> None:
-    onsets = tuple(PLAYED + onset for onset in SENTENCES)
-    end = [*onsets[1:], STOPPED][sentence]
-
-    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), recorded("hands_echo_uncancelled.flac", onsets[sentence], end, onsets, STOPPED)) is None
-
-
 async def test_hands_heard_alone_over_each_replys_opening_on_the_desks_speaker_sends_nothing() -> None:
     # Up to where the second voice first speaks: each reply's opening is heard as the microphone captured it until a
-    # stretch reads the echo path there, and hands' words in it are known by their text and time.
+    # stretch reads the echo path there, 0.26 s of it, too short for Whisper to write a word from.
     sound, slots = replayed(*take(OPENING)), round(cut_in(OPENING) * 100)
     alone = Sound(sound.heard[: 2 * SLOT * slots], sound.captured[: 2 * SLOT * slots], (sound.played or ())[:slots])
 

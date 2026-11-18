@@ -1856,8 +1856,8 @@ like none, and says nothing. Only a path read there has the canceller's output h
 none, every buffer is passed on as captured, so a person cutting into a reply's opening in
 headphones is heard unducked, and at the desk a reply's first half second is heard
 uncancelled, a second or more where the microphone or speaker opened mid-reply. Each reference says whether hands' voice may be in it (`Reference.reached`),
-false only where the path read none, which Whisper's rule of hands' words and the cut
-(`clips.slots`) read. Each
+false only where the path read none, which the cut
+(`clips.slots`) reads. Each
 microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
 its canceller heard, how many of those had nothing playing, how many it dropped unheard
 because the microphone had stopped taking them, how many it slipped, and how many it
@@ -1930,33 +1930,16 @@ otherwise `Unsure`. At the clip's end only, a closing row (`CLOSING`) adds from 
 0.19 a `Person`, so a wake phrase said alone over hands is told at its length. A person stays one for the rest of their clip, kept by clip number, since a
 clip's end can be identified after the next clip opens.
 
-hands' own words are kept from the brain by their text and their time, not by who the lane heard
-(`hands.voice.whisper`). Whisper decodes a clip hands played over with each word timed, and each
-word it heard is hands' where it takes a word of hands' sentences played over the clip, not yet
-taken, that it is, said or, in a word of five letters or more, spelled Whisper's way, played
-within 1.5 s of when it was heard, the nearest in time. A sentence's words are placed by their
-characters at Pocket TTS's speaking rate, 16 a second, from where the speaker was in the sentence
-as the clip heard it, so a sentence begun before the clip opened has its first words before the
-clip's start, and the rest of a sentence a barge-in cut off, placed more than 1.5 s past the cut, is
-not placed at all: the speaker counts what it has played of each synthesis, and each 10 ms of
-reference carries it (`clips.Playhead`). A Whisper segment is no voice boundary:
-primed with hands' vocabulary, Whisper heard a person's lines and hands' sentences in one segment,
-their words interleaved (`tests/fixtures/hands_and_another.flac`), so only a word, timed, is one
-voice's. A turn of hands' echo alone sends nothing: its `clip` event says `transcript` none, and
-its `ClipHeard` record holds each word taken as hands' under `echo`. Text and time cannot tell a
-person repeating hands' words from hands' echo, so a word of hands' is placed only where the echo
-canceller left hands' voice in what Whisper hears: none within 1 s of a 10 ms slot where, while
-hands played, the heard audio over the 0.2 s about it is more than 20 dB below what the microphone
-captured. Through hands'
-canceller at the desk, that loss is 29 to 47 dB wherever hands speaks alone, and 0 to 10 dB under a
-person speaking over it (`tests/fixtures/hands_cancelled_and_another.flac`, made by
-`scripts/record-double-talk.py`), so a person saying "No, the build is broken." over hands' "the
-build is green" is sent every word; `ClipHeard.unheard` counts the words of hands' the canceller
-took out, or no echo of which reached the microphone. Heard through no canceller, the loss is 0 and the text rule decides alone, and there a
-person who says a word hands said within 1.5 s of it loses that word. A clip hands played nothing
-over, or one the canceller took all of hands' voice out of, is decoded without its words timed,
-which costs the timing pass (0.33 s against 0.55 s for 24 s), and at the phone, whose own
-canceller is told what it plays, nothing is hands'.
+A turn's words are what Whisper hears of the clip, sent whole (`hands.voice.whisper`): the sound it hears has hands' own voice
+taken out of it by the canceller (`hands.voice.echo`), so every word it writes is a person's, hands' own words said at the same
+moment included, and no rule compares them with what hands played. A segment is dropped only as noise: one with no word, one the
+decoder looped in, one it only guessed at, one Silero heard nobody speak in. A decode primed with hands' vocabulary that loops
+is heard again unprimed, and the looped segments are recorded as dropped: "the build is green", 1.2 s of it through the
+canceller, read three times over primed and once unprimed. `tests/test_whisper_takes.py` holds it on the twelve recorded takes
+of `tests/echoscore.py`, through the desk's canceller and the real Whisper: hands alone, up to the person's first word, sends
+nothing on any of them, and each line a person says over hands, as its own clip from the 0.1 s before it, is sent every word
+and none of hands'. A reply's opening, heard uncancelled for 0.26 s, is too short for Whisper to write a word from. A hold
+long and quiet before the person speaks is a different clip, and primed Whisper may answer it with its vocabulary.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print

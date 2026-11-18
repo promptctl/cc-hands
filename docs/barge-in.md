@@ -84,8 +84,8 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 
 What is heard decides the cut, and nothing about whose voice it is: the sound every model hears has hands' voice taken out of it
 (`voice/echo.py`), so the words left in it are a person's, a short "yes" or "no" and words hands is saying itself included. A
-sound the diarizer took for a speaker with no words in it, a cough, cuts nothing. The turn's words are decided apart from the
-cut: each word Whisper heard that is a word hands played near when it was heard is not sent (`voice/whisper.py`). Each turn's `UserTurn` line says how long after
+sound the diarizer took for a speaker with no words in it, a cough, cuts nothing. The turn's words are the
+transcriber's, sent whole, with no rule about whose a word is (`voice/whisper.py`). Each turn's `UserTurn` line says how long after
 the cutting speaker's first word the cut came (`barge_in_after_speech`), from the clip's opening where the cut is on the
 transcriber's words, whose speaker no listener heard. Each clip, and each echo span of hands speaking with no clip open, is
 kept with what hands was playing over it, each sentence in which voice (`voice/recorder.py`).
