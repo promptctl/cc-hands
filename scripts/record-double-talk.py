@@ -160,21 +160,23 @@ def osascript(line: str) -> str:
     return subprocess.run(["osascript", "-e", line], check=True, capture_output=True, text=True).stdout.strip()
 
 
+def speaker_muted() -> bool:
+    """Whether the desk's speaker is muted; an output with no mute control reports `missing value`, and has none to put back."""
+    return {"true": True, "false": False}[osascript("output muted of (get volume settings)")]
+
+
 @contextmanager
-def speaker_up() -> Generator[None]:
+def speaker_up(was_muted: bool) -> Generator[None]:
     """The desk's speaker unmuted for what runs inside, and muted again as it was after, whatever happens in between."""
-    was = osascript("output muted of (get volume settings)")
-    # [LAW:parse-dont-validate] an output with no mute control reports `missing value`: there is no state to put back.
-    if was not in ("true", "false"):
-        raise RuntimeError(f"the default output has no mute to unmute and restore: it reports {was!r}")
     osascript("set volume output muted false")
     try:
         yield
     finally:
-        osascript(f"set volume output muted {was}")
+        osascript(f"set volume output muted {str(was_muted).lower()}")
 
 
 def main(fixture: Path, script: Script, gain: float) -> None:
+    was_muted = speaker_muted()  # before the synthesis, so an output with no mute fails at once
     say = pocket()
     made = [say(source(parse_voice(reply.voice)), reply.text) for reply in script.hands]
     onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + reply.pause for audio, reply in zip(made[:-1], script.hands[1:], strict=True))]))
@@ -236,7 +238,7 @@ def main(fixture: Path, script: Script, gain: float) -> None:
         played.extend(cancelled.played)
         return None, pyaudio.paContinue
 
-    with speaker_up():
+    with speaker_up(was_muted):
         audio = pyaudio.PyAudio()
         listening = audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=BUFFER, stream_callback=microphone)
         time.sleep(0.2)
