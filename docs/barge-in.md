@@ -39,7 +39,7 @@ dialogs, whose `<prompt>` carries `bargein` and `bargeintype`.
 | the trigger that opened the clip | the activation mode: push-to-talk or the phone's button, the wake word, engaged conversation |
 | the cut | barge-in: the user's speech stops what the system is saying (VoiceXML `bargein="true"`) |
 | a clip the hand opened cuts as it opens | VoiceXML's DTMF barge-in: a key press stops the prompt at once, with nothing to recognize |
-| a clip the voice opened, the wake word's or engaged conversation's, cuts once a speaker who is not hands is heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; hands waits for a speaker its voiceprint tells from its own echo, or for words where none of its voice may be in them (it played nothing over them, or into headphones), so its own voice cuts nothing, and nor does a cough where none of it may be; one it played over, which a voiceprint alone decides, a sound the diarizer took for a speaker could still cut |
+| a clip the voice opened, the wake word's or engaged conversation's, cuts once words are heard in it | nearest VoiceXML `bargeintype="speech"`, which stops the prompt on detected speech; the echo canceller takes hands' own voice out of the microphone's sound before anything hears it, so speech left in it is a person's, and a cough or a door, which the recognizer decodes to no words, cuts nothing |
 | the brain's turn | a dialog turn: one message to the agent and everything it says and does in reply |
 | a session telling | a proactive notification: hands speaking about a Claude Code session unprompted |
 | the note | context carry-over: what the next turn is told about the one cut off |
@@ -54,9 +54,9 @@ tables under the tree carry the reason for each branch and the code and test tha
 flowchart TD
     speak(["The user speaks"]) --> opened{"What opened the listening window?"}
     opened -- "push-to-talk, the phone's button" --> now["Cut as the window opens"]
-    opened -- "wake word, engaged conversation" --> whisper{"Is a speaker who is not hands heard in it?"}
+    opened -- "wake word, engaged conversation" --> whisper{"Are words heard in it, after the canceller took hands' voice out?"}
     whisper -- "yes" --> words["Cut once they are"]
-    whisper -- "no: hands' own voice, or no words where hands played nothing" --> nocut(["No cut: the reply plays on as if nothing had opened"])
+    whisper -- "no: nobody spoke, a cough, the room" --> nocut(["No cut: the reply plays on as if nothing had opened"])
     now --> inflight{"Is a brain turn in flight?"}
     words --> inflight
     inflight -- "no" --> nextturn(["Not a barge-in: the words are the next turn"])
@@ -79,23 +79,16 @@ the mechanism, `docs/architecture.md:1683–1707`). The cut is Pipecat's `Interr
 | The clip was opened by | It cuts |
 |---|---|
 | the user's hand: the shortcut, the phone's button | as it opens |
-| the voice: the wake word, engaged conversation | once a speaker who is not hands is heard in it (`voiceprints.cleared`): one none of hands' voice may be in (it played nothing over them, or into headphones), on their first words; one it may be in, once their voiceprint says a person, about a second of them in, while the clip is open; one too brief for that, a wake phrase said alone over hands, as the clip closes, ahead of its words |
-| the voice, where only hands' own voice is heard, or nobody | nothing, so nothing has to be undone; hands' own saying of the wake phrase included |
+| the voice: the wake word, engaged conversation | once the streaming recognizer decodes words in it, while the clip is open (`streaming.Stream.said`), on the first of them; words it holds until the clip closes, a short "no" or "yes", as it closes, on the words the transcriber heard in it (`clipowner._closing`), ahead of them |
+| the voice, where nobody spoke | nothing, so nothing has to be undone |
 
-Who each speaker is decides the cut. A `voiceprints.identified` event says who each speaker the
-diarizer heard was, by voiceprint against hands' own voice: `Person`, `Hands`, `Unsure`,
-`Unheard` or `Unidentified`, with the score or reason that said so, and `barge_in`, when the first
-speaker it cleared was first heard (`voice/voiceprints.py`). A speaker hands played over who
-cannot be scored yet, the model loading or a print being made, cuts nothing. A clip's close
-waits up to `IDENTIFIED_SECONDS` for its last identification, and its `clip` event says what it
-found, or that it came too late and cut nothing (`voice/clipowner.py`). The turn's words are
-decided apart from it: each word Whisper heard that is a word hands played near when it was heard
-is not sent, so a clip of hands' echo alone sends nothing, and a person's words over hands are sent
-(`voice/whisper.py`). Each turn's `UserTurn`
-line says how long after the cutting speaker's first word the cut came (`barge_in_after_speech`), from the clip's opening where the cut is on its transcribed words, whose speaker no listener heard. The score
-thresholds are provisional: each clip, and each echo span of hands speaking with no clip open, is
-kept with what hands was playing over it, each sentence in which voice (`voice/recorder.py`), so they are
-refitted on real use.
+What is heard decides the cut, and nothing about whose voice it is: the sound every model hears has hands' voice taken out of it
+(`voice/echo.py`), so the words left in it are a person's, a short "yes" or "no" and words hands is saying itself included. A
+sound the diarizer took for a speaker with no words in it, a cough, cuts nothing. The turn's words are decided apart from the
+cut: each word Whisper heard that is a word hands played near when it was heard is not sent (`voice/whisper.py`). Each turn's `UserTurn` line says how long after
+the cutting speaker's first word the cut came (`barge_in_after_speech`), from the clip's opening where the cut is on the
+transcriber's words, whose speaker no listener heard. Each clip, and each echo span of hands speaking with no clip open, is
+kept with what hands was playing over it, each sentence in which voice (`voice/recorder.py`).
 
 **2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
 a barge-in. The guards on lines 733–737 say no in four cases:
@@ -109,7 +102,7 @@ a barge-in. The guards on lines 733–737 say no in four cases:
 
 A cut over a line of hands' own, the acknowledgement or an answer, is not a barge-in: it is no word
 of the brain's, so it carries no Marker and stops nothing of the turn. A turn opened by voice cuts only
-once a speaker who is not hands is heard in it, so a question that finishes playing between the user starting to
+once words are heard in it, so a question that finishes playing between the user starting to
 speak and that moment is still answered by their words, as on master. And a cut in the moment
 between the output passing on a point's Marker and `Markers` taking it still reads as a barge-in, though
 everything had played. And hands' answer to words that arrive while a question the user heard is

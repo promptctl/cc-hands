@@ -4,10 +4,9 @@ Every turn starts as the clip that opens it opens, so its words gather from the 
 from the moment they speak (`hands.voice.floor`). Starting is not cutting. The cut is the user taking over: Pipecat's
 start of a turn, which the user aggregator broadcasts as `UserStartedSpeakingFrame` and then the interruption that stops
 the speaker, cancels the reply still streaming from the model and its calls in flight, and settles a line waiting to be
-heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the clip owner says a
-speaker who is not hands was heard in it (`SpeakerCleared`): while the clip is open, or as it closes, where it heard none before.
-Words cut nothing, since hands' own voice makes words too. A turn that ends uncut has taken nothing over: nothing is
-cut off, so nothing has to be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
+heard as cut off. A turn the user's hand opened cuts as it opens; one the voice opened cuts once the clip owner says
+speech was heard in it (`SpeechHeard`): while the clip is open, or as it closes, where it heard none before. A turn that
+ends uncut has taken nothing over: nothing is cut off, so nothing has to be undone, and the reply it found on its way goes on as if no turn had opened, a tool's result included. The cut can
 land while the turn's own words are on their way, so they are uninterruptible on both sides of the user aggregator
 (`hands.voice.turnstop.Words`, `hands.voice.conversation.UserWords`): an interruption stops hands, never the user. And it lands just
 ahead of them, so the user aggregator takes none of them in until the reply the cut stopped is written as cut off
@@ -26,7 +25,7 @@ from hands.clock import Clock
 from hands.sessions.audit import Record, TurnStart, UserTurn
 from hands.voice.trigger import turn_start
 from hands.voice.clips import Clip
-from hands.voice.turnstop import SpeakerCleared, TurnOpened
+from hands.voice.turnstop import SpeechHeard, TurnOpened
 
 
 class BargeInWritten(SystemFrame):
@@ -76,11 +75,11 @@ class TriggerTurnStart(BaseUserTurnStartStrategy):
                 # A clip opened while the clip owner is still on the last joins its turn, and cuts as its own trigger says.
                 turn.clips[clip] = self._now()
                 await self._barge_in_where(turn_start(clip.opener), turn)
-            case SpeakerCleared(clip=clip, first=first), _Open() as turn:
-                # A person, in whichever clip of the turn, heard while it was open or as it closed. [LAW:nothing-unseen]
+            case SpeechHeard(clip=clip, first=first), _Open() as turn:
+                # Speech, in whichever clip of the turn, heard while it was open or as it closed. [LAW:nothing-unseen]
                 # the cut's delay from their first voice, which the clip that opened before them may have kept.
                 await self._barge_in(turn, self._now() - (turn.clips[clip] + first))
-            case SpeakerCleared(), None:
+            case SpeechHeard(), None:
                 # [LAW:no-silent-failure] a turn ends only once the clip owner is done with every clip, behind each one's cut.
                 raise RuntimeError("the clip owner cut outside any user turn")
             case BargeInWritten(), _:

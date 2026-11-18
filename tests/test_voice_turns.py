@@ -59,9 +59,9 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
-from hands.voice.voiceprints import Embed, Voiceprints
+from hands.voice.voiceprints import Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
-from hands.voice import clipowner, desk, shortcut, streaming, voiceprints
+from hands.voice import clipowner, desk, shortcut, streaming
 from hands.voice.desk import Act
 from hands.voice.clipowner import ClipOwner
 from hands.voice.shortcut import Idle, KeyEvent, Move, Pressed, Released
@@ -644,66 +644,29 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         await rig.until(lambda: user_turns(rig) == [("on a person", True)])
         *_, whole = hearings(rig)
         assert (whole.outcome, whole.error, whole.facts["clip"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
+        assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 
 
-# The voice hands speaks in, which its own voiceprint is made of.
+# The voice hands speaks in.
 SPOKEN_IN = voices.source(voices.DEFAULT)
-
-# 20 ms of a voice at half of full scale: the user's, which `told_apart` prints apart from hands'.
-PERSON_VOICE = b"\x00\x40" * 320
-
-
-def told_apart(recorded: list[Entry]) -> Callable[[Path], Voiceprints]:
-    """hands' voiceprints on a model that prints a voice at half of full scale, the user's, apart from anything quieter,
-    hands' own, its TTS saying anything as a second of silence; what they record goes in `recorded`."""
-
-    def model() -> Embed:
-        return lambda voice: np.array([0.0, 1.0] if float(np.mean(np.abs(voice))) > 0.25 else [1.0, 0.0], np.float32)
-
-    def speech() -> voiceprints.Synthesize:
-        return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
-
-    return lambda kept: Voiceprints(SYSTEM, model, speech, kept, recorded.append)
-
 
 def turn_lines(rig: Rig) -> list[UserTurn]:
     return [entry for entry in rig.recorded if isinstance(entry, UserTurn)]
 
 
 @pytest.mark.parametrize("by", ["engaged conversation", "wake word"])
-async def test_hands_own_echo_over_a_reading_in_a_clip_the_voice_opened_cuts_nothing_though_words_are_heard_in_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger
-) -> None:
-    prints: list[Entry] = []
-    async with reading(monkeypatch, tmp_path, told_apart(prints)) as (rig, cut, line):
-        await rig.until(lambda: bool(events(prints, "voiceprints.enrolled")))
-        # Two seconds of hands' own reading come back through the microphone, the streaming recognizer hearing its words
-        # all the while, and the transcriber as the clip closes.
-        for _ in range(2 * len(SPEAKING) + 2):
-            rig.streamed.said.put("the parser")
-        await rig.clip(["listening", "arming", *SPEAKING, *SPEAKING, "listening"], by=by, voices=(SPOKEN_IN,))
-        await rig.texts.put("the parser is fixed")
-        await rig.until(lambda: len(turn_lines(rig)) == 1)
-        assert turn_lines(rig) == [UserTurn("on a person", None, None)]
-        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
-        assert "words" in overheard(rig)
-
-
-@pytest.mark.parametrize("by", ["engaged conversation", "wake word"])
 async def test_a_person_over_hands_in_a_clip_the_voice_opened_cuts_it_off_while_they_speak_and_the_turn_says_how_soon(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, by: Trigger
 ) -> None:
-    prints: list[Entry] = []
-    async with reading(monkeypatch, tmp_path, told_apart(prints)) as (rig, cut, line):
-        await rig.until(lambda: bool(events(prints, "voiceprints.enrolled")))
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
         for _ in range(2 * len(SPEAKING) + 2):
             rig.streamed.said.put("wait")
-        await rig.clip(["listening", "arming", *SPEAKING, *SPEAKING], sound=PERSON_VOICE, by=by, voices=(SPOKEN_IN,))
-        # Cut while the clip is still open, once their voice was told from hands'.
+        await rig.clip(["listening", "arming", *SPEAKING, *SPEAKING], by=by, voices=(SPOKEN_IN,))
+        # Cut while the clip is still open, on the first words heard in it: the canceller took hands' voice out of the sound.
         await rig.until(line.done)
         assert (line.result(), rig.out.released) == (False, 0)
         assert cut == [BargeIn("The parser is fixed.", 1)] and (rig.out.started, rig.out.interrupted) == (1, 1)
-        await rig.clip(["listening"], sound=PERSON_VOICE, by=by, voices=(SPOKEN_IN,))
+        await rig.clip(["listening"], by=by, voices=(SPOKEN_IN,))
         await rig.texts.put("wait, not yet")
         await rig.until(lambda: len(turn_lines(rig)) == 1)
         [turn] = turn_lines(rig)
