@@ -42,6 +42,7 @@ from pipecat.workers.runner import WorkerRunner
 from hands.brain import pinned
 from hands.clock import SYSTEM, Clock
 from hands.virtualclock import VirtualClock
+from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
 from hands.daemon import watchdog
 from hands.sessions.audit import Entry, Record, SettingsEdited
@@ -625,7 +626,10 @@ def pytest_sessionstart(session: pytest.Session) -> Generator[None]:
     wake_word = config.cache.mkdir("wake-word")
     claude_code = config.cache.mkdir("claude-code")
     layer = config.getoption("layer", None)
-    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), machine, unit=held(config))
+    # The echo canceller's model is read by the unit layer's tests, from a directory of the run's, not each test's own HOME.
+    dtln_models = config.cache.mkdir("dtln-aec")
+    monkeypatch.setattr(dtln, "CACHE", dtln_models)
+    fetches = Fetches(nltk_data, wake_word, claude_code, config.cache.mkdir("mock-anthropic"), dtln_models, machine, unit=held(config))
     # The fetches' lines go to the terminal below what this process has written to it.
     terminal.flush()
     fetched_apart(fetches)

@@ -175,7 +175,7 @@ def test_a_defect_in_a_fetch_is_raised_as_itself() -> None:
 
 
 def test_what_the_fetches_need_reaches_their_process_as_it_was_given() -> None:
-    fetches = Fetches(Path("/cache/nltk-data"), Path("/cache/wake-word"), Path("/cache/claude-code"), Path("/cache/mock-anthropic"), {"PATH": "/usr/bin", "GOPATH": "/go"})
+    fetches = Fetches(Path("/cache/nltk-data"), Path("/cache/wake-word"), Path("/cache/claude-code"), Path("/cache/mock-anthropic"), Path("/cache/dtln-aec"), {"PATH": "/usr/bin", "GOPATH": "/go"})
 
     assert Fetches.read(fetches.written()) == fetches
 

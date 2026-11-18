@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from functools import partial
+from http.client import HTTPException
 from pathlib import Path
 
 import httpx
@@ -27,7 +28,7 @@ from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
-from hands.voice import engaged, streaming, transcription, voiceprints
+from hands.voice import dtln, engaged, streaming, transcription, voiceprints
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
@@ -76,16 +77,17 @@ WAKE_WORDS = (Pretrained("Hey Jarvis"), Pretrained("Hey Mycroft"))
 
 @dataclass(frozen=True)
 class Fetches:
-    """What the run's fetches need: where each goes in pytest's cache, but the weights, which go to the Hugging Face
+    """What the run's fetches need: where each goes in pytest's cache, but the hub's weights, which go to the Hugging Face
     cache the process's environment names; and the machine's environment, which the mock is built with."""
 
     nltk_data: Path
     wake_word: Path
     claude_code: Path
     mock: Path
+    dtln: Path
     machine: dict[str, str]
     # The run is the unit layer's, held to nothing outside the process (tests/offline.py): of all this, its tests read only
-    # the sentence tokenizer, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
+    # the sentence tokenizer and the echo canceller's model, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
     unit: bool = False
 
     def mock_binary(self) -> Path:
@@ -98,7 +100,7 @@ class Fetches:
     @staticmethod
     def read(text: str) -> "Fetches":
         read = json.loads(text)
-        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), read["machine"], read["unit"])
+        return Fetches(Path(read["nltk_data"]), Path(read["wake_word"]), Path(read["claude_code"]), Path(read["mock"]), Path(read["dtln"]), read["machine"], read["unit"])
 
 
 def fetching[T](write: Callable[[str], object], what: str, failures: tuple[type[Exception], ...], fetch: Callable[[], T]) -> T:
@@ -132,6 +134,8 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
     disable_progress_bars()
     fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
+    # The echo canceller's model, which the unit layer's tests of the canceller run for real, so it is read there too.
+    fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError, HTTPException, ValueError), partial(dtln.fetched, fetches.dtln))
     if fetches.unit:
         return
     for weights in WEIGHTS:

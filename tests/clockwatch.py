@@ -67,6 +67,7 @@ UNMOVED = frozenset({
     "test_delta.py",
     "test_devices.py",
     "test_display.py",
+    "test_echoscore.py",
     "test_engaged_models.py",
     "test_filing.py",
     "test_focus.py",

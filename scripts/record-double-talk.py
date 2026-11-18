@@ -248,7 +248,6 @@ def main(fixture: Path, script: Script, gain: float) -> None:
         speaking.close()
         listening.close()
         audio.terminate()
-        echo.close()
 
     as_float = lambda raw: np.frombuffer(bytes(raw), np.int16).astype(np.float32) / 32768  # noqa: E731
     channels = np.stack([as_float(heard), as_float(captured), as_float(track(tuple(played)))], axis=1)
