@@ -56,7 +56,7 @@ def test_a_sample_is_one_event_saying_the_footprint_and_mlx_split() -> None:
     held = {"mlx_active_mb": 2587.0, "mlx_cache_mb": 1024.0}
     sample(VirtualClock(), kept.append, read=lambda: 6354 * MEGABYTE, held=lambda: held)
     samples = [entry for entry in kept if isinstance(entry, WideEvent)]
-    assert [(sample.event, sample.outcome, sample.facts) for sample in samples] == [(SAMPLED, "ok", {"footprint_mb": 6354.0, **held})]
+    assert [(event.event, event.outcome, event.facts) for event in samples] == [(SAMPLED, "ok", {"footprint_mb": 6354.0, **held})]
 
 
 def test_a_footprint_the_kernel_refuses_is_said_on_the_sample() -> None:
@@ -67,4 +67,4 @@ def test_a_footprint_the_kernel_refuses_is_said_on_the_sample() -> None:
 
     sample(VirtualClock(), kept.append, read=refused, held=dict)
     samples = [entry for entry in kept if isinstance(entry, WideEvent)]
-    assert [(sample.outcome, sample.facts) for sample in samples] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted"})]
+    assert [(event.outcome, event.facts) for event in samples] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted"})]
