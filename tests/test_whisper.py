@@ -187,9 +187,9 @@ async def test_what_whisper_hears_where_nobody_spoke_is_not_said(model: Model) -
 async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
     recorded: list[Entry] = []
     whisper = Whisper(clock=SYSTEM, prompt=primed(None), record=recorded.append)
-    # Spoken in, then held on in silence: Whisper's "Thank you." heard from 30 s on (promptctl-voice-i15t.a5s.x48).
+    # Spoken in, then held on in silence: Whisper's "Thank you." heard after the speech (promptctl-voice-i15t.a5s.x48).
     spoke = len(SPOKEN) / 2 / 16_000
-    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3, ()), transcription.Segment("Thank you.", 30.0, 40.0, 0.56, -0.28, ())]
+    heard = [transcription.Segment("Create a ticket.", 0.0, spoke, 0.8, -0.3, ()), transcription.Segment("Thank you.", spoke + 0.1, spoke + 0.5, 0.56, -0.28, ())]
 
     def segments(_samples: np.ndarray, _prompt: str | None, *, words: bool) -> list[transcription.Segment]:
         return heard
@@ -199,6 +199,21 @@ async def test_a_segment_is_heard_as_spoken_in_only_where_it_was_heard(model: Mo
     assert await whisper.transcribed(clip(1), as_heard(SPOKEN + SILENCE * 40)) == "Create a ticket."
     [[unsaid]] = [entry.dropped for entry in recorded if isinstance(entry, ClipHeard)]
     assert (unsaid.text, unsaid.voiced < 0.1) == ("Thank you.", True)
+
+
+async def test_a_quiet_stretch_longer_than_half_a_second_is_cut_to_it_before_whisper_hears_the_clip(model: Model) -> None:
+    """Primed with the vocabulary, Whisper answers a long quiet lead with the vocabulary's own words, 0.0 to 30.0 s, and the
+    person's words are lost (promptctl-voice-i15t.65f.qem): it is not given the lead, nor any pause that long."""
+    whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware", "authMiddleware"), record=lambda _: None)
+    spoken_in = np.frombuffer(SPOKEN, dtype=np.int16).astype(np.float32) / 32768.0
+    # Nine seconds of quiet ahead of the speech, and the same nine in the middle of it.
+    await whisper.transcribed(clip(1), as_heard(SILENCE * 9 + SPOKEN))
+    await whisper.transcribed(clip(2), as_heard(SPOKEN + SILENCE * 9 + SPOKEN))
+
+    [(lead, _), (pause, _)] = model.asked[1:]
+    # Each quiet stretch kept is at most half a second and the speech is kept whole: what is not speech is the little added.
+    assert (len(lead) <= len(spoken_in) + 3 * 8_000, len(pause) <= 2 * len(spoken_in) + 3 * 8_000) == (True, True)
+    assert (bool(np.abs(lead).max() > 0.1), bool(np.abs(pause).max() > 0.1)) == (True, True)
 
 
 async def test_a_clip_the_model_fails_raises_and_whisper_transcribes_the_next(model: Model) -> None:

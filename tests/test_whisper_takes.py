@@ -78,3 +78,12 @@ async def test_a_person_over_hands_is_sent_whole_and_hands_is_not_on_any_recorde
         # Each line its own clip, from LEAD before its first word to the next line's, as a voice-opened turn is.
         lost, leaked = judged(line, await sent(desk(take, line.start - LEAD, end)))
         assert (lost, leaked) == ([], []), line.text
+
+
+@pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
+async def test_a_whole_take_is_sent_every_word_the_person_said_in_it_and_none_of_hands(fixture: Path) -> None:
+    take = recorded(fixture)
+    # One clip from the take's first sample, as a held key that the person speaks late into is: the quiet before them is in it.
+    said = " ".join(line.text for line in take.person)
+    lost, leaked = judged(Line(said, 0.0), await sent(desk(take, 0.0, float("inf"))))
+    assert (lost, leaked) == ([], [])
