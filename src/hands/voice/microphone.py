@@ -718,14 +718,11 @@ class KeyedMicrophone(LocalAudioInputTransport):
         return None if self._in_stream is None else self.opened
 
     async def let_go(self, opened: Input) -> None:
-        """Stop and close a detached stream, then its canceller. Measured at 2.7 to 3.7 s when its device is gone."""
+        """Stop and close a detached stream. Measured at 2.7 to 3.7 s when its device is gone."""
 
         def stop_and_close() -> None:
             _letting_go(opened.stream.stop_stream)
             opened.stream.close()
-            # [LAW:no-ambient-temporal-coupling] on the thread that closed the stream, once it can call back no more:
-            # a stream that never finishes closing keeps its canceller.
-            opened.echo.close()
 
         # [LAW:nothing-unseen] one event for each stream let go of, carrying what its canceller did over its life.
         with unit("microphone.let_go", self._record, begun(self._clock), COUNTS):
@@ -938,12 +935,10 @@ class KeyedAudioTransport(LocalAudioTransport):
             microphone.stream.start_stream()
         except BaseException:
             # [LAW:no-ambient-temporal-coupling] PyAudio starts a callback stream as it opens it, so each stream opened
-            # here calls back into the canceller; each is stopped and closed before the canceller goes, and no let_go
-            # will reach any of them.
+            # here calls back into the canceller; each is stopped and closed, and no let_go will reach any of them.
             for stream in opened:
                 _letting_go(stream.stop_stream)
                 stream.close()
-            cancelling.close()
             raise
         return _Started(placement, portaudio, speaker, microphone)
 

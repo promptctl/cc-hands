@@ -16,6 +16,7 @@ Cost, one thread: 0.38 ms of inference per 8 ms hop. Latency: `Dtln.LATENCY`, 32
 """
 
 import hashlib
+import os
 import urllib.request
 from collections import deque
 from collections.abc import Callable
@@ -27,11 +28,11 @@ from typing import Any
 import numpy as np
 from ai_edge_litert.interpreter import Interpreter
 
-RATE = 16000
+SAMPLE_RATE = 16000
 BLOCK, SHIFT = 512, 128
 
-# The reference's delay at most, in samples: the stretch the echo path is looked for (`hands.voice.echo._PATH_LAG`).
-MAX_DELAY = RATE
+# The reference's delay at most, in samples: 1 s, the stretch `hands.voice.echo` looks for the echo path over.
+MAX_DELAY = SAMPLE_RATE
 
 # How much sooner than its echo the reference is read, in samples: 15 ms. Read late, where the echo is already in the
 # block before the reference that made it, DTLN-aec cancels none of it (34 of hands' words leaked over the twelve takes with
@@ -51,6 +52,9 @@ _SETTLED = 16
 # first word where, having read the 128 ms before, it took out 40 dB (hands_cancelled_and_another.flac, the 0.25 s after
 # its echo path was read), and Whisper heard "hey" of the first 8 s of hands alone (tests/test_whisper_recorded.py).
 _REPLAYED = 16
+
+# How long a read of the model's repository may wait for bytes, in seconds, before the fetch fails.
+_FETCH_TIMEOUT = 30
 
 REPOSITORY = "breizhn/DTLN-aec"
 REVISION = "9d24e128b4f409db18227b8babb343016625921f"
@@ -79,8 +83,9 @@ class Stages:
     refine_state: tuple[int, ...]
 
 
-def cache_directory() -> Path:
-    return Path.home() / ".cache" / "hands" / "dtln-aec" / REVISION
+# Where the model's files are kept. A test run points it at a directory of its own (tests/conftest.py), fetched once for
+# the run, because each test has a HOME of its own that holds nothing.
+CACHE = Path.home() / ".cache" / "hands" / "dtln-aec" / REVISION
 
 
 def _digest(path: Path) -> str:
@@ -89,21 +94,28 @@ def _digest(path: Path) -> str:
 
 @cache
 def weights() -> tuple[Path, Path]:
-    """The two parts' files, fetched once from the model's repository at REVISION into hands' cache, each held to its digest.
+    """The two parts' files in `CACHE`, fetched if they are not there."""
+    return fetched(CACHE)
+
+
+def fetched(directory: Path) -> tuple[Path, Path]:
+    """The two parts' files, fetched from the model's repository at REVISION into `directory` unless they are there, each held to its digest.
 
     [LAW:no-silent-failure] a file that is not the one pinned raises naming it: a canceller that cancels with other weights
-    would leak hands' voice or eat a person's with nothing to say why. A file is fetched beside its place and moved to it
-    once it is whole, so a fetch cut short leaves none to be taken for the file."""
-    directory = cache_directory()
+    would leak hands' voice or eat a person's with nothing to say why. A file is fetched whole and held to its digest
+    before it is written beside its place, by a name of this process's own, and moved to it: a fetch cut short leaves none
+    to be taken for the file, and two processes fetching at once do not write the same one."""
     directory.mkdir(parents=True, exist_ok=True)
     paths = list[Path]()
     for name, digest in PARTS:
         path = directory / name
         if not (path.is_file() and _digest(path) == digest):
-            fetched = path.with_suffix(".part")
-            urllib.request.urlretrieve(f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", fetched)  # noqa: S310
-            if (found := _digest(fetched)) != digest:
+            with urllib.request.urlopen(f"https://raw.githubusercontent.com/{REPOSITORY}/{REVISION}/pretrained_models/{name}", timeout=_FETCH_TIMEOUT) as response:  # noqa: S310
+                body = response.read()
+            if (found := hashlib.sha256(body).hexdigest()) != digest:
                 raise ValueError(f"{name} at {REVISION} is {found}, not the {digest} pinned")
+            fetched = path.with_suffix(f".{os.getpid()}.part")
+            fetched.write_bytes(body)
             fetched.replace(path)
         paths.append(path)
     first, second = paths
@@ -198,6 +210,10 @@ class Dtln:
         of it and the blocks it is overlapping: what it gives is what was already heard."""
         heard = list(self._history)
         self._position -= len(heard) * SHIFT
+        # The blocks and the overlap are of the stream as it ran: read afresh, they begin on silence as the model's first
+        # hop does, not on the end of the stream they would join the first of the replay to.
+        self._microphone_block = np.zeros(BLOCK, np.float32)
+        self._reference_block = np.zeros(BLOCK, np.float32)
         self._overlap = np.zeros(BLOCK, np.float32)
         for hop in heard:
             self._run(hop, delay)

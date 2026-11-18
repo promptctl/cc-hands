@@ -1831,9 +1831,8 @@ A Pipecat input filter could not stop it, because it runs when the event loop re
 frame, tens of milliseconds after capture. So `hands.voice.microphone` replaces the
 local transport's two halves, joined by the echo canceller of the streams open
 (`hands.voice.echo`: DTLN-aec, `hands.voice.dtln`, a neural canceller run with TFLite). Each reopen opens the new
-pair of streams on a new canceller, which learns the new room from nothing. The old
-canceller is closed on the thread that closed its microphone stream, so a stream still
-calling back never reaches a canceller that has been let go of. The `Speaker`'s stream is a
+pair of streams on a new canceller, which learns the new room from nothing. A stream
+still calling back after a reopen reaches only the canceller it was opened on. The `Speaker`'s stream is a
 `Playout` fed from PortAudio's callback: the device takes 20 ms whenever it needs it, what
 was written and then silence, and the canceller is given exactly that, on the device's
 clock. Told what was written as it was written instead, the reference moved against its
@@ -1859,7 +1858,7 @@ nothing, there once a stretch carries hands' echo, and none once a whole stretch
 alone, the microphone quiet, reads none: under a person's voice, an echo well down reads
 like none, and says nothing. Only a path read there has the canceller's output heard, and the lag it read is the delay DTLN-aec reads the reference at; unread or
 none, every buffer is passed on as captured, so a person cutting into a reply's opening in
-headphones is heard unducked, and at the desk a reply's first quarter second is heard
+headphones is heard unducked, and at the desk a reply's first half second is heard
 uncancelled, a second or more where the microphone or speaker opened mid-reply. Each reference says whether hands' voice may be in it (`Reference.reached`),
 false only where the path read none, which Whisper's rule of hands' words and the cut
 (`clips.slots`) read. Each

@@ -124,5 +124,4 @@ def replayed(captured: np.ndarray, reference: np.ndarray, playheads: tuple[tuple
         cancelled = canceller.heard(captured[at].tobytes(), RATE, 1)
         heard += cancelled.heard
         played += cancelled.played
-    canceller.close()
     return Sound(bytes(heard), captured[: 2 * SLOT * buffers].tobytes(), tuple(played))

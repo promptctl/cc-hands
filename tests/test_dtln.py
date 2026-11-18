@@ -2,10 +2,13 @@
 out, run on parts that are arithmetic, so what is tested is the plumbing and not the weights; the weights are held to
 the harness's numbers in tests/test_echoscore.py."""
 
+import io
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from hands.voice.dtln import BLOCK, MAX_DELAY, SHIFT, Dtln, Stages
+from hands.voice.dtln import BLOCK, MAX_DELAY, SHIFT, Dtln, Stages, fetched
 from hands.voice.dtln import _EARLY, _REPLAYED, _SETTLED  # pyright: ignore[reportPrivateUsage]  (the constants the plumbing is held to)
 
 BINS = BLOCK // 2 + 1
@@ -109,6 +112,25 @@ def test_the_model_begun_afresh_reads_the_last_of_the_microphone_again_before_th
     assert len(calls) == _REPLAYED + 4 + 4
 
 
+def test_the_model_begun_afresh_reads_the_microphone_again_from_silence_not_from_the_end_of_the_stream_it_left() -> None:
+    first: list[float] = []
+
+    def mask(microphone: np.ndarray, reference: np.ndarray, state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        first.append(float(microphone[0]))  # the DC bin: the sum of the block's samples
+        return np.ones(BINS, np.float32), state
+
+    def refine(masked: np.ndarray, reference: np.ndarray, state: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return masked / 4, state
+
+    dtln = Dtln(Stages(mask, refine, (1,), (1,)))
+    loud = np.ones(SHIFT * 4, np.float32)
+    for _ in range(40):
+        dtln.cancel(loud, loud, None)
+    dtln.cancel(loud, loud, 1000)
+    # The first hop replayed is one hop of sound after three of silence, whatever the stream was before it.
+    assert first[0] == pytest.approx(SHIFT)
+
+
 def test_a_delay_reaching_further_back_than_the_echo_path_looks_is_refused() -> None:
     with pytest.raises(ValueError, match="not within"):
         Dtln(passing()).cancel(np.zeros(160, np.float32), np.zeros(160, np.float32), MAX_DELAY + 1)
@@ -117,3 +139,13 @@ def test_a_delay_reaching_further_back_than_the_echo_path_looks_is_refused() -> 
 def test_a_frame_of_microphone_and_a_frame_of_reference_of_different_lengths_is_refused() -> None:
     with pytest.raises(ValueError, match="of reference"):
         Dtln(passing()).cancel(np.zeros(160, np.float32), np.zeros(159, np.float32), 0)
+
+
+def test_a_download_that_is_not_the_pinned_file_is_refused_by_name_and_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def served(url: str, timeout: float) -> io.BytesIO:
+        return io.BytesIO(b"not the model")
+
+    monkeypatch.setattr("urllib.request.urlopen", served)
+    with pytest.raises(ValueError, match="dtln_aec_512_1.tflite"):
+        fetched(tmp_path)
+    assert list(tmp_path.iterdir()) == []

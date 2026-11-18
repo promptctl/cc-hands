@@ -136,7 +136,6 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, m
                 cleaned[index : index + len(captured)] = np.frombuffer(canceller.heard(captured.tobytes(), HEARD_RATE, 1).heard, np.int16)
             case _:
                 raise AssertionError(what)
-    canceller.close()
     # Where each reading's first sample reached the converter, then the microphone a flight later, at 16 kHz.
     starts = [tick // 2 for n, (tick, _) in enumerate(writes) if n == 0 or tick - writes[n - 1][0] > CHUNK]
     onsets = [(start + int(np.flatnonzero(played[start:])[0])) * 2 // 3 + ROOM_DELAY for start in starts]

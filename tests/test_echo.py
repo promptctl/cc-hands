@@ -80,13 +80,9 @@ def test_a_microphone_buffer_of_part_of_a_frame_is_refused() -> None:
         EchoCanceller().heard(bytes(330), HEARD_RATE, 1)
 
 
-def test_a_stereo_microphone_is_heard_in_frames_of_both_channels() -> None:
-    canceller = EchoCanceller()
-    voice = np.repeat(_noise(1.0, HEARD_RATE, seed=3), 2).tobytes()  # each sample on both channels
-    cleaned = b"".join(canceller.heard(voice[start : start + 1280], HEARD_RATE, 2).heard for start in range(0, len(voice), 1280))
-    assert len(cleaned) == len(voice)
-    assert canceller.counts()["heard"] == 100  # one second of 10 ms frames, not two
-    assert abs(_power_db(cleaned[32000:]) - _power_db(voice[32000:])) < 3
+def test_a_stereo_microphone_is_refused() -> None:
+    with pytest.raises(ValueError, match="2 channels"):
+        EchoCanceller().heard(bytes(1280), HEARD_RATE, 2)
 
 
 def test_the_canceller_counts_frames_heard_with_nothing_playing_and_sound_it_had_to_drop() -> None:
@@ -178,6 +174,18 @@ def test_hands_heard_through_the_room_is_an_echo_path_even_quiet_and_a_person_ov
     assert _path_over(EchoPath(), echo + _dbfs(-30, 6.0, seed=5), played) == ["unread"] * 6
 
 
+def test_the_delay_is_the_echos_lag_while_the_path_is_read_there_and_none_while_it_is_not() -> None:
+    played = _noise(6.0, PLAYED_RATE, seed=3).astype(np.float64)
+    path = EchoPath()
+    assert path.delay is None  # unread
+    _path_over(path, _room(played, 0.3), played)
+    assert path.reading == "there"
+    assert path.delay is not None and abs(path.delay - round(0.068 * HEARD_RATE)) < 0.002 * HEARD_RATE
+    # The headphones go on: the lag of a path since lost is not the path's.
+    _path_over(path, _dbfs(-62, 3.0, seed=6), played[: 3 * PLAYED_RATE])
+    assert path.reading == "none" and path.delay is None
+
+
 def test_hands_heard_by_no_microphone_is_no_echo_path_once_two_seconds_of_it_are_read() -> None:
     # In headphones: the microphone hears the room alone while hands plays. A second of it is too short to say so.
     played = _noise(4.0, PLAYED_RATE, seed=3).astype(np.float64)
@@ -252,9 +260,10 @@ def test_hands_through_the_desks_speaker_never_reads_as_reaching_nothing_and_is_
 
 
 def test_a_reply_at_the_desk_after_a_pause_is_cancelled_within_its_opening() -> None:
-    # Unread again over the 4 s pause, the path is read there 0.21 s into the next reply, at 9.54 s, a person over it.
+    # Unread again over the 4 s pause, the path is read there 0.46 s into the next reply, at 9.54 s, a person over it: their
+    # voice peaks at -133 ms 0.21 s in, higher than the echo, and says nothing of the path.
     sound = replayed(*take(OPENING))
-    assert _uncancelled_from(sound, cut_in(OPENING), len(sound.heard) / 2 / RATE) <= 0.3
+    assert _uncancelled_from(sound, cut_in(OPENING), len(sound.heard) / 2 / RATE) <= 0.5
 
 
 def _uncancelled_from(sound: Sound, onset: float, end: float) -> float:

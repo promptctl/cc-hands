@@ -17,7 +17,7 @@ import soxr
 from livekit import rtc
 
 from hands.voice.clips import Reference, Playhead
-from hands.voice.dtln import MAX_DELAY, RATE, Dtln, tflite_stages, weights
+from hands.voice.dtln import MAX_DELAY, SAMPLE_RATE, Dtln, tflite_stages, weights
 
 # The canceller works on 10 ms frames, in both directions.
 _FRAMES_PER_SECOND = 100
@@ -39,8 +39,8 @@ _SPARE_FRAMES = 2
 # The stretch the echo path is read over, in 10 ms frames, and how often: 2 s, four times a second. Over one 2 s stretch
 # hands played in, the reading below was 42.9 to 81.6 at the desk with its speaker on
 # (tests/fixtures/hands_cancelled_and_another.flac) and 4.2 to 7.8 in headphones (hands_no_echo_and_another.flac); over
-# 1 s, the speaker's dipped to 9.1. Read every 0.25 s, the desk's speaker reads there 0.21 s into a reply after a pause
-# (hands_over_an_opening.flac), where every 1 s it took 0.46 s, hands' voice heard uncancelled until then.
+# 1 s, the speaker's dipped to 9.1. Read every 0.25 s, the desk's speaker reads there 0.46 s into a reply after a pause
+# (hands_over_an_opening.flac), hands' voice heard uncancelled until then.
 _PATH_FRAMES = 200
 _PATH_HOP = 25
 
@@ -60,7 +60,7 @@ _ECHO_PATH = 20.0
 # and its echo may be, either way: 68 ms at the desk, and at a reopen the reference can come as late as all of it the
 # canceller holds (`_HELD_FRAMES`).
 _PATH_BAND = (200.0, 4000.0)
-_PATH_LAG = 1.0
+_PATH_LAG = MAX_DELAY / SAMPLE_RATE
 
 # How loud the microphone is, at most, over a stretch whose low reading says no echo reached it: hands alone in
 # headphones -60 to -61.5 dBFS, the room alone -63, a person speaking -26 to -34. Under double talk an echo 20 dB down
@@ -98,8 +98,9 @@ def seconds(length: int, sample_rate: int, channels: int) -> float:
 
 @dataclass(frozen=True)
 class Cancelled:
-    """A microphone buffer through the canceller: `heard`, with the speaker's echo taken out; and `played`, the reference
-    each of its 10 ms frames was matched with, as the canceller was given it, so the two line up frame for frame."""
+    """A microphone buffer through the canceller: `heard`, with the speaker's echo taken out, `Dtln.LATENCY` behind the
+    microphone; and `played`, the reference each of its 10 ms frames was matched with, as the canceller was given it, the
+    microphone's own moment. They are the same length, frame for frame, but `heard` is the sound from that far before."""
 
     heard: bytes
     played: tuple[Reference | None, ...]
@@ -111,7 +112,6 @@ class Echo(Protocol):
     def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None: ...
     def heard(self, audio: bytes, sample_rate: int, channels: int) -> Cancelled: ...
     def counts(self) -> dict[str, int]: ...
-    def close(self) -> None: ...
 
 
 def referenced(reference: rtc.AudioFrame, playheads: tuple[Playhead, ...], reached: bool) -> Reference | None:
@@ -133,7 +133,7 @@ def mono(audio: bytes, channels: int) -> np.ndarray:
 @dataclass(frozen=True)
 class Peak:
     """Where the echo of the speaker's sound is in the microphone's: how far above chance (`score`), and how long after
-    the speaker played it (`lag`, in seconds; negative where the microphone leads the speaker, which no echo does)."""
+    the speaker played it (`lag`, in seconds, from one sample to `_PATH_LAG`)."""
 
     score: float
     lag: float
@@ -154,12 +154,13 @@ def echo_path(captured: np.ndarray, rate: int, played: np.ndarray) -> Peak:
     band = (frequency >= _PATH_BAND[0]) & (frequency <= _PATH_BAND[1]) & (np.abs(cross) > 0)
     gcc = np.fft.irfft(np.where(band, cross / np.where(band, np.abs(cross), 1), 0), size)
     lag = round(_PATH_LAG * rate)
-    lags = np.concatenate((gcc[: lag + 1], gcc[size - lag :]))
-    spread = float(np.sqrt(np.mean(lags**2)))
-    # `lags` is lag 0 to `_PATH_LAG`, then `_PATH_LAG` back to the one before 0.
-    at = int(np.abs(lags).argmax())
+    # Chance is read over the lags either way, the echo's peak over those it can have: an echo trails what the speaker
+    # played, never leads it or lands with it, so a higher peak at lag 0 or before, as a person speaking read 33.5 at
+    # -133 ms over hands' opening (hands_over_an_opening.flac), is not the path, and must not hide the one that is.
+    spread = float(np.sqrt(np.mean(np.concatenate((gcc[: lag + 1], gcc[size - lag :])) ** 2)))
+    at = 1 + int(np.abs(gcc[1 : lag + 1]).argmax())
     # Nothing in the band on either side, as digital silence captured: no higher above chance than nothing.
-    return Peak(float(np.abs(lags[at])) / spread if spread else 0.0, (at if at <= lag else at - len(lags)) / rate)
+    return Peak(float(np.abs(gcc[at])) / spread if spread else 0.0, at / rate)
 
 
 class EchoPath:
@@ -178,9 +179,8 @@ class EchoPath:
 
     def __init__(self) -> None:
         self.reading: Reading = "unread"
-        # How long after the speaker played it hands' voice was last read in the microphone, in samples at `RATE`: where
-        # the reference is lined up with its echo. None until a stretch reads there.
-        self.delay: int | None = None
+        # How long after the speaker played it hands' voice was last read in the microphone, in samples at `SAMPLE_RATE`.
+        self._lag = 0
         self._captured: deque[np.ndarray] = deque(maxlen=_PATH_FRAMES)
         # Each frame the speaker played TTS in; None where it played none, made silence at the TTS's rate when read.
         self._played: deque[np.ndarray | None] = deque(maxlen=_PATH_FRAMES)
@@ -197,11 +197,16 @@ class EchoPath:
         # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played none of reads as saying nothing.
         if self._frames % _PATH_HOP == 0 and len(self._captured) >= _LEAST_FRAMES:
             peak, alone = self._read()
-            self.reading = _verdict(self.reading, peak.score, alone)
-            # An echo trails what the speaker played, never leads it or lands with it: a peak at lag 0 or before, as a
-            # person speaking alone read 22.6 at 0.0 ms in hands_then_a_person_alone.flac, is chance, not the path.
-            self.delay = min(MAX_DELAY, round(peak.lag * RATE)) if peak.score >= _ECHO_PATH and peak.lag > 0 else self.delay
+            echoed = peak.score >= _ECHO_PATH
+            self.reading = _verdict(self.reading, echoed, alone)
+            self._lag = round(peak.lag * SAMPLE_RATE) if echoed else self._lag
         self.reading = "unread" if self._unplayed >= _FORGET_FRAMES else self.reading
+
+    @property
+    def delay(self) -> int | None:
+        """Where the reference is lined up with its echo, in samples: the lag the last stretch that read there put it at.
+        [LAW:one-source-of-truth] None whenever the path is not read there, so it is never the lag of a path since lost."""
+        return self._lag if self.reading == "there" else None
 
     def _read(self) -> tuple[Peak, bool]:
         """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:
@@ -216,10 +221,10 @@ class EchoPath:
         return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), alone
 
 
-def _verdict(was: Reading, reading: float, alone: bool) -> Reading:
-    """What is known of the echo path, given what was and a stretch's reading: one at `_ECHO_PATH` says there is one;
-    one under it over hands alone says there is none; any other leaves it as it was."""
-    return "there" if reading >= _ECHO_PATH else "none" if alone else was
+def _verdict(was: Reading, echoed: bool, alone: bool) -> Reading:
+    """What is known of the echo path, given what was and a stretch: one that reads `_ECHO_PATH` at a lag an echo has says
+    there is one; any other over hands alone says there is none; any other leaves it as it was."""
+    return "there" if echoed else "none" if alone else was
 
 
 class EchoCanceller:
@@ -243,9 +248,8 @@ class EchoCanceller:
     def __init__(self) -> None:
         self._dtln = Dtln(tflite_stages(*weights()))
         # The microphone as captured, held back as far as DTLN-aec holds what it cleans, so that what is heard moves from
-        # one to the other with the echo path's reading and neither jumps. Silence for the first of it, made in as many
-        # channels as the microphone has, which its first buffer says.
-        self._line = b""
+        # one to the other with the echo path's reading and neither jumps. Silence for the first of it.
+        self._line = bytes(Dtln.LATENCY * SAMPLE_BYTES)
         # The last frames of the reference in the speaker's own rate, as many as `_sixteen` resamples round one.
         self._context: list[np.ndarray] = []
         # [LAW:single-enforcer] the one reading of whether hands' voice reaches the microphone; each reference says it.
@@ -294,11 +298,10 @@ class EchoCanceller:
         # [LAW:parse-dont-validate] the microphone is opened on 20 ms buffers; any other length is a stream opened wrong.
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
-        # DTLN-aec was trained on sound at `RATE`, which is what Pipecat opens the microphone at.
-        if sample_rate != RATE:
-            raise ValueError(f"the microphone is at {sample_rate} Hz, not {RATE} Hz")
+        # DTLN-aec was trained on one channel of sound at `SAMPLE_RATE`, which is what Pipecat opens the microphone at.
+        if (sample_rate, channels) != (SAMPLE_RATE, 1):
+            raise ValueError(f"the microphone is {channels} channels at {sample_rate} Hz, not one at {SAMPLE_RATE} Hz")
         cleaned, played = bytearray(), list[Reference | None]()
-        self._line = self._line or bytes(Dtln.LATENCY * channels * SAMPLE_BYTES)
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference, and goes
             # through DTLN-aec, which keeps its state of the room either way; the echo path says which of the two is heard.
@@ -318,7 +321,7 @@ class EchoCanceller:
             without = self._dtln.cancel(microphone, sixteen, self._path.delay)
             line = self._line + captured
             as_captured, self._line = line[:size], line[size:]
-            cleaned += np.repeat(np.clip(np.rint(without * 32768), -32768, 32767).astype(np.int16), channels).tobytes() if reading == "there" else as_captured
+            cleaned += np.clip(np.rint(without * 32768), -32768, 32767).astype(np.int16).tobytes() if reading == "there" else as_captured
             self._counts["unreached"] += tts is not None and reading == "none"
             self._counts["unread"] += tts is not None and reading == "unread"
         self._counts["heard"] += len(audio) // size
@@ -328,24 +331,22 @@ class EchoCanceller:
         """What the canceller has done so far, by the names in COUNTS."""
         return dict(self._counts)
 
-    def close(self) -> None:
-        """Nothing is held that outlives the canceller: its model is a pair of interpreters the garbage collector frees."""
-
     def _sixteen(self, reference: rtc.AudioFrame) -> np.ndarray:
-        """The frame of reference at `RATE`, one channel. The speaker's rate is another than the microphone's (24 kHz for
-        the TTS), so the frame is resampled with the frame before and the one after it round it, and what is given is the
-        one before: 10 ms behind the speaker, the same 10 ms whatever the rate, where a streaming resampler gives its sound
-        in bursts that move it against the microphone's by as much as 30 ms.
+        """The frame of reference at `SAMPLE_RATE`, one channel. A speaker at another rate (24 kHz for the TTS) is resampled
+        with the frame before and the one after it round it, and what is given is the one before: 10 ms behind the speaker,
+        where a streaming resampler gives its sound in bursts that move it against the microphone's by as much as 30 ms. At
+        `SAMPLE_RATE` the frame is given as it is. Either way the echo path reads its lag off this stream, so the delay is
+        the one that stream has.
 
         [LAW:single-enforcer] it is this stream the echo path reads its lag from and DTLN-aec is given, so the lag is the
         one the model needs."""
         samples = mono(bytes(reference.data.cast("B")), reference.num_channels).astype(np.float32)
-        if reference.sample_rate == RATE:
+        if reference.sample_rate == SAMPLE_RATE:
             return samples
         self._context = [*(frame for frame in self._context[-2:] if len(frame) == len(samples)), samples]
         window = np.concatenate([np.zeros(len(samples), np.float32)] * (3 - len(self._context)) + self._context)
-        length = len(samples) * RATE // reference.sample_rate
-        return soxr.resample(window, reference.sample_rate, RATE)[length : 2 * length].astype(np.float32)
+        length = len(samples) * SAMPLE_RATE // reference.sample_rate
+        return soxr.resample(window, reference.sample_rate, SAMPLE_RATE)[length : 2 * length].astype(np.float32)
 
     def _next_played(self) -> tuple[rtc.AudioFrame, tuple[Playhead, ...]]:
         with self._holding:

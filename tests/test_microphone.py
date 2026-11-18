@@ -50,11 +50,9 @@ def _phone() -> Phone:
 class Room:
     """An echo canceller that keeps what the speaker played and cleans every microphone buffer to CLEANED."""
 
-    def __init__(self, log: list[str] | None = None, name: str = "canceller") -> None:
+    def __init__(self) -> None:
         self.plays: list[tuple[bytes, int, int, tuple[Playhead, ...]]] = []
         self.hears: list[bytes] = []
-        self.log = [] if log is None else log
-        self.name = name
 
     def played(self, audio: bytes, sample_rate: int, channels: int, playheads: tuple[Playhead, ...]) -> None:
         self.plays.append((audio, sample_rate, channels, playheads))
@@ -65,9 +63,6 @@ class Room:
 
     def counts(self) -> dict[str, int]:
         return {"heard": len(self.hears), "unplayed": 0, "dropped": 0}
-
-    def close(self) -> None:
-        self.log.append(f"close {self.name}")
 
 
 class Rig:
@@ -313,7 +308,7 @@ class FreshPortAudio:
 def lost_transport(log: list[str], events: list[Entry] | None = None, choices: Choices = Choices()) -> KeyedAudioTransport:
     params = LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True)
     hardware = iter([Hardware(DefaultDevices(input=1, output=1)), Hardware(DefaultDevices(input=2, output=2))])
-    cancellers = iter(Room(log, f"canceller {n}") for n in itertools.count(1))
+    cancellers = iter(Room() for _ in itertools.count(1))
     record: Record = (lambda _: None) if events is None else events.append
     transport = KeyedAudioTransport(SYSTEM, 
         params, PushToTalk(SYSTEM, lambda _: None), _phone(), record, portaudio=lambda: FreshPortAudio(log), hardware=lambda: next(hardware), echo=lambda: next(cancellers),
@@ -323,7 +318,7 @@ def lost_transport(log: list[str], events: list[Entry] | None = None, choices: C
     speaker.get_event_loop = asyncio.get_running_loop
     microphone._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     speaker._sample_rate = 24000  # pyright: ignore[reportPrivateUsage]
-    old = Room(log, "old canceller")
+    old = Room()
     speaker.attach(cast(PortAudio, SimpleNamespace()), Output(LostStream(log, "old speaker"), "headset", old))
     microphone.attach(cast(PortAudio, SimpleNamespace()), Input(LostStream(log, "old microphone"), "headset", old))
     log.clear()  # the first PortAudio, started by the same factory as every later one
@@ -361,7 +356,7 @@ async def test_reopening_lets_go_of_the_lost_devices_and_opens_on_the_defaults_a
     assert devices == Devices(input="MacBook Pro Microphone", output="MacBook Pro Speakers")
     assert log == [
         "stop old speaker", "write returned from old speaker", "close old speaker",  # closed only once no write is inside it
-        "stop old microphone", "close old microphone", "close old canceller", "end portaudio",
+        "stop old microphone", "close old microphone", "end portaudio",
         "start portaudio", "open speaker", "open microphone", "start new speaker", "start new microphone",
     ]  # fmt: skip
     assert transport.opened_on == Placement(OnDefault(2), OnDefault(2))  # read again, as PortAudio listed them anew
@@ -383,28 +378,11 @@ async def test_a_reopen_opens_both_streams_on_one_new_canceller_and_reports_the_
     speaker, microphone = transport.output().opened, transport.input().opened
     assert speaker is not None and microphone is not None
     assert speaker.echo is microphone.echo is not old.echo
-    assert "close canceller 2" not in log
     assert all(isinstance(event, WideEvent) for event in events)
     assert [(event.event, event.outcome, event.facts, dict(event.counts)) for event in cast(list[WideEvent], events)] == [
         ("speaker.let_go", "ok", {"device": "headset"}, {"pulled": 0, "unwritten": 0, "underflowed": 0}),
         ("microphone.let_go", "ok", {"device": "headset"}, {"heard": 1, "unplayed": 0, "dropped": 0, "slipped": 0, "unreached": 0, "unread": 0}),
     ]
-
-
-class RefusingPortAudio(FreshPortAudio):
-    """PortAudio started again on a device that refuses to open."""
-
-    def open(self, **settings: object) -> LostStream:
-        raise OSError(-9996, "Invalid input device")
-
-
-async def test_a_reopen_whose_streams_fail_to_open_lets_go_of_the_canceller_it_made_for_them(lost: Lost) -> None:
-    log: list[str] = []
-    transport = lost(log)
-    setattr(transport, "_portaudio", lambda: RefusingPortAudio(log))
-    with pytest.raises(OSError, match="Invalid input device"):
-        await transport.reopen()
-    assert "close canceller 2" in log  # the run fails, and exits without LiveKit's assertion over a canceller left open
 
 
 class MicrophoneRefusingPortAudio(FreshPortAudio):
@@ -416,13 +394,13 @@ class MicrophoneRefusingPortAudio(FreshPortAudio):
         return super().open(**settings)
 
 
-async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started_before_letting_go_of_the_canceller(lost: Lost) -> None:
+async def test_a_reopen_whose_microphone_fails_to_open_stops_the_speaker_it_started(lost: Lost) -> None:
     log: list[str] = []
     transport = lost(log)
     setattr(transport, "_portaudio", lambda: MicrophoneRefusingPortAudio(log))
     with pytest.raises(OSError, match="Invalid input device"):
         await transport.reopen()
-    assert log[log.index("open speaker") :] == ["open speaker", "stop new speaker", "close new speaker", "close canceller 2"]
+    assert log[log.index("open speaker") :] == ["open speaker", "stop new speaker", "close new speaker"]
 
 
 async def test_a_frame_given_while_the_transport_reopens_waits_and_plays_on_the_new_stream(devices: Rig) -> None:
