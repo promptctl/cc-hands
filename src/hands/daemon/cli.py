@@ -635,6 +635,10 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
+    from hands.voice import memory
+
+    # Before any model loads, so no buffer any of them frees is kept past the limit.
+    memory.limit_cache()
 
     path = os.environ.get("PATH", "")
     # This run is hands running, and the backend it reaches is the one it was configured on.
