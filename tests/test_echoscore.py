@@ -4,7 +4,7 @@ person's words lost, on takes built here, so the numbers a later ticket picks a 
 import numpy as np
 import pytest
 
-from echoscore import LATE, TAKES, Line, Take, Word, erle, judged, normal, recorded, words_of
+from echoscore import LATE, TAKES, Line, Take, Word, erle, judged, normal, recorded, scored, summary, words_of
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
@@ -78,6 +78,21 @@ def test_a_word_said_by_both_is_credited_to_the_person() -> None:
     assert judged(take, spoken(("the", 6.0), ("build", 6.2), ("is", 6.4))) == ((), (), ())
 
 
+def test_words_heard_in_place_of_more_said_are_lost_and_the_one_left_over_is_not_the_persons() -> None:
+    take = built((Line("Say step.", 5.0),), (0.0, 12.0))
+    assert judged(take, spoken(("sue", 6.0), ("stop", 6.2), ("ready", 6.4))) == (("say", "step"), spoken(("ready", 6.4)), ())
+
+
+def test_a_word_among_the_persons_that_they_did_not_say_is_not_theirs() -> None:
+    take = built((Line("Say the next step.", 5.0),), (0.0, 12.0))
+    heard = spoken(("say", 6.0), ("the", 6.2), ("hands", 6.3), ("next", 6.4), ("step", 6.6))
+    assert judged(take, heard) == ((), spoken(("hands", 6.3)), ())
+
+
+def test_a_typographic_apostrophe_spells_a_word_as_the_plain_one_does() -> None:
+    assert normal("Don\u2019t say don't.") == ["don't", "say", "don't"]
+
+
 def test_erle_is_the_captured_energy_over_the_cleaned_before_the_person_speaks_where_hands_played() -> None:
     take = built((Line("Yes.", 8.0),), (1.0, 12.0), captured=0.1)
     cleaned = np.full(len(take.captured), 0.01, np.float32)
@@ -85,6 +100,20 @@ def test_erle_is_the_captured_energy_over_the_cleaned_before_the_person_speaks_w
     # After the person speaks, the chain's job is to keep them: that is lost words, not echo returned.
     cleaned[round(8.0 * RATE) :] = 0.1
     assert erle(take, cleaned) == pytest.approx(20.0, abs=0.01)
+
+
+def test_erle_is_zero_where_the_microphone_and_the_cleaned_sound_are_both_silent() -> None:
+    take = built((Line("Yes.", 8.0),), (1.0, 12.0), captured=0.0)
+    assert erle(take, np.zeros(len(take.captured), np.float32)) == 0.0
+
+
+def test_a_take_scored_has_what_was_said_lost_leaked_and_its_erle_and_a_line_says_them() -> None:
+    take = built((Line("Say the next step.", 5.0),), (0.0, 12.0), captured=0.1)
+    score = scored(take, np.full(len(take.captured), 0.01, np.float32), spoken(("hands", 1.0), ("say", 6.0), ("the", 6.2)))
+    assert (score.said, score.lost, score.leaked, score.stray) == (4, ("next", "step"), spoken(("hands", 1.0)), ())
+    assert score.erle == pytest.approx(20.0, abs=0.01)
+    line = summary(score)
+    assert "leaked  1  lost  2 of  4  stray  0  ERLE  20.0 dB" in line and "leaked: hands;  lost: next step" in line
 
 
 def test_erle_is_none_where_hands_played_nothing_before_the_person_spoke() -> None:

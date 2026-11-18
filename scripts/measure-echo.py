@@ -6,7 +6,7 @@ canceller's ERLE beside them (tests/echoscore.py has what each counts, and what 
 Each take of scripts/record-double-talk.py (tests/fixtures, `echoscore.TAKES`) is run through the chain, and the cleaned
 sound is heard by the real streaming pair as one clip, begun afresh for each take. Nothing here plays or records sound: the
 takes are what the desk heard once. `raw`, the microphone with no canceller, is the control: a harness that cannot hear it
-leak hears nothing. The numbers are the pair's on this machine's MLX device, and are the same on every run.
+leak hears nothing. The numbers are the pair's on this machine's MLX device.
 """
 
 import sys

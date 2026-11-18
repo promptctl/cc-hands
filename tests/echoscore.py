@@ -11,7 +11,9 @@ What a score counts, over one take:
 
 - lost: a word of the person's lines the recognizer did not decode as said, among the words dated from the first line's
   start on. Misheard counts as lost: the person's words not decoded. A word the person and hands say at once, as the
-  scripts have the person do, is credited to the person: text and time cannot tell the two voices apart there.
+  scripts have the person do, is credited to the person: text and time cannot tell the two voices apart there. So is a
+  word of hands' spoken up to `LATE` before the first line began, and dated after it. Only a record of the person's voice
+  alone, which a take does not yet hold, tells these apart.
 - leaked: any other decoded word, dated where hands played in the stretch it was spoken in. mlx-audio dates a word late by
   up to a chunk (`LATE`), never early, so a word dated before the person's first line began is none of theirs.
 - stray: any other decoded word, with hands silent: the room.
@@ -102,8 +104,9 @@ class Word:
 
 
 def normal(text: str) -> list[str]:
-    """The words in `text`, as they are scored: lower case, letters, digits and apostrophes only."""
-    return re.findall(r"[\w']+", text.lower())
+    """The words in `text`, as they are scored: lower case, letters, digits and apostrophes only, a typographic apostrophe
+    the plain one: a line's text and the recognizer's spell "don't" alike or a spelling is scored as a word lost."""
+    return re.findall(r"[\w']+", text.lower().replace("\u2019", "'"))
 
 
 def words_of(tokens: Iterable[tuple[int, float, str]], closing: Iterable[Said], closed_at: float) -> tuple[Word, ...]:
@@ -123,12 +126,18 @@ def words_of(tokens: Iterable[tuple[int, float, str]], closing: Iterable[Said], 
 
 
 def heard_words(pair: Any, samples: np.ndarray) -> tuple[Word, ...]:
-    """What the pair, begun afresh, decodes from `samples` fed as one clip, as hands' listener feeds a clip, each word dated."""
+    """What the pair, begun afresh, decodes from `samples` fed as one clip, as hands' listener feeds a clip, each word dated.
+    The words decoded as the clip closed follow every token the session dated, so none is dated before the last of them."""
     pair.reset()
     with tapped(pair) as tap:
         _, ended = Live(pair).spoken(samples.astype(np.float32))
     closed_at = max((start for _, start, _ in tap.tokens), default=ended.seconds)
-    return words_of(tap.tokens, ended.closed.words, closed_at)
+    heard = words_of(tap.tokens, ended.closed.words, closed_at)
+    # [LAW:no-silent-failure] a word dated past the clip's own length means the pair was not begun afresh: every date, and
+    # every verdict that rests on one, would be off by the length of what it heard before.
+    if heard and heard[-1].start > ended.seconds:
+        raise ValueError(f"a word dated {heard[-1].start:.2f} s in a clip of {ended.seconds:.2f} s: the pair did not begin afresh")
+    return heard
 
 
 @dataclass(frozen=True)
@@ -146,15 +155,18 @@ class Score:
 
 def erle(take: Take, cleaned: np.ndarray) -> float | None:
     """The echo return loss enhancement, in dB, over the 10 ms slots before the person first speaks where hands played: the
-    captured sound's energy over the cleaned sound's. None where hands played nowhere there to be measured over."""
-    slots = [slot for slot, playing in enumerate(take.playheads) if playing and (slot + 1) * SLOT / RATE <= take.cut_in and (slot + 1) * SLOT <= len(cleaned)]
-    if not slots:
+    captured sound's energy over the cleaned sound's, 0 where both are silent. None where hands played nowhere there to be
+    measured over."""
+    before = int(min(take.cut_in * RATE / SLOT, len(take.playheads), len(cleaned) / SLOT))
+    playing = np.array([bool(heads) for heads in take.playheads[:before]], dtype=bool)
+    if not playing.any():
         return None
 
     def energy(samples: np.ndarray) -> float:
-        return sum(float(np.sum(np.square(samples[slot * SLOT : (slot + 1) * SLOT], dtype=np.float64))) for slot in slots)
+        # A floor far below any sound, so a side held to digital silence has an energy to divide by.
+        return max(float(np.square(samples[: before * SLOT].reshape(before, SLOT)[playing], dtype=np.float64).sum()), 1e-20)
 
-    return float(10 * np.log10(energy(decoded(take.captured.tobytes())) / max(energy(cleaned), 1e-20)))
+    return float(10 * np.log10(energy(decoded(take.captured.tobytes())) / energy(cleaned)))
 
 
 def judged(take: Take, heard: tuple[Word, ...]) -> tuple[tuple[str, ...], tuple[Word, ...], tuple[Word, ...]]:

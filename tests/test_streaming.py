@@ -23,6 +23,7 @@ import echoes
 from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed, take
 from conftest import CALLED, PAIRS, model_facts
 from listening import LEAD, SHAPES, Live, Timed, turn, unidentified
+import echoscore
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
@@ -1050,3 +1051,21 @@ async def test_hands_alone_over_a_replys_opening_on_the_desks_speaker_cuts_nothi
     end = round(echoes.cut_in(echoes.OPENING) * streaming.RATE)
     closed = (await overheard.held(1, decoded(sound.heard)[:end], slots(sound)[: end // SLOT])).first
     assert (overheard.barge_ins, closed) == ([], None), overheard.identified()
+
+
+# The harness that scores a chain (tests/echoscore.py), held to the real pair it hears through.
+@pytest.mark.outside
+@pytest.mark.parametrize("fixture", echoscore.TAKES, ids=lambda fixture: fixture.name)
+def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside_it(pair: Any, fixture: object) -> None:
+    take = echoscore.recorded(fixture)  # pyright: ignore[reportArgumentType]
+    heard = echoscore.heard_words(pair, echoscore.raw(take))  # raises where a word is dated past the clip: a pair not begun afresh
+    # Dated by its own token and not all at the close, and heard on into where the person speaks.
+    assert len({word.start for word in heard}) > len(heard) // 2
+    assert heard[-1].start > take.cut_in
+
+
+@pytest.mark.outside
+def test_the_microphone_as_captured_leaks_hands_at_the_desk_and_hands_canceller_leaks_less(pair: Any) -> None:
+    take = echoscore.recorded(echoes.CANCELLED)
+    leaked = {name: len(echoscore.judged(take, echoscore.heard_words(pair, chain(take)))[1]) for name, chain in echoscore.CHAINS.items()}
+    assert leaked["raw"] > leaked["aec3"]
