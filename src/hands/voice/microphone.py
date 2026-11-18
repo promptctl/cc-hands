@@ -56,7 +56,7 @@ from hands.voice.clips import Playhead
 from hands.voice.cues import Cue, sound
 from hands.sessions.audit import Played, Record
 from hands.sessions.wide import annotate, begun, count, unit
-from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes, seconds
+from hands.voice.echo import COUNTS, SAMPLE_BYTES, Echo, EchoCanceller, frame_bytes, seconds
 from hands.voice.phone import Phone
 from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
 from hands.voice.ptt import PushToTalk
@@ -83,15 +83,6 @@ PLAYOUT_COUNTS = ("pulled", "unwritten", "underflowed")
 # gone was measured at 2.7 to 3.7 s; a reopen that never finishes fails the run, which reads as down, and the next
 # `hands run` opens on the new defaults.
 REOPEN_DEADLINE = timedelta(seconds=10)
-
-
-@dataclass(frozen=True)
-class Overheard:
-    """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
-    speaker played over it; and whether the desk is where hands is, the gate's say, the desk heard as silence where not."""
-
-    cancelled: Cancelled
-    desk: bool
 
 
 class Stream(Protocol):
@@ -653,7 +644,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         self.opened: Input | None = None
         # [LAW:no-shared-mutable-globals] who hears the desk whatever the gate says, each with the loop it hears on:
         # replaced whole on the event loop, read whole on the capture thread.
-        self._overhearing: tuple[asyncio.Queue[Overheard], ...] = ()
+        self._overhearing: tuple[asyncio.Queue[bytes], ...] = ()
 
     async def setup(self, setup: FrameProcessorSetup) -> None:
         # As for the speaker: the base's setup, then the one way the stream is opened.
@@ -733,21 +724,10 @@ class KeyedMicrophone(LocalAudioInputTransport):
     async def overheard(self) -> AsyncGenerator[AsyncIterator[bytes]]:
         """Every buffer the desk's microphone captures while open, heard through the echo canceller whatever the key
         says, and silent while hands is at the phone: what a trigger listens to for when to open and close the turn."""
-        async with self.echoes() as echoes:
-
-            async def buffers() -> AsyncIterator[bytes]:
-                async for each in echoes:
-                    yield each.cancelled.heard if each.desk else bytes(len(each.cancelled.heard))
-
-            yield buffers()
-
-    @asynccontextmanager
-    async def echoes(self) -> AsyncGenerator[AsyncIterator[Overheard]]:
-        """Every buffer the desk's microphone captures while open, as `overheard`, with what the speaker played over it."""
-        heard: asyncio.Queue[Overheard] = asyncio.Queue()
+        heard: asyncio.Queue[bytes] = asyncio.Queue()
         self._overhearing = (*self._overhearing, heard)
 
-        async def buffers() -> AsyncIterator[Overheard]:
+        async def buffers() -> AsyncIterator[bytes]:
             while True:
                 yield await heard.get()
 
@@ -788,7 +768,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
         # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
-        overheard = Overheard(cancelled, gate.hears("desk"))
+        overheard = cancelled.heard if gate.hears("desk") else bytes(len(cancelled.heard))
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the

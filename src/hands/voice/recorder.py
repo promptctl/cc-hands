@@ -1,5 +1,5 @@
 """The recorder: each clip of the key's kept on disk as hands heard it, after the echo canceller, beside what hands was
-playing over it, so real use is kept as labelled data; nothing here loads Pipecat, and nothing here plays a sound.
+playing over it, so real use is kept to replay; nothing here loads Pipecat, and nothing here plays a sound.
 
 It is one listener on the clip owner (`hands.voice.clipowner`), given each clip whole as it ends, and writes it off the
 event loop into its run's own directory: `<clip>.heard.wav`, mono 16-bit at RATE; `<clip>.played.wav`, what the desk's
@@ -26,7 +26,7 @@ from hands.sessions.wide import annotate, begun, unit
 from hands.voice.clips import RATE, SLOT, Clip, Fate, Heard, Hearings, Reference, Sound, plays, voices
 
 # The most the clips store keeps, about nine hours of clips at 64 KB a second, heard and played, kept as the most recent
-# real use: past this, whole runs go, oldest first.
+# real use to replay: past this, whole runs go, oldest first.
 CLIPS_BYTES = 2 * 1024**3
 
 def track(played: tuple[Reference | None, ...]) -> bytes:

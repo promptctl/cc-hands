@@ -608,27 +608,6 @@ def test_the_canceller_is_given_the_syntheses_in_each_buffer_the_device_takes_an
     assert [playheads for *_, playheads in room.plays] == [(Playhead(alba, 0.0), Playhead(mary, 0.0)), (Playhead(mary, 0.0075),), ()]
 
 
-async def test_the_desk_is_overheard_with_what_was_played_and_whether_hands_is_there(devices: Rig) -> None:
-    async with devices.microphone.echoes() as echoes:
-        await devices.capture(at=1.0)  # the off level, no press
-        devices.key.move("listen", "wake word")
-        await devices.capture(at=1.02)  # the wake word's level, where a voice can open a clip
-        devices.key.move("start", "shortcut")
-        await devices.capture(at=1.04)  # a clip open
-        devices.key.go("phone")
-        await devices.capture(at=1.06)  # a call come, and hands still at the desk for its clip
-        devices.key.move("start", "phone button")
-        await devices.capture(at=1.08)  # hands at the phone, the desk's clip sent
-        heard = [await anext(echoes) for _ in range(5)]
-    assert [(each.cancelled, each.desk) for each in heard] == [
-        (Cancelled(CLEANED, PLAYED), True),
-        (Cancelled(CLEANED, PLAYED), True),
-        (Cancelled(CLEANED, PLAYED), True),
-        (Cancelled(CLEANED, PLAYED), True),
-        (Cancelled(CLEANED, PLAYED), False),
-    ]
-
-
 async def test_a_chunk_queued_behind_a_cue_is_played_after_the_cue(devices: Rig) -> None:
     devices.speaker._sample_rate = 16000  # pyright: ignore[reportPrivateUsage]
     devices.stream.blocking = True

@@ -155,6 +155,10 @@ class _Extent:
         self.kept = kept
         self.length = 0
 
+    def grew(self, samples: int) -> None:
+        """`samples` more of the clip open: the only way its length grows, and the silence after it is not."""
+        self.length += samples
+
     def frame(self, frame: int) -> float | None:
         """How many seconds after the clip opened the run's encoder frame `frame` begins, None for a frame with none of the
         clip's samples in it, before the clip opened or in the silence after it."""
@@ -216,7 +220,7 @@ class Stream:
 
     def heard(self, samples: Samples) -> None:
         """More of the clip open."""
-        self._open.extent.length += len(samples)
+        self._open.extent.grew(len(samples))
         self._decoded(samples)
 
     def silence(self, samples: int) -> None:
