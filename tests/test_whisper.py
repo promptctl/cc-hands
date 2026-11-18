@@ -144,6 +144,18 @@ async def test_a_clip_whisper_looped_in_primed_is_heard_again_unprimed_and_what_
     assert [(unsaid.text, unsaid.compression_ratio) for unsaid in heard.dropped] == [("the build is green", 20.8)]
 
 
+async def test_a_clip_whisper_loops_in_unprimed_too_says_nothing_and_records_both_loops(model: Model) -> None:
+    model.answers += [[], [("the build is green", 20.8, -0.43)], [("and turnstop, " * 12, 17.1, -0.24)]]
+    recorded: list[Entry] = []
+    whisper = Whisper(clock=SYSTEM, prompt=primed("authMiddleware"), record=recorded.append)
+
+    said = await whisper.transcribed(clip(1), as_heard(SPOKEN))
+
+    assert said is None
+    [heard] = [entry for entry in recorded if isinstance(entry, ClipHeard)]
+    assert [unsaid.compression_ratio for unsaid in heard.dropped] == [20.8, 17.1]
+
+
 async def test_a_clip_whisper_did_not_loop_in_is_decoded_once(model: Model) -> None:
     model.answers += [[], [("The build is green.", 0.7, -0.52)]]
 

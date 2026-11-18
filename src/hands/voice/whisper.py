@@ -56,6 +56,7 @@ _WORD = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 # garbled, so Whisper hears half a second of it past the end, as Pipecat padded every segment it gave a transcriber.
 _TRAILING_SILENCE = bytes(SECOND // 2)
 
+
 class Whisper:
     """Whisper large-v3-turbo on MLX: the clip owner's transcriber."""
 
@@ -115,7 +116,8 @@ class Whisper:
         samples = decoded(sound.heard + _TRAILING_SILENCE)
         segments = transcription.segments(samples, prompt, words=False)
         # A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go
-        # to the gates, which drop and record them, and the unprimed decode's take the clip's place.
+        # to the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard
+        # again, not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem).
         looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
         heard = transcription.segments(samples, None, words=False) if looping else segments
         return [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in [*looping, *heard]]

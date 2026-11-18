@@ -77,5 +77,4 @@ async def test_a_person_over_hands_is_sent_whole_and_hands_is_not_on_any_recorde
     for line, end in zip(take.person, ends, strict=True):
         # Each line its own clip, from LEAD before its first word to the next line's, as a voice-opened turn is.
         lost, leaked = judged(line, await sent(desk(take, line.start - LEAD, end)))
-        print(f"{take.name:40} {line.text!r:50} lost {lost}  leaked {leaked}")
         assert (lost, leaked) == ([], []), line.text
