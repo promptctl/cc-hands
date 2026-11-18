@@ -1,18 +1,11 @@
 """The recorder: each clip of the key's kept on disk as hands heard it, after the echo canceller, beside what hands was
-playing over it, so real use becomes labelled data to fit the voiceprint thresholds on (`hands.voice.voiceprints`);
-nothing here loads Pipecat, and nothing here plays a sound.
+playing over it, so real use is kept to replay; nothing here loads Pipecat, and nothing here plays a sound.
 
 It is one listener on the clip owner (`hands.voice.clipowner`), given each clip whole as it ends, and writes it off the
 event loop into its run's own directory: `<clip>.heard.wav`, mono 16-bit at RATE; `<clip>.played.wav`, what the desk's
 speaker played over it, the echo canceller's reference, put in the clip's format so the two line up sample for sample,
 which the phone has none of; and `<clip>.json`, what opened it, what the gate did with it, and every voice of hands'
 own TTS that may be in it: played over it, its echo path not read none.
-
-It keeps hands' own echo too, labelled. While the desk is at the off level, where only the shortcut opens a clip, with
-no press arming or held, and the speaker is playing hands' TTS, what the desk's microphone hears is nobody's but
-hands', whatever is left of it after the canceller: the user is on the shortcut alone until promptctl-voice-i15t.8vg.idh.
-Each stretch of it is an echo span, kept as a clip is, `echo-<span>.*`, its `.json` saying no clip was open, and
-identified as one speaker at its end, so the speaker check is fitted on shortcut use (promptctl-voice-i15t.8vg.xvr).
 """
 
 import asyncio
@@ -21,11 +14,8 @@ import json
 import shutil
 import threading
 import wave
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager
 from itertools import groupby
 from pathlib import Path
-from typing import Protocol
 
 import numpy as np
 import soxr
@@ -33,13 +23,10 @@ import soxr
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate, begun, unit
-from hands.voice.clips import RATE, SLOT, Clip, Fate, Heard, Hearings, Reference, Sound, decoded, plays, voices
-from hands.voice.echo import Cancelled
-from hands.voice.voiceprints import WINDOW, Voiced
+from hands.voice.clips import RATE, SLOT, Clip, Fate, Heard, Hearings, Reference, Sound, plays, voices
 
-# The most the clips store keeps, about nine hours of clips at 64 KB a second, heard and played. The recordings are the
-# dataset the speaker check is fitted and checked on (promptctl-voice-i15t.8vg.xvr), kept as the most recent real use:
-# past this, whole runs go, oldest first.
+# The most the clips store keeps, about nine hours of clips at 64 KB a second, heard and played, kept as the most recent
+# real use to replay: past this, whole runs go, oldest first.
 CLIPS_BYTES = 2 * 1024**3
 
 def track(played: tuple[Reference | None, ...]) -> bytes:
@@ -74,7 +61,7 @@ def written(path: Path, audio: bytes) -> int:
 
 
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
-    """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
+    """[LAW:single-enforcer] one recording, a clip's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was, every
     voice of hands' TTS that may be in it, each sentence it said over it, with when, so whose words were whose can be told from
     the recording alone, and how much of hands' TTS over it, in seconds, played with no echo path to the microphone; how
@@ -134,42 +121,21 @@ def pruned(runs: dict[Path, int], current: int, cap: int) -> dict[Path, int]:
     return left
 
 
-class Overheard(Protocol):
-    """A buffer of the desk's microphone through the canceller, whatever the key (`hands.voice.microphone.Overheard`)."""
-
-    @property
-    def cancelled(self) -> Cancelled: ...
-    @property
-    def desk(self) -> bool: ...
-    @property
-    def key(self) -> str: ...
-
-
-def echoed(each: Overheard) -> bool:
-    """Whether a buffer is hands' echo and nobody else's: heard at the desk at the off level with no press, as it was
-    captured, while the speaker played hands' TTS and its echo reached the microphone: in headphones, what the
-    microphone hears while hands plays is the room, or a person."""
-    return each.desk and each.key == "up" and any(reference is not None and reference.reached for reference in each.cancelled.played)
-
-
 class Recorder:
-    """Keeps every clip of the key's, and each echo span, in a directory of the run's own under `root`, named `named`,
-    and the store under `cap`.
+    """Keeps every clip of the key's in a directory of the run's own under `root`, named `named`, and the store under `cap`.
 
-    [LAW:no-silent-failure] a clip that cannot be written fails its hearing, the unit it is written in, with why, a
-    span its `echo.kept` unit, and a prune that fails its own `clips.pruned` unit; the next is written as if none had.
+    [LAW:no-silent-failure] a clip that cannot be written fails its hearing, the unit it is written in, with why, and a
+    prune that fails its own `clips.pruned` unit; the next is written as if none had.
     """
 
     name = "recorder"
 
-    def __init__(self, clock: Clock, root: Path, named: str, identify: Callable[[int, Voiced], None], record: Record, cap: int = CLIPS_BYTES) -> None:
+    def __init__(self, clock: Clock, root: Path, named: str, record: Record, cap: int = CLIPS_BYTES) -> None:
         self._root = root
         self._named = named
-        self._identify = identify
         self._clock = clock
         self._record = record
         self._cap = cap
-        self._spans = 0
         # [LAW:no-shared-mutable-globals] the run's directory once claimed, the bytes it holds, and each earlier run and
         # its bytes, counted once as the directory is claimed and kept up to date by each write and prune since: written
         # by each recording's writing thread under the one lock.
@@ -211,36 +177,3 @@ class Recorder:
                 with contextlib.suppress(Exception), unit("clips.pruned", self._record, begun(self._clock)):
                     self._runs = pruned(self._runs, self._current, self._cap)
             return directory
-
-    async def overhear(self, echoes: Callable[[], AbstractAsyncContextManager[AsyncIterator[Overheard]]]) -> None:
-        """Keep each echo span the desk overhears, until cancelled: a span runs while each buffer is hands' echo, as it
-        was captured (`echoed`), and ends at the first that is not, a press or a level that would let a voice open a
-        clip included."""
-        heard, played = bytearray(), list[Reference | None]()
-        async with echoes() as overheard:
-            async for each in overheard:
-                match echoed(each):
-                    case True:
-                        heard += each.cancelled.heard
-                        played += each.cancelled.played
-                    case False if heard:
-                        await self._span(Sound(bytes(heard), bytes(heard), tuple(played)))
-                        heard, played = bytearray(), list[Reference | None]()
-                    case False:
-                        pass
-
-    async def _span(self, sound: Sound) -> None:
-        """One echo span kept, a unit of its own, and identified as one speaker, hands, against hands' own prints.
-
-        [LAW:no-silent-failure] a span that cannot be written fails its `echo.kept` unit with why; the next span is
-        kept as if it had not."""
-        self._spans += 1
-        span = self._spans
-        with contextlib.suppress(Exception), unit("echo.kept", self._record, begun(self._clock)):
-            annotate(span=span, seconds=round(sound.seconds, 3), voices=voices(sound))
-            facts: dict[str, object] = dict(span=span, clip=None, echo=True)
-            directory = await asyncio.to_thread(self._written, f"echo-{span}", sound, facts)
-            annotate(kept=directory / f"echo-{span}.heard.wav")
-        voice = decoded(sound.heard)
-        # A span is no clip: its one voice is heard from its start, hands playing over all of it.
-        self._identify(span, Voiced(0, voice[-round(WINDOW * RATE) :], len(voice) / RATE, 0.0, voices(sound), 0.0))

@@ -1,14 +1,10 @@
 """The recorder: each clip kept on disk as hands heard it, beside what hands was playing over it and in which voices, in
-the clip's own format, in a directory of the run's own, written off the event loop once it ends; hands' own echo kept
-and identified as spans while it speaks with no clip open; the store kept under its cap by whole runs, oldest first;
-and anything that cannot be written failing its own unit with why."""
+the clip's own format, in a directory of the run's own, written off the event loop once it ends; the store kept under its
+cap by whole runs, oldest first; and anything that cannot be written failing its own unit with why."""
 
 import contextlib
 import json
 import wave
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -19,10 +15,8 @@ from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import RATE, Clip, Reference, Sound, Playhead, Synthesis
-from hands.voice.echo import Cancelled
 from hands.voice import recorder as recorders
 from hands.voice.recorder import Recorder, track
-from hands.voice.voiceprints import Voiced
 
 
 class Unused:
@@ -51,10 +45,6 @@ def events(recorded: list[Entry], name: str) -> list[WideEvent]:
     return [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == name]
 
 
-def unidentified(span: int, voiced: Voiced) -> None:
-    """No span identified: what a test of the store measures is the store."""
-
-
 async def kept(clock: VirtualClock, recorder: Recorder, clip: Clip, sound: Sound, recorded: list[Entry]) -> WideEvent:
     """The clip told to the recorder as the owner tells it, whole as it ends, and its writing run as the owner runs a
     hearing."""
@@ -73,7 +63,7 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     directory = tmp_path / "clips" / "run"
     clip = Clip(7, "engaged conversation")
     played = (Reference(tone(-1), RATE, 1, (ALBA,), True), Reference(tone(-2), RATE, 1, (ALBA, MARY), False), None)
-    event = await kept(clock, Recorder(clock, tmp_path / "clips", "run", unidentified, recorded.append), clip, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
+    event = await kept(clock, Recorder(clock, tmp_path / "clips", "run", recorded.append), clip, Sound(tone(1) + tone(2, 2), tone(9, 3), played), recorded)
     assert event.outcome == "ok"
     # What it heard, and what the speaker played against each 10 ms of it, sample for sample: silence where no TTS.
     assert read(directory / "7.heard.wav") == (1, RATE, tone(1) + tone(2, 2))
@@ -111,7 +101,7 @@ def test_what_the_speaker_played_is_put_in_the_clips_format_a_run_at_a_time_slot
 async def test_a_clip_at_the_phone_is_kept_with_nothing_said_to_have_played_over_it(tmp_path: Path) -> None:
     clock = VirtualClock()
     recorded: list[Entry] = []
-    event = await kept(clock, Recorder(clock, tmp_path, "run", unidentified, recorded.append), Clip(1, "phone button"), Sound(tone(3), tone(3), None), recorded)
+    event = await kept(clock, Recorder(clock, tmp_path, "run", recorded.append), Clip(1, "phone button"), Sound(tone(3), tone(3), None), recorded)
     assert event.outcome == "ok" and event.facts["played"] is False
     assert read(tmp_path / "run" / "1.heard.wav") == (1, RATE, tone(3))
     assert not (tmp_path / "run" / "1.played.wav").exists()
@@ -121,7 +111,7 @@ async def test_two_runs_named_alike_keep_their_clips_apart(tmp_path: Path) -> No
     clock = VirtualClock()
     recorded: list[Entry] = []
     for level in (1, 2):
-        await kept(clock, Recorder(clock, tmp_path, "2026-10-30T10-00-00Z", unidentified, recorded.append), Clip(1, "shortcut"), Sound(tone(level), tone(level), ()), recorded)
+        await kept(clock, Recorder(clock, tmp_path, "2026-10-30T10-00-00Z", recorded.append), Clip(1, "shortcut"), Sound(tone(level), tone(level), ()), recorded)
     assert read(tmp_path / "2026-10-30T10-00-00Z" / "1.heard.wav")[2] == tone(1)
     assert read(tmp_path / "2026-10-30T10-00-00Z-2" / "1.heard.wav")[2] == tone(2)
 
@@ -131,7 +121,7 @@ async def test_a_clip_that_cannot_be_written_fails_its_hearing_saying_why(tmp_pa
     blocked = tmp_path / "file"
     blocked.write_text("in the way")
     recorded: list[Entry] = []
-    event = await kept(clock, Recorder(clock, blocked / "clips", "run", unidentified, recorded.append), Clip(1, "shortcut"), Sound(tone(3), tone(3), ()), recorded)
+    event = await kept(clock, Recorder(clock, blocked / "clips", "run", recorded.append), Clip(1, "shortcut"), Sound(tone(3), tone(3), ()), recorded)
     assert (event.outcome, event.error) == ("failed", f"NotADirectoryError: [Errno 20] Not a directory: '{blocked / 'clips'}'")
 
 
@@ -147,14 +137,14 @@ async def test_a_store_taken_over_its_cap_deletes_whole_runs_oldest_first_and_ne
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
     older(tmp_path, "2026-10-02T00-00-00Z", 10_000)
     # This run's clip is about 3.3 KB: with both older runs the store is over 21 KB, under 14 KB without the oldest.
-    recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000)
+    recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", recorded.append, cap=14_000)
     await kept(clock, recorder, Clip(1, "shortcut"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     [pruned] = events(recorded, "clips.pruned")
     assert sorted(path.name for path in tmp_path.iterdir()) == ["2026-10-02T00-00-00Z", "2026-10-03T00-00-00Z"]
     kept_bytes = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
     assert (pruned.outcome, pruned.facts["runs"], pruned.facts["freed"], pruned.facts["kept"]) == ("ok", ("2026-10-01T00-00-00Z",), 10_000, kept_bytes)
     # A cap this run alone is over deletes every other run, and keeps this one whole.
-    recorder = Recorder(clock, tmp_path, "2026-10-04T00-00-00Z", unidentified, recorded.append, cap=100)
+    recorder = Recorder(clock, tmp_path, "2026-10-04T00-00-00Z", recorded.append, cap=100)
     await kept(clock, recorder, Clip(1, "shortcut"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     assert [path.name for path in tmp_path.iterdir()] == ["2026-10-04T00-00-00Z"]
     assert (tmp_path / "2026-10-04T00-00-00Z" / "1.heard.wav").exists()
@@ -164,88 +154,9 @@ async def test_a_store_under_its_cap_deletes_nothing(tmp_path: Path) -> None:
     clock = VirtualClock()
     recorded: list[Entry] = []
     older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
-    await kept(clock, Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=14_000), Clip(1, "shortcut"), Sound(tone(1), tone(1), ()), recorded)
+    await kept(clock, Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", recorded.append, cap=14_000), Clip(1, "shortcut"), Sound(tone(1), tone(1), ()), recorded)
     assert events(recorded, "clips.pruned") == []
     assert len(list(tmp_path.iterdir())) == 2
-
-
-@dataclass(frozen=True)
-class Heard:
-    """A buffer of the desk's microphone as the microphone hands it on (`hands.voice.microphone.Overheard`)."""
-
-    cancelled: Cancelled
-    desk: bool
-    key: str
-
-
-def buffer(level: int, syntheses: tuple[Playhead, ...], key: str = "up", desk: bool = True, reached: bool = True) -> Heard:
-    """20 ms of the desk, heard at `level`, over 20 ms of hands' TTS of `syntheses`, or none for no TTS, its echo reaching
-    the microphone or not."""
-    reference = Reference(tone(-level), RATE, 1, syntheses, reached) if syntheses else None
-    return Heard(Cancelled(tone(level, 2), (reference, reference)), desk, key)
-
-
-def overheard(buffers: list[Heard]) -> Callable[[], AbstractAsyncContextManager[AsyncIterator[Heard]]]:
-    """The desk's buffers, as the microphone hands them on."""
-
-    @asynccontextmanager
-    async def echoes() -> AsyncGenerator[AsyncIterator[Heard]]:
-        async def each() -> AsyncIterator[Heard]:
-            for heard in buffers:
-                yield heard
-
-        yield each()
-
-    return echoes
-
-
-async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_span_by_span(tmp_path: Path) -> None:
-    clock = VirtualClock()
-    recorded: list[Entry] = []
-    identified: list[tuple[int, Voiced]] = []
-    recorder = Recorder(clock, tmp_path, "run", lambda span, voiced: identified.append((span, voiced)), recorded.append)
-    await recorder.overhear(
-        overheard([
-            buffer(1, ()),  # no TTS played: hands not speaking, no span
-            buffer(2, (ALBA,)),  # a span opens
-            buffer(3, (ALBA, MARY)),
-            buffer(4, (MARY,), key="arming"),  # a press: the span ends there, and the press is the clip's
-            buffer(5, (MARY,)),  # a second span
-            buffer(6, (MARY,), key="listening"),  # the wake word's level, where a voice can open a clip: it ends
-            buffer(7, (MARY,)),  # a third
-            buffer(9, (MARY,), reached=False),  # in headphones: no echo of hands' reached the microphone, so it ends
-            buffer(8, (MARY,), desk=False),  # hands at the phone: it ends
-        ])
-    )
-    assert read(tmp_path / "run" / "echo-1.heard.wav")[2] == tone(2, 2) + tone(3, 2)
-    assert read(tmp_path / "run" / "echo-1.played.wav")[2] == tone(-2, 2) + tone(-3, 2)
-    assert json.loads((tmp_path / "run" / "echo-1.json").read_text()) == {
-        "span": 1, "clip": None, "echo": True, "seconds": 0.04, "played": True, "voices": ["alba", "mary"], "unreached": 0.0,
-        "said": [
-            {"voice": "alba", "text": "Hands here.", "start": 0.0, "into": 0.0, "stop": 0.04},
-            {"voice": "mary", "text": "Turn ended.", "start": 0.02, "into": 1.5, "stop": 0.04},
-        ],
-    }
-    assert read(tmp_path / "run" / "echo-2.heard.wav")[2] == tone(5, 2)
-    assert read(tmp_path / "run" / "echo-3.heard.wav")[2] == tone(7, 2)
-    assert [(event.outcome, event.facts["span"], event.facts["voices"]) for event in events(recorded, "echo.kept")] == [
-        ("ok", 1, ("alba", "mary")), ("ok", 2, ("mary",)), ("ok", 3, ("mary",)),
-    ]
-    # Each span is one voice, hands', identified against its prints once it has ended, with every voice it played.
-    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.echoed) for span, voiced in identified] == [
-        (1, 0, 0.04, ("alba", "mary")), (2, 0, 0.02, ("mary",)), (3, 0, 0.02, ("mary",)),
-    ]
-    assert np.array_equal(identified[1][1].voice, np.full(320, 5 / 32768, np.float32))
-
-
-async def test_echo_spans_count_toward_the_stores_cap(tmp_path: Path) -> None:
-    clock = VirtualClock()
-    recorded: list[Entry] = []
-    older(tmp_path, "2026-10-01T00-00-00Z", 10_000)
-    recorder = Recorder(clock, tmp_path, "2026-10-03T00-00-00Z", unidentified, recorded.append, cap=10_500)
-    await recorder.overhear(overheard([buffer(1, (ALBA,)), buffer(1, ())]))
-    [pruned] = events(recorded, "clips.pruned")
-    assert pruned.facts["runs"] == ("2026-10-01T00-00-00Z",)
 
 
 async def test_a_run_alone_over_the_cap_prunes_nothing_and_never_walks_the_store_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -259,7 +170,7 @@ async def test_a_run_alone_over_the_cap_prunes_nothing_and_never_walks_the_store
         return measured(directory)
 
     monkeypatch.setattr(recorders, "size", size)
-    recorder = Recorder(clock, tmp_path, "run", unidentified, recorded.append, cap=100)
+    recorder = Recorder(clock, tmp_path, "run", recorded.append, cap=100)
     for number in (1, 2, 3):
         await kept(clock, recorder, Clip(number, "shortcut"), Sound(tone(1, 10), tone(1, 10), ()), recorded)
     assert events(recorded, "clips.pruned") == [] and walked == []

@@ -20,7 +20,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.aggregators.llm_text_processor import LLMTextProcessor
 from pipecat.tests.utils import run_test
 
-from conftest import stood_in, unprimed
+from conftest import unprimed
 from hands.virtualclock import VirtualClock
 from hands.core.spoken import Leak, spoken, spoken_count, spoken_ref
 from hands.core.turn import Said
@@ -364,7 +364,6 @@ def test_the_pipeline_puts_the_filter_where_every_utterance_crosses_it(monkeypat
         player=(player := Player(lambda _: None)),
         floor=Floor(lambda id: id, dict, clock),
         prompt=unprimed,
-        prints=stood_in(clock, tmp_path / "voiceprints"),
         clips=tmp_path / "clips",
         record=lambda _: None,
     )

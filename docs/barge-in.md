@@ -87,8 +87,8 @@ What is heard decides the cut, and nothing about whose voice it is: the sound ev
 sound the diarizer took for a speaker with no words in it, a cough, cuts nothing. The turn's words are the
 transcriber's, sent whole, with no rule about whose a word is (`voice/whisper.py`). Each turn's `UserTurn` line says how long after
 the cutting speaker's first word the cut came (`barge_in_after_speech`), from the clip's opening where the cut is on the
-transcriber's words, whose speaker no listener heard. Each clip, and each echo span of hands speaking with no clip open, is
-kept with what hands was playing over it, each sentence in which voice (`voice/recorder.py`).
+transcriber's words, whose speaker no listener heard. Each clip is kept with what hands was playing over it, each sentence in which
+voice (`voice/recorder.py`).
 
 **2. Barge-in on the brain's turn.** `_barge_in`, `brain/stage.py:726–746`, decides whether a cut is
 a barge-in. The guards on lines 733–737 say no in four cases:

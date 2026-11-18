@@ -25,7 +25,6 @@ from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from conftest import PAIRS, events, hearing_with, running
-from listening import unidentified
 from test_streaming import NOT_SPEECH, READER, fixture_clips, hearings, pcm
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
@@ -215,7 +214,7 @@ async def recognizing() -> tuple[streaming.StreamingRecognizer, Recorded]:
     whose start a load holding the loop would hold past its bound on CI's VMs; the first frame then waits for nothing it
     does."""
     record = Recorded(asyncio.get_running_loop())
-    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda gating: PAIRS.loaded(lambda: nemotron(gating)), unidentified, record)
+    recognizer = streaming.StreamingRecognizer(SYSTEM, lambda gating: PAIRS.loaded(lambda: nemotron(gating)), record)
     await record.until(lambda: bool(events(record.entries, "streaming.loaded")))
     return recognizer, record
 

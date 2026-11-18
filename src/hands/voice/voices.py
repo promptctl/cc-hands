@@ -11,15 +11,12 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any, NewType, cast
 
-import numpy as np
-import soxr
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError, RepositoryNotFoundError
 from pipecat.frames.frames import AggregatedTextFrame, ErrorFrame, Frame, TTSAudioRawFrame, TTSSpeakFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.pocket_tts.tts import PocketTTSService, PocketTTSSettings, language_to_pocket_tts_language
 from pipecat.transcriptions.language import Language
 from pipecat.utils.types import require_given
-from pocket_tts import TTSModel
 from pocket_tts.models.tts_model import CONFIGS_DIR, DEFAULT_LANGUAGE
 from pocket_tts.utils.config import load_config
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES  # pyright: ignore[reportPrivateUsage]
@@ -31,12 +28,10 @@ from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import begun
-from hands.voice.clips import RATE, Samples
 from hands.voice.echo import seconds
 from hands.voice.library import Found, Library, address
 from hands.voice.player import LineFrame, LineText, Lines, Unsaid, line_frame
 from hands.voice.synthesis import Made, SpeakingIn, Synthesis
-from hands.voice.voiceprints import Synthesize
 
 # One of pocket_tts's own names: its embedding is primed by the weights it loads, and pipecat resolves the name itself.
 Voice = NewType("Voice", str)
@@ -170,14 +165,11 @@ class Voices:
     drops only the speech, so a hearing cut short still ends back in the chosen voice.
     """
 
-    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library, speaking: Callable[[str], None]) -> None:
+    def __init__(self, home: Home, lines: Lines, fetch: Fetch, library: Library) -> None:
         self._home = home
         self._lines = lines
         self._fetch = fetch
         self._library = library
-        # Told of each voice hands speaks in from now, as the TTS service is handed it (`source`), as its own print of
-        # it is made from (`hands.voice.voiceprints`): never of a voice only heard as a sample.
-        self._speaking = speaking
         # [LAW:no-ambient-temporal-coupling] the one owner of a change of voice: Pipecat runs a reply's calls side by
         # side, and a hearing and a choice interleaved would leave a sample in another's voice, or the speaker in a
         # voice the file does not hold. Each runs whole, one after another.
@@ -213,7 +205,6 @@ class Voices:
             await asyncio.to_thread(self._fetch, voice)
             await asyncio.to_thread(keep, self._home, voice)
             await self._speak_in(voice)
-            self._speaking(source(voice))
 
     async def _speak_in(self, voice: Chosen) -> None:
         await self._lines.push_frame(TTSUpdateSettingsFrame(delta=PocketTTSSettings(voice=source(voice))))
@@ -286,17 +277,3 @@ class SaidInTTS(PocketTTSService):
             yield frame
         # [LAW:nothing-unseen] how long the TTS took to make it, beside how long it plays: its real-time factor.
         yield Made(synthesis, self._clock.now() - synthesis.begun.began, made, failure)
-
-
-def pocket() -> Synthesize:
-    """Pocket TTS, hands' own TTS, saying any text in any of its voices, as the TTS service is handed them (`source`), at
-    RATE, on a model of its own loaded here and let go of with what this returns: a Pocket TTS model generates for one
-    caller at a time, and the TTS service's is the speaker's."""
-    model = TTSModel.load_model(language=language_to_pocket_tts_language(LANGUAGE))
-
-    def said(voice: str, text: str) -> Samples:
-        state = model.get_state_for_audio_prompt(voice)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  (pocket_tts types its state as a bare dict)
-        audio = model.generate_audio(state, text).numpy().astype(np.float32)  # pyright: ignore[reportUnknownMemberType]
-        return soxr.resample(audio, model.sample_rate, RATE).astype(np.float32)
-
-    return said

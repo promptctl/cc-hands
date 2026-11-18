@@ -20,17 +20,16 @@ from loguru import logger
 
 import recordings
 import echoes
-from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed
+from echoes import replayed
 from conftest import CALLED, PAIRS, model_facts
-from listening import LEAD, SHAPES, Live, Timed, turn, unidentified
+from listening import LEAD, SHAPES, Live, Timed, turn
 import echoscore
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
-from hands.sessions.wide import WideEvent, begun, unit
-from hands.voice import engaged, streaming, voiceprints
+from hands.sessions.wide import WideEvent, begun
+from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import SLOT, Clip, Fate, Reference, Sound, Playhead, Synthesis, decoded, slots
-from hands.voice.voiceprints import Identifier, Voiced
+from hands.voice.clips import Clip, Fate, Sound, decoded
 from hands.voice.streaming import CHUNK, MEL_HOP, STEP, Active, Closed, Decoded, Ended, Said, Samples, Session, Spoken, StreamingRecognizer, steps, through
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
@@ -110,14 +109,11 @@ class Rig:
     async def opened(self, clip: Clip, before: Samples) -> None:
         await self.run(clip, self.listener.opened(clip, Sound(pcm(before), pcm(before), None)))
 
-    async def heard(self, clip: Clip, samples: Samples, frame: int = STEPPED, voices: tuple[str, ...] | None = None) -> None:
-        """`samples` of `clip`, given in frames of `frame` samples, hands playing in `voices` over them, nothing known of
-        what it played for None, and every hearing they bring run."""
-        syntheses = () if voices is None else tuple(Playhead(Synthesis(voice, "Hands here.", begun(SYSTEM)), 0.0) for voice in voices)
+    async def heard(self, clip: Clip, samples: Samples, frame: int = STEPPED) -> None:
+        """`samples` of `clip`, given in frames of `frame` samples, and every hearing they bring run."""
         for start in range(0, len(samples), frame):
             piece = pcm(samples[start : start + frame])
-            played = None if voices is None else tuple(Reference(bytes(320), 16000, 1, syntheses, True) for _ in range(len(piece) // 320))
-            await self.run(clip, self.listener.heard(Sound(piece, piece, played)))
+            await self.run(clip, self.listener.heard(Sound(piece, piece, None)))
 
     async def ended(self, clip: Clip, fate: Fate) -> None:
         await self.run(clip, self.listener.ended(clip, fate, Sound(b"", b"", None)))
@@ -128,23 +124,9 @@ class Rig:
         return [(event.outcome, event.facts["heard"], event.facts.get("added", event.facts.get("words"))) for event in hearings(self.recorded)]
 
 
-class Told:
-    """An identifier that keeps each speaker it is handed: as they reach a row of the table, and as their clip ends."""
-
-    def __init__(self) -> None:
-        self.identified: list[tuple[Clip, tuple[Voiced, ...]]] = []
-        self.ended_with: list[tuple[Clip, tuple[Voiced, ...]]] = []
-
-    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
-        self.identified.append((clip, voiced))
-
-    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
-        self.ended_with.append((clip, voiced))
-
-
-def rigged(session: Session, identify: Identifier = unidentified) -> Rig:
+def rigged(session: Session) -> Rig:
     recorded: list[Entry] = []
-    listener = StreamingRecognizer(SYSTEM, lambda _: session, identify, recorded.append)
+    listener = StreamingRecognizer(SYSTEM, lambda _: session, recorded.append)
     return Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
 
 
@@ -293,164 +275,32 @@ async def test_decoding_that_fails_breaks_the_runs_stream_and_each_clip_from_it_
     assert len(session.fed) == 3
 
 
-async def test_each_speaker_is_handed_on_as_their_clip_ends_with_the_clips_own_samples_the_diarizer_heard_them_in() -> None:
-    told = Told()
-    # Speaker 0 in the run's first two frames and the fourth, speaker 1 in the fourth and fifth: both in the fourth.
-    session = Scripted([(), (), said("is it", (1, "yes"))], active=[(), (Active(0, 0), Active(0, 1)), (Active(0, 3), Active(1, 3), Active(1, 4))])
-    rig = rigged(session, told)
-    clip = (np.arange(2 * STEPPED) / (4 * STEPPED)).astype(np.float32)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, clip)
-    # Under a second each: no row of the table reached, so nobody is scored while the clip is open.
-    assert told.identified == []
-    await rig.ended(CLIP, "sent")
-    frame = streaming.FRAME
-    # Each with exactly the samples of the frames they were active in, the overlap in both and said to be shared, as
-    # the clip's own audio came through the 16-bit frames a clip is captured in.
-    heard = decoded_as_captured(clip)
-    [(of, voiced)] = told.ended_with
-    assert of == CLIP
-    assert [(each.speaker, each.voice.tobytes(), each.seconds, each.shared, each.echoed) for each in voiced] == [
-        (0, np.concatenate([heard[: 2 * frame], heard[3 * frame : 4 * frame]]).tobytes(), 3 * frame / streaming.RATE, frame / streaming.RATE, ()),
-        (1, heard[3 * frame : 5 * frame].tobytes(), 2 * frame / streaming.RATE, frame / streaming.RATE, ()),
-    ]
-
-
-async def test_a_speaker_is_handed_on_once_at_each_row_of_the_table_they_reach_and_once_as_their_clip_ends() -> None:
-    told = Told()
-    # Speaker 0 heard in a frame more at each step, three frames a step, from the clip's first frame on: 0.24 s a step.
-    steps_heard = [tuple(Active(0, frame) for frame in range(3 * step, 3 * step + 3)) for step in range(10)]
-    # The opening's feed, of nothing kept from before the clip, comes first.
-    rig = rigged(Scripted([], active=[(), *steps_heard]), told)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(10 * STEPPED)))
-    # 1.2 s at the fifth step reaches 1 s, 1.68 s at the seventh 1.5 s; 2.4 s by the last reaches no more.
-    assert [round(voiced.seconds, 2) for _, (voiced,) in told.identified] == [1.2, 1.68]
-    await rig.ended(CLIP, "sent")
-    assert [round(voiced.seconds, 2) for _, (voiced,) in told.ended_with] == [2.4]
-
-
-async def test_a_clip_the_broken_stream_could_not_hear_still_ends_for_the_identifier_with_nobody_in_it() -> None:
-    told = Told()
-    rig = rigged(Scripted([], failing=frozenset({1})), told)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(2 * STEPPED)))
-    await rig.ended(CLIP, "sent")
-    assert told.ended_with == [(CLIP, ())]
-
-
-@dataclass
-class Closing(Scripted):
-    """A session whose close waits on the test, as a decode stuck on the GPU would."""
-
-    closes: threading.Event = field(default_factory=threading.Event)
-
-    def closed(self) -> Closed:
-        assert self.closes.wait(timeout=10)
-        return super().closed()
-
-
-async def test_a_clips_end_the_owner_gave_up_waiting_on_still_ends_for_the_identifier_once_the_stream_gets_there() -> None:
-    told = Told()
-    session = Closing([], active=[(), (Active(0, 0),)])
-    rig = rigged(session, told)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(STEPPED)))
-    [settle] = rig.listener.ended(CLIP, "sent", Sound(b"", b"", None))
-    # The owner's bound runs out on the hearing: it is cancelled while the stream is still closing the clip.
-    with pytest.raises(TimeoutError), unit("hearing", lambda _event: None, begun(SYSTEM)):
-        await asyncio.wait_for(settle(), 0.05)
-    session.closes.set()
-    async with asyncio.timeout(10):
-        while not told.ended_with:
-            await asyncio.sleep(0.01)
-    [(clip, (voiced,))] = told.ended_with
-    assert (clip, voiced.speaker) == (CLIP, 0)
-
-
-async def test_a_speaker_marked_only_where_the_clip_has_no_samples_is_nobody() -> None:
-    told = Told()
-    # Speaker 1 only in frame 40, 3.2 s into a run whose clip is 0.48 s: in the silence after it.
-    rig = rigged(Scripted([], active=[(), (Active(0, 0),), (Active(1, 40),)]), told)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(2 * STEPPED)))
-    await rig.ended(CLIP, "sent")
-    [(_, voiced)] = told.ended_with
-    assert [(each.speaker, each.seconds) for each in voiced] == [(0, streaming.FRAME / streaming.RATE)]
-
-
-async def test_each_speaker_carries_the_voices_hands_played_over_the_frames_they_were_heard_in() -> None:
-    told = Told()
-    rig = rigged(Scripted([], active=[(), (Active(0, 0),), (Active(1, 3),)]), told)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(STEPPED)), voices=("alba",))
-    await rig.heard(CLIP, sound(seconds(STEPPED)), voices=())
-    await rig.ended(CLIP, "sent")
-    [(_, voiced)] = told.ended_with
-    assert [(each.speaker, each.echoed) for each in voiced] == [(0, ("alba",)), (1, ())]
-
-
-@pytest.mark.parametrize("over", [(), ("charles",)], ids=["nothing played", "hands played"])
-def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard_whatever_hands_played_over_them(over: tuple[str, ...]) -> None:
+async def test_a_speakers_words_cut_hands_off_from_when_they_were_first_heard() -> None:
     # Half a second kept from before the clip opened; the speaker first heard in the run's eighth frame, 0.06 s after it.
     session = Scripted([(), said("stop")], active=[(), (Active(0, 7), Active(0, 8))])
     stream = streaming.Stream(session)
-    kept = round(0.5 * streaming.RATE)
-    stream.opened(sound(0.5), 0, (over,) * (kept // SLOT))
-    stream.heard(sound(seconds(STEPPED)), (over,) * (STEPPED // SLOT))
+    stream.opened(sound(0.5), 0)
+    stream.heard(sound(seconds(STEPPED)))
     since = stream.said()
     assert since.added == said("stop")
     assert since.barge_in_at == pytest.approx(0.06)
-    # And every voice of them is told from there.
-    [voiced] = stream.ended().voices
-    assert voiced.first == pytest.approx(0.06)
 
 
 def test_a_sound_the_diarizer_took_for_a_speaker_with_no_words_in_it_cuts_nothing() -> None:
     session = Scripted([(), ()], active=[(), (Active(0, 7), Active(0, 8))])
     stream = streaming.Stream(session)
-    stream.opened(sound(0.5), 0, ())
-    stream.heard(sound(seconds(STEPPED)), ())
+    stream.opened(sound(0.5), 0)
+    stream.heard(sound(seconds(STEPPED)))
     assert stream.said().barge_in_at is None
 
 
-async def test_a_hearings_words_go_out_without_waiting_on_who_said_them(tmp_path: Path) -> None:
-    scoring = threading.Event()
-
-    def model() -> voiceprints.Embed:
-        def embed(voice: Samples) -> voiceprints.Print:
-            # hands' print, of one sample, is made at once; a speaker's voice waits on the test.
-            assert len(voice) == 1 or scoring.wait(timeout=10)
-            return np.ones(2, np.float32) / np.sqrt(np.float32(2))
-
-        return embed
-
-    recorded: list[Entry] = []
-    prints = voiceprints.Voiceprints(SYSTEM, model, lambda: lambda _voice, _text: np.zeros(1, np.float32), tmp_path, recorded.append)
-    prints.speaking_in("charles")
-    # Long enough to be scored: 14 frames, 1.12 s, of a clip of 1.2 s, the words with the feed that ends it.
-    session = Scripted([*[()] * 5, said("stop")], active=[*[()] * 5, tuple(Active(0, frame) for frame in range(14))])
-    listener = StreamingRecognizer(SYSTEM, lambda _: session, prints, recorded.append)
-    rig = Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
-    await rig.opened(CLIP, sound(0))
-    await rig.heard(CLIP, sound(seconds(5 * STEPPED)))
-    # The words are heard, while who said them is still being scored.
-    assert ("ok", "words", said("stop")) in rig.told()
-    identified = lambda: [entry for entry in recorded if isinstance(entry, WideEvent) and entry.event == "voiceprints.identified"]  # noqa: E731
-    assert identified() == []
-    scoring.set()
-    async with asyncio.timeout(10):
-        while not identified():
-            await asyncio.sleep(0.01)
-    [event] = identified()
-    [speaker] = cast(tuple[voiceprints.Speaker, ...], event.facts["speakers"])
-    assert (event.facts["clip"], speaker.number) == (1, 0)
-    # Scored against hands' print, on all 1.12 s of them: in hands' range, short of the 3 s that would make them hands.
-    match speaker.who:
-        case voiceprints.Unsure(score=score, seconds=heard):
-            assert (score, heard) == (pytest.approx(1.0), pytest.approx(1.12))
-        case other:
-            raise AssertionError(other)
+def test_a_speaker_marked_only_where_the_clip_has_no_samples_was_first_heard_nowhere_and_cuts_nothing() -> None:
+    # Speaker 0 only in frame 40, 3.2 s into a run whose clip is 0.48 s: in the silence after it.
+    stream = streaming.Stream(Scripted([(), said("stop")], active=[(), (Active(0, 40),)]))
+    stream.opened(sound(0), 0)
+    stream.heard(sound(seconds(2 * STEPPED)))
+    since = stream.said()
+    assert since.added == said("stop") and since.barge_in_at is None
 
 
 def loaded(recorded: list[Entry]) -> list[WideEvent]:
@@ -465,7 +315,7 @@ async def test_clips_spoken_while_the_models_load_are_heard_once_they_have() -> 
         go.wait()
         return Scripted([(), said("hello")])
 
-    listener = StreamingRecognizer(SYSTEM, slow, unidentified, recorded.append)
+    listener = StreamingRecognizer(SYSTEM, slow, recorded.append)
     rig = Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     await rig.opened(CLIP, sound(0))
     hearing = asyncio.create_task(rig.heard(CLIP, sound(seconds(2 * STEPPED))))
@@ -490,7 +340,7 @@ async def test_models_that_fail_to_load_fail_each_clip_once_saying_why() -> None
     def unreachable(_gating: int) -> Session:
         raise OSError("the hub is unreachable")
 
-    listener = StreamingRecognizer(SYSTEM, unreachable, unidentified, recorded.append)
+    listener = StreamingRecognizer(SYSTEM, unreachable, recorded.append)
     rig = Rig(listener, ClipOwner(SYSTEM, Unused(), (listener,), recorded.append), recorded)
     for number in (1, 2):
         await rig.opened(Clip(number, "engaged conversation"), sound(0))
@@ -839,117 +689,34 @@ def test_the_diarizer_commits_on_exactly_the_feeds_steps_names(paired: Any) -> N
     assert sum(stepped for _, stepped in moved) > 5
 
 
-@dataclass(frozen=True)
-class HandsPrint:
-    """The real model, and hands' print made by it from hands' own TTS output."""
-
-    embed: voiceprints.Embed
-    voiceprint: voiceprints.Print
-
-    def who(self, voiced: Voiced) -> voiceprints.Who:
-        return voiceprints.scored(self.embed, (self.voiceprint,), voiced, voiceprints.THRESHOLDS)
-
-
-@pytest.fixture(scope="module")
-def hands_print() -> HandsPrint:
-    [said] = fixture_clips("hands_tts.flac")
-    embed = voiceprints.load()
-    return HandsPrint(embed, embed(said))
-
-
-@dataclass
-class Fed:
-    """The real pair's stream, and how far the run has been fed, as the listener counts it."""
-
-    stream: streaming.Stream
-    samples: int = 0
-
-    def feed_clip(self, clip: Samples) -> tuple[list[Voiced], Ended]:
-        """Every speaker each hearing of a clip handed on, and the clip as it ended, fed in 20 ms frames as the listener
-        feeds it, asked at every step of the diarizer's as a hearing asks."""
-        found = list[Voiced]()
-        self.stream.opened(np.zeros(0, np.float32), self.samples, ())
-        for start in range(0, len(clip), 320):
-            piece = clip[start : start + 320]
-            self.stream.heard(piece, ())
-            found += self.stream.said().reached if steps(self.samples + len(piece)) > steps(self.samples) else ()
-            self.samples += len(piece)
-        silence = through(self.samples) - self.samples
-        self.stream.silence(silence)
-        self.samples += silence
-        return found, self.stream.ended()
-
-
-# Each test below decodes the whole echo once, the longest decoding in this file; one decoding it twice overran the
-# per-test timeout on CI.
-@pytest.mark.outside
-def test_no_hearing_of_hands_own_echo_makes_a_person_at_any_length_it_is_scored_at(paired: Session, hands_print: HandsPrint) -> None:
-    [echo] = fixture_clips("hands_echo_uncancelled.flac")
-    fed = Fed(streaming.Stream(paired))
-    # Each sentence its own clip, from its onset, so each is scored from its first second.
-    starts = [round((PLAYED + start) * streaming.RATE) for start in SENTENCES]
-    heard = [fed.feed_clip(echo[start:end]) for start, end in zip(starts, [*starts[1:], len(echo)])]
-    whos = [hands_print.who(voiced) for found, ended in heard for voiced in (*found, *ended.voices)]
-    assert not [who for who in whos if isinstance(who, voiceprints.Person)], whos
-    # Scored at every length the table has a row for, and found to be hands once heard long enough.
-    scored = [who.seconds for who in whos if isinstance(who, voiceprints.Hands | voiceprints.Unsure)]
-    assert min(scored) < voiceprints.PERSON.seconds and max(scored) > voiceprints.HANDS.seconds, whos
-
-
-@pytest.mark.outside
-def test_hands_own_echo_heard_whole_as_one_clip_is_hands(paired: Session, hands_print: HandsPrint) -> None:
-    [echo] = fixture_clips("hands_echo_uncancelled.flac")
-    _, ended = Fed(streaming.Stream(paired)).feed_clip(echo)
-    whole = [hands_print.who(voiced) for voiced in ended.voices]
-    assert whole and all(isinstance(who, voiceprints.Hands) for who in whole), whole
-
-
-@pytest.mark.outside
-def test_a_second_voice_over_hands_is_a_person_and_hands_alone_after_it_is_hands(paired: Session, hands_print: HandsPrint) -> None:
-    [mic] = fixture_clips("hands_and_another.flac")
-    fed = Fed(streaming.Stream(paired))
-    over, alone = (mic[round(start * streaming.RATE) : round(end * streaming.RATE)] for start, end in (OVER_HANDS, HANDS_ALONE))
-    _, both = fed.feed_clip(over)
-    # The second voice's lines are said by a person, whichever speaker the diarizer gave them.
-    speakers = {said.speaker for said in both.words if "second speaker" in said.text.lower()}
-    theirs = [hands_print.who(voiced) for voiced in both.voices if voiced.speaker in speakers]
-    assert theirs and all(isinstance(who, voiceprints.Person) for who in theirs), theirs
-    # Identified afresh in the next clip, from its own audio: hands, whatever number it had in the last.
-    found, after = fed.feed_clip(alone)
-    whole = [hands_print.who(voiced) for voiced in after.voices]
-    assert whole and all(isinstance(who, voiceprints.Hands) for who in whole), whole
-    live = [hands_print.who(voiced) for voiced in found]
-    assert not [who for who in live if isinstance(who, voiceprints.Person)], live
-
-
 @dataclass
 class Overheard:
     """The real pair's stream, fed a clip 20 ms at a time as the listener feeds it and asked at every step of the diarizer's
-    as a hearing asks, `echoed` the voices of hands' that may be in each 10 ms of it, 'charles' in all of it unless said.
+    as a hearing asks.
 
     Each cut is placed in the audio where it was asked for: how far into the clip the stream had heard, and when the
     speaker who cut was first heard. The stream runs on this thread, as the real pair's MLX streams must, so the place is
     the same on every machine."""
 
-    fed: Fed
+    stream: streaming.Stream
+    samples: int = 0
     barge_ins: list[tuple[float, float]] = field(default_factory=list[tuple[float, float]])
 
-    def held(self, clip: Samples, echoed: tuple[tuple[str, ...], ...] | None = None) -> Ended:
+    def held(self, clip: Samples) -> Ended:
         """A clip of `clip`, heard to its end."""
-        stream = self.fed.stream
-        echoed = (("charles",),) * -(-len(clip) // SLOT) if echoed is None else echoed
+        stream = self.stream
         self.barge_ins.clear()
-        stream.opened(np.zeros(0, np.float32), self.fed.samples, ())
+        stream.opened(np.zeros(0, np.float32), self.samples)
         for start in range(0, len(clip), FRAME_SAMPLES):
             piece = clip[start : start + FRAME_SAMPLES]
-            stream.heard(piece, echoed[start // SLOT : (start + len(piece)) // SLOT])
-            self.fed.samples += len(piece)
-            if steps(self.fed.samples) > steps(self.fed.samples - len(piece)):
+            stream.heard(piece)
+            self.samples += len(piece)
+            if steps(self.samples) > steps(self.samples - len(piece)):
                 since = stream.said()
                 self.barge_ins += [] if since.barge_in_at is None else [((start + len(piece)) / streaming.RATE, since.barge_in_at)]
-        silence = through(self.fed.samples) - self.fed.samples
+        silence = through(self.samples) - self.samples
         stream.silence(silence)
-        self.fed.samples += silence
+        self.samples += silence
         return stream.ended()
 
 
@@ -964,21 +731,21 @@ CUT_SECONDS = 2.0
 
 @pytest.fixture
 def overheard(paired: Session) -> Overheard:
-    return Overheard(Fed(streaming.Stream(paired)))
+    return Overheard(streaming.Stream(paired))
 
 
-def desk_heard(fixture: Path) -> tuple[echoscore.Take, Samples, tuple[tuple[str, ...], ...]]:
-    """A take as the desk hears it: through the echo canceller, with the voices of hands' that may be in each 10 ms."""
+def desk_heard(fixture: Path) -> tuple[echoscore.Take, Samples]:
+    """A take as the desk hears it: through the echo canceller."""
     recorded = echoscore.recorded(fixture)
     sound = replayed(recorded.captured, recorded.reference, recorded.playheads)
-    return recorded, decoded(sound.heard), slots(sound)
+    return recorded, decoded(sound.heard)
 
 
 @pytest.mark.outside
 @pytest.mark.parametrize("fixture", echoscore.TAKES, ids=lambda fixture: fixture.name)
 def test_hands_alone_cuts_nothing_on_any_recorded_take_heard_whole_as_one_clip(overheard: Overheard, fixture: Path) -> None:
-    recorded, heard, echoed = desk_heard(fixture)
-    overheard.held(heard, echoed)
+    recorded, heard = desk_heard(fixture)
+    overheard.held(heard)
     # A cut asked for before the person's first word is hands' own voice or the room cutting hands off.
     assert [cut for cut in overheard.barge_ins if cut[0] < recorded.cut_in] == [], (fixture.name, overheard.barge_ins, recorded.cut_in)
 
@@ -986,12 +753,12 @@ def test_hands_alone_cuts_nothing_on_any_recorded_take_heard_whole_as_one_clip(o
 @pytest.mark.outside
 @pytest.mark.parametrize("fixture", [fixture for fixture in echoscore.TAKES if echoscore.recorded(fixture).person], ids=lambda fixture: fixture.name)
 def test_a_person_over_hands_cuts_it_off_within_two_seconds_of_each_line_they_say_or_has_it_heard_whole_as_their_clip_closes(overheard: Overheard, fixture: Path) -> None:
-    recorded, heard, echoed = desk_heard(fixture)
+    recorded, heard = desk_heard(fixture)
     ends = [*[line.start - 0.3 for line in recorded.person[1:]], len(heard) / streaming.RATE]
     for line, end in zip(recorded.person, ends, strict=True):
         # Each line its own clip, from LEAD before its first word to three seconds past it, as a voice-opened turn is.
         first, last = round((line.start - LEAD) * streaming.RATE), round(min(end, line.start + 3.0) * streaming.RATE)
-        ended = overheard.held(heard[first:last], echoed[first // SLOT : last // SLOT])
+        ended = overheard.held(heard[first:last])
         said = streaming.joined(each.text for each in ended.words)
         match overheard.barge_ins:
             case [(asked, _), *_]:
