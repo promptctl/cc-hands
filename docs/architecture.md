@@ -1938,8 +1938,11 @@ is heard again unprimed, and the looped segments are recorded as dropped: "the b
 canceller, read three times over primed and once unprimed. `tests/test_whisper_takes.py` holds it on the twelve recorded takes
 of `tests/echoscore.py`, through the desk's canceller and the real Whisper: hands alone, up to the person's first word, sends
 nothing on any of them, and each line a person says over hands, as its own clip from the 0.1 s before it, is sent every word
-and none of hands'. A reply's opening, heard uncancelled for 0.26 s, is too short for Whisper to write a word from. A hold
-long and quiet before the person speaks is a different clip, and primed Whisper may answer it with its vocabulary.
+and none of hands'. A reply's opening, heard uncancelled for 0.26 s, is too short for Whisper to write a word from. A quiet
+stretch longer than half a second, in the lead or in the middle of a clip, is cut to half a second before Whisper hears it
+(`Whisper._without_long_quiet`, by Silero's frames under the same 0.25 the segment gate drops by): primed with the vocabulary,
+Whisper answers a long quiet lead with the vocabulary's own words, sure of them, and the person's are lost. The same takes are
+held whole, from their first sample, as the hold of a key the person speaks late into, and each sends every word the person said.
 
 hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
 enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
