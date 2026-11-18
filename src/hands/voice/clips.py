@@ -90,6 +90,9 @@ class Length:
     def seconds(self) -> float | None:
         return self._seconds
 
+    def __repr__(self) -> str:
+        return f"Length({self._seconds})"
+
     def made(self, seconds: float) -> None:
         # [LAW:single-enforcer] a synthesis is made once: a sentence said again is a synthesis of its own.
         if self._seconds is not None:

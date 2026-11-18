@@ -71,7 +71,8 @@ _CANCELLING = 20.0
 _ERLE_SLOTS = 20
 
 # How far either side of where a word of hands' is placed, in seconds, the canceller is looked for taking hands' voice
-# out: a word is placed up to 0.8 s from where it played (`_CHARACTERS_PER_SECOND`), and while a person speaks over
+# out: a word is placed up to 0.41 s from where it played by its sentence's length on tests/fixtures/hands_long_sentence.flac,
+# up to 0.8 s early in a sentence at `_CHARACTERS_PER_SECOND`, and while a person speaks over
 # hands only the slots between their words show the canceller at work, as the person's own words come through it at
 # 0 to 10 dB.
 _CANCELLED_SECONDS = 1.0
@@ -192,17 +193,18 @@ def _placed(plays: tuple[Play, ...]) -> Placed:
         (word.group(), play.start * SLOT / RATE + into - play.into)
         for play in plays
         for text in (play.synthesis.text.lower(),)
+        for scale in (_length(play.synthesis) / len(text),)
         for word in _WORD.finditer(text)
-        for into in ((word.start() + word.end()) / 2 / len(text) * _length(play.synthesis),)
+        for into in ((word.start() + word.end()) / 2 * scale,)
         if into - play.into <= (play.stop - play.start) * SLOT / RATE + _ECHO_SECONDS
     )
 
 
 def _length(synthesis: Synthesis) -> float:
     """How long a synthesis plays, in seconds: as long as the TTS made it; and where it has not made all of it, as the
-    clip closes within the first fifth of its play, or never will, cut by a barge-in, as long as its characters take at
-    `_CHARACTERS_PER_SECOND`. Only words played before its making ended are placed so, early in it, where that rate's
-    error is least."""
+    clip closes within the first fifth of its play, or never will, cut by a barge-in or the TTS failing, as long as its
+    characters take at `_CHARACTERS_PER_SECOND`. A sentence the TTS made whole has only words played before its making
+    ended placed so, early in it, where that rate's error is least; one it failed has all it played placed so."""
     match synthesis.length.seconds:
         case None:
             return len(synthesis.text) / _CHARACTERS_PER_SECOND

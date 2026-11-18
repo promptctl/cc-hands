@@ -45,7 +45,7 @@ from hands.sessions.wide import WideEvent
 from hands.voice.player import LineFrame, LineText, Player, Unsaid, line_frame, said
 from hands.voice.spoken import SpokenForm
 from hands.voice.tools import audited, playback_tools
-from hands.voice.synthesis import SpeakingIn
+from hands.voice.synthesis import Made
 from hands.voice.voices import SaidInTTS
 
 # What happens at the speaker, as the taps report it: a line handed to it (a sentence's text is a sentence of the brain's),
@@ -423,10 +423,9 @@ async def test_hands_tts_says_how_long_a_synthesis_is_once_it_has_made_all_of_it
     monkeypatch.setattr(PocketTTSService, "run_tts", made)
     tts = Stubbed()
     tts._clock = SYSTEM  # pyright: ignore[reportPrivateUsage]  (Stubbed builds no clock of its own)
-    frames = [frame async for frame in SaidInTTS.run_tts(tts, "Two tenths of a second.", "context")]
-    [speaking] = [frame for frame in frames if isinstance(frame, SpeakingIn)]
-    # Known as making ends, ahead of the Made that follows the audio to the speaker.
-    assert speaking.synthesis.length.seconds == length
+    # Known as making ends, by the Made that follows the audio to the speaker, read as it is made.
+    lengths = [frame.synthesis.length.seconds async for frame in SaidInTTS.run_tts(tts, "Two tenths of a second.", "context") if isinstance(frame, Made)]
+    assert lengths == [length]
 
 
 async def test_hands_tts_refuses_a_line_that_says_not_whose_it_is() -> None:

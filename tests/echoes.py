@@ -94,7 +94,7 @@ def take(fixture: Path) -> tuple[np.ndarray, np.ndarray, tuple[tuple[Playhead, .
     described = json.loads(fixture.with_suffix(".json").read_text())
     said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
     # As long as the TTS made each, where the take kept it: the takes before hands_long_sentence did not.
-    for synthesis, seconds in zip(said, described.get("made", ()), strict=False):
+    for synthesis, seconds in zip(said, described["made"], strict=True) if "made" in described else ():
         synthesis.length.made(seconds)
     samples, _ = audio(fixture.with_suffix(".flac"))
     playheads = tuple(() if slot is None else (Playhead(said[int(slot[0])], float(slot[1])),) for slot in described["played"])

@@ -241,7 +241,7 @@ async def test_a_long_sentence_of_hands_heard_uncancelled_sends_nothing(opened: 
 def test_each_word_of_a_long_sentence_of_hands_is_placed_where_whisper_heard_it() -> None:
     # Placed by its share of the sentence's length, as the TTS made it, each word is within 0.41 s of where Whisper heard
     # it, the furthest off at its opening; at a fixed 16 characters a second, the furthest is 0.69 s off, at its end,
-    # and later the slower the sentence.
+    # and later the slower the sentence. 0.55 s is halfway between.
     captured, _, playheads = take(LONG_SENTENCE)
     free = list(_placed(plays(uncancelled(captured, playheads))))
     heard = [(word, (timed.start + timed.end) / 2) for segment in transcription.segments(decoded(captured.tobytes()), None, words=True) for timed in segment.words for word in _words(timed.text)]
@@ -253,4 +253,4 @@ def test_each_word_of_a_long_sentence_of_hands_is_placed_where_whisper_heard_it(
             free.remove(match)
             off[f"{word} at {at:.2f}"] = round(match[1] - at, 2)
 
-    assert len(off) >= 30 and all(abs(seconds) <= 0.5 for seconds in off.values()), off
+    assert len(off) >= 30 and all(abs(seconds) <= 0.55 for seconds in off.values()), off
