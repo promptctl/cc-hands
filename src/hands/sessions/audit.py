@@ -143,8 +143,8 @@ class BargeIn:
     waiting: int
 
 
-# When a user turn cuts off what hands is saying: as the clip that opens it opens, Pipecat's VAD start; or once a speaker
-# who is not hands is heard in it (`hands.voice.voiceprints.cleared`).
+# When a user turn cuts off what hands is saying: as the clip that opens it opens, Pipecat's VAD start; or once speech is
+# heard in it, hands' own voice having been taken out of the sound (`hands.voice.echo`).
 TurnStart = Literal["on the clip", "on a person"]
 
 

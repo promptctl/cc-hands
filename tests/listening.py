@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.clips import NOBODY, Cleared, Clip, Settle
+from hands.voice.clips import Clip
 from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
@@ -31,13 +31,13 @@ def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
 
 
 class Unidentifying:
-    """Nobody identified: what a test of the words alone measures is the words. Each clip ends with nobody cleared."""
+    """Nobody identified: what a test of the words alone measures is the words."""
 
-    def identify(self, clip: Clip, voiced: tuple[Voiced, ...], cleared: Cleared) -> None:
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         pass
 
-    def ended(self, clip: Clip, voiced: tuple[Voiced, ...], settle: Settle) -> None:
-        settle(NOBODY)
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
+        pass
 
 
 unidentified = Unidentifying()

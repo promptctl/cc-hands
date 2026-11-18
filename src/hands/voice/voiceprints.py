@@ -11,9 +11,9 @@ Measured on zoj's recordings (promptctl-voice-i15t.99s.zoj, re-measured by scrip
 through the room scores 0.79 to 0.93 over long windows, another voice -0.04 to 0.16, and the two overlap below about a
 second of speech, so how much of a speaker was heard decides what their score can say (`THRESHOLDS`).
 
-Who each speaker is decides the cut of a turn the voice opened: only a speaker who is not hands cuts hands off
-(`cleared`). It is worked out on a lane of its own, after the words it is about have gone out, so no hearing's words ever
-wait on a voiceprint; the lane tells the clip owner of each speaker it clears as it clears them.
+Who each speaker is decides no cut: hands' voice is taken out of the sound before anything hears it
+(`hands.voice.echo`), so the words left in it cut hands off (`hands.voice.streaming`). It is worked out on a lane of its
+own, after the words it is about have gone out, so no hearing's words ever wait on a voiceprint.
 """
 
 from collections.abc import Callable
@@ -30,7 +30,7 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import Begun, annotate, begun, ended, unit
 from hands.threads import SerialThread
 from hands.voice import loads
-from hands.voice.clips import NOBODY, RATE, Cleared, Clip, Identified, Samples, Settle
+from hands.voice.clips import RATE, Clip, Samples
 
 # The model, fetched from the Hugging Face hub into its cache, at the revision measured for it.
 MODEL = "csukuangfj/speaker-embedding-models"
@@ -161,30 +161,12 @@ def decided(scored: float, seconds: float, window: Window, thresholds: tuple[Thr
             return Unsure(scored, seconds, window)
 
 
-def cleared(who: Who, echoed: bool, said: bool) -> bool:
-    """Whether a speaker, `echoed` by hands' voice at the microphone or not, who has `said` words or not, clears
-    hands to be cut off.
-
-    [LAW:single-enforcer] the one rule of who cuts hands off. A speaker none of hands' voice may be in, hands playing
-    nothing or playing into headphones, has no echo of hands in them, so whoever they are, their words clear them, before
-    any voiceprint, and a sound the diarizer took for a speaker with no words in it, a cough, clears nothing. One it may
-    be in may be hands' own echo, so only a person clears it: hands, a speaker in hands' range, one heard too briefly, and one who could not be scored at all (the model
-    loading, a print being made) cut nothing, and their `voiceprints.identified` unit says why."""
-    match echoed, who:
-        case False, _:
-            return said
-        case True, Person():
-            return True
-        case True, Hands() | Unsure() | Unheard() | Unidentified():
-            return False
-
-
 @dataclass(frozen=True)
 class Voiced:
     """One speaker in a clip, as the stream heard them: their number in the run, the latest WINDOW of their voice in
     the clip, how many seconds of them it has in all, how many of the latest were frames shared with another speaker,
-    every voice of hands' TTS that may be in any of them, how many seconds after the clip opened they were first heard,
-    under none in what it kept from before, and whether the stream has decoded any words of theirs."""
+    every voice of hands' TTS that may be in any of them, and how many seconds after the clip opened they were first heard,
+    under none in what it kept from before."""
 
     speaker: int
     voice: Samples
@@ -192,7 +174,6 @@ class Voiced:
     shared: float
     echoed: tuple[str, ...]
     first: float
-    said: bool
 
 
 @dataclass(frozen=True)
@@ -216,11 +197,11 @@ def scored(embed: Embed, prints: tuple[Print, ...], voiced: Voiced, thresholds: 
 
 
 class Identifier(Protocol):
-    """What identifies the speakers the stream hears: each as they reach a row of the table, `cleared` told of those it
-    clears to cut hands off; and every one at the end of their clip, `settle` told what that came to."""
+    """What identifies the speakers the stream hears: each as they reach a row of the table, and every one at the end of
+    their clip."""
 
-    def identify(self, clip: Clip, voiced: tuple[Voiced, ...], cleared: Cleared) -> None: ...
-    def ended(self, clip: Clip, voiced: tuple[Voiced, ...], settle: Settle) -> None: ...
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None: ...
 
 
 # What hands says to make its own voiceprint in a voice: about twelve seconds of the kind of thing it says, never played.
@@ -398,36 +379,25 @@ class Voiceprints:
             case samples, embed:
                 return embed(samples)
 
-    def identify(self, clip: Clip, voiced: tuple[Voiced, ...], cleared: Cleared) -> None:
+    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `voiced` is, as they reach a row of the table, worked out on the lane and told as one
-        `voiceprints.identified` unit, which hangs off the unit open here; `cleared` told, from the lane, when the
-        first of them cleared to cut hands off was first heard. Returns at once."""
+        `voiceprints.identified` unit, which hangs off the unit open here. Returns at once."""
         began = begun(self._clock)
+        self._lane.give(lambda: self._identified(clip, voiced, THRESHOLDS, began))
 
-        def identified() -> None:
-            match self._identified(clip, voiced, THRESHOLDS, began).first:
-                case None:
-                    pass
-                case first:
-                    cleared(first)
-
-        self._lane.give(identified)
-
-    def ended(self, clip: Clip, voiced: tuple[Voiced, ...], settle: Settle) -> None:
+    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
         """Who each speaker in `clip` is, at its end, by the table and its closing row: its last identification, after
-        which no speaker of it is remembered, and `settle` told what it came to.
+        which no speaker of it is remembered.
 
-        [LAW:no-silent-failure] `settle` is told on every path, nobody cleared where the identification failed, which
-        its unit says why of: the clip owner closes the clip on it, and would otherwise wait out its whole bound."""
+        [LAW:no-silent-failure] no speaker of the clip is remembered on any path, nobody identified where the
+        identification failed, which its unit says why of."""
         began = begun(self._clock)
 
         def last() -> None:
-            identified = NOBODY
             try:
-                identified = self._identified(clip, voiced, ENDING, began)
+                self._identified(clip, voiced, ENDING, began)
             finally:
                 self._people.pop(clip.number, None)
-                settle(identified)
 
         self._lane.give(last)
 
@@ -446,21 +416,17 @@ class Voiceprints:
 
         self._lane.give(identified)
 
-    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], thresholds: tuple[Threshold, ...], began: Begun) -> Identified:
-        """Who each speaker in `voiced` is, by `thresholds`, told as one unit, and what that came to: `NOBODY` where
-        there was nobody to identify, or identifying them failed."""
+    def _identified(self, clip: Clip, voiced: tuple[Voiced, ...], thresholds: tuple[Threshold, ...], began: Begun) -> None:
+        """Who each speaker in `voiced` is, by `thresholds`, told as one unit; one that fails says why on it."""
         if not voiced:
-            return NOBODY
+            return
         try:
             speakers = tuple(Speaker(each.speaker, self._who(clip, each, thresholds)) for each in voiced)
         except Exception as error:
             ended("voiceprints.identified", self._record, began, error, clip=clip.number)
-            return NOBODY
-        judged = tuple(zip(voiced, speakers, strict=True))
-        first = min((each.first for each, speaker in judged if cleared(speaker.who, bool(each.echoed), each.said)), default=None)
-        # [LAW:nothing-unseen] who each speaker is, and when the first of them who cuts hands off was first heard.
-        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers, barge_in=first)
-        return Identified(first)
+            return
+        # [LAW:nothing-unseen] who each speaker is.
+        ended("voiceprints.identified", self._record, began, None, clip=clip.number, speakers=speakers)
 
     def _who(self, clip: Clip, voiced: Voiced, thresholds: tuple[Threshold, ...]) -> Who:
         """[LAW:single-enforcer] once a person in a clip, a speaker is one for the rest of it."""

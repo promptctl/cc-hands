@@ -17,10 +17,10 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent
 from hands.voice import voiceprints
-from hands.voice.clips import NOBODY, RATE, Clip, Identified, Samples
+from hands.voice.clips import RATE, Clip, Samples
 from hands.voice.voiceprints import (
     ALONE, CLOSING, ENDING, THRESHOLDS, HANDS, PERSON, Embed, Hands, Person, Print, Speaker, Synthesize, Unheard, Unidentified, Unsure, Voiced,
-    Voiceprints, Who, Window, cleared, decided, scored,
+    Voiceprints, Who, Window, decided, scored,
 )
 
 NONE = Window(1.0, 0.0)
@@ -49,10 +49,8 @@ def by_length(prints: dict[int, Print]) -> Embed:
     return lambda voice: prints[len(voice)]
 
 
-def voiced(
-    length: int, seconds: float, speaker: int = 0, shared: float = 0.0, echoed: tuple[str, ...] = (), first: float = 0.0, said: bool = True
-) -> Voiced:
-    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, echoed, first, said)
+def voiced(length: int, seconds: float, speaker: int = 0, shared: float = 0.0, echoed: tuple[str, ...] = (), first: float = 0.0) -> Voiced:
+    return Voiced(speaker, np.zeros(length, np.float32), seconds, shared, echoed, first)
 
 
 def rounded(who: Who) -> Who:
@@ -81,19 +79,6 @@ def test_a_speaker_under_a_second_is_unheard_and_never_scored_and_one_heard_long
     assert rounded(scored(embed, (unit(1, 0), unit(1, 1)), voiced(RATE, 3.0, shared=0.25), THRESHOLDS)) == Hands(1.0, 3.0, Window(1.0, 0.25))
 
 
-@pytest.mark.parametrize(
-    "who",
-    [Person(0.0, 3.0, NONE), Hands(1.0, 3.0, NONE), Unsure(0.4, 1.2, NONE), Unheard(0.4), Unidentified(3.0, "no print yet of charles")],
-    ids=["person", "hands", "unsure", "unheard", "unidentified"],
-)
-def test_a_speaker_hands_played_nothing_over_cuts_it_off_by_their_words_and_one_it_played_over_only_as_a_person(who: Who) -> None:
-    assert cleared(who, echoed=False, said=True)
-    # A sound the diarizer took for a speaker, with no words in it, cuts nothing.
-    assert not cleared(who, echoed=False, said=False)
-    # Hands' own echo, and anyone not yet told from it, the model loading or a print being made included, cuts nothing.
-    assert cleared(who, echoed=True, said=True) == cleared(who, echoed=True, said=False) == isinstance(who, Person)
-
-
 def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end_and_by_nothing_before() -> None:
     hands = unit(1, 0)
     # A wake phrase said alone, 0.8 s of a voice unlike hands' (5 samples), and hands' own echo as long (7 samples).
@@ -106,28 +91,7 @@ def test_a_speaker_under_a_second_is_decided_by_the_closing_row_at_the_clips_end
     assert scored(embed, (hands,), voiced(5, CLOSING.seconds - 0.01), ENDING) == Unheard(CLOSING.seconds - 0.01)
 
 
-async def test_an_identification_clears_a_speaker_hands_played_nothing_over_only_where_the_stream_decoded_words_of_them(tmp_path: Path) -> None:
-    recorded: list[Entry] = []
-    prints = Voiceprints(SYSTEM, lambda: by_length({1: unit(1, 0), 5: unit(0, 1)}), said_in({"charles": 1}, []), tmp_path, recorded.append)
-    prints.speaking_in("charles")
-    await until(recorded, "voiceprints.enrolled", 1)
-    cleared_at: list[float] = []
-    # A sound the diarizer took for a speaker, no words of it: nothing cuts. A speaker with words decoded: they do.
-    prints.identify(CLIP, (voiced(5, 1.5, said=False, first=0.2),), cleared_at.append)
-    prints.identify(SECOND, (voiced(5, 1.5, said=True, first=0.4),), cleared_at.append)
-    # The lane runs one identification at a time, so the first's silence is settled by the time the second tells.
-    assert await appeared(cleared_at, 1) == [0.4]
-
-
-async def appeared[T](items: list[T], count: int) -> list[T]:
-    """`items` once the lane has put `count` in it."""
-    async with asyncio.timeout(10):
-        while len(items) < count:
-            await asyncio.sleep(0.01)
-    return items
-
-
-async def test_the_lane_tells_each_person_it_clears_over_hands_and_settles_each_clips_end_on_every_path(tmp_path: Path) -> None:
+async def test_each_identification_is_one_event_a_clips_end_adds_the_closing_row_and_one_that_fails_says_so(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     # hands' print is charles's, (1, 0); its echo prints as it, at 7 samples; a person as (0, 1), at 5; 9 breaks the model.
     model = by_length({1: unit(1, 0), 5: unit(0, 1), 7: unit(1, 0)})
@@ -135,24 +99,22 @@ async def test_the_lane_tells_each_person_it_clears_over_hands_and_settles_each_
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
     over = ("charles",)
-    cleared_at: list[float] = []
-    # hands' echo, from the clip's start, and a person over it from 0.9 s: the person cuts, heard from 0.9 s.
-    prints.identify(CLIP, (voiced(7, 3.0, echoed=over, first=0.0), voiced(5, 1.5, speaker=1, echoed=over, first=0.9)), cleared_at.append)
-    # hands' echo alone cuts nothing.
-    prints.identify(SECOND, (voiced(7, 3.0, echoed=over),), cleared_at.append)
-    settled: list[Identified] = []
-    # A wake phrase said alone over hands, 0.8 s from 0.3 s, after hands' echo: told at the end by the closing row.
-    ending = (voiced(5, 0.8, speaker=2, echoed=over, first=0.3), voiced(7, 3.0, echoed=over))
-    prints.ended(CLIP, ending, settled.append)
-    # Nobody heard; and an identification that fails: both settle, with nobody.
-    prints.ended(SECOND, (), settled.append)
-    prints.ended(Clip(3, "wake word"), (voiced(9, 3.0, echoed=over),), settled.append)
-    assert await appeared(settled, 3) == [Identified(0.3), NOBODY, NOBODY]
-    assert cleared_at == [0.9]
-    failed = entries(recorded, "voiceprints.identified")[-1]
-    assert (failed.outcome, failed.facts["clip"]) == ("failed", 3)
-    # [LAW:nothing-unseen] each identification says when the first speaker who cuts was first heard.
-    assert [event.facts.get("barge_in") for event in entries(recorded, "voiceprints.identified")] == [0.9, None, 0.3, None]
+    window = Window(0.0, 0.0)
+    # hands' echo from the clip's start, and a person over it from 0.9 s; hands' echo alone in the next clip.
+    prints.identify(CLIP, (voiced(7, 3.0, echoed=over), voiced(5, 1.5, speaker=1, echoed=over, first=0.9)))
+    prints.identify(SECOND, (voiced(7, 3.0, echoed=over),))
+    # A wake phrase said alone over hands, 0.8 s, after hands' echo: told at the end by the closing row.
+    prints.ended(CLIP, (voiced(5, 0.8, speaker=2, echoed=over, first=0.3), voiced(7, 3.0, echoed=over)))
+    # Nobody heard says nothing; an identification that fails says why on its own event.
+    prints.ended(SECOND, ())
+    prints.ended(Clip(3, "wake word"), (voiced(9, 3.0, echoed=over),))
+    events = await until(recorded, "voiceprints.identified", 4)
+    assert [whos(event) for event in events[:3]] == [
+        [Hands(1.0, 3.0, window), Person(0.0, 1.5, window)],
+        [Hands(1.0, 3.0, window)],
+        [Person(0.0, 0.8, window), Hands(1.0, 3.0, window)],
+    ]
+    assert (events[3].outcome, events[3].facts["clip"]) == ("failed", 3)
 
 
 def entries(recorded: list[Entry], event: str) -> list[WideEvent]:
@@ -191,14 +153,6 @@ CLIP = Clip(1, "engaged conversation")
 SECOND = Clip(2, "engaged conversation")
 
 
-def ignored(_first: float) -> None:
-    """Where a test is not about who is cleared to cut hands off."""
-
-
-def unsettled(_last: Identified) -> None:
-    """Where a test is not about what a clip's end came to."""
-
-
 async def test_hands_keeps_the_print_of_the_voice_it_speaks_in_and_the_one_before(tmp_path: Path) -> None:
     recorded: list[Entry] = []
     # charles prints as (1, 0), alba as (0, 1), mary as (-1, 0); the speaker's voice, 7 samples, as charles's.
@@ -207,13 +161,13 @@ async def test_hands_keeps_the_print_of_the_voice_it_speaks_in_and_the_one_befor
     prints.speaking_in("charles")
     prints.speaking_in("alba")
     await until(recorded, "voiceprints.enrolled", 2)
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     # Against charles's print, kept as the voice before the last change: hands.
     [first] = await until(recorded, "voiceprints.identified", 1)
     assert whos(first) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
     prints.speaking_in("mary")
     await until(recorded, "voiceprints.enrolled", 3)
-    prints.identify(SECOND, (voiced(7, 3.0),), ignored)
+    prints.identify(SECOND, (voiced(7, 3.0),))
     # charles's print let go of: alba's and mary's say nothing like this voice is hands.
     second = (await until(recorded, "voiceprints.identified", 2))[1]
     assert whos(second) == [Person(0.0, 3.0, Window(0.0, 0.0))]
@@ -245,7 +199,7 @@ async def test_each_voice_is_enrolled_once_ever_its_tts_loaded_for_that_alone_an
     again.speaking_in("charles")
     again.speaking_in("alba")
     await until(later, "voiceprints.recalled", 2)
-    again.identify(CLIP, (voiced(7, 3.0),), ignored)
+    again.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(later, "voiceprints.identified", 1)
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
     assert entries(later, "voiceprints.enrolled") == [] and made == ["loaded", "loaded"]
@@ -266,12 +220,12 @@ async def test_until_its_print_is_made_every_speaker_is_unidentified_and_nothing
     prints = Voiceprints(SYSTEM, lambda: model, speech, tmp_path, recorded.append)
     # Returns while the print is still being said.
     prints.speaking_in("charles")
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "no print yet of charles")]
     speaking.set()
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     assert whos((await until(recorded, "voiceprints.identified", 2))[1]) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
 
@@ -282,7 +236,7 @@ async def test_a_speaker_heard_over_a_voice_hands_clips_no_print_of_is_unidentif
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(CLIP, (voiced(7, 3.0, echoed=("charles", "fantine")),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0, echoed=("charles", "fantine")),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "fantine of hands' may be in them and hands holds no print of it")]
 
@@ -302,7 +256,7 @@ async def test_a_print_that_cannot_be_made_fails_its_unit_and_every_speaker_says
     assert (enrolled.outcome, enrolled.error, enrolled.facts["voice"], enrolled.facts["seconds"]) == (
         "failed", "RuntimeError: the voice's embedding is not in the cache", "charles", None,
     )
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "hands' voiceprint of charles could not be made: RuntimeError: the voice's embedding is not in the cache")]
 
@@ -316,7 +270,7 @@ async def test_a_print_that_cannot_be_kept_fails_its_unit_and_is_still_scored_ag
     prints.speaking_in("charles")
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     assert (enrolled.outcome, enrolled.error) == ("failed", f"NotADirectoryError: [Errno 20] Not a directory: '{blocked / voiceprints.REVISION}'")
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Hands(1.0, 3.0, Window(0.0, 0.0))]
 
@@ -335,7 +289,7 @@ async def test_a_model_that_does_not_load_fails_its_unit_and_every_speaker_says_
     [enrolled] = await until(recorded, "voiceprints.enrolled", 1)
     # No TTS loaded for a print nothing could make.
     assert enrolled.outcome == "failed" and made == []
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(7, 3.0),))
     [event] = await until(recorded, "voiceprints.identified", 1)
     assert whos(event) == [Unidentified(3.0, "the voiceprint model did not load: RuntimeError: the voiceprint model x.onnx did not load")]
 
@@ -347,12 +301,12 @@ async def test_a_person_in_a_clip_stays_one_for_that_clip_alone_even_where_its_e
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(CLIP, (voiced(5, 1.5),), ignored)
-    prints.identify(SECOND, (voiced(7, 3.0),), ignored)
+    prints.identify(CLIP, (voiced(5, 1.5),))
+    prints.identify(SECOND, (voiced(7, 3.0),))
     # Clip 1's end, behind clip 2's first identification: still its person.
-    prints.ended(CLIP, (voiced(7, 3.0),), unsettled)
+    prints.ended(CLIP, (voiced(7, 3.0),))
     # And clip 2's speaker is not clip 1's person.
-    prints.identify(SECOND, (voiced(7, 3.0),), ignored)
+    prints.identify(SECOND, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 4)]
     window = Window(0.0, 0.0)
     assert told == [[Person(0.0, 1.5, window)], [Hands(1.0, 3.0, window)], [Person(0.0, 1.5, window)], [Hands(1.0, 3.0, window)]]
@@ -365,10 +319,10 @@ async def test_a_clip_that_ends_with_nobody_heard_in_it_lets_go_of_who_was_a_per
     prints = Voiceprints(SYSTEM, lambda: model, said_in({"charles": 1}, []), tmp_path, recorded.append)
     prints.speaking_in("charles")
     await until(recorded, "voiceprints.enrolled", 1)
-    prints.identify(CLIP, (voiced(5, 1.5),), ignored)
+    prints.identify(CLIP, (voiced(5, 1.5),))
     # A broken stream, or an end the owner gave up on, ends the clip with nobody: no event, and the person let go of.
-    prints.ended(CLIP, (), unsettled)
-    prints.identify(CLIP, (voiced(7, 3.0),), ignored)
+    prints.ended(CLIP, ())
+    prints.identify(CLIP, (voiced(7, 3.0),))
     told = [whos(event) for event in await until(recorded, "voiceprints.identified", 2)]
     assert told == [[Person(0.0, 1.5, Window(0.0, 0.0))], [Hands(1.0, 3.0, Window(0.0, 0.0))]]
 

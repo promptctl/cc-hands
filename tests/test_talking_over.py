@@ -31,13 +31,13 @@ from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.voice import engaged, streaming
 from hands.voice.clipowner import ClipOwner
-from hands.voice.clips import RATE, Clip, Cleared, Fate, Hearings, Settle, Sound
+from hands.voice.clips import RATE, Clip, Fate, Hearings, Sound
 from hands.voice.desk import Leveled, Made
 from hands.voice.engaged import Ears
 from hands.voice.ptt import PushToTalk
 from hands.voice.shortcut import KeyEvent, Move
 from hands.voice.trigger import Choice
-from hands.voice.turnstop import SpeakerCleared
+from hands.voice.turnstop import SpeechHeard
 
 # The real load, bound before conftest stands a pair that hears nothing in for it.
 from hands.voice.streaming import load as nemotron
@@ -92,14 +92,14 @@ class Counted:
     returned: list[int] = field(default_factory=list[int])
     name: str = streaming.StreamingRecognizer.name
 
-    def opened(self, clip: Clip, before: Sound, cleared: Cleared) -> Hearings:
-        return self._counted(self.recognizer.opened(clip, before, cleared))
+    def opened(self, clip: Clip, before: Sound) -> Hearings:
+        return self._counted(self.recognizer.opened(clip, before))
 
     def heard(self, sound: Sound) -> Hearings:
         return self._counted(self.recognizer.heard(sound))
 
-    def ended(self, clip: Clip, fate: Fate, sound: Sound, settle: Settle) -> Hearings:
-        return self._counted(self.recognizer.ended(clip, fate, sound, settle))
+    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
+        return self._counted(self.recognizer.ended(clip, fate, sound))
 
     def _counted(self, hearings: Hearings) -> Hearings:
         self.returned += [self.captured()] * len(hearings)
@@ -149,7 +149,7 @@ class Downstream(FrameProcessor):
             case InputAudioRawFrame():
                 self.frames += 1
                 self._passed.set()
-            case SpeakerCleared():
+            case SpeechHeard():
                 self.cuts += 1
             case _:
                 pass

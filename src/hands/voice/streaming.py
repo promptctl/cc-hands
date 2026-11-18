@@ -9,11 +9,11 @@ taken back. hands keeps one session for the run and feeds it only the clips, so 
 clip to the last: a new session, or the session's own end, numbers everyone from 0 again (promptctl-voice-i15t.99s.gaq).
 
 Each hearing hands each speaker's voice in the clip, the frames the diarizer heard them in, to be identified against
-hands' own (`hands.voice.voiceprints`), after its words have gone out: only a speaker who is not hands cuts hands off.
+hands' own (`hands.voice.voiceprints`), after its words have gone out.
 
-It is one listener on the clip owner (`hands.voice.clipowner`), which cuts hands off as a speaker in a clip still open is
-cleared to: on their first words where none of hands' voice may be in them, and once they are identified as a person
-where some may, so a turn the voice opened cuts while the user is still speaking over hands, not once they stop.
+It is one listener on the clip owner (`hands.voice.clipowner`), which cuts hands off on the first words a speaker says in a
+clip still open: the sound it hears has hands' voice taken out of it (`hands.voice.echo`), so speech left in it is a
+person's, and a turn the voice opened cuts while the user is still speaking over hands, not once they stop.
 Its words are never sent: the model is weak on conversational speech (about 20% WER on AMI, against 6 to 8% for the
 batch models measured beside it), so the transcriber (`hands.voice.whisper`) says what each clip held.
 """
@@ -32,8 +32,8 @@ from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
 from hands.voice import loads, voiceprints
 from hands.threads import SerialThread
-from hands.voice.clips import RATE, SLOT, Clip, Cleared, Fate, Heard, Hearings, Samples, Settle, Sound, decoded, slots
-from hands.voice.voiceprints import WINDOW, Identifier, Unheard, Voiced
+from hands.voice.clips import RATE, SLOT, Clip, Fate, Heard, Hearings, Samples, Sound, decoded, slots
+from hands.voice.voiceprints import WINDOW, Identifier, Voiced
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
 MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
@@ -212,14 +212,13 @@ class _Voice:
         self.seconds += len(heard) / RATE
         self.echoed |= dict.fromkeys(echoed)
 
-    def voiced(self, speaker: int, said: bool) -> Voiced:
-        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared; `said` whether any
-        words of theirs have been decoded."""
+    def voiced(self, speaker: int) -> Voiced:
+        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared."""
         voice = np.concatenate([samples for samples, _ in self.latest])
         # The oldest frame kept is cut to the window, and its share with it.
         cut = max(0, self.held - round(WINDOW * RATE))
         shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
-        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.echoed), self.first, said)
+        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.echoed), self.first)
 
 
 @dataclass
@@ -238,8 +237,8 @@ class _OpenClip:
 @dataclass(frozen=True)
 class Since:
     """What a hearing of the clip open found since the last: the words each speaker added, each speaker who has
-    reached a row of the voiceprint table they had not, to be identified at it, and when the first speaker whose words
-    clear them to cut hands off was first heard, None for none."""
+    reached a row of the voiceprint table they had not, to be identified at it, and when the first speaker who added
+    words was first heard, None for none."""
 
     added: Spoken
     reached: tuple[Voiced, ...]
@@ -309,7 +308,7 @@ class Stream:
 
     def said(self) -> Since:
         """The words each speaker added to the clip open since this was last asked, each speaker who has reached a row of
-        the table since, and when the first speaker who added words that clear them was first heard:
+        the table since, and when the first speaker who added words was first heard:
         [LAW:single-enforcer] a speaker is handed on once for each row, here alone."""
         clip, added, reached = self._open, list[Said](), list[Voiced]()
         for speaker, text in clip.text.items():
@@ -320,19 +319,17 @@ class Stream:
             rows = voiceprints.reached(voice.seconds)
             if rows > voice.reached:
                 voice.reached = rows
-                reached.append(voice.voiced(speaker, bool(clip.said.get(speaker))))
-        # Their words, ahead of any voiceprint of them: a speaker unheard by it, who clears hands to be cut off only
-        # where none of hands' voice may be in them.
-        voiced = (clip.voices[said.speaker] for said in added if said.speaker in clip.voices)
-        barge_in_at = min((voice.first for voice in voiced if voiceprints.cleared(Unheard(voice.seconds), bool(voice.echoed), True)), default=None)
+                reached.append(voice.voiced(speaker))
+        # [LAW:single-enforcer] the one rule of who cuts hands off: a speaker who says words. A sound the diarizer took for
+        # a speaker with no words in it, a cough, cuts nothing.
+        barge_in_at = min((clip.voices[said.speaker].first for said in added if said.speaker in clip.voices), default=None)
         return Since(tuple(added), tuple(reached), barge_in_at)
 
     def ended(self) -> Ended:
         """The clip open, heard to the silence after it, with every speaker heard in it."""
         clip = self._open
         spoken = tuple(Said(speaker, said) for speaker, text in clip.text.items() if (said := words(text)))
-        speakers = {each.speaker for each in spoken}
-        voices = tuple(voice.voiced(speaker, speaker in speakers) for speaker, voice in clip.voices.items())
+        voices = tuple(voice.voiced(speaker) for speaker, voice in clip.voices.items())
         return Ended(spoken, round(clip.tape.length / RATE, 3), clip.closed, voices)
 
 
@@ -385,9 +382,8 @@ class StreamingRecognizer:
         # [LAW:one-source-of-truth] the samples the run's stream has been given, the silence after each clip included:
         # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a clip.
         self._fed = 0
-        # The clip open, or the last one, as the owner told it, and what is told of each speaker cleared in it.
+        # The clip open, or the last one, as the owner told it.
         self._clip = Clip(0, "shortcut")
-        self._cleared: Cleared = lambda _first: None
 
     def _load(self, model: Callable[[int], Session]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each clip with why.
@@ -408,10 +404,10 @@ class StreamingRecognizer:
         except Exception as error:
             self._stream = Broken(f"the models did not load: {type(error).__name__}: {error}")
 
-    def opened(self, clip: Clip, before: Sound, cleared: Cleared) -> Hearings:
+    def opened(self, clip: Clip, before: Sound) -> Hearings:
         """`clip` opens: what it kept from before it opened is the start of its words."""
         samples, start, voices = decoded(before.heard), self._fed, slots(before)
-        self._clip, self._cleared = clip, cleared
+        self._clip = clip
         self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start, voices)))
         return self._fed_with(len(samples))
 
@@ -432,7 +428,7 @@ class StreamingRecognizer:
             logger.opt(exception=error).error("the streaming session's decoding broke; no clip is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, clip: Clip, silence: int, settle: Settle) -> Ended:
+    def _ended(self, clip: Clip, silence: int) -> Ended:
         """The clip open, heard through the silence after it, on the thread, and every speaker in it handed on to be
         identified at its end. [LAW:single-enforcer] a clip's end is handed on here whatever comes of it, nobody in it
         for a clip the stream could not hear: the identifier lets go of all it held for the clip, and no hearing that
@@ -444,14 +440,14 @@ class StreamingRecognizer:
             voices = heard.voices
             return heard
         finally:
-            self._identify.ended(clip, voices, settle)
+            self._identify.ended(clip, voices)
 
-    def _said(self, clip: Clip, cleared: Cleared) -> Since:
+    def _said(self, clip: Clip) -> Since:
         """What the stream found since the last hearing, on the thread, each speaker who reached a row handed on to be
         identified in the same step that marked the row reached, so a hearing cancelled after it loses none."""
         since = self._stream.said()
         if since.reached:
-            self._identify.identify(clip, since.reached, cleared)
+            self._identify.identify(clip, since.reached)
         return since
 
     def _fed_with(self, samples: int) -> Hearings:
@@ -465,8 +461,8 @@ class StreamingRecognizer:
             case _:
                 # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its table:
                 # the words go out without waiting on it.
-                clip, cleared = self._clip, self._cleared
-                said = self._thread.settles(lambda: self._said(clip, cleared))
+                clip = self._clip
+                said = self._thread.settles(lambda: self._said(clip))
 
                 async def hear() -> Heard:
                     since = await said
@@ -476,12 +472,12 @@ class StreamingRecognizer:
 
                 return (hear,)
 
-    def ended(self, clip: Clip, fate: Fate, sound: Sound, settle: Settle) -> Hearings:
+    def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
         """The clip open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
         which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same clip.
-        Every speaker heard in it is identified at its end, which `settle` is told of."""
+        Every speaker heard in it is identified at its end."""
         silence = through(self._fed) - self._fed
-        ended = self._thread.settles(lambda: self._ended(clip, silence, settle))
+        ended = self._thread.settles(lambda: self._ended(clip, silence))
         self._fed += silence
 
         async def close() -> Heard:

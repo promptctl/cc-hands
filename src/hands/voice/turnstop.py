@@ -61,15 +61,15 @@ class ClipDiscarded(VADUserStoppedSpeakingFrame):
 
 class Words(TranscriptionFrame, UninterruptibleFrame):
     """What the transcriber heard said in a clip. The user's own, so no interruption drops it: one can land while the turn's words
-    are still on their way to it, since a turn the voice opened cuts hands off only once a speaker in it is heard."""
+    are still on their way to it, since a turn the voice opened cuts hands off only once speech in it is heard."""
 
 
 @dataclass(kw_only=True)
-class SpeakerCleared(DataFrame, UninterruptibleFrame):
-    """A speaker cleared to cut hands off was heard in this clip (`hands.voice.voiceprints.cleared`), `first` seconds
-    after it opened, under none in what it kept from before: a turn the voice opened cuts hands off on it. Pushed by the
-    clip owner alone, while the clip is open or as it closes, ahead of its words; the user's own, as Words are, so no
-    interruption drops it."""
+class SpeechHeard(DataFrame, UninterruptibleFrame):
+    """Speech was heard in this clip after the echo canceller took hands' voice out of it, so a person's: its speaker was
+    first heard `first` seconds after the clip opened, under none in what it kept from before, and a turn the voice opened
+    cuts hands off on it. Pushed by the clip owner alone, while the clip is open or as it closes, ahead of its words; the
+    user's own, as Words are, so no interruption drops it."""
 
     clip: Clip
     first: float

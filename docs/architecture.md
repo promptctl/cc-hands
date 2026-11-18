@@ -1786,21 +1786,17 @@ When a turn cuts is the trigger's that opened its clip (`turn_start` in
 from the gate, as it carries the key. A clip the user's hand opens, the shortcut or the
 phone's button, cuts as it opens, Pipecat's VAD start: holding one and letting go with
 nothing said is how the user stops hands. A clip the voice opens, the wake word's or
-engaged conversation's, cuts only once a speaker who is not hands is heard in it
-(`hands.voice.voiceprints.cleared`), because the desk hears through the echo canceller, and
-the reply's own sound left over from it, hands' own saying of the wake phrase among it, or a
-cough or a door, opens a clip. Between 23:52 on 2026-10-05 and 02:53 UTC on the MacBook's
-speakers, 14 of 33 voice barge-ins on a reading held no words for Whisper. The streaming model
+engaged conversation's, cuts only once words are heard in it, because the desk hears through the
+echo canceller, and a cough or a door opens a clip too. The streaming model
 (`hands.voice.streaming`, NVIDIA's Nemotron Speech Streaming paired with Nemotron 3 Diarization
 on MLX, one session for the run, fed only the clips) decodes silence, hiss and clicks to no
-words (`tests/test_streaming.py`); hands' own voice left over from the canceller is speech, and
-it hears that as words, so words alone cut only where none of hands' voice may be in the
-speaker who said them: hands played nothing over them, or played into headphones, its echo
-path read none (`clips.slots`). Where some may be, the speaker cuts once their voiceprint says a person, about a
-second of them in, while the clip is open (`SpeakerCleared`, pushed by the clip owner alone, and only for
-the clip still open); a speaker too brief for that, a wake phrase said alone over hands, is
-judged at the clip's close, which waits up to `IDENTIFIED_SECONDS` for it. Hands' own voice cuts
-nothing, and neither does a speaker hands played over who cannot be scored yet. Such a turn
+words (`tests/test_streaming.py`), and the canceller (`hands.voice.echo`) takes hands' own voice
+out of the sound before the clip owner hears it, so the words it decodes are a person's: the first of them
+cuts, while the clip is open (`SpeechHeard`, pushed by the clip owner alone, and only for the clip
+still open); one the recognizer holds until the clip closes, a short "no", cuts as it closes, on the
+words the transcriber heard in it. On the recorded takes (`tests/echoscore.py`) hands alone cuts nothing,
+and a person's line cuts within two seconds of its first word, or is heard whole as the clip closes
+(`tests/test_streaming.py`). Such a turn
 cuts nothing, so nothing has to be
 undone: until it cuts, nothing behind the user aggregator hears that the user started
 speaking, so the reply on its way plays on and runs on a tool's result as if no turn
@@ -1919,8 +1915,7 @@ its first work (`streaming.loaded`), so the voice starts without them and clips 
 are heard behind them; models that fail to load, or decoding that fails, fail the end of that
 clip and every clip's after it, with why.
 
-Each speaker in each clip is identified by their voice, which decides the cut of a clip the voice
-opened (`hands.voice.voiceprints`). The session's own diarizer decisions, the frames each speaker
+Each speaker in each clip is identified by their voice (`hands.voice.voiceprints`), which decides no cut. The session's own diarizer decisions, the frames each speaker
 is active in at the threshold their stream is masked by, are read out of it as it takes each
 chunk, and the clip's samples in those frames are that speaker's voice in the clip; a frame two
 speakers share is in both, and counted as shared. A speaker is handed to the voiceprint lane
@@ -1933,10 +1928,7 @@ refit fits on. One table of score thresholds by length decides: under 1 s, `Unhe
 0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
 otherwise `Unsure`. At the clip's end only, a closing row (`CLOSING`) adds from 0.5 s under
 0.19 a `Person`, so a wake phrase said alone over hands is told at its length. A person stays one for the rest of their clip, kept by clip number, since a
-clip's end can be identified after the next clip opens. The lane tells the clip owner of each
-person it finds over hands while their clip is open, from its own thread; the owner takes it on
-the event loop and cuts only while that clip is still open. Each clip's end is settled on every
-path, nobody cleared where the identification failed.
+clip's end can be identified after the next clip opens.
 
 hands' own words are kept from the brain by their text and their time, not by who the lane heard
 (`hands.voice.whisper`). Whisper decodes a clip hands played over with each word timed, and each
