@@ -1062,7 +1062,7 @@ def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside
     assert heard, f"{take.name}: the pair decoded nothing"
     # Dated by its own token and not all at the close, and heard on into where the person speaks.
     assert len({word.start for word in heard}) > len(heard) // 2
-    assert heard[-1].start > take.cut_in
+    assert not take.person or heard[-1].start > take.cut_in
 
 
 @pytest.mark.outside

@@ -81,7 +81,20 @@ def recorded(fixture: Path) -> Take:
 
 
 # The takes recorded so far, each with hands out of the speaker as at the desk and out of none as in headphones.
-TAKES = (echoes.CANCELLED, echoes.NO_ECHO, echoes.OPENING, echoes.NO_ECHO_OPENING)
+TAKES = (
+    echoes.CANCELLED,
+    echoes.NO_ECHO,
+    echoes.OPENING,
+    echoes.NO_ECHO_OPENING,
+    echoes.SAME_WORDS,
+    echoes.NO_ECHO_SAME_WORDS,
+    echoes.SHORT_WORDS,
+    echoes.NO_ECHO_SHORT_WORDS,
+    echoes.TWO_VOICES,
+    echoes.NO_ECHO_TWO_VOICES,
+    echoes.LONG_AND_SLOW,
+    echoes.PERSON_ALONE,
+)
 
 # A chain: what the recognizer hears of a take, as mono samples in [-1, 1) from the take's start.
 type Chain = Callable[[Take], np.ndarray]

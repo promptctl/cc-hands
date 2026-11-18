@@ -14,7 +14,14 @@ which sentence each 10 ms was matched with, so what hands played over it is know
 hands_no_echo_and_another.flac is the same take with hands' voice in no speaker, as in headphones: the canceller was told
 it, and the microphone heard only the second voice and the room. hands_over_an_opening.flac and
 hands_no_echo_over_an_opening.flac are another script's two takes the same two ways: a reply hands says alone, a 4 s
-pause, and 'alba' cutting into the next reply as it opens."""
+pause, and 'alba' cutting into the next reply as it opens.
+
+The takes of promptctl-voice-i15t.65f.gp1 are the same two ways again where a person and hands meet otherwise:
+hands_and_the_same_words and hands_no_echo_and_the_same_words ('alba' saying words of hands' as hands says them),
+hands_and_short_words and hands_no_echo_and_short_words ('alba' saying "No.", "Stop." and "Yes." over hands),
+hands_in_two_voices and hands_no_echo_in_two_voices (hands' replies in 'charles' and 'marius'). hands_long_and_slow.flac is
+two long sentences of hands' with no one speaking, and hands_then_a_person_alone.flac a reply and then 'alba' alone, at
+the desk with the speaker up. Each .json also names the voice of each of hands' sentences."""
 
 import json
 from pathlib import Path
@@ -72,6 +79,17 @@ CANCELLED = Path(__file__).parent / "fixtures" / "hands_cancelled_and_another"
 NO_ECHO = Path(__file__).parent / "fixtures" / "hands_no_echo_and_another"
 OPENING = Path(__file__).parent / "fixtures" / "hands_over_an_opening"
 NO_ECHO_OPENING = Path(__file__).parent / "fixtures" / "hands_no_echo_over_an_opening"
+# What a person and hands do at the desk beyond those: a person saying words hands is saying, a short "no", "stop" or "yes"
+# over hands, hands in two voices, hands' long and slow sentences with no one speaking, and a person alone after hands.
+# Each but the last two is recorded at the desk and again in headphones.
+SAME_WORDS = Path(__file__).parent / "fixtures" / "hands_and_the_same_words"
+NO_ECHO_SAME_WORDS = Path(__file__).parent / "fixtures" / "hands_no_echo_and_the_same_words"
+SHORT_WORDS = Path(__file__).parent / "fixtures" / "hands_and_short_words"
+NO_ECHO_SHORT_WORDS = Path(__file__).parent / "fixtures" / "hands_no_echo_and_short_words"
+TWO_VOICES = Path(__file__).parent / "fixtures" / "hands_in_two_voices"
+NO_ECHO_TWO_VOICES = Path(__file__).parent / "fixtures" / "hands_no_echo_in_two_voices"
+LONG_AND_SLOW = Path(__file__).parent / "fixtures" / "hands_long_and_slow"
+PERSON_ALONE = Path(__file__).parent / "fixtures" / "hands_then_a_person_alone"
 # The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
 # says them.
 OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
