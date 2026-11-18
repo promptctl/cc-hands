@@ -117,18 +117,18 @@ class Whisper:
                 kept.append(segment)
             else:
                 dropped.append(Unsaid(segment.text, segment.compression_ratio, segment.avg_logprob, voiced))
-        return ClipHeard(clip, " ".join(segment.text for segment in kept) or None, tuple(dropped), (), 0)
+        return ClipHeard(clip, " ".join(segment.text for segment in kept) or None, tuple(dropped))
 
     def _scored(self, sound: Sound, prompt: str | None) -> list[tuple[transcription.Segment, float]]:
         """Each segment Whisper hears in a clip, heard with `_TRAILING_SILENCE` after it, primed with `prompt`, and how sure
         Silero is that anyone spoke in the stretch it was heard in. It blocks while the model runs."""
         samples = self._without_long_quiet(decoded(sound.heard + _TRAILING_SILENCE))
-        segments = transcription.segments(samples, prompt, words=False)
+        segments = transcription.segments(samples, prompt)
         # A decode primed with the vocabulary that loops is heard again unprimed (`_REPEATING`): the looped segments still go
         # to the gates, which drop and record them, and the unprimed decode's take the clip's place. The whole clip is heard
         # again, not the looped stretch: a loop's own times are not to be trusted (one ran 0.0 to 30.0 s, promptctl-voice-i15t.65f.qem).
         looping = [segment for segment in segments if segment.compression_ratio > _REPEATING]
-        heard = transcription.segments(samples, None, words=False) if looping else segments
+        heard = transcription.segments(samples, None) if looping else segments
         return [(segment, self._voiced(samples[round(segment.start * RATE) : round(segment.end * RATE)])) for segment in [*looping, *heard]]
 
     def _without_long_quiet(self, samples: np.ndarray) -> np.ndarray:
