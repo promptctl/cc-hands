@@ -1,7 +1,6 @@
 """The harness that scores an echo-cancelling chain (tests/echoscore.py): what it counts as hands' words leaked and a
 person's words lost, on takes built here, so the numbers a later ticket picks a chain by mean what they say."""
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -132,17 +131,21 @@ def test_each_take_recorded_has_what_a_chain_is_run_over(fixture: Path) -> None:
 
 
 def test_the_takes_hold_what_a_person_and_hands_do_at_the_desk() -> None:
-    takes = {fixture.name: (recorded(fixture), json.loads(fixture.with_suffix(".json").read_text())["hands"], json.loads(fixture.with_suffix(".json").read_text())["voices"]) for fixture in TAKES}
+    takes = [recorded(fixture) for fixture in TAKES]
+
+    def said(take: Take) -> dict[str, str]:
+        """Each of hands' sentences the take plays, with its voice."""
+        return {playhead.synthesis.text: playhead.synthesis.voice for slot in take.playheads for playhead in slot}
 
     def hands_playing(take: Take, line: Line) -> bool:
         return take.played(line.start, line.start + 0.5)
 
-    assert any("no_echo" in name for name in takes), "in headphones"
-    assert any(not take.person and max(len(normal(text)) for text in said) >= 30 for take, said, _ in takes.values()), "long sentences of hands', with no one over them"
-    assert any(len(set(voices)) > 1 for _, _, voices in takes.values()), "two of hands' voices"
-    assert any(hands_playing(take, line) and len(normal(line.text)) == 1 and normal(line.text)[0] in {"yes", "no", "stop"} for take, _, _ in takes.values() for line in take.person), "a short word over hands"
-    assert any(f" {' '.join(normal(line.text))} " in f" {' '.join(normal(text))} " for take, said, _ in takes.values() for line in take.person for text in said if len(normal(line.text)) > 2), "a person saying what hands says"
-    assert any(not hands_playing(take, line) for take, _, _ in takes.values() for line in take.person), "a person alone"
+    assert any("no_echo" in take.name for take in takes), "in headphones"
+    assert any(not take.person and max(len(normal(text)) for text in said(take)) >= 30 for take in takes), "long sentences of hands', with no one over them"
+    assert any(len(set(said(take).values())) > 1 for take in takes), "two of hands' voices"
+    assert any(hands_playing(take, line) and len(normal(line.text)) == 1 and normal(line.text)[0] in {"yes", "no", "stop"} for take in takes for line in take.person), "a short word over hands"
+    assert any(f" {' '.join(normal(line.text))} " in f" {' '.join(normal(text))} " for take in takes for line in take.person for text in said(take) if len(normal(line.text)) > 2), "a person saying what hands says"
+    assert any(not hands_playing(take, line) for take in takes for line in take.person), "a person alone"
 
 
 def test_a_take_whose_samples_and_slots_are_not_one_stretch_is_none() -> None:

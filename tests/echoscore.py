@@ -210,6 +210,6 @@ def summary(score: Score) -> str:
     """One take's numbers on one line, and the words behind them."""
     level = "n/a" if score.erle is None else f"{score.erle:5.1f} dB"
     return (
-        f"{score.take:36} leaked {len(score.leaked):2}  lost {len(score.lost):2} of {score.said:2}  stray {len(score.stray):2}  ERLE {level}"
+        f"{score.take:40} leaked {len(score.leaked):2}  lost {len(score.lost):2} of {score.said:2}  stray {len(score.stray):2}  ERLE {level}"
         f"   leaked: {' '.join(word.text for word in score.leaked) or '-'};  lost: {' '.join(score.lost) or '-'}"
     )

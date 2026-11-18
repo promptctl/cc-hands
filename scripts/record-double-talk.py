@@ -12,7 +12,7 @@ microphone is heard through the canceller as the desk hears it. The .flac holds,
 canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, hands' sentences with the
 voice of each, which of them each 10 ms was matched with and how far into it, and the lines of the person with when each began.
 
-The speaker is kept muted: a take unmutes it, and mutes it again as it was.
+The speaker is kept muted: a take unmutes it for the playing and mutes it again as it was.
 
 Run by hand in a quiet room, never by a test: each take plays up to 30 s of speech aloud, and the microphone hears the room too,
 so a take with anyone else's voice in it is recorded again. `scripts/measure-echo.py raw` shows it: a word that is neither
@@ -164,6 +164,9 @@ def osascript(line: str) -> str:
 def speaker_up() -> Generator[None]:
     """The desk's speaker unmuted for what runs inside, and muted again as it was after, whatever happens in between."""
     was = osascript("output muted of (get volume settings)")
+    # [LAW:parse-dont-validate] an output with no mute control reports `missing value`: there is no state to put back.
+    if was not in ("true", "false"):
+        raise RuntimeError(f"the default output has no mute to unmute and restore: it reports {was!r}")
     osascript("set volume output muted false")
     try:
         yield
@@ -192,7 +195,7 @@ def main(fixture: Path, script: Script, gain: float) -> None:
     ends = [start + len(audio) / RATE for start, (_, audio) in zip(starts, lines)]
     # [LAW:no-silent-failure] a line begun before the take, or over the person's own line before it, is a script that does not say what it plays.
     if any(start < 0 or start < before for start, before in zip(starts, [0.0, *ends], strict=False)):
-        raise ValueError(f"the person's lines do not follow one another from the start of the take: {list(zip(starts, ends))}")
+        raise ValueError("the person's lines do not follow one another from the start of the take: " + "; ".join(f"{line.text!r} {start:.2f}-{end:.2f} s" for (line, _), start, end in zip(lines, starts, ends)))
     length = round((max([onsets[-1] + len(made[-1]) / RATE, *ends]) + TAIL) * RATE)
     hands = np.zeros(length, np.float32)
     sentence = np.full(length, -1)
@@ -233,16 +236,17 @@ def main(fixture: Path, script: Script, gain: float) -> None:
         played.extend(cancelled.played)
         return None, pyaudio.paContinue
 
-    audio = pyaudio.PyAudio()
-    listening = audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=BUFFER, stream_callback=microphone)
-    time.sleep(0.2)
-    speaking = audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, output=True, frames_per_buffer=BUFFER, stream_callback=speaker)
-    done.wait()
-    time.sleep(0.5)
-    speaking.close()
-    listening.close()
-    audio.terminate()
-    echo.close()
+    with speaker_up():
+        audio = pyaudio.PyAudio()
+        listening = audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, input=True, frames_per_buffer=BUFFER, stream_callback=microphone)
+        time.sleep(0.2)
+        speaking = audio.open(format=pyaudio.paInt16, channels=1, rate=RATE, output=True, frames_per_buffer=BUFFER, stream_callback=speaker)
+        done.wait()
+        time.sleep(0.5)
+        speaking.close()
+        listening.close()
+        audio.terminate()
+        echo.close()
 
     as_float = lambda raw: np.frombuffer(bytes(raw), np.int16).astype(np.float32) / 32768  # noqa: E731
     channels = np.stack([as_float(heard), as_float(captured), as_float(track(tuple(played)))], axis=1)
@@ -266,7 +270,6 @@ def main(fixture: Path, script: Script, gain: float) -> None:
 if __name__ == "__main__":
     match sys.argv[1:]:
         case [fixture] if fixture in TAKES:
-            with speaker_up():
-                main(FIXTURES / fixture, *TAKES[fixture])
+            main(FIXTURES / fixture, *TAKES[fixture])
         case _:
             sys.exit(f"usage: record-double-talk.py FIXTURE (one of {', '.join(TAKES)})")
