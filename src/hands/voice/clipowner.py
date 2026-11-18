@@ -412,8 +412,9 @@ class ClipOwner(FrameProcessor):
         """When the speaker who cuts hands off as `clip` closes was first heard, None for no cut: a turn the voice opened
         is cut here where nothing cut it while the clip was open.
 
-        A clip hands played nothing over has no echo of hands in it, so its words cut, their speaker heard from its
-        opening, and nothing waits on a voiceprint. One it played over cuts on its last identification, which judges a
+        A clip none of hands' voice may be in (`hands.voice.clips.voices`), hands playing nothing or playing into
+        headphones, has no echo of hands in it, so its words cut, their speaker heard from its opening, and nothing waits
+        on a voiceprint. One it may be in cuts on its last identification, which judges a
         speaker heard under a second too (`hands.voice.voiceprints.CLOSING`): a wake phrase said alone over hands, then
         silence. A clip the user's hand opened cut as it opened, and one that cut while it was open has no cut left to
         wait on."""
@@ -433,8 +434,8 @@ class ClipOwner(FrameProcessor):
                 return (await identification).first
 
     async def _identification(self, sound: Sound, identified: "asyncio.Future[Identified]", facts: dict[str, Fact]) -> Identified:
-        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip hands played
-        nothing over has no echo of hands in it, so it waits on nothing.
+        """What a clip's last identification came to, waited on for IDENTIFIED_SECONDS at most. A clip none of
+        hands' voice may be in (`hands.voice.clips.voices`) has no echo of hands in it, so it waits on nothing.
 
         [LAW:no-silent-failure] one that misses the bound cuts nothing, which the clip's event says, as it says what one in
         time came to; the clip's words never wait on it."""

@@ -12,7 +12,9 @@ channels as heard after the canceller, as captured before it, and the canceller'
 in 'charles', and 'alba' saying two lines over them that repeat hands' words where hands says them. Its .json keeps
 which sentence each 10 ms was matched with, so what hands played over it is known, not read off.
 hands_no_echo_and_another.flac is the same take with hands' voice in no speaker, as in headphones: the canceller was told
-it, and the microphone heard only the second voice and the room."""
+it, and the microphone heard only the second voice and the room. hands_over_an_opening.flac and
+hands_no_echo_over_an_opening.flac are another script's two takes the same two ways: a reply hands says alone, a 4 s
+pause, and 'alba' cutting into the next reply as it opens."""
 
 import json
 from pathlib import Path
@@ -68,20 +70,19 @@ def played(onsets: tuple[float, ...], stopped: float, start: float, seconds: flo
 
 CANCELLED = Path(__file__).parent / "fixtures" / "hands_cancelled_and_another"
 NO_ECHO = Path(__file__).parent / "fixtures" / "hands_no_echo_and_another"
+OPENING = Path(__file__).parent / "fixtures" / "hands_over_an_opening"
+NO_ECHO_OPENING = Path(__file__).parent / "fixtures" / "hands_no_echo_over_an_opening"
 # The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
 # says them.
 OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
-# When the second voice first speaks on it, in seconds.
-CANCELLED_ALONE = json.loads(CANCELLED.with_suffix(".json").read_text())["other"][0]["start"]
 
 
-def cancelled() -> Sound:
-    """hands_cancelled_and_another.flac as the desk heard it, and what the speaker played over each 10 ms of it."""
-    described = json.loads(CANCELLED.with_suffix(".json").read_text())
-    said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
-    samples, _ = audio(CANCELLED.with_suffix(".flac"))
-    played = tuple(None if slot is None else Reference(bytes(2 * SLOT), RATE, 1, (Playhead(said[int(slot[0])], float(slot[1])),), True) for slot in described["played"])
-    return Sound(samples[: len(played) * SLOT, 0].tobytes(), samples[: len(played) * SLOT, 1].tobytes(), played)
+def cut_in(fixture: Path) -> float:
+    """When the second voice first speaks on a take of scripts/record-double-talk.py, in seconds."""
+    return json.loads(fixture.with_suffix(".json").read_text())["other"][0]["start"]
+
+
+CANCELLED_ALONE = cut_in(CANCELLED)
 
 
 def take(fixture: Path) -> tuple[np.ndarray, np.ndarray, tuple[tuple[Playhead, ...], ...]]:

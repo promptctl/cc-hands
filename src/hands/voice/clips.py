@@ -99,9 +99,9 @@ class Playhead:
 @dataclass(frozen=True)
 class Reference:
     """10 ms of hands' own TTS as the desk's speaker played it, as the echo canceller was given it: 16-bit at the
-    speaker's own rate and channels, which are not a clip's; each synthesis of the TTS in it, where in it; and whether the
-    canceller, as it was matched, read an echo path from the speaker to the microphone (`hands.voice.echo.EchoPath`):
-    none in headphones, or with the speaker muted, where nothing of it reached the microphone."""
+    speaker's own rate and channels, which are not a clip's; each synthesis of the TTS in it, where in it; and whether it
+    may have reached the microphone: false only where the canceller, as it was matched, had read no echo path from the
+    speaker to the microphone (`hands.voice.echo.EchoPath`), in headphones, or with the speaker muted."""
 
     audio: bytes
     rate: int
@@ -141,12 +141,15 @@ class Sound:
 
 
 def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
-    """The voices of hands' TTS over each 10 ms of `sound`, none where it played none, and none known at the phone."""
-    return tuple(() if reference is None else reference.voices for reference in sound.played or ())
+    """The voices of hands' TTS that may be in each 10 ms of `sound`: none where it played none, none where nothing it
+    played reached the microphone, as in headphones, and none known at the phone."""
+    # [LAW:one-source-of-truth] whether hands' voice can be in a sound is the canceller's reading of the echo path; a
+    # reference that reached nothing is no echo to wait on a voiceprint for.
+    return tuple(reference.voices if reference is not None and reference.reached else () for reference in sound.played or ())
 
 
 def voices(sound: Sound) -> tuple[str, ...]:
-    """Every voice of hands' TTS played over `sound`, in the order first played."""
+    """Every voice of hands' TTS that may be in `sound`, in the order first played."""
     return tuple(dict.fromkeys(voice for slot in slots(sound) for voice in slot))
 
 

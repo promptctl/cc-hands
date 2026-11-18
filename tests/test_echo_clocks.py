@@ -13,6 +13,8 @@ from typing import Protocol
 
 import numpy as np
 
+from hands.sessions.wide import begun
+from hands.virtualclock import VirtualClock
 from hands.voice.echo import Echo, EchoCanceller
 from hands.voice.microphone import Playout, Pull
 from hands.voice.synthesis import Synthesis, Taken
@@ -28,6 +30,8 @@ SPEAKER_LATENCY = 76 * TICKS // 1000
 MICROPHONE_LATENCY = 40 * TICKS // 1000
 ROOM_DELAY = 48  # microphone samples, 3 ms
 NOISE = 33.0  # the room's floor, about -60 dBFS
+# What every reading is a synthesis of: hands' TTS, whose echo the canceller reads the echo path for.
+SAID = Synthesis("charles", "Hands here.", begun(VirtualClock()))
 
 
 class Speaker(Protocol):
@@ -115,7 +119,7 @@ def run_room(speaker: Callable[[Echo], Speaker], seed: int, readings: int = 8, m
         tick, _, what, chunk = heapq.heappop(events)
         match what:
             case "write":
-                playing.write(chunk, None)
+                playing.write(chunk, SAID)
             case "speaker":
                 buffer = np.frombuffer(playing.take(PERIOD // 2), np.int16)
                 start = (tick + SPEAKER_LATENCY) // 2
@@ -154,13 +158,15 @@ class _Room:
 
 
 def opening_reductions(heard: Heard, seconds: float = 0.4) -> list[float]:
-    """dB taken out of each reading's opening: its first sound at the microphone, and the `seconds` after it."""
+    """dB taken out of each reading's opening but the first: its first sound at the microphone, and the `seconds` after
+    it. The first is heard as captured until the canceller reads an echo path (`hands.voice.echo.EchoPath`), and with
+    silences under 3 s between them, none after it is."""
     span = int(seconds * HEARD_RATE)
 
     def power(samples: np.ndarray) -> float:
         return float(10 * np.log10(np.mean(samples.astype(np.float64) ** 2) + 1e-9))
 
-    return [power(heard.raw[at : at + span]) - power(heard.cleaned[at : at + span]) for at in heard.onsets]
+    return [power(heard.raw[at : at + span]) - power(heard.cleaned[at : at + span]) for at in heard.onsets[1:]]
 
 
 def test_every_readings_opening_is_cancelled_wherever_its_first_write_falls() -> None:

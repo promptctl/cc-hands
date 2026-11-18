@@ -6,7 +6,7 @@ It is one listener on the clip owner (`hands.voice.clipowner`), given each clip 
 event loop into its run's own directory: `<clip>.heard.wav`, mono 16-bit at RATE; `<clip>.played.wav`, what the desk's
 speaker played over it, the echo canceller's reference, put in the clip's format so the two line up sample for sample,
 which the phone has none of; and `<clip>.json`, what opened it, what the gate did with it, and every voice of hands'
-own TTS played over it.
+own TTS that may be in it: played over it, its echo path not read none.
 
 It keeps hands' own echo too, labelled. While the desk is at the off level, where only the shortcut opens a clip, with
 no press arming or held, and the speaker is playing hands' TTS, what the desk's microphone hears is nobody's but
@@ -76,7 +76,7 @@ def written(path: Path, audio: bytes) -> int:
 def recording(directory: Path, name: str, sound: Sound, facts: dict[str, object]) -> int:
     """[LAW:single-enforcer] one recording, a clip's or an echo span's, in its run's `directory`: `<name>.heard.wav`,
     `<name>.played.wav` where what the speaker played is known, and `<name>.json`, `facts` with how long it was, every
-    voice of hands' TTS over it, each sentence it said over it, with when, so whose words were whose can be told from
+    voice of hands' TTS that may be in it, each sentence it said over it, with when, so whose words were whose can be told from
     the recording alone, and how much of hands' TTS over it, in seconds, played with no echo path to the microphone; how
     many bytes they are."""
     size = written(directory / f"{name}.heard.wav", sound.heard)

@@ -80,7 +80,7 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
     assert read(directory / "7.played.wav")[:2] == (1, RATE)
     assert len(read(directory / "7.played.wav")[2]) == len(tone(1, 3)) and read(directory / "7.played.wav")[2][-320:] == tone(0)
     assert json.loads((directory / "7.json").read_text()) == {
-        "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba", "mary"], "unreached": 0.01,
+        "clip": 7, "opener": "engaged conversation", "fate": "sent", "seconds": 0.03, "played": True, "voices": ["alba"], "unreached": 0.01,
         # Each sentence hands said over it, from the 10 ms it began playing in, as far into it as it was, to the end of
         # the last.
         "said": [
@@ -88,8 +88,9 @@ async def test_a_clip_at_the_desk_is_kept_as_heard_with_what_hands_played_over_i
             {"voice": "mary", "text": "Turn ended.", "start": 0.01, "into": 1.5, "stop": 0.02},
         ],
     }
-    # [LAW:nothing-unseen] where it went, how long, whether what was played went with it, and in which voices.
-    assert (event.facts["kept"], event.facts["seconds"], event.facts["played"], event.facts["voices"]) == (directory / "7.heard.wav", 0.03, True, ("alba", "mary"))
+    # [LAW:nothing-unseen] where it went, how long, whether what was played went with it, and the voices of hands' that
+    # may be in it: not mary's, which reached nothing.
+    assert (event.facts["kept"], event.facts["seconds"], event.facts["played"], event.facts["voices"]) == (directory / "7.heard.wav", 0.03, True, ("alba",))
 
 
 def test_what_the_speaker_played_is_put_in_the_clips_format_a_run_at_a_time_slot_for_slot() -> None:
@@ -231,7 +232,7 @@ async def test_hands_echo_at_the_off_level_with_no_press_is_kept_and_identified_
         ("ok", 1, ("alba", "mary")), ("ok", 2, ("mary",)), ("ok", 3, ("mary",)),
     ]
     # Each span is one voice, hands', identified against its prints once it has ended, with every voice it played.
-    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.played) for span, voiced in identified] == [
+    assert [(span, voiced.speaker, round(voiced.seconds, 3), voiced.echoed) for span, voiced in identified] == [
         (1, 0, 0.04, ("alba", "mary")), (2, 0, 0.02, ("mary",)), (3, 0, 0.02, ("mary",)),
     ]
     assert np.array_equal(identified[1][1].voice, np.full(320, 5 / 32768, np.float32))

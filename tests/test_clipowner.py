@@ -117,18 +117,18 @@ class Rig:
     recorded: list[Entry]
     gate: Gate = field(default_factory=Gate)
 
-    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = ()) -> None:
-        """A frame captured under `gate`, hands playing in `voices` over it."""
+    async def frame(self, gate: Gate, sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> None:
+        """A frame captured under `gate`, hands playing in `voices` over it, its voice `reached` the microphone or not."""
         self.gate = gate
-        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices), 16000, 1, "desk"))
+        await self.run.worker.queue_frame(gate.framed(sound, sound, played_with(sound, voices, reached), 16000, 1, "desk"))
 
-    async def clip(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = ()) -> None:
-        """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it, then
-        sent or thrown away."""
+    async def clip(self, sounds: Sequence[bytes], fate: Fate = "sent", by: Trigger = "engaged conversation", voices: tuple[str, ...] = (), reached: bool = True) -> None:
+        """A clip opened by `by`, a frame of each sound captured while it is open, hands playing in `voices` over it, its
+        voice `reached` the microphone or not, then sent or thrown away."""
         down = self.gate.after("start", by)
         for sound in sounds:
-            await self.frame(down, sound, voices)
-        await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices)
+            await self.frame(down, sound, voices, reached)
+        await self.frame(down.after("stop" if fate == "sent" else "drop", by), b"\x00\x00" * 320, voices, reached)
 
     def events(self, name: str) -> list[WideEvent]:
         return [entry for entry in self.recorded if isinstance(entry, WideEvent) and entry.event == name]
@@ -152,11 +152,11 @@ def frame_of(n: int) -> bytes:
     return n.to_bytes(2, "little") * 320
 
 
-def played_with(sound: bytes, voices: tuple[str, ...] = ()) -> tuple[Reference, ...]:
+def played_with(sound: bytes, voices: tuple[str, ...] = (), reached: bool = True) -> tuple[Reference, ...]:
     """What the speaker played over `sound`, as the canceller hands it on, one reference for each 10 ms: the same sound,
-    a sentence of hands' TTS in each of `voices`."""
+    a sentence of hands' TTS in each of `voices`, that `reached` the microphone or not."""
     syntheses = tuple(Playhead(Synthesis(voice, "The parser is fixed.", begun(SYSTEM)), 0.0) for voice in voices)
-    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses, True) for start in range(0, len(sound), 320))
+    return tuple(Reference(sound[start : start + 320], 16000, 1, syntheses, reached) for start in range(0, len(sound), 320))
 
 
 async def test_every_listener_is_given_the_same_samples_in_capture_order_what_the_clip_kept_from_before_it_included() -> None:
@@ -551,6 +551,15 @@ async def test_a_clip_hands_played_nothing_over_cuts_on_its_words_as_it_closes_a
         await rig.until(lambda: ("resolved", 2) in rig.seen.seen)
         assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.0), ("words", "stop there"), ("resolved", 1), ("resolved", 2)]
         assert ["identified" in event.facts for event in rig.events("clip")] == [False, False]
+
+
+async def test_a_clip_none_of_hands_voice_reached_cuts_on_its_words_as_it_closes_and_waits_on_no_voiceprint() -> None:
+    # hands playing into headphones: nothing of its voice reached the microphone, so nothing waits on a voiceprint.
+    async with rigged(Scripted(["stop there"]), (Heeding("streaming"),)) as rig:
+        await rig.clip([frame_of(3)], by="wake word", voices=("charles",), reached=False)
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen)
+        assert [seen for seen in rig.seen.seen if seen[0] != "opened"] == [("barge_in", 1, 0.0), ("words", "stop there"), ("resolved", 1)]
+        assert "identified" not in rig.events("clip")[0].facts
 
 
 async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_nothing_whoever_it_heard() -> None:

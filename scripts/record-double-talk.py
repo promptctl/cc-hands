@@ -1,25 +1,30 @@
-"""Record a person saying hands' own words over hands, through hands' echo canceller: a fixture's .flac and .json under
-tests/fixtures, hands_cancelled_and_another for promptctl-voice-i15t.8vg.csd, with hands out of the speaker, and
-hands_no_echo_and_another for promptctl-voice-i15t.8vg.0gs, with hands out of no speaker, as in headphones.
+"""Record a person speaking over hands, through hands' echo canceller: a fixture's .flac and .json under tests/fixtures,
+each take of one of two scripts (`TAKES`). hands_cancelled_and_another for promptctl-voice-i15t.8vg.csd, with hands out of
+the speaker, and hands_no_echo_and_another for promptctl-voice-i15t.8vg.0gs, with hands out of no speaker, as in
+headphones: a person saying hands' own words over the middle of hands' sentences. hands_over_an_opening and
+hands_no_echo_over_an_opening for promptctl-voice-i15t.8vg.t1a, the same two ways: a person speaking over the opening of
+a reply that follows a pause.
 
-Three of hands' sentences are made by hands' own TTS ('charles', its default voice) and played out of the default
-speaker, the canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says two lines
-over the second and third that repeat hands' words where hands says them, as a person contradicting hands does. hands'
-voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The
+hands' sentences are made by hands' own TTS ('charles', its default voice) and played out of the default speaker, the
+canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says its lines over them.
+hands' voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The
 default microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard
 after the canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, which of
 hands' sentences each 10 ms was matched with and how far into it, and the lines of both voices with when each began.
 
-Run by hand at a quiet desk with the speaker up, never by a test: it plays about 16 s of speech aloud.
+Run by hand at a quiet desk with the speaker up, never by a test: each take plays 15 to 16 s of speech aloud.
 
-    uv run python scripts/record-double-talk.py hands_cancelled_and_another 1
-    uv run python scripts/record-double-talk.py hands_no_echo_and_another 0
+    uv run python scripts/record-double-talk.py hands_cancelled_and_another
+    uv run python scripts/record-double-talk.py hands_no_echo_and_another
+    uv run python scripts/record-double-talk.py hands_over_an_opening
+    uv run python scripts/record-double-talk.py hands_no_echo_over_an_opening
 """
 
 import json
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -34,25 +39,50 @@ from hands.voice.recorder import track
 from hands.voice.voices import DEFAULT, parse_voice, pocket, source
 
 FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
-HANDS = (
+
+
+@dataclass(frozen=True)
+class Script:
+    """What a take plays: hands' first sentence, each after it with the pause before it, and each line of the other
+    voice: what it says, over which of hands' sentences, and which of hands' words in it it says where hands says them,
+    the empty string for a line begun as the sentence begins."""
+
+    first: str
+    then: tuple[tuple[float, str], ...]
+    other: tuple[tuple[str, int, str], ...]
+
+    @property
+    def hands(self) -> tuple[str, ...]:
+        return (self.first, *(sentence for _, sentence in self.then))
+
+
+DOUBLE_TALK = Script(
     "Hands here. Starting houdini-mcp and opening macklebox now.",
-    "Phosphene finished its render, and the build is green.",
-    "I can hear you. Say the next step when you are ready.",
+    ((0.3, "Phosphene finished its render, and the build is green."), (0.3, "I can hear you. Say the next step when you are ready.")),
+    (("No, the build is broken.", 1, "the build is"), ("Say the next step again.", 2, "Say the next step")),
 )
-# Each line of the other voice: what it says, over which of hands' sentences, and which of hands' words in it it says
-# where hands says them.
-OTHER = (
-    ("No, the build is broken.", 1, "the build is"),
-    ("Say the next step again.", 2, "Say the next step"),
+# A reply hands says alone, and after a pause longer than any between sentences of one reply, another a person cuts
+# into as it opens.
+OPENING = Script(
+    "Hands here. Starting houdini-mcp and opening macklebox now.",
+    ((4.0, "Checking the speech models before we continue with the release."),),
+    (("Wait, stop, that is not what I asked.", 1, ""),),
 )
-LEAD, GAP, TAIL = 1.0, 0.3, 2.0
+# Each take's script, and hands' gain to the speaker: 1 at the desk, 0 as in headphones.
+TAKES = {
+    "hands_cancelled_and_another": (DOUBLE_TALK, 1.0),
+    "hands_no_echo_and_another": (DOUBLE_TALK, 0.0),
+    "hands_over_an_opening": (OPENING, 1.0),
+    "hands_no_echo_over_an_opening": (OPENING, 0.0),
+}
+LEAD, TAIL = 1.0, 2.0
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
 
 
-def main(fixture: Path, gain: float) -> None:
+def main(fixture: Path, script: Script, gain: float) -> None:
     say = pocket()
-    made = [say(source(DEFAULT), text) for text in HANDS]
-    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + GAP for audio in made[:-1])]))
+    made = [say(source(DEFAULT), text) for text in script.hands]
+    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + pause for audio, (pause, _) in zip(made[:-1], script.then, strict=True))]))
     length = round((onsets[-1] + len(made[-1]) / RATE + TAIL) * RATE)
     hands = np.zeros(length, np.float32)
     sentence = np.full(length, -1)
@@ -62,14 +92,14 @@ def main(fixture: Path, gain: float) -> None:
         sentence[at : at + len(audio)] = index
     other = np.zeros(length, np.float32)
     lines = []
-    for text, over, words in OTHER:
+    for text, over, words in script.other:
         audio = say(source(parse_voice("alba")), text)
         # The other voice's words begin where hands', placed by its characters at Pocket TTS's own pace, begin.
-        begins = onsets[over] + HANDS[over].index(words) / len(HANDS[over]) * len(made[over]) / RATE - text.index(words) / len(text) * len(audio) / RATE
+        begins = onsets[over] + script.hands[over].index(words) / len(script.hands[over]) * len(made[over]) / RATE - text.index(words) / len(text) * len(audio) / RATE
         at = round(begins * RATE)
         other[at : at + len(audio)] = audio[: length - at]
         lines.append((text, begins))
-    syntheses = [Synthesis(DEFAULT, text, begun(VirtualClock())) for text in HANDS]
+    syntheses = [Synthesis(DEFAULT, text, begun(VirtualClock())) for text in script.hands]
     out = np.clip((hands * gain + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
     reference = np.clip(hands * 32767, -32768, 32767).astype(np.int16).tobytes()
 
@@ -119,14 +149,14 @@ def main(fixture: Path, gain: float) -> None:
     offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]
     fixture.with_suffix(".json").write_text(
-        json.dumps({"hands": list(HANDS), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
+        json.dumps({"hands": list(script.hands), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
     )
     print(f"{fixture}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
 
 
 if __name__ == "__main__":
     match sys.argv[1:]:
-        case [fixture, gain]:
-            main(FIXTURES / fixture, float(gain))
+        case [fixture] if fixture in TAKES:
+            main(FIXTURES / fixture, *TAKES[fixture])
         case _:
-            sys.exit("usage: record-double-talk.py FIXTURE GAIN (a name under tests/fixtures/; hands' speaker gain, 1 at the desk, 0 as in headphones)")
+            sys.exit(f"usage: record-double-talk.py FIXTURE (one of {', '.join(TAKES)})")

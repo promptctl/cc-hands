@@ -3,6 +3,7 @@ this module stays in UNMOVED in tests/clockwatch.py, and test_engaged.py, which 
 
 import pytest
 from conftest import model_facts
+from echoes import OPENING, cut_in, replayed, take
 from pipecat.audio.vad.vad_analyzer import VADState
 from speech import quiet, spoken
 
@@ -69,3 +70,20 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
     desk = next(event for event in rig.events if event.event == "desk" and event.facts["level"] == "engaged")
     verdicts = [event.facts["complete"] for event in rig.events if event.event == "desk.judged"]
     assert verdicts.count(True) + desk.counts["ended_on_silence"] == 1
+
+
+async def test_hands_alone_at_the_desk_through_the_canceller_arms_no_turn_though_its_opening_is_heard_uncancelled() -> None:
+    # A canceller's first reply at the desk's speaker, up to where a person cuts into the next: heard as captured until
+    # the canceller reads its echo path (hands.voice.echo.EchoPath), 0.28 s in, longer than after a pause, too short a
+    # stretch of hands for Silero to start on. Heard all as captured, it arms a turn.
+    heard = replayed(*take(OPENING)).heard[: 2 * int(cut_in(OPENING) * 16000)]
+    rig = Rig(verdicts=[])
+    async with loaded(rig.clock, 16000, rig.events.append) as models:
+        driving = rig.start(models)
+        await rig.choose("engaged")
+        await rig.hear(*(heard[at : at + 640] for at in range(0, len(heard), 640)))
+        await rig.drained()
+        await rig.choose("off")
+        await rig.until(lambda: "deafen" in rig.made)
+        await stopped(driving)
+    assert rig.made == ["listen", "deafen"]
