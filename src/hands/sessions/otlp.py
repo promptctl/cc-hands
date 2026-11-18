@@ -59,7 +59,7 @@ _SEVERITY: Mapping[Level, int] = {"info": 9, "warning": 13, "error": 17}
 _DIRECT = build_opener(ProxyHandler({}))
 
 
-def _post(request: Request, timeout: float) -> bytes:
+def post(request: Request, timeout: float) -> bytes:
     """The collector's answer to `request`, each socket operation of it allowed `timeout` seconds."""
     with _DIRECT.open(request, timeout=timeout) as response:
         return response.read()
@@ -113,7 +113,7 @@ def degradation(collector: str, signal: Signal, streak: Failing | None) -> Degra
     # The words hold nothing a batch would change, neither a count nor an error: the same failure is not news again each
     # time it repeats, however the collector words it. Each error is in its Exported line.
     since = streak.since.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    return Degradation(f"can't export {signal}", f"the collector at {collector} has not taken all of its {signal} since {since}")
+    return Degradation(f"can't export {signal}", f"{collector} has not taken all of its {signal} since {since}")
 
 
 class Exports:
@@ -221,7 +221,7 @@ class Exporter:
         clock: Clock,
         linger: float = LINGER_SECONDS,
         timeout: float = TIMEOUT_SECONDS,
-        post: Callable[[Request, float], bytes] = _post,
+        post: Callable[[Request, float], bytes] = post,
     ) -> None:
         self._collector = collector
         self._record = record
@@ -319,7 +319,7 @@ class Exporter:
         except Exception as error:
             # Unreachable, an HTTP error status, or an event that would not encode: the batch is lost to the collector
             # alike, and said alike.
-            return _why(error), None
+            return why(error), None
 
 
 def _drained(queued: "queue.SimpleQueue[WideEvent | _Closed]") -> list[WideEvent | _Closed]:
@@ -331,7 +331,7 @@ def _drained(queued: "queue.SimpleQueue[WideEvent | _Closed]") -> list[WideEvent
             return taken
 
 
-def _why(error: Exception) -> str:
+def why(error: Exception) -> str:
     said = f"{type(error).__name__}: {error}"
     if not isinstance(error, HTTPError):
         return said

@@ -7,6 +7,7 @@ run runs starts the run again, on the file as edited.
 
     [telemetry]
     collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address; none by default
+    metrics = "https://victoriametrics.example"   # a VictoriaMetrics address hands pushes its metrics to; none by default
 
     [talk]
     personality = "Dry and wry, with a bit of wit."   # how hands comes across, in the user's words; hands' own by default
@@ -41,6 +42,7 @@ from hands.clock import Clock
 from hands.sessions.audit import Record, SettingsEdited
 from hands.sessions.files import replace_whole
 from hands.sessions.home import Home
+from hands.sessions.metrics import IMPORT
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
 from hands.voice.devicechoice import Auto, Choice, Choices, Named, Off
@@ -65,12 +67,14 @@ class Claude:
 @dataclass(frozen=True)
 class Config:
     """`collector` is the OpenTelemetry collector each wide event is also sent to, over OTLP/HTTP; None sends them nowhere
-    but the audit log. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
+    but the audit log. `metrics` is the VictoriaMetrics hands pushes its metrics to (hands.sessions.metrics); None pushes
+    them nowhere. `personality` is how hands comes across, in the user's own words; None is hands' own. `wake` is
     the wake word the desk listens for at its wake word level. `devices` are the audio devices the desk hears and
     speaks on."""
 
     llm: Claude = Claude()
     collector: str | None = None
+    metrics: str | None = None
     personality: str | None = None
     wake: Word = Pretrained()
     devices: Choices = Choices()
@@ -243,13 +247,13 @@ def parse(text: str, model: str | None = None) -> Config:
         raise Rejected(f"not TOML: {error}") from error
     _known(top, "the file", ("llm", "telemetry", "talk", "audio"))
     telemetry = _table(top, "telemetry")
-    _known(telemetry, "[telemetry]", ("collector",))
+    _known(telemetry, "[telemetry]", ("collector", "metrics"))
     talk = _table(top, "talk")
     _known(talk, "[talk]", ("personality", "wake_word", "wake_word_model"))
     audio = _table(top, "audio")
     _known(audio, "[audio]", ("input_device", "output_device"))
     devices = Choices(input=_device(audio, "input_device"), output=_device(audio, "output_device"))
-    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices)
+    return Config(llm=_llm(_table(top, "llm"), model), collector=_collector(telemetry), metrics=_metrics(telemetry), personality=_personality(talk), wake=_wake(talk), devices=devices)
 
 
 def _device(table: Mapping[str, object], key: str) -> Choice:
@@ -293,6 +297,12 @@ def _collector(table: Mapping[str, object]) -> str | None:
     if "collector" not in table:
         return None
     return _base(_text(table, "[telemetry]", "collector", ""), "[telemetry] collector", "an OTLP/HTTP collector", "http://host:4318", "/v1/traces")
+
+
+def _metrics(table: Mapping[str, object]) -> str | None:
+    if "metrics" not in table:
+        return None
+    return _base(_text(table, "[telemetry]", "metrics", ""), "[telemetry] metrics", "a VictoriaMetrics store", "https://victoriametrics.example", IMPORT)
 
 
 def _base(url: str, where: str, server: str, example: str, appended: str) -> str:

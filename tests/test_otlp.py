@@ -547,7 +547,7 @@ def test_a_signal_is_said_failing_only_once_its_run_is_more_than_a_blip_and_in_w
     failing_now = said(FAILING_BATCHES)
     assert failing_now is not None and failing_now.brief == "can't export traces"
     # Since a day and a time, so an outage begun on an earlier day does not read as one begun later today.
-    assert failing_now.said == f"the collector at http://otel.example:4318 has not taken all of its traces since {STARTED.astimezone():%Y-%m-%d %H:%M:%S}"
+    assert failing_now.said == f"http://otel.example:4318 has not taken all of its traces since {STARTED.astimezone():%Y-%m-%d %H:%M:%S}"
     # The same failure, repeating, is not news again.
     assert said(FAILING_BATCHES + 5) == failing_now
 
@@ -587,10 +587,10 @@ def test_a_collector_that_keeps_refusing_one_signal_is_said_by_the_heartbeat_the
         batch(f"{FAILING_BATCHES:016x}")
         failing_now = look(blip)
         assert failing_now.title == "⚠︎ hands can't export traces"
-        assert failing_now.text.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
+        assert failing_now.text.startswith(f"hands is up but {refusing.url} has not taken all of its traces since")
         assert failing_now.notices == (failing_now.text,)
         assert main(["--home", str(tmp_path), "status"]) == 0
-        assert capsys.readouterr().out.startswith(f"hands is up but the collector at {refusing.url} has not taken all of its traces since")
+        assert capsys.readouterr().out.startswith(f"hands is up but {refusing.url} has not taken all of its traces since")
         # Refusing on, in other words each time, it stays said and is not news again.
         refusing.answer = b'{"code": 14, "message": "the store is still down"}'
         batch("00000000000000ff")

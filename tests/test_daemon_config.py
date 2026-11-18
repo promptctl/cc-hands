@@ -148,6 +148,16 @@ def test_the_collector_is_an_http_address_spelled_without_a_trailing_slash() -> 
         config.parse('[telemetry]\nendpoint = "http://otel.example:4318"\n')
 
 
+def test_the_metrics_store_is_a_victoriametrics_address_spelled_without_a_trailing_slash() -> None:
+    assert config.parse("").metrics is None
+    assert config.parse('[telemetry]\nmetrics = "https://victoriametrics.example/"\n').metrics == "https://victoriametrics.example"
+    # The import endpoint itself, or credentials the log would hold: refused as the file is read, not push by push.
+    for unusable in ("victoriametrics.example", "https://victoriametrics.example/api/v1/import/prometheus", "https://user:secret@victoriametrics.example"):
+        with pytest.raises(Rejected, match="is not a VictoriaMetrics store's base address") as refused:
+            config.parse(f'[telemetry]\nmetrics = "{unusable}"\n')
+        assert "secret" not in str(refused.value)
+
+
 def test_a_file_naming_a_transcription_server_or_a_whisper_model_is_refused() -> None:
     # Either would be a setting silently not applied: hands transcribes with its own Whisper, on one model.
     with pytest.raises(Rejected, match="the file has no 'transcription'"):
@@ -357,7 +367,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
 
     def prompted() -> run.Configured:
         answered.wait()
-        return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318")))
+        return run.Configured(config, run.Settings(b"", Config(collector="http://otel.example:4318", metrics="https://victoriametrics.example")))
 
     run_start = Start(restarted=False, clock=SYSTEM)
     # A collector already failing while hands starts is said by the start's beats, as it is once hands runs.
@@ -373,7 +383,7 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
         await asyncio.sleep(0.005)
     answered.set()
     assert await starting == config
-    # The start's event says which file the settings came from, the collector they name, which server and
+    # The start's event says which file the settings came from, the collector and metrics store they name, which server and
     # model the run reaches and on what account, the voice it speaks in, the personality it comes across in, and the
     # wake word it listens for, with the model of the user's own it is heard with, and the devices config.toml chooses.
     recorded: list[Entry] = []
@@ -382,9 +392,9 @@ async def test_the_start_beats_while_the_configuration_is_read(tmp_path: Path, m
     assert isinstance(event, WideEvent) and (event.event, event.outcome) == ("hands.start", "ok")
     # How big hands was as its start ended.
     assert isinstance(event.facts["footprint_mb"], float) and event.facts["footprint_mb"] > 0
-    chosen = {name: event.facts[name] for name in ("settings", "collector", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model", "input_device", "output_device")}
+    chosen = {name: event.facts[name] for name in ("settings", "collector", "metrics", "backend", "model", "account", "voice", "personality", "wake_word", "wake_word_model", "input_device", "output_device")}
     assert chosen == {
-        "settings": home.config, "collector": "http://otel.example:4318",
+        "settings": home.config, "collector": "http://otel.example:4318", "metrics": "https://victoriametrics.example",
         "backend": "ClaudeCodeBackend", "model": ANTHROPIC_MODEL, "account": Account("claude.ai", "brain@example.com"), "voice": voices.DEFAULT,
         "personality": "Dry and wry.", "wake_word": "Hey Computer", "wake_word_model": "/wake/hey_computer.onnx",
         "input_device": Named("MacBook Pro Microphone"), "output_device": Auto(),

@@ -2567,6 +2567,21 @@ Those events are in the log alone: `hands status` must answer whatever the confi
 command waits on a collector or reads a config.toml to find one. hands names only the collector; which stores sit behind it is
 the homelab's.
 
+With `[telemetry] metrics` set, the metrics are pushed to that VictoriaMetrics, in the
+Prometheus text format, to its `/api/v1/import/prometheus` (`hands.sessions.metrics`). They
+are views over the events, folded as each is recorded and never counted beside them: every
+event adds one to `hands_events_total` and its duration to `hands_event_seconds_total`, by
+its name and outcome, and each count it declared to `hands_event_counts_total`, zeros
+included; the last `memory.sampled` event's sizes are `hands_memory_bytes`. Every label is
+fixed by the code, so the series are as few as its events. `hands run` samples its memory
+once a minute (`hands.voice.memory`): one `memory.sampled` event with the footprint and MLX's
+split of the GPU memory it holds, live, cached, and peak. Each sample recorded sets off a
+push, from a thread of its own, and a stop pushes once more; each push is an `Exported` line
+of the `metrics` signal, folded into the degradations as the collector's signals are. The
+`hands.start` event names the metrics store. MLX's cache of freed buffers is bounded at 1 GB
+for every model in the process: unbounded, it grew to 11 GB over the streaming pair alone and
+took the daemon from 6.4 GB to 19 GB in eleven minutes.
+
 ## Endurance
 
 The intermediary talks with you for hours, and the brain's own context is the one thing in
@@ -2613,6 +2628,7 @@ variant with a real alternative or it does not exist. The fields:
 | `[llm] backend` | `claude`, the brain: the default, and the one harness hands drives so far; a model API called with a key is never one |
 | `[llm] model` | the model, one of the four hands offers |
 | `[telemetry] collector` | the OpenTelemetry collector's OTLP/HTTP address each wide event is also sent to |
+| `[telemetry] metrics` | the VictoriaMetrics address hands pushes its metrics to |
 | `[talk] personality` | how hands comes across, in the user's words: a section of the conversational model's instruction, last before its closing words, so it sets tone and never what hands does |
 | `[talk] wake_word` | what the `wake word` trigger listens for: one of openWakeWord's own (Hey Jarvis, the default, Hey Mycroft, Hey Rhasspy, Alexa), or with `wake_word_model` the phrase the user's model was trained on |
 | `[talk] wake_word_model` | the full path of an ONNX model the user trained with openWakeWord; checked as the trigger is switched to, as openWakeWord's own are fetched then |

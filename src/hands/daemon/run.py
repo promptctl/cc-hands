@@ -66,7 +66,7 @@ from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
-from hands.voice import voiceprints
+from hands.voice import memory, voiceprints
 from hands.voice.voiceprints import Voiceprints
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
@@ -333,14 +333,14 @@ async def configured(configure: Callable[[], Configured], survey: Callable[[Conf
         raise read
     config = read.voice
     # [LAW:nothing-unseen] which settings won is read from the start's event, not re-derived from a shell: the file they came
-    # from (None where the home has none and every setting is its default), the collector they name, the
+    # from (None where the home has none and every setting is its default), the collector and metrics store they name, the
     # model the run reaches and the brain's account, the voice it
     # starts speaking in, the one the user kept or the default, the personality it comes across in, None for hands' own,
     # the wake word the desk listens for at its wake word level, with the model of the user's own it is heard with, None for
     # openWakeWord's own, and the audio devices config.toml chooses for the desk.
     read_from = read.settings.path(home)
     run_start.heard(
-        settings=read_from, collector=read.settings.config.collector,
+        settings=read_from, collector=read.settings.config.collector, metrics=read.settings.config.metrics,
         backend=type(config.llm).__name__, model=config.llm.model, account=config.llm.account, voice=str(config.voice),
         personality=config.personality, wake_word=config.wake.phrase, wake_word_model=str(config.wake.model) if isinstance(config.wake, Trained) else None,
         input_device=config.devices.input, output_device=config.devices.output,
@@ -389,7 +389,7 @@ async def converse(
 
     # [LAW:no-silent-failure] without the ticker no settled burst of progress is heard, without the sweep a dead
     # session stays listed, without the reader no record becomes a step and no status Claude Code sets is heard, without the relay
-    # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute and a device config.toml names is never returned to, without the talk key no turn starts, and without the pipeline nothing is heard or said at all, so any of
+    # nothing is asked aloud, without the progress player the focus is not heard working, without the narrator no finished turn or ended session is heard, without the summary store no backlog or unheard turn is ever said, without the namer no session is given a name, without the heartbeat the daemon looks dead while it runs, without the memory sampler its memory grows unseen, without the cue player a turn received and hands acting are never heard, without the device follower an unplugged headset leaves it deaf and mute and a device config.toml names is never returned to, without the talk key no turn starts, and without the pipeline nothing is heard or said at all, so any of
     # them failing stops the run where it can be seen: in its terminal, and as down to the shim and the indicator.
     stop_if_failed = stopping(stop)
 
@@ -416,6 +416,7 @@ async def converse(
         asyncio.create_task(keep_summarising(clock, store, summarise, record), name="the summary store"),
         asyncio.create_task(keep_naming(clock, names, sessions.live_members, minded.summariser(AsideKind.NAME, NAME_INSTRUCTION, NAME_TIMEOUT_SECONDS), record), name="the namer"),
         asyncio.create_task(keep_beating(beat, heart.period.total_seconds(), clock), name="the heartbeat"),
+        asyncio.create_task(memory.keep_sampling(clock, record), name="the memory sampler"),
         *(asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches),
     ]
     following = asyncio.create_task(follow_devices(clock, pipeline.started, voice.audio, channel.say, record), name="the audio device follower")

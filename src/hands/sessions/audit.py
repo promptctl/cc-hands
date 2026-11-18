@@ -211,18 +211,18 @@ class SettingsEdited:
     refused: str | None
 
 
-# The OTLP signals each wide event is sent to the collector as: a span, for the trace store, and a log record, for the
-# event store.
-Signal = Literal["traces", "logs"]
+# What hands sends its telemetry as: each wide event as a span, for the trace store, and as a log record, for the event
+# store, both to the collector over OTLP; and the metrics viewed over them (hands.sessions.metrics), to VictoriaMetrics.
+Signal = Literal["traces", "logs", "metrics"]
 
 
 @dataclass(frozen=True)
 class Exported:
-    """A batch of wide events sent to the collector as one OTLP signal, each named by its span id; how long the send
-    took; and why the collector did not take it, None where it took every event: it could not be reached, it refused
-    the request, it rejected events in it without saying which, or hands stopped before the batch could be sent. Each
-    is in the log still. `warning` is what the collector said of a batch it took whole, as OTLP's partial success with
-    nothing rejected says it."""
+    """A batch of telemetry sent to `collector`, the address of the store that takes it, as one signal: wide events,
+    each named by its span id, or a push of the metrics, which names none; how long the send took; and why it was not
+    taken, None where all of it was: the store could not be reached, it refused the request, it rejected events in it
+    without saying which, or hands stopped before the batch could be sent. Each event is in the log still. `warning` is
+    what the collector said of a batch it took whole, as OTLP's partial success with nothing rejected says it."""
 
     collector: str
     signal: Signal

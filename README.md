@@ -193,6 +193,7 @@ model = "claude-opus-5-5"     # one of the four below
 
 [telemetry]
 collector = "http://otel.example:4318"   # an OpenTelemetry collector's OTLP/HTTP address
+metrics = "https://victoriametrics.example"   # a VictoriaMetrics address hands pushes its metrics to
 
 [talk]
 personality = "Dry and wry, with a bit of wit."   # how hands comes across, in your own words
@@ -228,6 +229,11 @@ environment as `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`; without them a s
 With a collector set, each wide event `hands run` writes to its audit log is also sent there as a span, straight to that address and past any proxy, so it can be found in whatever stores and Grafana sit behind the collector. The log stays
 the whole record either way, and each batch sent is an `Exported` line in it, naming its spans and, where the
 collector did not take them, why.
+
+With `metrics` set, hands pushes its metrics to that VictoriaMetrics once a minute, as it samples its own memory:
+`hands_events_total`, `hands_event_seconds_total` and `hands_event_counts_total`, by event, outcome and count, folded from
+the same wide events, and `hands_memory_bytes`, its footprint and MLX's live, cached and peak GPU memory. Each push is an
+`Exported` line of the `metrics` signal.
 
 hands talks through a harness it drives, never a model API called with a key: `claude`, the brain, is one long-lived
 Claude Code of hands' own, on any login Claude Code takes from Anthropic, on Claude Sonnet 5.5 unless `model` names

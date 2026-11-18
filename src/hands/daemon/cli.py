@@ -29,6 +29,7 @@ from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, E
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
+from hands.sessions.metrics import Metrics, pushing
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -544,7 +545,8 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     threading.Thread(target=reap, args=(shown,), name="indicator", daemon=True).start()
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
-    with exporting(settings.config.collector, exports.record, clock) as exported:
+    # [LAW:one-source-of-truth] the metrics are folded from the wide events as they are written, never counted beside them.
+    with pushing(settings.config.metrics, Metrics(exports.record), exports.record, clock) as pushed, exporting(settings.config.collector, pushed, clock) as exported:
         record = told_on_terminal(exported)
         ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
     return ending, shown
@@ -635,6 +637,10 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
     """hands' run, once the seconds it takes to import Pipecat have passed."""
     # Imported here, so that `hands status` answers without loading Pipecat.
     from hands.daemon.run import Configured, configured_from, run
+    from hands.voice import memory
+
+    # Before any model loads, so no buffer any of them frees is kept past the limit.
+    memory.limit_cache()
 
     path = os.environ.get("PATH", "")
     # This run is hands running, and the backend it reaches is the one it was configured on.
