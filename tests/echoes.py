@@ -89,7 +89,7 @@ def take(fixture: Path) -> tuple[np.ndarray, np.ndarray, tuple[tuple[Playhead, .
     """A take of scripts/record-double-talk.py as the microphone captured it and as the speaker played it, and the
     playheads of hands' sentence over each 10 ms of it."""
     described = json.loads(fixture.with_suffix(".json").read_text())
-    said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
+    said = tuple(Synthesis(voice, text, begun(VirtualClock())) for text, voice in zip(described["hands"], described["voices"], strict=True))
     samples, _ = audio(fixture.with_suffix(".flac"))
     playheads = tuple(() if slot is None else (Playhead(said[int(slot[0])], float(slot[1])),) for slot in described["played"])
     return samples[: len(playheads) * SLOT, 1], samples[: len(playheads) * SLOT, 2], playheads

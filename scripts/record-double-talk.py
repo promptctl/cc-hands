@@ -1,29 +1,34 @@
 """Record a person speaking over hands, through hands' echo canceller: a fixture's .flac and .json under tests/fixtures,
-each take of one of two scripts (`TAKES`). hands_cancelled_and_another for promptctl-voice-i15t.8vg.csd, with hands out of
-the speaker, and hands_no_echo_and_another for promptctl-voice-i15t.8vg.0gs, with hands out of no speaker, as in
-headphones: a person saying hands' own words over the middle of hands' sentences. hands_over_an_opening and
-hands_no_echo_over_an_opening for promptctl-voice-i15t.8vg.t1a, the same two ways: a person speaking over the opening of
-a reply that follows a pause.
+each take of one of the scripts in `TAKES`, for what a person and hands actually do at the desk: a person saying hands' own
+words over the middle of its sentences, over the opening of a reply that follows a pause, a short "yes", "no" or "stop"
+over it, over a reply in a second of its voices, and alone after it; and hands alone, in long sentences. Each with hands out
+of the speaker, as at the desk (`hands_<what>`), and where a person speaks over hands, out of no speaker, as in headphones
+(`hands_no_echo_<what>`).
 
-hands' sentences are made by hands' own TTS ('charles', its default voice) and played out of the default speaker, the
-canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says its lines over them.
-hands' voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The
-default microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard
-after the canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, which of
-hands' sentences each 10 ms was matched with and how far into it, and the lines of both voices with when each began.
+hands' sentences are made by hands' own TTS, each in the voice its script gives, and played out of the default speaker, the
+canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says the person's lines. hands'
+voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The default
+microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard after the
+canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, hands' sentences with the
+voice of each, which of them each 10 ms was matched with and how far into it, and the lines of the person with when each began.
 
-Run by hand at a quiet desk with the speaker up, never by a test: each take plays 15 to 16 s of speech aloud.
+The speaker is kept muted: a take unmutes it, and mutes it again as it was.
+
+Run by hand in a quiet room, never by a test: each take plays up to 30 s of speech aloud, and the microphone hears the room too,
+so a take with anyone else's voice in it is recorded again. `scripts/measure-echo.py raw` shows it: a word that is neither
+hands' nor the person's, where hands is out of the speaker.
 
     uv run python scripts/record-double-talk.py hands_cancelled_and_another
-    uv run python scripts/record-double-talk.py hands_no_echo_and_another
-    uv run python scripts/record-double-talk.py hands_over_an_opening
-    uv run python scripts/record-double-talk.py hands_no_echo_over_an_opening
+    uv run python scripts/record-double-talk.py        # lists the takes
 """
 
 import json
+import subprocess
 import sys
 import threading
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,31 +47,95 @@ FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 
 @dataclass(frozen=True)
+class Reply:
+    """One of hands' sentences: what it says, in which voice, and the pause before it (the first's is `LEAD`)."""
+
+    text: str
+    pause: float = 0.3
+    voice: str = str(DEFAULT)
+
+
+@dataclass(frozen=True)
+class Alongside:
+    """The person's line says `words`, which hands' reply says too, where hands says them."""
+
+    reply: int
+    words: str
+
+
+@dataclass(frozen=True)
+class Into:
+    """The person's line begins `seconds` into hands' reply."""
+
+    reply: int
+    seconds: float
+
+
+@dataclass(frozen=True)
+class After:
+    """The person's line begins `seconds` after hands' reply ended."""
+
+    reply: int
+    seconds: float
+
+
+@dataclass(frozen=True)
+class Said:
+    """A line of the person's: what it says, and where against hands' replies it begins."""
+
+    text: str
+    placed: Alongside | Into | After
+
+
+@dataclass(frozen=True)
 class Script:
-    """What a take plays: hands' first sentence, each after it with the pause before it, and each line of the other
-    voice: what it says, over which of hands' sentences, and which of hands' words in it it says where hands says them,
-    the empty string for a line begun as the sentence begins."""
+    """What a take plays: hands' replies, the first begun after `LEAD`, and the person's lines."""
 
-    first: str
-    then: tuple[tuple[float, str], ...]
-    other: tuple[tuple[str, int, str], ...]
-
-    @property
-    def hands(self) -> tuple[str, ...]:
-        return (self.first, *(sentence for _, sentence in self.then))
+    hands: tuple[Reply, ...]
+    person: tuple[Said, ...]
 
 
-DOUBLE_TALK = Script(
-    "Hands here. Starting houdini-mcp and opening macklebox now.",
-    ((0.3, "Phosphene finished its render, and the build is green."), (0.3, "I can hear you. Say the next step when you are ready.")),
-    (("No, the build is broken.", 1, "the build is"), ("Say the next step again.", 2, "Say the next step")),
+MIDDLE = (
+    Reply("Hands here. Starting houdini-mcp and opening macklebox now."),
+    Reply("Phosphene finished its render, and the build is green."),
+    Reply("I can hear you. Say the next step when you are ready."),
 )
-# A reply hands says alone, and after a pause longer than any between sentences of one reply, another a person cuts
-# into as it opens.
+# The person says some of hands' own words where hands says them.
+DOUBLE_TALK = Script(MIDDLE, (Said("No, the build is broken.", Alongside(1, "the build is")), Said("Say the next step again.", Alongside(2, "Say the next step"))))
+# The person says only hands' own words, the whole of each line, as hands says them.
+SAME_WORDS = Script(MIDDLE, (Said("the build is green", Alongside(1, "the build is green")), Said("Say the next step when you are ready.", Alongside(2, "Say the next step when you are ready."))))
+# A reply hands says alone, and after a pause longer than any between sentences of one reply, another a person cuts into as
+# it opens.
 OPENING = Script(
-    "Hands here. Starting houdini-mcp and opening macklebox now.",
-    ((4.0, "Checking the speech models before we continue with the release."),),
-    (("Wait, stop, that is not what I asked.", 1, ""),),
+    (Reply("Hands here. Starting houdini-mcp and opening macklebox now."), Reply("Checking the speech models before we continue with the release.", 4.0)),
+    (Said("Wait, stop, that is not what I asked.", Into(1, 0.0)),),
+)
+# A "no", a "stop" and a "yes", one word over each reply.
+SHORT_WORDS = Script(MIDDLE, (Said("No.", Into(0, 2.0)), Said("Stop.", Into(1, 2.5)), Said("Yes.", Into(2, 2.5))))
+# A reply in a second of hands' voices, the person over the middle of it saying words of their own.
+TWO_VOICES = Script(
+    (
+        Reply("Hands here. Starting houdini-mcp and opening macklebox now."),
+        Reply("The render finished, and the review you asked for is ready to read.", 0.8, "marius"),
+        Reply("Tell me which file you want first and I will open it.", 0.5),
+    ),
+    (Said("Wait, which review do you mean?", Into(1, 2.0)),),
+)
+# Long sentences, with no person anywhere: only hands, to be taken out.
+LONG_AND_SLOW = Script(
+    (
+        Reply("I have read the three files you pointed me at, and before I change anything, I want to walk through what I found, slowly, one piece at a time, so that you can stop me if I have anything wrong."),
+        Reply(
+            "The first file builds the list of sessions, the second decides which of them should speak next, and the third, which is the one I am least sure about, writes the answer back to the terminal where you are working.",
+            1.5,
+        ),
+    ),
+    (),
+)
+# A reply, and after it hands silent while the person speaks, a long sentence and then a short word.
+ALONE = Script(
+    (Reply("Hands here. Starting houdini-mcp and opening macklebox now."),),
+    (Said("The build is broken on the branch I pushed this morning, so please hold the deploy until I have looked at it.", After(0, 2.5)), Said("Yes.", After(0, 13.0))),
 )
 # Each take's script, and hands' gain to the speaker: 1 at the desk, 0 as in headphones.
 TAKES = {
@@ -74,16 +143,57 @@ TAKES = {
     "hands_no_echo_and_another": (DOUBLE_TALK, 0.0),
     "hands_over_an_opening": (OPENING, 1.0),
     "hands_no_echo_over_an_opening": (OPENING, 0.0),
+    "hands_and_the_same_words": (SAME_WORDS, 1.0),
+    "hands_no_echo_and_the_same_words": (SAME_WORDS, 0.0),
+    "hands_and_short_words": (SHORT_WORDS, 1.0),
+    "hands_no_echo_and_short_words": (SHORT_WORDS, 0.0),
+    "hands_in_two_voices": (TWO_VOICES, 1.0),
+    "hands_no_echo_in_two_voices": (TWO_VOICES, 0.0),
+    "hands_long_and_slow": (LONG_AND_SLOW, 1.0),
+    "hands_then_a_person_alone": (ALONE, 1.0),
 }
 LEAD, TAIL = 1.0, 2.0
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
 
 
+def osascript(line: str) -> str:
+    return subprocess.run(["osascript", "-e", line], check=True, capture_output=True, text=True).stdout.strip()
+
+
+@contextmanager
+def speaker_up() -> Generator[None]:
+    """The desk's speaker unmuted for what runs inside, and muted again as it was after, whatever happens in between."""
+    was = osascript("output muted of (get volume settings)")
+    osascript("set volume output muted false")
+    try:
+        yield
+    finally:
+        osascript(f"set volume output muted {was}")
+
+
 def main(fixture: Path, script: Script, gain: float) -> None:
     say = pocket()
-    made = [say(source(DEFAULT), text) for text in script.hands]
-    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + pause for audio, (pause, _) in zip(made[:-1], script.then, strict=True))]))
-    length = round((onsets[-1] + len(made[-1]) / RATE + TAIL) * RATE)
+    made = [say(source(parse_voice(reply.voice)), reply.text) for reply in script.hands]
+    onsets = list(np.cumsum([LEAD, *(len(audio) / RATE + reply.pause for audio, reply in zip(made[:-1], script.hands[1:], strict=True))]))
+    lines = [(line, say(source(parse_voice("alba")), line.text)) for line in script.person]
+
+    def begins(line: Said, audio: np.ndarray) -> float:
+        match line.placed:
+            case Alongside(reply, words):
+                # The line's words begin where hands', placed by its characters at Pocket TTS's own pace, begin.
+                text = script.hands[reply].text
+                return onsets[reply] + text.index(words) / len(text) * len(made[reply]) / RATE - line.text.index(words) / len(line.text) * len(audio) / RATE
+            case Into(reply, seconds):
+                return onsets[reply] + seconds
+            case After(reply, seconds):
+                return onsets[reply] + len(made[reply]) / RATE + seconds
+
+    starts = [begins(line, audio) for line, audio in lines]
+    ends = [start + len(audio) / RATE for start, (_, audio) in zip(starts, lines)]
+    # [LAW:no-silent-failure] a line begun before the take, or over the person's own line before it, is a script that does not say what it plays.
+    if any(start < 0 or start < before for start, before in zip(starts, [0.0, *ends], strict=False)):
+        raise ValueError(f"the person's lines do not follow one another from the start of the take: {list(zip(starts, ends))}")
+    length = round((max([onsets[-1] + len(made[-1]) / RATE, *ends]) + TAIL) * RATE)
     hands = np.zeros(length, np.float32)
     sentence = np.full(length, -1)
     for index, (onset, audio) in enumerate(zip(onsets, made)):
@@ -91,15 +201,10 @@ def main(fixture: Path, script: Script, gain: float) -> None:
         hands[at : at + len(audio)] = audio
         sentence[at : at + len(audio)] = index
     other = np.zeros(length, np.float32)
-    lines = []
-    for text, over, words in script.other:
-        audio = say(source(parse_voice("alba")), text)
-        # The other voice's words begin where hands', placed by its characters at Pocket TTS's own pace, begin.
-        begins = onsets[over] + script.hands[over].index(words) / len(script.hands[over]) * len(made[over]) / RATE - text.index(words) / len(text) * len(audio) / RATE
-        at = round(begins * RATE)
+    for start, (_, audio) in zip(starts, lines):
+        at = round(start * RATE)
         other[at : at + len(audio)] = audio[: length - at]
-        lines.append((text, begins))
-    syntheses = [Synthesis(DEFAULT, text, begun(VirtualClock())) for text in script.hands]
+    syntheses = [Synthesis(reply.voice, reply.text, begun(VirtualClock())) for reply in script.hands]
     out = np.clip((hands * gain + other) * 32767, -32768, 32767).astype(np.int16).tobytes()
     reference = np.clip(hands * 32767, -32768, 32767).astype(np.int16).tobytes()
 
@@ -148,15 +253,20 @@ def main(fixture: Path, script: Script, gain: float) -> None:
     first = next(reference for reference in played if reference is not None)
     offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]
-    fixture.with_suffix(".json").write_text(
-        json.dumps({"hands": list(script.hands), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
-    )
+    described = {
+        "hands": [reply.text for reply in script.hands],
+        "voices": [reply.voice for reply in script.hands],
+        "other": [{"text": line.text, "start": round(start + offset, 3)} for (line, _), start in zip(lines, starts)],
+        "played": slots,
+    }
+    fixture.with_suffix(".json").write_text(json.dumps(described) + "\n")
     print(f"{fixture}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
 
 
 if __name__ == "__main__":
     match sys.argv[1:]:
         case [fixture] if fixture in TAKES:
-            main(FIXTURES / fixture, *TAKES[fixture])
+            with speaker_up():
+                main(FIXTURES / fixture, *TAKES[fixture])
         case _:
             sys.exit(f"usage: record-double-talk.py FIXTURE (one of {', '.join(TAKES)})")
