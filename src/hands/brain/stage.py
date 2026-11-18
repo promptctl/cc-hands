@@ -327,6 +327,9 @@ class _Turn:
     # what the brain said and asked.
     marked: int = 0
     reached: int = 0
+    # What the speaker has taken off `said` and holds for the floor, not yet handed on: the user speaks, and the cut that
+    # follows cancels the speaker, so what it held was neither spoken nor left on `said`, and no note of the unheard found it.
+    in_hand: str | _Point | _Aside | None = None
     # Hands' lines given while a text block streams, which follow it once it ends, never through the middle of it.
     behind: list[_Aside] = field(default_factory=list[_Aside])
 
@@ -864,9 +867,11 @@ class BrainStage(FrameProcessor):
         turn.withholding = False
         # [LAW:no-ambient-temporal-coupling] the reply starts with the first thing the turn says, not with the turn: a turn
         # typed behind one Claude Code opened itself says nothing until that one has ended, so no two replies interleave.
+        turn.in_hand = words
         await self._floor.wait()
         await self._reply(turn, True)
         while words is not None:
+            turn.in_hand = None
             match words:
                 case str():
                     turn.spoken.append(words)
@@ -901,7 +906,7 @@ class BrainStage(FrameProcessor):
 
     async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
         """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""
-        words = await turn.said.get()
+        words = turn.in_hand = await turn.said.get()
         await self._floor.wait()
         return words
 
@@ -1245,7 +1250,7 @@ async def _told(untold: "_Cut | str") -> str:
                 case None:
                     return _cut_note(await bookmark)
                 case turn:
-                    return _barge_in_note(await bookmark, "".join((*turn.spoken, *_left(turn.said))), turn.readbacks)
+                    return _barge_in_note(await bookmark, "".join((*turn.spoken, *_left(turn))), turn.readbacks)
 
 
 def _heard_of(bookmark: Bookmark, words: str, readbacks: Sequence[Labelled]) -> str:
@@ -1269,11 +1274,15 @@ def _heard_of(bookmark: Bookmark, words: str, readbacks: Sequence[Labelled]) -> 
     return f"{last}{rest}"
 
 
-def _left(said: asyncio.Queue[str | _Point | _Aside | None]) -> list[str]:
-    """The turn's words still waiting for a speaker that stopped taking them."""
+def _left(turn: _Turn) -> list[str]:
+    """The turn's words still waiting for a speaker that stopped taking them: the one it held for the floor, then the rest."""
     left: list[str] = []
-    while not said.empty():
-        match said.get_nowait():
+    waiting = [turn.in_hand]
+    turn.in_hand = None
+    while not turn.said.empty():
+        waiting.append(turn.said.get_nowait())
+    for item in waiting:
+        match item:
             case str() as words:
                 left.append(words)
             case _:

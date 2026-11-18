@@ -492,7 +492,6 @@ def reply_accounted(hands: Hands) -> bool:
     return "I left it unwritten." in "".join(hands.out.said()) or any("They did not hear" in typed and "I left it unwritten." in typed for typed in asked)
 
 
-@pytest.mark.quarantined("promptctl-voice-i15t.65f.ucz", until="2026-11-25")
 async def test_a_write_answered_no_does_not_run_and_the_turn_said_straight_after_is_typed_once_the_prompt_shows_and_taken(mock_api: MockApi, hands: Hands) -> None:
     """The brain asks to Write, the user says no and at once says the next turn. The Write never runs, whatever Claude
     Code still had on its screen as the next turn was typed, and the next turn is answered (promptctl-brain-q9s8.45d).
