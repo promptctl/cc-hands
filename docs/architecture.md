@@ -1866,7 +1866,7 @@ false only where the path read none, which Whisper's rule of hands' words and th
 microphone stream let go of is one `microphone.let_go` wide event, carrying how many frames
 its canceller heard, how many of those had nothing playing, how many it dropped unheard
 because the microphone had stopped taking them, how many it slipped, and how many it
-passed on as captured, read none and unread; each speaker stream let go of is one `speaker.let_go`, carrying how
+passed on as captured with hands' TTS playing, read none and unread; each speaker stream let go of is one `speaker.let_go`, carrying how
 many frames its device took, how many of those had nothing written, and how many
 callbacks PortAudio said came too late. Each synthesis, one sentence hands' TTS made, is one `speech`
 wide event once its end comes out of the device behind its last byte: how long of it the device played

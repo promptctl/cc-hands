@@ -74,7 +74,7 @@ async def test_a_pause_between_words_is_inside_the_turn_heard_by_the_real_models
 
 async def test_hands_alone_at_the_desk_through_the_canceller_arms_no_turn_though_its_opening_is_heard_uncancelled() -> None:
     # A canceller's first reply at the desk's speaker, up to where a person cuts into the next: heard as captured until
-    # the canceller reads its echo path (hands.voice.echo.EchoPath), 0.28 s in, the longest any reply is, too short a
+    # the canceller reads its echo path (hands.voice.echo.EchoPath), 0.28 s in, longer than after a pause, too short a
     # stretch of hands for Silero to start on. Heard all as captured, it arms a turn.
     heard = replayed(*take(OPENING)).heard[: 2 * int(cut_in(OPENING) * 16000)]
     rig = Rig(verdicts=[])

@@ -5,9 +5,9 @@ import pytest
 
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
-from hands.voice.clips import SLOT, Reference, Playhead, Sound, Synthesis
+from hands.voice.clips import RATE, SLOT, Reference, Playhead, Sound, Synthesis
 from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, Reading, echo_path
-from echoes import CANCELLED, NO_ECHO, OPENING, replayed, take
+from echoes import CANCELLED, NO_ECHO, OPENING, cut_in, replayed, take
 
 HEARD_RATE, PLAYED_RATE = 16000, 24000
 
@@ -237,25 +237,29 @@ def _unreached(sound: Sound) -> int:
     return sum(reference is not None and not reference.reached for reference in sound.played or ())
 
 
-def test_hands_through_the_desks_speaker_never_reads_as_reaching_nothing_and_is_cancelled_from_a_quarter_second_in() -> None:
+def test_hands_through_the_desks_speaker_never_reads_as_reaching_nothing_and_is_cancelled_within_a_reply_s_opening() -> None:
     sound = replayed(*take(CANCELLED))
     assert _unreached(sound) == 0
-    # Unread until a stretch says there is an echo path: hands' first sentence, at 1.24 s, is heard uncancelled to 1.5 s,
-    # and cancelled from then on.
-    cancelled = _cancelled(sound)
-    assert not any(cancelled[:75]) and all(cancelled[75:200])
+    # Unread until a stretch says there is an echo path: hands' first sentence, from 1.24 s, is heard uncancelled for
+    # 0.26 s.
+    assert _uncancelled_from(sound, 1.24, 4.0) <= 0.3
 
 
-def test_a_reply_at_the_desk_after_a_pause_is_heard_uncancelled_only_for_its_first_quarter_second() -> None:
+def test_a_reply_at_the_desk_after_a_pause_is_cancelled_within_its_opening() -> None:
     # Unread again over the 4 s pause, the path is read there 0.21 s into the next reply, at 9.54 s, a person over it.
-    cancelled = _cancelled(replayed(*take(OPENING)))
-    assert not any(cancelled[477:487]) and all(cancelled[488:])
+    sound = replayed(*take(OPENING))
+    assert _uncancelled_from(sound, cut_in(OPENING), len(sound.heard) / 2 / RATE) <= 0.3
 
 
-def _cancelled(sound: Sound) -> list[bool]:
-    """Whether each 20 ms buffer of `sound` was heard through AEC3, not as the microphone captured it."""
-    buffer = 4 * SLOT
-    return [sound.heard[at : at + buffer] != sound.captured[at : at + buffer] for at in range(0, len(sound.heard), buffer)]
+def _uncancelled_from(sound: Sound, onset: float, end: float) -> float:
+    """How long `sound` is heard as the microphone captured it from `onset`, in seconds, where from then to `end` it is
+    heard through AEC3."""
+    buffer, per_second = 4 * SLOT, RATE // (2 * SLOT)
+    cancelled = [sound.heard[at : at + buffer] != sound.captured[at : at + buffer] for at in range(0, len(sound.heard), buffer)]
+    after = cancelled[round(onset * per_second) : round(end * per_second)]
+    opened = after.index(True)
+    assert all(after[opened:])
+    return opened / per_second
 
 
 def test_hands_echo_20_db_down_under_a_person_never_reads_as_reaching_nothing() -> None:

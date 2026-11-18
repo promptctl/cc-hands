@@ -184,11 +184,11 @@ class EchoPath:
     def _read(self) -> tuple[float, bool]:
         """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:
         the stretch whole, hands played at least half of it, and the microphone was quiet over it."""
-        captured = np.concatenate(self._captured)
         tts = [frame for frame in self._played if frame is not None]
-        alone = len(self._captured) == _PATH_FRAMES and 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
         if not tts:
-            return 0.0, alone
+            return 0.0, False
+        captured = np.concatenate(self._captured)
+        alone = len(self._captured) == _PATH_FRAMES and 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
         silence = np.zeros(len(tts[0]))
         played = np.concatenate([silence if frame is None else frame for frame in self._played])
         return echo_path(captured, len(self._captured[0]) * _FRAMES_PER_SECOND, played), alone

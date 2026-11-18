@@ -14,10 +14,10 @@ hands' sentences each 10 ms was matched with and how far into it, and the lines 
 
 Run by hand at a quiet desk with the speaker up, never by a test: it plays about 16 s of speech aloud.
 
-    uv run python scripts/record-double-talk.py hands_cancelled_and_another 1
-    uv run python scripts/record-double-talk.py hands_no_echo_and_another 0
-    uv run python scripts/record-double-talk.py hands_over_an_opening 1
-    uv run python scripts/record-double-talk.py hands_no_echo_over_an_opening 0
+    uv run python scripts/record-double-talk.py hands_cancelled_and_another
+    uv run python scripts/record-double-talk.py hands_no_echo_and_another
+    uv run python scripts/record-double-talk.py hands_over_an_opening
+    uv run python scripts/record-double-talk.py hands_no_echo_over_an_opening
 """
 
 import json
@@ -68,11 +68,12 @@ OPENING = Script(
     ((4.0, "Checking the speech models before we continue with the release."),),
     (("Wait, stop, that is not what I asked.", 1, ""),),
 )
+# Each take's script, and hands' gain to the speaker: 1 at the desk, 0 as in headphones.
 TAKES = {
-    "hands_cancelled_and_another": DOUBLE_TALK,
-    "hands_no_echo_and_another": DOUBLE_TALK,
-    "hands_over_an_opening": OPENING,
-    "hands_no_echo_over_an_opening": OPENING,
+    "hands_cancelled_and_another": (DOUBLE_TALK, 1.0),
+    "hands_no_echo_and_another": (DOUBLE_TALK, 0.0),
+    "hands_over_an_opening": (OPENING, 1.0),
+    "hands_no_echo_over_an_opening": (OPENING, 0.0),
 }
 LEAD, TAIL = 1.0, 2.0
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
@@ -155,7 +156,7 @@ def main(fixture: Path, script: Script, gain: float) -> None:
 
 if __name__ == "__main__":
     match sys.argv[1:]:
-        case [fixture, gain] if fixture in TAKES:
-            main(FIXTURES / fixture, TAKES[fixture], float(gain))
+        case [fixture] if fixture in TAKES:
+            main(FIXTURES / fixture, *TAKES[fixture])
         case _:
-            sys.exit(f"usage: record-double-talk.py FIXTURE GAIN (FIXTURE one of {', '.join(TAKES)}; hands' speaker gain, 1 at the desk, 0 as in headphones)")
+            sys.exit(f"usage: record-double-talk.py FIXTURE (one of {', '.join(TAKES)})")
