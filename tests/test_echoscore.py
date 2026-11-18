@@ -1,0 +1,100 @@
+"""The harness that scores an echo-cancelling chain (tests/echoscore.py): what it counts as hands' words leaked and a
+person's words lost, on takes built here, so the numbers a later ticket picks a chain by mean what they say."""
+
+import numpy as np
+import pytest
+
+from echoscore import LATE, TAKES, Line, Take, Word, erle, judged, normal, recorded, words_of
+from hands.sessions.wide import begun
+from hands.virtualclock import VirtualClock
+from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
+from hands.voice.streaming import Said
+
+HANDS = (Playhead(Synthesis("charles", "Hands here.", begun(VirtualClock())), 0.0),)
+
+
+def built(person: tuple[Line, ...], playing: tuple[float, float], seconds: float = 12.0, captured: float = 0.1) -> Take:
+    """A take of `seconds` where hands plays from `playing[0]` to `playing[1]` and the person says `person`."""
+    slots = round(seconds * RATE / SLOT)
+    heads = tuple(HANDS if playing[0] <= slot * SLOT / RATE < playing[1] else () for slot in range(slots))
+    return Take("built", np.full(slots * SLOT, round(captured * 32768), np.int16), np.zeros(slots * SLOT, np.int16), heads, person)
+
+
+def spoken(*pairs: tuple[str, float]) -> tuple[Word, ...]:
+    return tuple(Word(text, start) for text, start in pairs)
+
+
+def test_pieces_of_a_word_are_one_word_dated_by_its_first_and_punctuation_is_none() -> None:
+    tokens = [(0, 9.12, " No"), (0, 9.44, ","), (0, 9.44, " the"), (0, 9.6, " bu"), (0, 9.6, "ild"), (0, 9.92, " bro"), (0, 9.92, "k"), (0, 9.92, "en"), (0, 11.36, ".")]
+    assert words_of(tokens, (), 0.0) == spoken(("no", 9.12), ("the", 9.44), ("build", 9.6), ("broken", 9.92))
+
+
+def test_two_speakers_pieces_are_not_spelled_into_each_others_words() -> None:
+    tokens = [(0, 1.0, " a"), (1, 1.1, " on"), (0, 1.2, "gain"), (1, 1.3, "ly")]
+    assert words_of(tokens, (), 0.0) == spoken(("again", 1.0), ("only", 1.1))
+
+
+def test_the_words_decoded_as_the_clip_closed_are_dated_where_it_closed() -> None:
+    assert words_of([(0, 2.0, " say")], [Said(0, " the next, step.")], 5.0) == spoken(("say", 2.0), ("the", 5.0), ("next", 5.0), ("step", 5.0))
+
+
+def test_a_word_hands_said_before_the_person_spoke_leaked_and_the_persons_own_words_are_kept() -> None:
+    take = built((Line("No, the build is broken.", 5.0),), (0.0, 12.0))
+    heard = spoken(("hands", 1.0), ("here", 1.5), ("no", 6.0), ("the", 6.2), ("build", 6.4), ("is", 6.6), ("broken", 6.8))
+    assert judged(take, heard) == ((), spoken(("hands", 1.0), ("here", 1.5)), ())
+
+
+def test_a_word_of_the_person_that_comes_out_as_another_is_lost_and_not_hands() -> None:
+    take = built((Line("Say the next step again.", 5.0),), (0.0, 12.0))
+    heard = spoken(("say", 6.0), ("the", 6.2), ("next", 6.4), ("end", 6.6))
+    assert judged(take, heard) == (("step", "again"), (), ())
+
+
+def test_a_word_past_the_persons_lines_where_hands_plays_leaked() -> None:
+    take = built((Line("Say the next step.", 5.0),), (0.0, 12.0))
+    heard = spoken(("say", 6.0), ("the", 6.2), ("next", 6.4), ("step", 6.6), ("when", 8.0), ("ready", 8.4))
+    assert judged(take, heard) == ((), spoken(("when", 8.0), ("ready", 8.4)), ())
+
+
+def test_a_word_where_hands_played_nothing_is_the_rooms() -> None:
+    take = built((), (0.0, 2.0))
+    heard = spoken(("hands", 1.0), ("hm", 9.0))
+    assert judged(take, heard) == ((), spoken(("hands", 1.0)), spoken(("hm", 9.0)))
+
+
+def test_a_word_decoded_late_leaked_if_hands_played_in_the_chunk_it_was_spoken_in() -> None:
+    take = built((), (0.0, 2.0))
+    assert judged(take, spoken(("hands", 2.0 + LATE - 0.1)))[1] != ()
+    assert judged(take, spoken(("hands", 2.0 + LATE + 0.5)))[1] == ()
+
+
+def test_a_person_whose_words_are_all_missing_lost_every_one_and_leaked_none() -> None:
+    take = built((Line("Yes.", 5.0),), (0.0, 12.0))
+    assert judged(take, ()) == (("yes",), (), ())
+
+
+def test_a_word_said_by_both_is_credited_to_the_person() -> None:
+    take = built((Line("the build is", 5.0),), (0.0, 12.0))
+    assert judged(take, spoken(("the", 6.0), ("build", 6.2), ("is", 6.4))) == ((), (), ())
+
+
+def test_erle_is_the_captured_energy_over_the_cleaned_before_the_person_speaks_where_hands_played() -> None:
+    take = built((Line("Yes.", 8.0),), (1.0, 12.0), captured=0.1)
+    cleaned = np.full(len(take.captured), 0.01, np.float32)
+    assert erle(take, cleaned) == pytest.approx(20.0, abs=0.01)
+    # After the person speaks, the chain's job is to keep them: that is lost words, not echo returned.
+    cleaned[round(8.0 * RATE) :] = 0.1
+    assert erle(take, cleaned) == pytest.approx(20.0, abs=0.01)
+
+
+def test_erle_is_none_where_hands_played_nothing_before_the_person_spoke() -> None:
+    assert erle(built((Line("Yes.", 1.0),), (5.0, 8.0)), np.zeros(12 * RATE, np.float32)) is None
+
+
+@pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
+def test_each_take_recorded_has_what_a_chain_is_run_over(fixture: object) -> None:
+    take = recorded(fixture)  # pyright: ignore[reportArgumentType]
+    assert len(take.captured) == len(take.reference) == len(take.playheads) * SLOT
+    assert take.person and all(line.start > 0 for line in take.person)
+    assert any(take.playheads[: round(take.cut_in * RATE / SLOT)]), "hands plays before the person speaks"
+    assert normal(take.person[0].text)

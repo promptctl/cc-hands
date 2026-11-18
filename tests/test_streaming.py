@@ -22,7 +22,7 @@ import recordings
 import echoes
 from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed, take
 from conftest import CALLED, PAIRS, model_facts
-from listening import LEAD, SHAPES, Live, turn, unidentified
+from listening import LEAD, SHAPES, Live, Timed, turn, unidentified
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
@@ -691,24 +691,6 @@ def test_each_word_is_the_speaker_who_said_it_and_each_clip_closes_its_own_speak
     # A clip where one person speaks closes their stream alone: one made from gate history carried across the close
     # before it would show here. In clips 4 and 5 the diarizer also marks, for a moment, a speaker who decodes no word.
     assert [clip.closed.speakers for clip in ended] == [{0}, {0}, {0}, {0, 1}, {0, 2}, {0}]
-
-
-@dataclass
-class Timed:
-    """The pair's mlx-audio session, keeping each token it decodes as it is fed, with its speaker and when it starts, in
-    seconds of the run: mlx-audio's own alignment, which `Said` leaves out."""
-
-    session: Any
-    tokens: list[tuple[int, float, str]] = field(default_factory=list[tuple[int, float, str]])
-
-    def feed(self, samples: Samples) -> Any:
-        decoded = self.session.feed(samples)
-        self.tokens += [(streaming.speaker(delta.speaker), token.start, token.text) for delta in decoded for token in delta.tokens]
-        return decoded
-
-    def __getattr__(self, name: str) -> Any:
-        # Everything else the pair's close reaches is the session's own.
-        return getattr(self.session, name)
 
 
 # Who says each clip of two_speakers_ami.flac that these cases hear.
