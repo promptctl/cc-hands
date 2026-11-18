@@ -1177,6 +1177,34 @@ async def test_a_sentence_the_brain_streams_between_the_user_starting_to_speak_a
     rig.brain.end()
 
 
+async def test_a_sentence_taken_while_hands_reads_whether_it_is_quiet_is_told_unheard_when_the_user_cuts_in(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A turn nobody waited on reads the quiet setting as its first sentence is taken, and the user cuts in during the read:
+    the sentence is on neither the queue nor the speaker, and the brain is still told it went unheard."""
+    reading = asyncio.Event()
+    real = stage.set_to
+
+    async def held(aloud: Any) -> Any:
+        await reading.wait()
+        return await real(aloud)
+
+    monkeypatch.setattr(stage, "set_to", held)
+    notified = rig.brain.opens()
+    told, _ = rig.request()
+    rig.stream(told, "The build finished.")
+    await rig.quiet()
+    await rig.worker.queue_frame(UserStartedSpeakingFrame())
+    await rig.quiet()
+    cuts = rig.out.shape().count("InterruptionFrame")
+    await rig.worker.queue_frame(InterruptionFrame())
+    await rig.until(lambda: rig.out.shape().count("InterruptionFrame") > cuts)
+    await rig.stop()
+    notified.ended.set_result(BrainAnswered(PromptId("n1"), None))
+    await rig.worker.queue_frame(UserWords("and then?"))
+    await rig.until(lambda: len(rig.brain.asked) == 1)
+    over = '[hands] The user spoke over you, and nothing more was said aloud. They did not hear: "The build finished.".'
+    assert rig.brain.asked[0] == f"{heard('and then?')}\n\n{over}"
+
+
 async def test_a_turn_spoken_over_that_then_fails_tells_the_next_what_the_user_heard_and_that_it_failed(rig: Rig) -> None:
     await rig.say("tell me everything")
     exchange, _ = rig.request()

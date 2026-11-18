@@ -327,8 +327,9 @@ class _Turn:
     # what the brain said and asked.
     marked: int = 0
     reached: int = 0
-    # What the speaker has taken off `said` and holds for the floor, not yet handed on: the user speaks, and the cut that
-    # follows cancels the speaker, so what it held was neither spoken nor left on `said`, and no note of the unheard found it.
+    # What the speaker has taken off `said` and not yet spoken or withheld, whether it waits on the floor or on the read of
+    # the quiet setting: a cut cancels the speaker there, so it was neither spoken nor left on `said`, and no note of the
+    # unheard found it. Set only by `_take`.
     in_hand: str | _Point | _Aside | None = None
     # Hands' lines given while a text block streams, which follow it once it ends, never through the middle of it.
     behind: list[_Aside] = field(default_factory=list[_Aside])
@@ -845,7 +846,7 @@ class BrainStage(FrameProcessor):
         await self.push_frame(LLMFullResponseStartFrame() if under_way else LLMFullResponseEndFrame())
 
     async def _speak(self, turn: _Turn) -> None:
-        words = await turn.said.get()
+        words = await self._take(turn)
         # [LAW:dataflow-not-control-flow] the turn's words are taken as ever, and none is handed to the speaker until the
         # turn is heard: asked as each comes, so hands' words filed into a turn nobody waited on are answered aloud.
         while not await self._heard(turn):
@@ -863,11 +864,11 @@ class BrainStage(FrameProcessor):
                     turn.asides.append((line, _ms(self._clock.now() - since)))
                     await self._floor.wait()
                     await self.push_frame(line_frame(hands_says(line), append_to_context=False))
-            words = await turn.said.get()
+            turn.in_hand = None
+            words = await self._take(turn)
         turn.withholding = False
         # [LAW:no-ambient-temporal-coupling] the reply starts with the first thing the turn says, not with the turn: a turn
         # typed behind one Claude Code opened itself says nothing until that one has ended, so no two replies interleave.
-        turn.in_hand = words
         await self._floor.wait()
         await self._reply(turn, True)
         while words is not None:
@@ -904,9 +905,15 @@ class BrainStage(FrameProcessor):
                     turn.quiet = (await set_to(self._aloud)).quiet != "off"
                 return not turn.quiet
 
+    async def _take(self, turn: _Turn) -> str | _Point | _Aside | None:
+        """What the turn says next, off `said` and into `in_hand` in one step: a cut that cancels the speaker anywhere before
+        the word is spoken or withheld still finds it there."""
+        turn.in_hand = await turn.said.get()
+        return turn.in_hand
+
     async def _handed(self, turn: _Turn) -> str | _Point | _Aside | None:
         """What the turn hands on next, once hands has the floor: nothing of it is said while the user speaks."""
-        words = turn.in_hand = await turn.said.get()
+        words = await self._take(turn)
         await self._floor.wait()
         return words
 
