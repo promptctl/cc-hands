@@ -10,9 +10,9 @@ noise (`_heard`), and no quiet stretch longer than half a second is heard (`_wit
 
 import re
 import threading
-from itertools import groupby
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from importlib.resources import files
+from itertools import groupby
 
 import numpy as np
 from pipecat.audio.vad.silero import SileroOnnxModel
@@ -135,28 +135,34 @@ class Whisper:
         """`samples` with every stretch Silero is under `_VOICED` sure of in each of its 32 ms frames cut to `_QUIET` frames,
         half of it from either end of the stretch, so a voice keeps the lead and the trail it had. What Whisper writes of a
         clip is then timed in these samples, not the clip's."""
-        self._silero.reset_states()
-        frames = len(samples) // _FRAME
-        voiced = [float(self._silero(samples[frame * _FRAME : (frame + 1) * _FRAME], RATE)[0, 0]) >= _VOICED for frame in range(frames)]
+        voiced = [confidence >= _VOICED for confidence in self._confidences(samples)]
         kept: list[np.ndarray] = []
         first = 0
         for is_voiced, run in groupby(voiced):
-            end = first + sum(1 for _ in run)
-            # The first and last frames kept of a quiet run that is too long; any other run is kept whole.
-            head, tail = (first + _QUIET // 2, end - (_QUIET - _QUIET // 2)) if not is_voiced and end - first > _QUIET else (end, end)
-            kept += [samples[first * _FRAME : head * _FRAME], samples[tail * _FRAME : end * _FRAME]]
+            end = first + len(list(run))
+            if is_voiced or end - first <= _QUIET:
+                kept.append(samples[first * _FRAME : end * _FRAME])
+            else:
+                # A quiet stretch too long: its first and last frames, half of `_QUIET` from either end.
+                kept += [samples[first * _FRAME : (first + _QUIET // 2) * _FRAME], samples[(end - (_QUIET - _QUIET // 2)) * _FRAME : end * _FRAME]]
             first = end
         # The few samples after the last whole frame.
-        return np.concatenate([*kept, samples[frames * _FRAME :]])
+        return np.concatenate([*kept, samples[len(voiced) * _FRAME :]])
+
+    def _confidences(self, samples: np.ndarray) -> Iterator[float]:
+        """How sure Silero is that anyone spoke in each 32 ms frame of `samples`, from a fresh state, read as it is asked
+        for."""
+        self._silero.reset_states()
+        for start in range(0, len(samples) - _FRAME + 1, _FRAME):
+            yield float(self._silero(samples[start : start + _FRAME], RATE)[0, 0])
 
     def _voiced(self, samples: np.ndarray) -> float:
         """How sure Silero is that anyone spoke in `samples`: its confidence in the surest of its 32 ms frames, from a fresh
         state, read only until one is `_VOICED` sure, all a segment is kept for. Speech is that sure within a few frames,
         so a segment someone spoke in costs next to nothing; one nobody did is read through, at 2.4 ms a second of it."""
-        self._silero.reset_states()
         surest = 0.0
-        for start in range(0, len(samples) - _FRAME + 1, _FRAME):
-            surest = max(surest, float(self._silero(samples[start : start + _FRAME], RATE)[0, 0]))
+        for confidence in self._confidences(samples):
+            surest = max(surest, confidence)
             if surest >= _VOICED:
                 break
         return surest
