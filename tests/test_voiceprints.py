@@ -284,7 +284,7 @@ async def test_a_speaker_heard_over_a_voice_hands_clips_no_print_of_is_unidentif
     await until(recorded, "voiceprints.enrolled", 1)
     prints.identify(CLIP, (voiced(7, 3.0, echoed=("charles", "fantine")),), ignored)
     [event] = await until(recorded, "voiceprints.identified", 1)
-    assert whos(event) == [Unidentified(3.0, "hands played fantine over them and holds no print of it")]
+    assert whos(event) == [Unidentified(3.0, "fantine of hands' may be in them and hands holds no print of it")]
 
 
 async def test_a_print_that_cannot_be_made_fails_its_unit_and_every_speaker_says_why(tmp_path: Path) -> None:

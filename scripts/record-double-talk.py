@@ -12,7 +12,7 @@ default microphone is heard through the canceller as the desk hears it. The .fla
 after the canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, which of
 hands' sentences each 10 ms was matched with and how far into it, and the lines of both voices with when each began.
 
-Run by hand at a quiet desk with the speaker up, never by a test: it plays about 16 s of speech aloud.
+Run by hand at a quiet desk with the speaker up, never by a test: each take plays 15 to 16 s of speech aloud.
 
     uv run python scripts/record-double-talk.py hands_cancelled_and_another
     uv run python scripts/record-double-talk.py hands_no_echo_and_another

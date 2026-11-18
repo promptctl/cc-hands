@@ -46,7 +46,8 @@ _PATH_HOP = 25
 
 # The shortest stretch read, in 10 ms frames, as a canceller starts: 1 s, the most the reference and its echo may be
 # apart (`_PATH_LAG`). It can say there is an echo path, 0.28 s into a canceller's first reply at the desk where a whole
-# stretch took 0.78 s; only a whole stretch, as fitted, says there is none. A canceller made mid-reply, at a reopen,
+# stretch took 0.78 s; only a whole stretch, as fitted, says there is none. In headphones, every stretch of 1 to 2 s on
+# both takes read 6.0 at most, far under `_ECHO_PATH`. A canceller made mid-reply, at a reopen,
 # hears that reply uncancelled for this second at least.
 _LEAST_FRAMES = 100
 
@@ -67,7 +68,10 @@ _PATH_LAG = 1.0
 _QUIET = -45.0
 
 # How long, in 10 ms frames, hands plays nothing before the echo path is unread again, as it is when the canceller is
-# made: 3 s, so a speaker unmuted or turned up between replies is read afresh, not taken for headphones.
+# made: 3 s, so a speaker unmuted or turned up between replies is read afresh, not taken for headphones, and one muted or
+# headphones put on are not taken for the desk: a path kept there over the pause ducks a person under hands' voice, and,
+# a person loud over it, is never read none, so they never cut hands off. The desk pays the opening of each reply after
+# a pause, heard uncancelled until a stretch reads there.
 _FORGET_FRAMES = 300
 
 # [LAW:types-are-the-program] what is known of the echo path: unread, no stretch of hands' voice since the canceller was

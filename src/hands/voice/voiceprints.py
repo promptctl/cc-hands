@@ -501,7 +501,7 @@ class Voiceprints:
                 case None if voice in self._enrolling or voice in self._speaking:
                     return Unprinted(f"no print yet of {voice}")
                 case None:
-                    return Unprinted(f"hands played {voice} over them and holds no print of it")
+                    return Unprinted(f"{voice} of hands' may be in them and hands holds no print of it")
         return tuple(voiceprint for voiceprint in self._prints.values() if isinstance(voiceprint, np.ndarray))
 
 
