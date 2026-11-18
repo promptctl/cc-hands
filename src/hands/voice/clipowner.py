@@ -347,6 +347,8 @@ class ClipOwner(FrameProcessor):
                                 case None:
                                     pass
                                 case first:
+                                    # [LAW:nothing-unseen] the clip's event says it was cut at its close, as `hearing` says one cut while open.
+                                    facts["cut"] = "at close"
                                     self._out.put_nowait(SpeechHeard(clip=clip, first=first))
                             for each in transcription:
                                 self._out.put_nowait(each)

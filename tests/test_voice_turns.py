@@ -644,6 +644,7 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         await rig.until(lambda: user_turns(rig) == [("on a person", True)])
         *_, whole = hearings(rig)
         assert (whole.outcome, whole.error, whole.facts["clip"]) == ("failed", "RuntimeError: decoding failed: RuntimeError: Metal ran out of memory", 1)
+        assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 
 
 # The voice hands speaks in.
