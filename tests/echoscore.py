@@ -81,7 +81,20 @@ def recorded(fixture: Path) -> Take:
 
 
 # The takes recorded so far, each with hands out of the speaker as at the desk and out of none as in headphones.
-TAKES = (echoes.CANCELLED, echoes.NO_ECHO, echoes.OPENING, echoes.NO_ECHO_OPENING)
+TAKES = (
+    echoes.CANCELLED,
+    echoes.NO_ECHO,
+    echoes.OPENING,
+    echoes.NO_ECHO_OPENING,
+    echoes.SAME_WORDS,
+    echoes.NO_ECHO_SAME_WORDS,
+    echoes.SHORT_WORDS,
+    echoes.NO_ECHO_SHORT_WORDS,
+    echoes.TWO_VOICES,
+    echoes.NO_ECHO_TWO_VOICES,
+    echoes.LONG_AND_SLOW,
+    echoes.PERSON_ALONE,
+)
 
 # A chain: what the recognizer hears of a take, as mono samples in [-1, 1) from the take's start.
 type Chain = Callable[[Take], np.ndarray]
@@ -197,6 +210,6 @@ def summary(score: Score) -> str:
     """One take's numbers on one line, and the words behind them."""
     level = "n/a" if score.erle is None else f"{score.erle:5.1f} dB"
     return (
-        f"{score.take:36} leaked {len(score.leaked):2}  lost {len(score.lost):2} of {score.said:2}  stray {len(score.stray):2}  ERLE {level}"
+        f"{score.take:40} leaked {len(score.leaked):2}  lost {len(score.lost):2} of {score.said:2}  stray {len(score.stray):2}  ERLE {level}"
         f"   leaked: {' '.join(word.text for word in score.leaked) or '-'};  lost: {' '.join(score.lost) or '-'}"
     )

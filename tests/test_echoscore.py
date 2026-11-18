@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import echoes
 from echoscore import LATE, TAKES, Line, Take, Word, erle, judged, normal, recorded, scored, summary, words_of
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
@@ -125,9 +126,28 @@ def test_erle_is_none_where_hands_played_nothing_before_the_person_spoke() -> No
 @pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
 def test_each_take_recorded_has_what_a_chain_is_run_over(fixture: Path) -> None:
     take = recorded(fixture)
-    assert take.person and all(line.start > 0 for line in take.person)
-    assert any(take.playheads[: round(take.cut_in * RATE / SLOT)]), "hands plays before the person speaks"
-    assert normal(take.person[0].text)
+    assert take.person or fixture == echoes.LONG_AND_SLOW, "a person speaks, but in the one take of hands alone"
+    assert all(line.start > 0 and normal(line.text) for line in take.person)
+    before = take.playheads[: round(take.cut_in * RATE / SLOT)] if take.person else take.playheads
+    assert any(before), "hands plays before the person speaks"
+
+
+def test_the_takes_hold_what_a_person_and_hands_do_at_the_desk() -> None:
+    def said(fixture: Path) -> dict[str, str]:
+        """Each of hands' sentences the take plays, with its voice."""
+        return {playhead.synthesis.text: playhead.synthesis.voice for slot in recorded(fixture).playheads for playhead in slot}
+
+    def over_hands(fixture: Path) -> list[Line]:
+        take = recorded(fixture)
+        return [line for line in take.person if take.played(line.start, line.start + 0.5)]
+
+    long_and_slow = recorded(echoes.LONG_AND_SLOW)
+    assert not long_and_slow.person and max(len(normal(text)) for text in said(echoes.LONG_AND_SLOW)) >= 30, "long sentences of hands', with no one over them"
+    assert len(set(said(echoes.TWO_VOICES).values())) > 1, "two of hands' voices"
+    assert {normal(line.text)[0] for line in over_hands(echoes.SHORT_WORDS) if len(normal(line.text)) == 1} & {"yes", "no", "stop"}, "a short word over hands"
+    assert any(f" {' '.join(normal(line.text))} " in f" {' '.join(normal(text))} " for line in over_hands(echoes.SAME_WORDS) for text in said(echoes.SAME_WORDS)), "a person saying what hands says"
+    alone = recorded(echoes.PERSON_ALONE)
+    assert alone.person and not over_hands(echoes.PERSON_ALONE), "a person alone"
 
 
 def test_a_take_whose_samples_and_slots_are_not_one_stretch_is_none() -> None:

@@ -1060,9 +1060,9 @@ def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside
     take = echoscore.recorded(fixture)
     heard = echoscore.heard_words(pair, echoscore.raw(take))  # raises where a word is dated past the clip: a pair not begun afresh
     assert heard, f"{take.name}: the pair decoded nothing"
-    # Dated by its own token and not all at the close, and heard on into where the person speaks.
+    # Dated by its own token and not all at the close, and heard on into where the person speaks, or past the middle of a take with no one.
     assert len({word.start for word in heard}) > len(heard) // 2
-    assert heard[-1].start > take.cut_in
+    assert heard[-1].start > (take.cut_in if take.person else len(take.reference) / echoscore.RATE / 2)
 
 
 @pytest.mark.outside
