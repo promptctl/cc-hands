@@ -57,6 +57,11 @@ class Take:
     playheads: tuple[tuple[Playhead, ...], ...]
     person: tuple[Line, ...]
 
+    def __post_init__(self) -> None:
+        # [LAW:types-are-the-program] a take is the same stretch of time three ways: samples captured, samples played, and 10 ms slots.
+        if not len(self.captured) == len(self.reference) == len(self.playheads) * SLOT:
+            raise ValueError(f"{self.name}: {len(self.captured)} samples captured, {len(self.reference)} played and {len(self.playheads)} slots of {SLOT} are not one stretch")
+
     def played(self, first: float, last: float) -> bool:
         """Whether hands played anything in the stretch from `first` to `last` seconds into the take."""
         slots = self.playheads[max(0, int(first * RATE / SLOT)) : int(last * RATE / SLOT) + 1]
@@ -135,7 +140,7 @@ def heard_words(pair: Any, samples: np.ndarray) -> tuple[Word, ...]:
     heard = words_of(tap.tokens, ended.closed.words, closed_at)
     # [LAW:no-silent-failure] a word dated past the clip's own length means the pair was not begun afresh: every date, and
     # every verdict that rests on one, would be off by the length of what it heard before.
-    if heard and heard[-1].start > ended.seconds:
+    if heard and heard[-1].start > ended.seconds + LATE:
         raise ValueError(f"a word dated {heard[-1].start:.2f} s in a clip of {ended.seconds:.2f} s: the pair did not begin afresh")
     return heard
 

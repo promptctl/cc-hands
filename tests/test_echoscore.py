@@ -1,6 +1,8 @@
 """The harness that scores an echo-cancelling chain (tests/echoscore.py): what it counts as hands' words leaked and a
 person's words lost, on takes built here, so the numbers a later ticket picks a chain by mean what they say."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -121,9 +123,13 @@ def test_erle_is_none_where_hands_played_nothing_before_the_person_spoke() -> No
 
 
 @pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
-def test_each_take_recorded_has_what_a_chain_is_run_over(fixture: object) -> None:
-    take = recorded(fixture)  # pyright: ignore[reportArgumentType]
-    assert len(take.captured) == len(take.reference) == len(take.playheads) * SLOT
+def test_each_take_recorded_has_what_a_chain_is_run_over(fixture: Path) -> None:
+    take = recorded(fixture)
     assert take.person and all(line.start > 0 for line in take.person)
     assert any(take.playheads[: round(take.cut_in * RATE / SLOT)]), "hands plays before the person speaks"
     assert normal(take.person[0].text)
+
+
+def test_a_take_whose_samples_and_slots_are_not_one_stretch_is_none() -> None:
+    with pytest.raises(ValueError, match="not one stretch"):
+        Take("short", np.zeros(SLOT, np.int16), np.zeros(2 * SLOT, np.int16), ((), ()), ())
