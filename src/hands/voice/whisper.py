@@ -25,7 +25,7 @@ from hands.sessions.wide import annotate
 from hands.voice import loads
 from hands.threads import SerialThread
 from hands.voice import transcription
-from hands.voice.clips import RATE, SECOND, SLOT, Clip, Play, Sound, decoded, plays
+from hands.voice.clips import RATE, SECOND, SLOT, Clip, Play, Sound, Synthesis, decoded, plays
 
 # Whisper's own compression_ratio_threshold: above it, the decoder was repeating itself, as it does over noise primed
 # with a vocabulary, sure of every word ("and turnstop, and turnstop, ..." read 17.1 to 23.8; speech no more than 0.92,
@@ -51,12 +51,13 @@ _FRAME = 512
 _VOICED = 0.25
 
 # How far from when Whisper heard a word, in seconds, the word of hands' it is may have played: no time is known for a
-# word of a sentence played, so it is placed by its characters (`_placed`).
+# word of a sentence played, so it is placed by its share of the sentence's characters (`_placed`).
 _ECHO_SECONDS = 1.5
 
-# How many characters of a sentence hands' TTS says a second, Pocket TTS's speaking rate: on
-# tests/fixtures/hands_echo_uncancelled.flac, every word of hands' Whisper heard was within 0.8 s of its characters at
-# this rate from its sentence's start, later where the sentence pauses at its punctuation.
+# How many characters of a sentence hands' TTS says a second, Pocket TTS's speaking rate, for a sentence whose length
+# is not known (`_length`): on tests/fixtures/hands_echo_uncancelled.flac, which kept no sentence's length, every word
+# of hands' Whisper heard was within 0.8 s of its characters at this rate from its sentence's start, later where the
+# sentence pauses at its punctuation. A sentence's own rate is not this one: 13 to 21 a second on the desk's takes.
 _CHARACTERS_PER_SECOND = 16.0
 
 # The echo return loss enhancement (ERLE), in dB, at which the echo canceller is taking hands' voice out: how far below
@@ -182,18 +183,31 @@ def _words(text: str) -> list[str]:
 
 
 def _placed(plays: tuple[Play, ...]) -> Placed:
-    """Each word of the sentences hands played over a clip, placed in its sentence by its characters, at
-    `_CHARACTERS_PER_SECOND`, and in the clip by where the speaker was in the sentence as its play began, so a sentence
-    begun before the clip opened has its first words before the clip's start. A word placed further than
-    `_ECHO_SECONDS` past where its play stopped was never played over the clip, as the rest of a sentence a barge-in
+    """Each word of the sentences hands played over a clip, placed in its sentence at its share of the sentence's
+    characters of the sentence's length (`_length`), and in the clip by where the speaker was in the sentence as its play
+    began, so a sentence begun before the clip opened has its first words before the clip's start. A word placed further
+    than `_ECHO_SECONDS` past where its play stopped was never played over the clip, as the rest of a sentence a barge-in
     cut off, and is not placed."""
     return tuple(
         (word.group(), play.start * SLOT / RATE + into - play.into)
         for play in plays
-        for word in _WORD.finditer(play.synthesis.text.lower())
-        for into in ((word.start() + word.end()) / 2 / _CHARACTERS_PER_SECOND,)
+        for text in (play.synthesis.text.lower(),)
+        for word in _WORD.finditer(text)
+        for into in ((word.start() + word.end()) / 2 / len(text) * _length(play.synthesis),)
         if into - play.into <= (play.stop - play.start) * SLOT / RATE + _ECHO_SECONDS
     )
+
+
+def _length(synthesis: Synthesis) -> float:
+    """How long a synthesis plays, in seconds: as long as the TTS made it; and where it has not made all of it, as the
+    clip closes within the first fifth of its play, or never will, cut by a barge-in, as long as its characters take at
+    `_CHARACTERS_PER_SECOND`. Only words played before its making ended are placed so, early in it, where that rate's
+    error is least."""
+    match synthesis.length.seconds:
+        case None:
+            return len(synthesis.text) / _CHARACTERS_PER_SECOND
+        case seconds:
+            return seconds
 
 
 def _left(placed: Placed, sound: Sound) -> Placed:

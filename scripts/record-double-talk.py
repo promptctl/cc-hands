@@ -3,21 +3,23 @@ each take of one of two scripts (`TAKES`). hands_cancelled_and_another for promp
 the speaker, and hands_no_echo_and_another for promptctl-voice-i15t.8vg.0gs, with hands out of no speaker, as in
 headphones: a person saying hands' own words over the middle of hands' sentences. hands_over_an_opening and
 hands_no_echo_over_an_opening for promptctl-voice-i15t.8vg.t1a, the same two ways: a person speaking over the opening of
-a reply that follows a pause.
+a reply that follows a pause. hands_long_sentence for promptctl-voice-i15t.8vg.k6o: one long sentence of hands' alone.
 
 hands' sentences are made by hands' own TTS ('charles', its default voice) and played out of the default speaker, the
 canceller told each as hands tells it; a second voice ('alba'), not told to the canceller, says its lines over them.
 hands' voice goes to the speaker at a gain, 1 at the desk and 0 as in headphones, and to the canceller whole either way. The
 default microphone is heard through the canceller as the desk hears it. The .flac holds, at RATE, the audio as heard
 after the canceller, as captured before it, and the reference each 10 ms of it was matched with; the .json, which of
-hands' sentences each 10 ms was matched with and how far into it, and the lines of both voices with when each began.
+hands' sentences each 10 ms was matched with and how far into it, how long the TTS made each, and the lines of both
+voices with when each began.
 
-Run by hand at a quiet desk with the speaker up, never by a test: each take plays 15 to 16 s of speech aloud.
+Run by hand at a quiet desk with the speaker up, never by a test: each take plays 11 to 16 s of speech aloud.
 
     uv run python scripts/record-double-talk.py hands_cancelled_and_another
     uv run python scripts/record-double-talk.py hands_no_echo_and_another
     uv run python scripts/record-double-talk.py hands_over_an_opening
     uv run python scripts/record-double-talk.py hands_no_echo_over_an_opening
+    uv run python scripts/record-double-talk.py hands_long_sentence
 """
 
 import json
@@ -68,12 +70,20 @@ OPENING = Script(
     ((4.0, "Checking the speech models before we continue with the release."),),
     (("Wait, stop, that is not what I asked.", 1, ""),),
 )
+# One long sentence hands says alone, pausing at its commas, whose late words play far from where a fixed speaking
+# rate places them.
+LONG = Script(
+    "Before we merge this, I checked the canceller, the diarizer, and the speaker check on every recording we kept, and each of them passed, so the next step is a live run at the desk.",
+    (),
+    (),
+)
 # Each take's script, and hands' gain to the speaker: 1 at the desk, 0 as in headphones.
 TAKES = {
     "hands_cancelled_and_another": (DOUBLE_TALK, 1.0),
     "hands_no_echo_and_another": (DOUBLE_TALK, 0.0),
     "hands_over_an_opening": (OPENING, 1.0),
     "hands_no_echo_over_an_opening": (OPENING, 0.0),
+    "hands_long_sentence": (LONG, 1.0),
 }
 LEAD, TAIL = 1.0, 2.0
 BUFFER = 2 * SLOT  # 20 ms, as hands opens both streams
@@ -149,7 +159,7 @@ def main(fixture: Path, script: Script, gain: float) -> None:
     offset = played.index(first) * SLOT / RATE - first.playheads[0].into - onsets[syntheses.index(first.playheads[0].synthesis)]
     slots = [None if reference is None else [syntheses.index(reference.playheads[0].synthesis), round(reference.playheads[0].into, 3)] for reference in played]
     fixture.with_suffix(".json").write_text(
-        json.dumps({"hands": list(script.hands), "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
+        json.dumps({"hands": list(script.hands), "made": [round(len(audio) / RATE, 3) for audio in made], "other": [{"text": text, "start": round(begins + offset, 3)} for text, begins in lines], "played": slots}) + "\n"
     )
     print(f"{fixture}.flac: {len(heard) / 2 / RATE:.2f} s, canceller {echo.counts()}")
 

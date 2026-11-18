@@ -1943,8 +1943,10 @@ hands' own words are kept from the brain by their text and their time, not by wh
 (`hands.voice.whisper`). Whisper decodes a clip hands played over with each word timed, and each
 word it heard is hands' where it takes a word of hands' sentences played over the clip, not yet
 taken, that it is, said or, in a word of five letters or more, spelled Whisper's way, played
-within 1.5 s of when it was heard, the nearest in time. A sentence's words are placed by their
-characters at Pocket TTS's speaking rate, 16 a second, from where the speaker was in the sentence
+within 1.5 s of when it was heard, the nearest in time. A sentence's words are placed at their
+share of its characters of its length, as long as the TTS made it (`clips.Length`: Pocket TTS makes
+a sentence at about 5.6x real time, so its length is known long before its last words play), or,
+for one not yet made whole or never to be, at 16 characters a second, from where the speaker was in the sentence
 as the clip heard it, so a sentence begun before the clip opened has its first words before the
 clip's start, and the rest of a sentence a barge-in cut off, placed more than 1.5 s past the cut, is
 not placed at all: the speaker counts what it has played of each synthesis, and each 10 ms of

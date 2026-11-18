@@ -14,7 +14,8 @@ which sentence each 10 ms was matched with, so what hands played over it is know
 hands_no_echo_and_another.flac is the same take with hands' voice in no speaker, as in headphones: the canceller was told
 it, and the microphone heard only the second voice and the room. hands_over_an_opening.flac and
 hands_no_echo_over_an_opening.flac are another script's two takes the same two ways: a reply hands says alone, a 4 s
-pause, and 'alba' cutting into the next reply as it opens."""
+pause, and 'alba' cutting into the next reply as it opens. hands_long_sentence.flac is a third script's one take at the
+desk: one long sentence of hands' alone."""
 
 import json
 from pathlib import Path
@@ -72,6 +73,8 @@ CANCELLED = Path(__file__).parent / "fixtures" / "hands_cancelled_and_another"
 NO_ECHO = Path(__file__).parent / "fixtures" / "hands_no_echo_and_another"
 OPENING = Path(__file__).parent / "fixtures" / "hands_over_an_opening"
 NO_ECHO_OPENING = Path(__file__).parent / "fixtures" / "hands_no_echo_over_an_opening"
+# One sentence of hands' alone, 179 characters paused at five commas, at the desk: its .json keeps how long the TTS made it.
+LONG_SENTENCE = Path(__file__).parent / "fixtures" / "hands_long_sentence"
 # The second voice's lines on hands_cancelled_and_another.flac, "the build is" and "Say the next step" said where hands
 # says them.
 OVER_CANCELLED = ("No, the build is broken.", "Say the next step again.")
@@ -90,6 +93,9 @@ def take(fixture: Path) -> tuple[np.ndarray, np.ndarray, tuple[tuple[Playhead, .
     playheads of hands' sentence over each 10 ms of it."""
     described = json.loads(fixture.with_suffix(".json").read_text())
     said = tuple(Synthesis("charles", text, begun(VirtualClock())) for text in described["hands"])
+    # As long as the TTS made each, where the take kept it: the takes before hands_long_sentence did not.
+    for synthesis, seconds in zip(said, described.get("made", ()), strict=False):
+        synthesis.length.made(seconds)
     samples, _ = audio(fixture.with_suffix(".flac"))
     playheads = tuple(() if slot is None else (Playhead(said[int(slot[0])], float(slot[1])),) for slot in described["played"])
     return samples[: len(playheads) * SLOT, 1], samples[: len(playheads) * SLOT, 2], playheads
@@ -108,3 +114,10 @@ def replayed(captured: np.ndarray, reference: np.ndarray, playheads: tuple[tuple
         played += cancelled.played
     canceller.close()
     return Sound(bytes(heard), captured[: 2 * SLOT * buffers].tobytes(), tuple(played))
+
+
+def uncancelled(captured: np.ndarray, playheads: tuple[tuple[Playhead, ...], ...]) -> Sound:
+    """What the microphone `captured` heard as it captured it, through no canceller, its `playheads` played over it, an
+    echo of each reaching it."""
+    played = tuple(Reference(bytes(2 * SLOT), RATE, 1, heads, True) if heads else None for heads in playheads)
+    return Sound(captured.tobytes(), captured.tobytes(), played)

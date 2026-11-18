@@ -16,7 +16,7 @@ clip changes for it.
 
 import math
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 import numpy as np
@@ -77,14 +77,37 @@ def decoded(audio: bytes) -> Samples:
     return np.frombuffer(audio, dtype=np.int16).astype(np.float32) / np.float32(32768)
 
 
+class Length:
+    """How many seconds of speech hands' TTS made of a synthesis: None until it has made all of it, and for good where a
+    barge-in cut its making or the TTS failed. Pocket TTS streams a sentence at about 5.6x real time, so its length is
+    known within a fifth of its play, long before its last words play. Written once, by the TTS, on the event loop,
+    where it is read."""
+
+    def __init__(self) -> None:
+        self._seconds: float | None = None
+
+    @property
+    def seconds(self) -> float | None:
+        return self._seconds
+
+    def made(self, seconds: float) -> None:
+        # [LAW:single-enforcer] a synthesis is made once: a sentence said again is a synthesis of its own.
+        if self._seconds is not None:
+            raise RuntimeError(f"a synthesis made twice: {self._seconds} s, then {seconds} s")
+        self._seconds = seconds
+
+
 @dataclass(frozen=True, eq=False)
 class Synthesis:
     """One sentence hands' TTS made into speech: its `text` as the TTS was handed it, in `voice`, `begun` as it was
-    handed it. Each making is one of its own, so a sentence said twice is two."""
+    handed it, and its `length` once made. Each making is one of its own, so a sentence said twice is two."""
 
     voice: str
     text: str
     begun: Begun
+    # [LAW:one-source-of-truth] the length is the synthesis's own, not the playout's: the TTS's Made reaches the playout
+    # only behind the sentence's audio, too late to place what of it played in a clip that closed first.
+    length: Length = field(default_factory=Length)
 
 
 @dataclass(frozen=True)

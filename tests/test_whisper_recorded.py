@@ -12,9 +12,10 @@ import pytest
 
 from hands.virtualclock import VirtualClock
 from hands.voice import vocabulary
-from hands.voice.clips import SLOT, Clip, Sound
-from hands.voice.whisper import Whisper
-from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED, CANCELLED_ALONE, HANDS_ALONE, NO_ECHO, OPENING, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cut_in, played, replayed, take
+from hands.voice import transcription
+from hands.voice.clips import SLOT, Clip, Sound, decoded, plays
+from hands.voice.whisper import Whisper, _placed, _words  # pyright: ignore[reportPrivateUsage]  (where a word is placed is the contract under test)
+from echoes import ANOTHER, ANOTHER_STOPPED, CANCELLED, CANCELLED_ALONE, HANDS_ALONE, LONG_SENTENCE, NO_ECHO, OPENING, OVER_CANCELLED, OVER_HANDS, PLAYED, READ, SENTENCES, STOPPED, cut_in, played, replayed, take, uncancelled
 from speech import RATE, audio, quiet, spoken
 
 pytestmark = pytest.mark.outside
@@ -227,3 +228,29 @@ async def test_hands_heard_alone_over_each_replys_opening_on_the_desks_speaker_s
     alone = Sound(sound.heard[: 2 * SLOT * slots], sound.captured[: 2 * SLOT * slots], (sound.played or ())[:slots])
 
     assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), alone) is None
+
+
+@pytest.mark.parametrize("opened", [0.0, 6.0], ids=["whole", "from its last words"])
+async def test_a_long_sentence_of_hands_heard_uncancelled_sends_nothing(opened: float) -> None:
+    captured, _, playheads = take(LONG_SENTENCE)
+    slot = round(opened * RATE / SLOT)
+
+    assert await whisper(VOCABULARY).transcribed(Clip(1, "shortcut"), uncancelled(captured[slot * SLOT :], playheads[slot:])) is None
+
+
+def test_each_word_of_a_long_sentence_of_hands_is_placed_where_whisper_heard_it() -> None:
+    # Placed by its share of the sentence's length, as the TTS made it, each word is within 0.41 s of where Whisper heard
+    # it, the furthest off at its opening; at a fixed 16 characters a second, the furthest is 0.69 s off, at its end,
+    # and later the slower the sentence.
+    captured, _, playheads = take(LONG_SENTENCE)
+    free = list(_placed(plays(uncancelled(captured, playheads))))
+    heard = [(word, (timed.start + timed.end) / 2) for segment in transcription.segments(decoded(captured.tobytes()), None, words=True) for timed in segment.words for word in _words(timed.text)]
+    off: dict[str, float] = {}
+    for word, at in heard:
+        # In order, each heard word takes the first of hands' that it is; "diariser", spelled Whisper's way, takes none.
+        match = next(((said, when) for said, when in free if said == word), None)
+        if match is not None:
+            free.remove(match)
+            off[f"{word} at {at:.2f}"] = round(match[1] - at, 2)
+
+    assert len(off) >= 30 and all(abs(seconds) <= 0.5 for seconds in off.values()), off

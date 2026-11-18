@@ -284,6 +284,9 @@ class SaidInTTS(PocketTTSService):
                 case _:
                     pass
             yield frame
+        # [LAW:types-are-the-program] only a making that ended whole has a length: what a failed one made is part of one.
+        if failure is None:
+            synthesis.length.made(made)
         # [LAW:nothing-unseen] how long the TTS took to make it, beside how long it plays: its real-time factor.
         yield Made(synthesis, self._clock.now() - synthesis.begun.began, made, failure)
 

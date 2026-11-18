@@ -70,11 +70,13 @@ def as_heard(audio: bytes, played: Played = None) -> Sound:
     return Sound(audio, audio, played)
 
 
-def saying(seconds: float, *sentences: tuple[str, float, float], reached: bool = True) -> Sound:
+def saying(seconds: float, *sentences: tuple[str, float, float], reached: bool = True, made: bool = False) -> Sound:
     """`seconds` of a clip, hands saying each of `sentences` over it, its text from its start to its stop in seconds, one
     synthesis each, as the canceller hands what was played on: one reference for each 10 ms, its echo reaching the
-    microphone or not."""
+    microphone or not; each `made` by the TTS as long as it plays, or not yet made whole."""
     said = [(Synthesis("charles", text, begun(VirtualClock())), start, stop) for text, start, stop in sentences]
+    for synthesis, start, stop in said if made else ():
+        synthesis.length.made(stop - start)
 
     def at(slot: int) -> Reference | None:
         playing = tuple(Playhead(synthesis, slot / 100 - start) for synthesis, start, stop in said if start <= slot / 100 < stop)
@@ -250,6 +252,16 @@ async def test_a_persons_words_heard_in_one_segment_with_hands_sentence_are_said
     clip_heard = await told(saying(2.5, ("Starting the build now.", 0.0, 2.0)))
     # [LAW:nothing-unseen] hands' own words are said apart from noise: dropped as hands' echo, not as nobody's.
     assert (clip_heard.said, clip_heard.echo, clip_heard.dropped) == ("Can you hear me?", ("starting", "the", "build", "now."), ())
+
+
+# 215 characters, said over 16.5 s, at 13 a second: its last word plays 3 s after its characters at 16 a second reach it.
+SLOW = "Before we merge this, I checked the canceller, the diarizer, and the speaker check on every recording we kept, and each of them passed, so the next step is a live run at the desk with the speaker up and nobody near."
+
+
+async def test_the_last_word_of_a_long_slow_sentence_hands_made_is_hands_where_its_share_of_the_length_plays_it(timed: Timed) -> None:
+    timed.segments.append([(" near.", 16.1, 16.4)])
+    clip_heard = await told(saying(17.0, (SLOW, 0.0, 16.5), made=True))
+    assert (clip_heard.said, clip_heard.echo) == (None, ("near.",))
 
 
 async def test_a_word_of_hands_said_long_after_hands_said_it_is_the_persons(timed: Timed) -> None:
