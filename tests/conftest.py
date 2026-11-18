@@ -28,7 +28,6 @@ import huggingface_hub.constants
 import mlx.core as mx
 import mlx_whisper
 import nltk
-import numpy as np
 import pytest
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
@@ -40,7 +39,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM, Clock
+from hands.clock import SYSTEM
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
@@ -50,7 +49,7 @@ from hands.sessions.delta import BASELINING, PATIENCE, Deltas
 from hands.sessions.registry import Sessions
 from hands.sessions.wide import Fact, WideEvent
 from hands.sessions.wrapper import PACKAGED
-from hands.voice import library, streaming, transcription, voiceprints
+from hands.voice import library, streaming, transcription
 from sentences import PUNKT_TAB
 from fetches import Fetches, fetched_apart
 import offline
@@ -365,19 +364,6 @@ def no_streaming_weights(monkeypatch: pytest.MonkeyPatch) -> None:
         return Unspoken()
 
     monkeypatch.setattr(streaming, "load", unspoken)
-
-
-def stood_in(clock: Clock, kept: Path) -> voiceprints.Voiceprints:
-    """hands' voiceprints where no test is about them: a model that prints every voice alike, and a TTS that says
-    anything as a second of silence, its prints kept in `kept`. The real model is test_voiceprints' and test_streaming's."""
-
-    def model() -> voiceprints.Embed:
-        return lambda _voice: np.ones(2, np.float32) / np.sqrt(np.float32(2))
-
-    def speech() -> voiceprints.Synthesize:
-        return lambda _voice, _text: np.zeros(streaming.RATE, np.float32)
-
-    return voiceprints.Voiceprints(clock, model, speech, kept, lambda _entry: None)
 
 
 async def unprimed() -> None:

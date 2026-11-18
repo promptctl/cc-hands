@@ -409,7 +409,7 @@ class ClipOwner(FrameProcessor):
                 pass
 
     async def _heard(self, listener: Listener, clip: Clip, hearing: Hearing, began: Begun) -> None:
-        """One hearing, bounded, and what came of it: a speaker its words clear, in the clip still open, cuts hands off."""
+        """One hearing, bounded, and what came of it: a speaker who says words in the clip still open cuts hands off."""
         # [LAW:nothing-unseen] the listener puts what its model made of the audio on this event, from inside the hearing;
         # its duration runs from when the listener returned it, so one that waited behind another says how long it waited.
         with continuing(None), unit("hearing", self._record, began):
@@ -417,7 +417,7 @@ class ClipOwner(FrameProcessor):
             async with self._clock.timeout(HEARING_SECONDS - (self._clock.now() - began.began)):
                 heard = await hearing()
             annotate(heard="nothing" if heard.words is None else "words")
-            # A speaker a listener's words cleared cuts while their clip is still open. Heard once it has closed, they cut
+            # A speaker a listener hears say words cuts while their clip is still open. Heard once it has closed, they cut
             # nothing, and the clip's close says what it held.
             match heard.barge_in_at:
                 case None:

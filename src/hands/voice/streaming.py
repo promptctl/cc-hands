@@ -8,9 +8,6 @@ runs one cache-aware FastConformer-RNNT stream per speaker, so a word comes out 
 taken back. hands keeps one session for the run and feeds it only the clips, so a speaker keeps its number from the first
 clip to the last: a new session, or the session's own end, numbers everyone from 0 again (promptctl-voice-i15t.99s.gaq).
 
-Each hearing hands each speaker's voice in the clip, the frames the diarizer heard them in, to be identified against
-hands' own (`hands.voice.voiceprints`), after its words have gone out.
-
 It is one listener on the clip owner (`hands.voice.clipowner`), which cuts hands off on the first words a speaker says in a
 clip still open: the sound it hears has hands' voice taken out of it (`hands.voice.echo`), so speech left in it is a
 person's, and a turn the voice opened cuts while the user is still speaking over hands, not once they stop.
@@ -19,7 +16,6 @@ batch models measured beside it), so the transcriber (`hands.voice.whisper`) say
 """
 
 import math
-from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -30,10 +26,9 @@ from loguru import logger
 from hands.clock import Clock
 from hands.sessions.audit import Record
 from hands.sessions.wide import annotate
-from hands.voice import loads, voiceprints
+from hands.voice import loads
 from hands.threads import SerialThread
-from hands.voice.clips import RATE, SLOT, Clip, Fate, Heard, Hearings, Samples, Sound, decoded, slots
-from hands.voice.voiceprints import WINDOW, Identifier, Voiced
+from hands.voice.clips import RATE, Clip, Fate, Heard, Hearings, Samples, Sound, decoded
 
 # The models, fetched from the Hugging Face hub into its cache on the first load, at the revisions measured for them.
 MODEL = "nvidia/nemotron-speech-streaming-en-0.6b"
@@ -151,134 +146,77 @@ def joined(texts: Iterable[str | None]) -> str | None:
     return " ".join(text for text in texts if text) or None
 
 
-# The voices of hands' TTS that may be in each 10 ms of a stretch of a clip, in order (`hands.voice.clips.slots`).
-type Echoed = tuple[tuple[str, ...], ...]
-
-
-class _Tape:
-    """The clip open's samples, from where the run was when it opened, the first `kept` of them what it kept from before
-    it opened, and the voices of hands' that may be in each 10 ms of them: grown in place, so a frame of it is a slice."""
+class _Extent:
+    """Where the clip open falls in the run: `start` samples into it, the first `kept` of the clip what it kept from before
+    it opened, `length` samples in all."""
 
     def __init__(self, start: int, kept: int) -> None:
         self.start = start
         self.kept = kept
-        self._samples = np.zeros(RATE, np.float32)
-        self._echoed = list[tuple[str, ...]]()
         self.length = 0
 
-    def add(self, samples: Samples, echoed: Echoed) -> None:
-        wanted = self.length + len(samples)
-        if wanted > len(self._samples):
-            # Doubled as it fills: a clip of any length is copied a few times, not at every frame.
-            grown = np.zeros(max(wanted, 2 * len(self._samples)), np.float32)
-            grown[: self.length] = self._samples[: self.length]
-            self._samples = grown
-        self._samples[self.length : wanted] = samples
-        # One slot for each 10 ms, none echoed where nothing says what was.
-        slots = -(-len(samples) // SLOT)
-        self._echoed += [*echoed[:slots], *[()] * (slots - len(echoed))]
-        self.length = wanted
-
-    def frame(self, frame: int) -> tuple[Samples, tuple[str, ...], int]:
-        """The samples of the run's encoder frame `frame` that are the clip's, none for a frame before it opened or in
-        the silence after it, every voice of hands' that may be in them, and the sample of the clip's audio they begin at,
-        counted from its first, what it kept from before it opened."""
+    def frame(self, frame: int) -> float | None:
+        """How many seconds after the clip opened the run's encoder frame `frame` begins, None for a frame with none of the
+        clip's samples in it, before the clip opened or in the silence after it."""
         start = min(max(frame * FRAME - self.start, 0), self.length)
         end = min(max((frame + 1) * FRAME - self.start, 0), self.length)
-        voices = dict.fromkeys(voice for slot in self._echoed[start // SLOT : -(-end // SLOT)] for voice in slot)
-        return self._samples[start:end], tuple(voices), start
-
-
-@dataclass
-class _Voice:
-    """One speaker of the clip open: how many seconds after it opened they were first heard; the latest WINDOW of where
-    the diarizer heard them, overlap included, each frame of it with whether another speaker was heard in it too; how
-    many seconds of them in all; every voice of hands' that may be in them; and how many rows of the table they have been handed to be identified at."""
-
-    first: float
-    latest: deque[tuple[Samples, bool]] = field(default_factory=deque[tuple[Samples, bool]])
-    # How many samples `latest` holds, kept as it changes.
-    held: int = 0
-    seconds: float = 0.0
-    echoed: dict[str, None] = field(default_factory=dict[str, None])
-    reached: int = 0
-
-    def add(self, heard: Samples, shared: bool, echoed: tuple[str, ...]) -> None:
-        self.latest.append((heard, shared))
-        self.held += len(heard)
-        # The oldest frame let go of while the window is whole without it.
-        while self.held - len(self.latest[0][0]) >= round(WINDOW * RATE):
-            self.held -= len(self.latest.popleft()[0])
-        self.seconds += len(heard) / RATE
-        self.echoed |= dict.fromkeys(echoed)
-
-    def voiced(self, speaker: int) -> Voiced:
-        """The speaker as they are to be scored: their latest WINDOW, and how much of it was shared."""
-        voice = np.concatenate([samples for samples, _ in self.latest])
-        # The oldest frame kept is cut to the window, and its share with it.
-        cut = max(0, self.held - round(WINDOW * RATE))
-        shared = sum(len(samples) for samples, shared in self.latest if shared) - (cut if self.latest[0][1] else 0)
-        return Voiced(speaker, voice[cut:], self.seconds, shared / RATE, tuple(self.echoed), self.first)
+        return (start - self.kept) / RATE if end > start else None
 
 
 @dataclass
 class _OpenClip:
     """The clip open, as the stream heard it: each speaker's text decoded since it opened, in the order they were first
-    heard in it, how much of each speaker's words hearings have said, its samples, each speaker's voice in it, and its
-    close, which closes no stream until the silence after it is heard."""
+    heard in it, how much of each speaker's words hearings have said, where it falls in the run, how many seconds after
+    it opened each speaker was first heard, and its close, which closes no stream until the silence after it is heard."""
 
-    tape: _Tape
+    extent: _Extent
     text: dict[int, str] = field(default_factory=dict[int, str])
     said: dict[int, int] = field(default_factory=dict[int, int])
-    voices: dict[int, _Voice] = field(default_factory=dict[int, _Voice])
+    first_heard: dict[int, float] = field(default_factory=dict[int, float])
     closed: Closed = Closed(frozenset(), ())
 
 
 @dataclass(frozen=True)
 class Since:
-    """What a hearing of the clip open found since the last: the words each speaker added, each speaker who has
-    reached a row of the voiceprint table they had not, to be identified at it, and when the first speaker who added
-    words was first heard, None for none."""
+    """What a hearing of the clip open found since the last: the words each speaker added, and when the first speaker who
+    added words was first heard, None for none."""
 
     added: Spoken
-    reached: tuple[Voiced, ...]
     barge_in_at: float | None
 
 
 @dataclass(frozen=True)
 class Ended:
     """A clip, once the stream heard the silence after it: every word each speaker said in it, how many seconds of it
-    were heard, its close, whose words are among them, and every speaker heard in it, with their voice in it."""
+    were heard, and its close."""
 
     words: Spoken
     seconds: float
     closed: Closed
-    voices: tuple[Voiced, ...]
 
 
 class Stream:
-    """The run's streaming recognition: one session of the pair for the whole run, fed only clips, and each speaker's
-    voice in each clip.
+    """The run's streaming recognition: one session of the pair for the whole run, fed only clips.
 
     [LAW:one-source-of-truth] a clip's words are what the session decoded from its opening to the silence after it, so a
-    word belongs to one clip and one speaker, and a speaker keeps its number from the first clip to the last. A speaker's
-    voice is where the session's own diarizer heard them, so their words and the voice they are identified by are the
-    same frames.
+    word belongs to one clip and one speaker, and a speaker keeps its number from the first clip to the last. When a
+    speaker was first heard is where the session's own diarizer first marked them, so their words and the time they cut
+    hands off at are the same frames.
     """
 
     def __init__(self, session: Session) -> None:
         self._session = session
-        self._open = _OpenClip(_Tape(0, 0))
+        self._open = _OpenClip(_Extent(0, 0))
 
-    def opened(self, samples: Samples, start: int, echoed: Echoed) -> None:
+    def opened(self, samples: Samples, start: int) -> None:
         """A clip opens, `start` samples into the run, with `samples`, what it kept from before it opened: its words start
         with what they decode to."""
-        self._open = _OpenClip(_Tape(start, len(samples)))
-        self.heard(samples, echoed)
+        self._open = _OpenClip(_Extent(start, len(samples)))
+        self.heard(samples)
 
-    def heard(self, samples: Samples, echoed: Echoed) -> None:
-        """More of the clip open, and the voices of hands' that may be in it."""
-        self._open.tape.add(samples, echoed)
+    def heard(self, samples: Samples) -> None:
+        """More of the clip open."""
+        self._open.extent.length += len(samples)
         self._decoded(samples)
 
     def silence(self, samples: int) -> None:
@@ -291,46 +229,38 @@ class Stream:
     def _decoded(self, samples: Samples) -> None:
         decoded = self._session.decoded(samples)
         self._added(decoded.words)
-        speakers = Counter(active.frame for active in decoded.active)
         for active in decoded.active:
-            self._voiced(active, speakers[active.frame] > 1)
+            self._heard(active)
 
     def _added(self, spoken: Spoken) -> None:
         for said in spoken:
             self._open.text[said.speaker] = self._open.text.get(said.speaker, "") + said.text
 
-    def _voiced(self, active: Active, shared: bool) -> None:
-        """A frame more of a speaker's voice, where it falls in the clip: a frame with none of the clip's samples in it,
-        before the clip or in the silence after it, is none of anyone's voice."""
-        heard, echoed, at = self._open.tape.frame(active.frame)
-        if len(heard):
-            self._open.voices.setdefault(active.speaker, _Voice((at - self._open.tape.kept) / RATE)).add(heard, shared, echoed)
+    def _heard(self, active: Active) -> None:
+        """A speaker heard in a frame, where it falls in the clip: a frame with none of the clip's samples in it, before the
+        clip or in the silence after it, is none of anyone's voice."""
+        at = self._open.extent.frame(active.frame)
+        if at is not None:
+            self._open.first_heard.setdefault(active.speaker, at)
 
     def said(self) -> Since:
-        """The words each speaker added to the clip open since this was last asked, each speaker who has reached a row of
-        the table since, and when the first speaker who added words was first heard:
-        [LAW:single-enforcer] a speaker is handed on once for each row, here alone."""
-        clip, added, reached = self._open, list[Said](), list[Voiced]()
+        """The words each speaker added to the clip open since this was last asked, and when the first speaker who added
+        words was first heard."""
+        clip, added = self._open, list[Said]()
         for speaker, text in clip.text.items():
             known = words(text) or ""
             new, clip.said[speaker] = words(known[clip.said.get(speaker, 0) :]), len(known)
             added += [Said(speaker, new)] if new else []
-        for speaker, voice in clip.voices.items():
-            rows = voiceprints.reached(voice.seconds)
-            if rows > voice.reached:
-                voice.reached = rows
-                reached.append(voice.voiced(speaker))
         # [LAW:single-enforcer] the one rule of who cuts hands off: a speaker who says words. A sound the diarizer took for
         # a speaker with no words in it, a cough, cuts nothing.
-        barge_in_at = min((clip.voices[said.speaker].first for said in added if said.speaker in clip.voices), default=None)
-        return Since(tuple(added), tuple(reached), barge_in_at)
+        barge_in_at = min((clip.first_heard[said.speaker] for said in added if said.speaker in clip.first_heard), default=None)
+        return Since(tuple(added), barge_in_at)
 
     def ended(self) -> Ended:
-        """The clip open, heard to the silence after it, with every speaker heard in it."""
+        """The clip open, heard to the silence after it."""
         clip = self._open
         spoken = tuple(Said(speaker, said) for speaker, text in clip.text.items() if (said := words(text)))
-        voices = tuple(voice.voiced(speaker) for speaker, voice in clip.voices.items())
-        return Ended(spoken, round(clip.tape.length / RATE, 3), clip.closed, voices)
+        return Ended(spoken, round(clip.extent.length / RATE, 3), clip.closed)
 
 
 @dataclass(frozen=True)
@@ -341,18 +271,18 @@ class Broken:
 
     error: str
 
-    def opened(self, samples: Samples, start: int, echoed: Echoed) -> None:
+    def opened(self, samples: Samples, start: int) -> None:
         """A clip no model hears."""
 
-    def heard(self, samples: Samples, echoed: Echoed) -> None:
+    def heard(self, samples: Samples) -> None:
         """Samples no model hears."""
 
     def silence(self, samples: int) -> None:
         """Silence no model hears."""
 
     def said(self) -> Since:
-        """No word, and nobody, which the clip's end says why of."""
-        return Since((), (), None)
+        """No word, which the clip's end says why of."""
+        return Since((), None)
 
     def ended(self) -> Ended:
         raise RuntimeError(self.error)
@@ -372,18 +302,15 @@ class StreamingRecognizer:
     # The run's stream, set by the thread's first work and read only by the work queued behind it, on the same thread.
     _stream: Stream | Broken
 
-    def __init__(self, clock: Clock, model: Callable[[int], Session], identify: Identifier, record: Record) -> None:
+    def __init__(self, clock: Clock, model: Callable[[int], Session], record: Record) -> None:
         self._clock = clock
         self._record = record
-        self._identify = identify
         # The models load on the thread first, so clips spoken while they load wait behind them, and nothing else does.
         self._thread = SerialThread("Streaming")
         self._thread.give(lambda: self._load(model))
         # [LAW:one-source-of-truth] the samples the run's stream has been given, the silence after each clip included:
         # the diarizer's steps they complete are where the stream's words change, and where a frame falls in a clip.
         self._fed = 0
-        # The clip open, or the last one, as the owner told it.
-        self._clip = Clip(0, "shortcut")
 
     def _load(self, model: Callable[[int], Session]) -> None:
         """The run's stream, on the pair made at GATING; or, where it fails to load, one that fails each clip with why.
@@ -406,15 +333,14 @@ class StreamingRecognizer:
 
     def opened(self, clip: Clip, before: Sound) -> Hearings:
         """`clip` opens: what it kept from before it opened is the start of its words."""
-        samples, start, voices = decoded(before.heard), self._fed, slots(before)
-        self._clip = clip
-        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start, voices)))
+        samples, start = decoded(before.heard), self._fed
+        self._thread.give(lambda: self._moved(lambda stream: stream.opened(samples, start)))
         return self._fed_with(len(samples))
 
     def heard(self, sound: Sound) -> Hearings:
         """More of the clip open, decoded on the thread behind everything given before it."""
-        samples, voices = decoded(sound.heard), slots(sound)
-        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples, voices)))
+        samples = decoded(sound.heard)
+        self._thread.give(lambda: self._moved(lambda stream: stream.heard(samples)))
         return self._fed_with(len(samples))
 
     def _moved(self, move: Callable[[Stream | Broken], None]) -> None:
@@ -428,27 +354,10 @@ class StreamingRecognizer:
             logger.opt(exception=error).error("the streaming session's decoding broke; no clip is heard live from here")
             self._stream = Broken(f"decoding failed: {type(error).__name__}: {error}")
 
-    def _ended(self, clip: Clip, silence: int) -> Ended:
-        """The clip open, heard through the silence after it, on the thread, and every speaker in it handed on to be
-        identified at its end. [LAW:single-enforcer] a clip's end is handed on here whatever comes of it, nobody in it
-        for a clip the stream could not hear: the identifier lets go of all it held for the clip, and no hearing that
-        fails or runs out of time on the owner's side can skip it."""
-        voices: tuple[Voiced, ...] = ()
-        try:
-            self._moved(lambda stream: stream.silence(silence))
-            heard = self._stream.ended()
-            voices = heard.voices
-            return heard
-        finally:
-            self._identify.ended(clip, voices)
-
-    def _said(self, clip: Clip) -> Since:
-        """What the stream found since the last hearing, on the thread, each speaker who reached a row handed on to be
-        identified in the same step that marked the row reached, so a hearing cancelled after it loses none."""
-        since = self._stream.said()
-        if since.reached:
-            self._identify.identify(clip, since.reached)
-        return since
+    def _ended(self, silence: int) -> Ended:
+        """The clip open, heard through the silence after it, on the thread."""
+        self._moved(lambda stream: stream.silence(silence))
+        return self._stream.ended()
 
     def _fed_with(self, samples: int) -> Hearings:
         """A hearing of the clip open where `samples` more complete a step of the diarizer's, and none where they do not:
@@ -459,10 +368,7 @@ class StreamingRecognizer:
             case 0:
                 return ()
             case _:
-                # Who said them is worked out on the voiceprints' own lane, each speaker as they reach a row of its table:
-                # the words go out without waiting on it.
-                clip = self._clip
-                said = self._thread.settles(lambda: self._said(clip))
+                said = self._thread.settles(lambda: self._stream.said())
 
                 async def hear() -> Heard:
                     since = await said
@@ -474,10 +380,9 @@ class StreamingRecognizer:
 
     def ended(self, clip: Clip, fate: Fate, sound: Sound) -> Hearings:
         """The clip open ends, sent or dropped: every word each speaker said in it, the last of them after it closed,
-        which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same clip.
-        Every speaker heard in it is identified at its end."""
+        which cut nothing; told so what hands heard live can be read beside what the transcriber heard of the same clip."""
         silence = through(self._fed) - self._fed
-        ended = self._thread.settles(lambda: self._ended(clip, silence))
+        ended = self._thread.settles(lambda: self._ended(silence))
         self._fed += silence
 
         async def close() -> Heard:

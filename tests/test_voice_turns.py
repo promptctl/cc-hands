@@ -36,7 +36,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.filters.identity_filter import IdentityFilter
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from conftest import events, model_facts, patiently, running, stood_in, unprimed
+from conftest import events, model_facts, patiently, running, unprimed
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -59,7 +59,6 @@ from hands.core.session import Held, Membership, Permission, RequestId, Running,
 from hands.core.status import Busy, Stamp
 from hands.voice.speech import Aloud, Narrated, Unprompted
 from hands.voice.clips import Clip, Reference, Sound, Playhead, Synthesis
-from hands.voice.voiceprints import Voiceprints
 from hands.voice.turnstop import TurnOpened, TurnResolved, Typed
 from hands.voice import clipowner, desk, shortcut, streaming
 from hands.voice.desk import Act
@@ -274,11 +273,6 @@ async def rig(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator
         yield made
 
 
-def voiceprints_stood_in(kept: Path) -> Voiceprints:
-    """The voiceprints the rig stands in where a test makes none of its own."""
-    return stood_in(SYSTEM, kept)
-
-
 @asynccontextmanager
 async def rigged(
     monkeypatch: pytest.MonkeyPatch,
@@ -286,10 +280,8 @@ async def rigged(
     llm: FrameProcessor,
     behind: list[FrameProcessor],
     watching: Sequence[BaseObserver] = (),
-    prints: Callable[[Path], Voiceprints] = voiceprints_stood_in,
 ) -> AsyncGenerator[Rig]:
-    """The rig, with `behind` run behind what records the user's turns, `watching` beside the latency observer, and hands'
-    voiceprints kept where `prints` keeps them."""
+    """The rig, with `behind` run behind what records the user's turns, and `watching` beside the latency observer."""
     monkeypatch.setattr(built, "SaidInTTS", NoSpeech)
     recorded: list[Entry] = []
     primed: list[None] = []
@@ -311,7 +303,6 @@ async def rigged(
         player=Player(recorded.append),
         floor=Floor(lambda id: id, dict, SYSTEM),
         prompt=vocabulary,
-        prints=prints(tmp_path / "voiceprints"),
         clips=tmp_path / "clips",
         record=recorded.append,
     )
@@ -500,14 +491,12 @@ class Speaker(FrameProcessor):
 
 
 @asynccontextmanager
-async def reading(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prints: Callable[[Path], Voiceprints] = voiceprints_stood_in
-) -> AsyncGenerator[tuple[Rig, list[Entry], "asyncio.Task[bool]"]]:
+async def reading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncGenerator[tuple[Rig, list[Entry], "asyncio.Task[bool]"]]:
     """The rig with the player behind it, as the pipeline stands it ahead of the speaker, partway through reading a reply,
     and a line said through `heard` waiting on the speaker: what the player records, and that line's waiter."""
     cut: list[Entry] = []
     player, speaker, output = Player(cut.append), IdentityFilter(), Speaker()
-    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [player.lines, speaker, output], [player.watching(speaker, output)], prints) as rig:
+    async with rigged(monkeypatch, tmp_path, FrameProcessor(), [player.lines, speaker, output], [player.watching(speaker, output)]) as rig:
         await rig.worker.queue_frames([spoken("The parser is fixed."), spoken("Its tests pass.")])
         line = asyncio.create_task(player.heard(hands_says("Shall I push it?")))
         try:

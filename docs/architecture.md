@@ -1915,21 +1915,6 @@ its first work (`streaming.loaded`), so the voice starts without them and clips 
 are heard behind them; models that fail to load, or decoding that fails, fail the end of that
 clip and every clip's after it, with why.
 
-Each speaker in each clip is identified by their voice (`hands.voice.voiceprints`), which decides no cut. The session's own diarizer decisions, the frames each speaker
-is active in at the threshold their stream is masked by, are read out of it as it takes each
-chunk, and the clip's samples in those frames are that speaker's voice in the clip; a frame two
-speakers share is in both, and counted as shared. A speaker is handed to the voiceprint lane
-(`Voiceprints`, a thread of its own) once as their heard seconds first reach each row of the
-table, and once more as the clip ends, after the hearing's words have gone out, so no words wait
-on it. The lane scores their latest 3 s with 3D-Speaker's ERes2Net, run by sherpa-onnx on the
-CPU, against hands' own voiceprints, and says who each was on a `voiceprints.identified` unit:
-the score, the seconds heard, and the window scored with how much of it was shared, the input a
-refit fits on. One table of score thresholds by length decides: under 1 s, `Unheard`; from 1 s under
-0.25, from 1.5 s under 0.55, from 3 s under 0.70, a `Person`; from 3 s at or over it, `Hands`;
-otherwise `Unsure`. At the clip's end only, a closing row (`CLOSING`) adds from 0.5 s under
-0.19 a `Person`, so a wake phrase said alone over hands is told at its length. A person stays one for the rest of their clip, kept by clip number, since a
-clip's end can be identified after the next clip opens.
-
 A turn's words are what Whisper hears of the clip, sent whole (`hands.voice.whisper`): the sound it hears has hands' own voice
 taken out of it by the canceller (`hands.voice.echo`), so every word it writes is a person's, hands' own words said at the same
 moment included, and no rule compares them with what hands played. A segment is dropped only as noise: one with no word, one the
@@ -1944,14 +1929,6 @@ stretch longer than half a second, in the lead or in the middle of a clip, is cu
 Whisper answers a long quiet lead with the vocabulary's own words, sure of them, and the person's are lost. The same takes are
 held whole, from their first sample, as the hold of a key the person speaks late into, and each sends every word the person said.
 
-hands' voiceprints are made from its own Pocket TTS output, never from a person. Each voice is
-enrolled once ever: on an enrolment thread, with a Pocket TTS model loaded for that one print
-and let go of after (`enrolment.loaded`, `voiceprints.enrolled`). The print is kept in
-`voiceprints/<revision>/` in the home and read back by later runs (`voiceprints.recalled`).
-Choosing a voice passes at once. hands holds the print of the voice it speaks in and of the
-one before the last change. The model loads on the lane as its first work (`voiceprints.loaded`),
-off the voice's build.
-
 hands knows which sentences, in which voice, it played under each 10 ms of what the microphone heard. Its TTS
 (`hands.voice.voices.SaidInTTS`) sends a `SpeakingIn` frame ahead of each synthesis's audio and a
 `Made` behind it. The speaker cuts that audio into Pipecat's chunks itself, each of one synthesis, so
@@ -1959,9 +1936,7 @@ the sender never joins two, and ends each synthesis it opened with one uninterru
 (`hands.voice.synthesis`). The sender queues both in line with the chunks, and the speaker labels
 each chunk of TTS audio it writes with the synthesis whose `SpeakingIn` it last wrote; the
 transport's own silence and padding carry none. The playout carries the label to the echo canceller. On the capture thread, the canceller keeps a
-10 ms reference only for a frame of labelled, non-silent TTS audio, and None for every other frame. A speaker is `Unidentified` with the reason when nothing can score
-them against every voice they may be: the model did not load, there is no print yet of the voice
-hands speaks in, or hands played a voice over them that it holds no print of.
+10 ms reference only for a frame of labelled, non-silent TTS audio, and None for every other frame.
 
 Every clip is kept on disk by one more listener, the recorder (`hands.voice.recorder`), in a
 directory of the run's own under `clips/` in the home, claimed so two runs started in the same
@@ -1971,17 +1946,9 @@ speaker played it and put in the clip's format only as the clip is written, so t
 sample for sample; the phone has none. Beside them go what opened the clip, what the gate did
 with it, and each sentence hands said over it, in which voice, with when.
 
-The recorder also keeps hands' echo as labelled data. A buffer counts as hands' echo when all
-three hold as it is captured: the desk is at the off level with no press (the gate's key is up,
-so only the shortcut could open a clip), and a frame of it carries hands' TTS. Then what the
-microphone overhears is nobody's but hands'. Each stretch of such buffers is an echo span,
-`echo-<span>.*` in the same directory, its `.json` saying no clip was open. It is identified as
-one voice at its end, on a `voiceprints.identified` unit carrying the span number. A press or a
-change of level ends the span. The store is kept under 2 GB by deleting whole runs, oldest first
-and never the current one (`clips.pruned`). The size is counted once as the run's directory is
-claimed and kept as a running total after that. So shortcut use is the data the voiceprint
-table is refitted on (`scripts/measure-voiceprints.py`, promptctl-voice-i15t.8vg.xvr). A clip
-that cannot be written fails its `hearing` event with why, and a span its `echo.kept` event.
+The store is kept under 2 GB by deleting whole runs, oldest first and never the current one
+(`clips.pruned`). The size is counted once as the run's directory is claimed and kept as a running
+total after that. A clip that cannot be written fails its `hearing` event with why.
 
 **A lost device is followed, not waited on.** PortAudio does not report a device
 that disappears. Measured on 2026-09-24 against a CoreAudio aggregate device destroyed

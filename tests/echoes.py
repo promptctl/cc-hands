@@ -1,11 +1,5 @@
-"""hands' own voice through the room, uncancelled, and a person over it, recorded at the desk for
-promptctl-voice-i15t.99s.zoj, and what hands played as each was recorded.
-
-hands_echo_uncancelled.flac is the MacBook's microphone, no canceller, as hands said eight sentences ('charles', its
-default voice) out of its speakers; hands_and_another.flac is another play of the same sentences, with a second voice
-('alba') saying five lines over hands until about 14.3 s, and hands alone after. hands_tts.flac is hands' own TTS output
-in that voice, the first three sentences, which the print is made from as hands makes its own. The list hands played
-from was not kept, so when each sentence began is read off each recording.
+"""hands' own voice through the room and a person over it, recorded at the desk for promptctl-voice-i15t.99s.zoj, and
+what hands played as each was recorded.
 
 hands_cancelled_and_another.flac is the desk heard through hands' echo canceller (scripts/record-double-talk.py): its
 channels as heard after the canceller, as captured before it, and the canceller's reference; three of hands' sentences
@@ -33,20 +27,6 @@ from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Played, Reference, Playhead, Sound, Synthesis
 from hands.voice.echo import EchoCanceller
 from speech import audio
-
-# When each of hands' sentences began on hands_echo_uncancelled.flac, in seconds from PLAYED.
-PLAYED = 0.5
-SENTENCES = (0.0, 4.92, 8.56, 12.04, 15.68, 19.56, 23.36, 26.52)
-# And when its play stopped.
-STOPPED = PLAYED + 29.7
-
-# When each began on hands_and_another.flac, in seconds from its start: where Whisper first hears it, unprimed where it
-# heard it alone ("I can hear you." 11.7 s, the fourth to sixth sentences' segments), primed where the person hides its
-# start ("starting" 5.0 s, past "Hands here.", "phosphene" 8.4 s); the seventh and eighth, and the stop, past the end of
-# the recording at 24 s, by the uncancelled play's gaps. Its play is not the uncancelled one's: 1.4 to 3.5 s later.
-ANOTHER = (4.0, 8.3, 11.6, 15.0, 18.2, 21.4, 25.2, 28.4)
-ANOTHER_STOPPED = 31.6
-OVER_HANDS, HANDS_ALONE = (0.0, 14.6), (15.0, 24.0)
 
 # hands' eight sentences, as its TTS was given them: read back off the recordings one sentence at a time, the names as
 # hands' vocabulary spells them.

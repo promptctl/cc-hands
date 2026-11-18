@@ -608,7 +608,7 @@ def test_the_canceller_is_given_the_syntheses_in_each_buffer_the_device_takes_an
     assert [playheads for *_, playheads in room.plays] == [(Playhead(alba, 0.0), Playhead(mary, 0.0)), (Playhead(mary, 0.0075),), ()]
 
 
-async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_stood(devices: Rig) -> None:
+async def test_the_desk_is_overheard_with_what_was_played_and_whether_hands_is_there(devices: Rig) -> None:
     async with devices.microphone.echoes() as echoes:
         await devices.capture(at=1.0)  # the off level, no press
         devices.key.move("listen", "wake word")
@@ -620,12 +620,12 @@ async def test_the_desk_is_overheard_with_what_was_played_and_where_the_gate_sto
         devices.key.move("start", "phone button")
         await devices.capture(at=1.08)  # hands at the phone, the desk's clip sent
         heard = [await anext(echoes) for _ in range(5)]
-    assert [(each.cancelled, each.desk, each.key) for each in heard] == [
-        (Cancelled(CLEANED, PLAYED), True, "up"),
-        (Cancelled(CLEANED, PLAYED), True, "listening"),
-        (Cancelled(CLEANED, PLAYED), True, "down"),
-        (Cancelled(CLEANED, PLAYED), True, "down"),
-        (Cancelled(CLEANED, PLAYED), False, "down"),
+    assert [(each.cancelled, each.desk) for each in heard] == [
+        (Cancelled(CLEANED, PLAYED), True),
+        (Cancelled(CLEANED, PLAYED), True),
+        (Cancelled(CLEANED, PLAYED), True),
+        (Cancelled(CLEANED, PLAYED), True),
+        (Cancelled(CLEANED, PLAYED), False),
     ]
 
 

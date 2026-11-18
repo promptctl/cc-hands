@@ -66,8 +66,7 @@ from hands.voice.keys import drive_quit, tapped
 from hands.voice.phonepage import serve_phone
 from hands.voice.turnstop import Typed
 from hands.voice.floor import Floor
-from hands.voice import memory, voiceprints
-from hands.voice.voiceprints import Voiceprints
+from hands.voice import memory
 from hands.voice.refocus import Refocus
 from hands.voice.vocabulary import Lexicon
 from hands.voice.readback import identifier, spoken_name
@@ -290,13 +289,9 @@ async def run(
         # [LAW:one-source-of-truth] the one environment the run was handed: the settings' secrets, git's, and the brain's alike.
         config = await start(lambda: configured(lambda: configure(environment), survey, home, sessions, run_start), heart, sessions.live_count, degraded, stop, clock)
         if config is not None:
-            # [LAW:one-source-of-truth] one keeper of hands' own voiceprints: the voice's build says the voice hands speaks
-            # in, the chooser each one it changes to. Its model loads on a thread of its own once the voice is built, so
-            # nothing waits on it.
-            prints = Voiceprints(clock, voiceprints.load, voices.pocket, home.voiceprints, record)
             # [LAW:single-enforcer] one chooser of the voice: the voice tools and the phone's page share its lock, so a
             # hearing or a choice on one never interleaves with the other's in the speaker.
-            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock), prints.speaking_in)
+            voice_choices = voices.Voices(home, player.lines, voices.fetched, Library(clock))
             tools = [audited(clock, tool, record) for tool in intermediary_tools(sessions, store, home, recounts, player, refocus, key.switch, levels, config.wake, own, voice_choices, Catalogue(credentials(environment), clock), environment, lambda: quiet_cues.owe(WORKING))]
             # The page's own reads and choices, each the one its tool makes: the same chooser, level, key, model, and speaker.
             gallery = Gallery(voices=voice_choices, levels=levels, desk=key, own=own, speaker=player, wake=config.wake, models=CLAUDE_MODELS)
@@ -312,7 +307,7 @@ async def run(
                 # What Whisper is primed with, read as each clip is transcribed.
                 lexicon = Lexicon(sessions, home, environment, record)
                 floor = Floor(lambda id: spoken_name(sessions, id), sessions.live_sessions, clock)
-                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, prints, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
+                voice = await start(lambda: off_loop(lambda: build_voice(clock, config, minded.llm, key, player, floor, lexicon, home.clips, record), "the voice load"), heart, sessions.live_count, degraded, stop, clock)
                 if voice is not None:
                     summarise = minded.summariser(AsideKind.SUMMARY, SUMMARY_INSTRUCTION, SUMMARIES_TIMEOUT_SECONDS)
                     await converse(clock, voice, home, sessions, tails, reader, heart, degraded, stop, after_crash, record, deltas, minded, store, summarise, names, recounts, quiet_cues, levels, config.wake, run_start, environment, gallery)
@@ -474,14 +469,6 @@ async def converse(
     cueing = asyncio.create_task(cue_silence_once_started(), name="the cues for silence")
     cueing.add_done_callback(stop_if_failed)
     background.append(cueing)
-    async def keep_echoes_once_started() -> None:
-        # As for the talk key: the desk is overheard once the pipeline has opened its streams.
-        await pipeline.started.wait()
-        await voice.recorder.overhear(voice.audio.input().echoes)
-
-    echoes = asyncio.create_task(keep_echoes_once_started(), name="the echo spans")
-    echoes.add_done_callback(stop_if_failed)
-    background.append(echoes)
     talk_key = asyncio.create_task(drive_desk_once_started(), name="the desk's trigger")
     talk_key.add_done_callback(stop_if_failed)
     background.append(talk_key)

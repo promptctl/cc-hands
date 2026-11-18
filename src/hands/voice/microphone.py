@@ -59,7 +59,7 @@ from hands.sessions.wide import annotate, begun, count, unit
 from hands.voice.echo import COUNTS, SAMPLE_BYTES, Cancelled, Echo, EchoCanceller, frame_bytes, seconds
 from hands.voice.phone import Phone
 from hands.voice.portaudio import Channels, Lists, default_input, device_index, name_of
-from hands.voice.ptt import Key, PushToTalk
+from hands.voice.ptt import PushToTalk
 from hands.voice.turnstop import TurnOpened
 from hands.voice.synthesis import Chunking, Cutter, Ended, Made, Piece, SpeakingIn, Synthesis, Syntheses, Taken
 from hands.threads import SerialThread, off_loop, tell
@@ -88,13 +88,10 @@ REOPEN_DEADLINE = timedelta(seconds=10)
 @dataclass(frozen=True)
 class Overheard:
     """A buffer of the desk's microphone through the echo canceller, whatever the key: what it heard and what the
-    speaker played over it; whether the desk is where hands is, the gate's say, the desk heard as silence where not; and
-    the gate's key as it was captured, which says both the press and the level: up at the desk is the off level with no
-    press, where nothing but the shortcut opens a clip."""
+    speaker played over it; and whether the desk is where hands is, the gate's say, the desk heard as silence where not."""
 
     cancelled: Cancelled
     desk: bool
-    key: Key
 
 
 class Stream(Protocol):
@@ -746,8 +743,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
 
     @asynccontextmanager
     async def echoes(self) -> AsyncGenerator[AsyncIterator[Overheard]]:
-        """Every buffer the desk's microphone captures while open, as `overheard`, with what the speaker played over it
-        and where the gate stood as it was captured."""
+        """Every buffer the desk's microphone captures while open, as `overheard`, with what the speaker played over it."""
         heard: asyncio.Queue[Overheard] = asyncio.Queue()
         self._overhearing = (*self._overhearing, heard)
 
@@ -792,7 +788,7 @@ class KeyedMicrophone(LocalAudioInputTransport):
         gate = self._key.gate
         # [LAW:single-enforcer] the gate says which place is heard, by a trigger as by the clip owner: while hands is at the
         # phone, the desk's buffers reach a trigger as silence of the same length, so the room there opens nothing.
-        overheard = Overheard(cancelled, gate.hears("desk"), gate.key)
+        overheard = Overheard(cancelled, gate.hears("desk"))
         for overhearing in self._overhearing:
             loop.call_soon_threadsafe(overhearing.put_nowait, overheard)
         # [LAW:single-enforcer] the gate alone says which place's microphone reaches the clip owner; while hands is at the

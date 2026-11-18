@@ -140,17 +140,11 @@ class Sound:
         return Levels(dbfs(self.captured), dbfs(self.heard))
 
 
-def slots(sound: Sound) -> tuple[tuple[str, ...], ...]:
-    """The voices of hands' TTS that may be in each 10 ms of `sound`: none where it played none, none where nothing it
-    played reached the microphone, as in headphones, and none known at the phone."""
-    # [LAW:one-source-of-truth] whether hands' voice can be in a sound is the canceller's reading of the echo path; a
-    # reference that reached nothing is no echo to wait on a voiceprint for.
-    return tuple(reference.voices if reference is not None and reference.reached else () for reference in sound.played or ())
-
-
 def voices(sound: Sound) -> tuple[str, ...]:
-    """Every voice of hands' TTS that may be in `sound`, in the order first played."""
-    return tuple(dict.fromkeys(voice for slot in slots(sound) for voice in slot))
+    """Every voice of hands' TTS that may be in `sound`, in the order first played: none where it played none, none where
+    nothing it played reached the microphone, as in headphones, and none known at the phone."""
+    # [LAW:one-source-of-truth] whether hands' voice can be in a sound is the canceller's reading of the echo path.
+    return tuple(dict.fromkeys(voice for reference in sound.played or () if reference is not None and reference.reached for voice in reference.voices))
 
 
 @dataclass(frozen=True)

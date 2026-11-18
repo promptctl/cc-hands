@@ -9,8 +9,6 @@ from typing import Any
 import numpy as np
 
 from hands.voice import engaged, streaming
-from hands.voice.clips import Clip
-from hands.voice.voiceprints import Voiced
 from hands.voice.streaming import RATE, Ended, Samples, Session, Spoken, through
 
 # A turn's clip opens LEAD before its first word and ends `after` past its last, in one of the two shapes a clip takes:
@@ -30,19 +28,6 @@ def turn(audio: Samples, start: float, end: float, after: float) -> Samples:
     return audio[first:last]
 
 
-class Unidentifying:
-    """Nobody identified: what a test of the words alone measures is the words."""
-
-    def identify(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
-        pass
-
-    def ended(self, clip: Clip, voiced: tuple[Voiced, ...]) -> None:
-        pass
-
-
-unidentified = Unidentifying()
-
-
 class Live:
     """One stream of the real pair, fed clips as the listener feeds it: 20 ms at a time, each followed by the silence
     `through` says, and closed."""
@@ -53,9 +38,9 @@ class Live:
 
     def spoken(self, samples: Samples) -> tuple[Spoken, Ended]:
         """A clip of `samples`: each speaker's words heard while it was open, and the clip as it ended."""
-        self.stream.opened(np.zeros(0, np.float32), self.fed, ())
+        self.stream.opened(np.zeros(0, np.float32), self.fed)
         for start in range(0, len(samples), 320):
-            self.stream.heard(samples[start : start + 320], ())
+            self.stream.heard(samples[start : start + 320])
         self.fed += len(samples)
         live = self.stream.said().added
         silence = through(self.fed) - self.fed

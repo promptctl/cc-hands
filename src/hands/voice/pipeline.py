@@ -36,7 +36,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import TriggerTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import conversation, dtln, loads, streaming, voiceprints, voices
+from hands.voice import conversation, dtln, loads, streaming, voices
 from hands.voice.recorder import Recorder
 from hands.sessions.wide import annotate
 from hands.voice.clipowner import ClipOwner
@@ -72,7 +72,6 @@ class Voice:
     tts: SaidInTTS
     user_turns: conversation.UserTurns
     assistant_turns: conversation.AssistantTurns
-    recorder: Recorder
 
 
 def build_voice(
@@ -83,14 +82,12 @@ def build_voice(
     player: Player,
     floor: Floor,
     prompt: Callable[[], Awaitable[str | None]],
-    prints: voiceprints.Voiceprints,
     clips: Path,
     record: Record,
 ) -> Voice:
     """Wire mic, push-to-talk, the clip owner with Whisper transcribing and the streaming recognizer and the recorder
-    listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each speaker the
-    streaming recognizer hears is identified by `prints`, and each clip the recorder hears is kept under `clips`, in a
-    directory of this build's own."""
+    listening, the model's stage, pocket-tts, speakers, and the phone beside the mic and speakers; each clip the recorder
+    hears is kept under `clips`, in a directory of this build's own."""
     # [LAW:one-source-of-truth] the key is the only voice activity signal:
     # it mutes the microphone at the transport, and the clip owner reads it off
     # each frame to push the VAD frames the turn strategies act on, so the user
@@ -119,14 +116,11 @@ def build_voice(
     # The reply is broken into the pieces that filter sees here, ahead of the service, so a fenced block reaches it
     # whole; Pipecat flushes this aggregator at the end of each reply and resets it on a barge-in.
     pieces = LLMTextProcessor(text_aggregator=FenceAggregator())
-    # hands' own print of the voice it speaks in, made on the voiceprints' own threads: nothing here waits on it.
-    prints.speaking_in(voices.source(config.voice))
     # Whisper says what each clip sent held; the streaming recognizer hears each clip's words while it is open, each with
-    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each clip, and
-    # each echo span the run overhears (`Voice.recorder`), in a directory of the run's own, named by when the voice was
-    # built: a clip's number is the run's.
-    recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), prints.spanned, record)
-    listeners = (streaming.StreamingRecognizer(clock, streaming.load, prints, record), recorder)
+    # who said it: nothing the owner does waits on it, its models' load included. The recorder keeps each clip in a
+    # directory of the run's own, named by when the voice was built: a clip's number is the run's.
+    recorder = Recorder(clock, clips, clock.wall().strftime("%Y-%m-%dT%H-%M-%SZ"), record)
+    listeners = (streaming.StreamingRecognizer(clock, streaming.load, record), recorder)
     stt = ClipOwner(clock, Whisper(clock=clock, prompt=prompt, record=record), listeners, record)
 
     start = TriggerTurnStart(clock, record)
@@ -159,5 +153,4 @@ def build_voice(
     )
     return Voice(
         worker=worker, key=key, audio=transport, phone=phone, stt=stt, llm=llm, lines=player.lines, tts=tts, user_turns=user_aggregator, assistant_turns=assistant_aggregator,
-        recorder=recorder,
     )
