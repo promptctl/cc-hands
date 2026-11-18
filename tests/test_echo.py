@@ -1,4 +1,4 @@
-"""The echo canceller, run for real on WebRTC's AEC3 against a room made of arithmetic."""
+"""The echo canceller, run for real on DTLN-aec against a room made of arithmetic."""
 
 import numpy as np
 import pytest
@@ -6,6 +6,7 @@ import pytest
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Reference, Playhead, Sound, Synthesis
+from hands.voice.dtln import Dtln
 from hands.voice.echo import Cancelled, EchoCanceller, EchoPath, Reading, echo_path
 from echoes import CANCELLED, NO_ECHO, OPENING, cut_in, replayed, take
 
@@ -39,14 +40,14 @@ def test_the_echo_of_what_the_speaker_played_is_taken_out_of_what_the_microphone
     played_bytes, chunk = played.tobytes(), 2 * int(0.02 * PLAYED_RATE)
     for index in range(len(echo) // 320):
         start, end = index * chunk + (6 if index % 2 else 0), (index + 1) * chunk + (0 if index % 2 else 6)
-        # hands' TTS, whose echo the path is read for: AEC3's output is heard once it is read there.
+        # hands' TTS, whose echo the path is read for: the canceller's output is heard once it is read there.
         canceller.played(played_bytes[start:end], PLAYED_RATE, 1, (ALBA,))
         buffer = echo[index * 320 : (index + 1) * 320].tobytes()
         cleaned = canceller.heard(buffer, HEARD_RATE, 1).heard
         assert len(cleaned) == len(buffer)
         if index >= 100:  # after two seconds to learn the room
             heard_raw, heard_clean = heard_raw + buffer, heard_clean + cleaned
-    assert _power_db(heard_raw) - _power_db(heard_clean) > 15  # about 22 dB on AEC3 today; nothing taken out is 0
+    assert _power_db(heard_raw) - _power_db(heard_clean) > 15  # nothing taken out is 0
 
 
 def test_a_voice_with_nothing_playing_is_heard_as_it_was_said() -> None:
@@ -67,6 +68,11 @@ def test_a_voice_after_the_speaker_stops_being_written_to_is_heard_as_it_was_sai
     voice = _noise(2.0, HEARD_RATE, seed=2).tobytes()  # then the user, with nothing more written
     cleaned = b"".join(canceller.heard(voice[start : start + 640], HEARD_RATE, 1).heard for start in range(0, len(voice), 640))
     assert abs(_power_db(cleaned[16000:]) - _power_db(voice[16000:])) < 3
+
+
+def _delayed(captured: bytes) -> bytes:
+    """What the canceller hears of `captured` where it takes nothing out: the same sound, `Dtln.LATENCY` samples later."""
+    return (bytes(Dtln.LATENCY * 2) + captured)[: len(captured)]
 
 
 def test_a_microphone_buffer_of_part_of_a_frame_is_refused() -> None:
@@ -159,8 +165,8 @@ def _path_over(path: EchoPath, captured: np.ndarray, played: np.ndarray | None) 
 
 def test_an_echo_of_what_hands_played_reads_as_one_at_another_rate_with_no_resampling() -> None:
     played = _noise(2.0, PLAYED_RATE, seed=3).astype(np.float64)
-    assert echo_path(_room(played, 0.1) / 32768, HEARD_RATE, played / 32768) > 40
-    assert echo_path(_dbfs(-50, 2.0, seed=4) / 32768, HEARD_RATE, played / 32768) < 10
+    assert echo_path(_room(played, 0.1) / 32768, HEARD_RATE, played / 32768).score > 40
+    assert echo_path(_dbfs(-50, 2.0, seed=4) / 32768, HEARD_RATE, played / 32768).score < 10
 
 
 def test_hands_heard_through_the_room_is_an_echo_path_even_quiet_and_a_person_over_it_leaves_it_unread() -> None:
@@ -229,7 +235,7 @@ def test_with_no_echo_path_read_the_microphone_is_heard_as_it_captured_and_each_
     # Unread, hands' voice may be in the microphone; read none, a whole stretch in, it is not.
     assert reached[:200] == [True] * 200 and not any(reached[200:])
     # Unread or read none, the person is heard as the microphone captured them, not ducked under hands.
-    assert all(cancelled.heard == captured for captured, cancelled in heard)
+    assert b"".join(cancelled.heard for _, cancelled in heard) == _delayed(b"".join(captured for captured, _ in heard))
     assert (canceller.counts()["unread"], canceller.counts()["unreached"]) == (200, 200)
 
 
@@ -253,9 +259,10 @@ def test_a_reply_at_the_desk_after_a_pause_is_cancelled_within_its_opening() -> 
 
 def _uncancelled_from(sound: Sound, onset: float, end: float) -> float:
     """How long `sound` is heard as the microphone captured it from `onset`, in seconds, where from then to `end` it is
-    heard through AEC3."""
+    heard through the canceller."""
     buffer, per_second = 4 * SLOT, RATE // (2 * SLOT)
-    cancelled = [sound.heard[at : at + buffer] != sound.captured[at : at + buffer] for at in range(0, len(sound.heard), buffer)]
+    delayed = _delayed(sound.captured)
+    cancelled = [sound.heard[at : at + buffer] != delayed[at : at + buffer] for at in range(0, len(sound.heard), buffer)]
     after = cancelled[round(onset * per_second) : round(end * per_second)]
     opened = after.index(True)
     assert all(after[opened:])
@@ -276,5 +283,5 @@ def test_hands_in_headphones_is_heard_as_captured_and_reaches_nothing_once_a_str
     reached = [reference.reached for reference in sound.played or () if reference is not None]
     # The microphone is heard as captured throughout, the person's lines over hands with it; hands' voice may be in it
     # until a whole stretch shows no echo path, 1.01 s of hands in, and is not from then on.
-    assert sound.heard == sound.captured
+    assert sound.heard == _delayed(sound.captured)
     assert all(reached[:100]) and not any(reached[102:])

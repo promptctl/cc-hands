@@ -100,7 +100,7 @@ TAKES = (
 type Chain = Callable[[Take], np.ndarray]
 
 
-def aec3(take: Take) -> np.ndarray:
+def desk(take: Take) -> np.ndarray:
     """hands' own canceller (hands.voice.echo), as the desk runs it."""
     return decoded(echoes.replayed(take.captured, take.reference, take.playheads).heard)
 
@@ -110,7 +110,7 @@ def raw(take: Take) -> np.ndarray:
     return decoded(take.captured.tobytes())
 
 
-CHAINS: dict[str, Chain] = {"aec3": aec3, "raw": raw}
+CHAINS: dict[str, Chain] = {"desk": desk, "raw": raw}
 
 
 @dataclass(frozen=True)

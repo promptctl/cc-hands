@@ -27,7 +27,7 @@ from huggingface_hub.utils.tqdm import disable_progress_bars
 from mlx_audio.utils import get_model_path
 
 from hands.brain import pinned
-from hands.voice import engaged, streaming, transcription, voiceprints
+from hands.voice import dtln, engaged, streaming, transcription, voiceprints
 from hands.voice.wake import fetched
 from hands.voice.wakeword import Pretrained
 from npm_registry import REGISTRY
@@ -85,7 +85,7 @@ class Fetches:
     mock: Path
     machine: dict[str, str]
     # The run is the unit layer's, held to nothing outside the process (tests/offline.py): of all this, its tests read only
-    # the sentence tokenizer, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
+    # the sentence tokenizer and the echo canceller's model, so that is all it fetches. The rest is a weight it cannot read or a process it cannot start.
     unit: bool = False
 
     def mock_binary(self) -> Path:
@@ -132,6 +132,8 @@ def fetch_all(fetches: Fetches, write: Callable[[str], object]) -> None:
     # The line each fetch writes says what the run is fetching; the hub's bars would break it.
     disable_progress_bars()
     fetching(write, f"NLTK's punkt_tab sentence tokenizer at {PUNKT_TAB.sha256[:12]}", INSTALL_FAILURES, partial(asyncio.run, install(PUNKT_TAB, fetches.nltk_data, pinned.download)))
+    # The echo canceller's model, which the unit layer's tests of the canceller run for real, so it is read there too.
+    fetching(write, f"DTLN-aec's models at {dtln.REVISION[:12]}", (OSError,), dtln.weights)
     if fetches.unit:
         return
     for weights in WEIGHTS:

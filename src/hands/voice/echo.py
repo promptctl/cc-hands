@@ -1,12 +1,10 @@
 """Acoustic echo cancellation: the speaker's sound taken back out of what the Mac's microphone hears.
 
-With speakers on, the room carries every reply to the microphone. WebRTC's echo canceller (AEC3, through LiveKit's
-binding of its audio processing module) is told what the speaker plays, the far-end or reference signal, and subtracts
-the echo of it from every microphone buffer, the near-end signal, estimating the delay and the room's response as it
-goes. Measured 2026-10-03 on MacBook Pro speakers and microphone, through hands' own transport: about 27 dB of the
-echo removed; a press mid-reply with nobody speaking left no word of the reply in 8 clips of 8, where the raw
-microphone made one of it ("Run.", "in the") in every clip; a voice starting 50 ms after the press kept its first word
-in 8 of 8, where muting the microphone until the reply's sound had died away lost it in 8 of 8.
+With speakers on, the room carries every reply to the microphone. DTLN-aec (`hands.voice.dtln`) is told what the speaker
+plays, the far-end or reference signal, delayed by how long after it the echo reaches the microphone, and takes the echo
+of it out of every microphone buffer, the near-end signal, while a person's voice over it stays. On the twelve takes of
+tests/fixtures (scripts/measure-echo.py) it leaves a person's words where WebRTC's AEC3, the canceller it replaced,
+ducked 7 of 101 of them under hands' voice.
 """
 
 import threading
@@ -15,9 +13,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 import numpy as np
+import soxr
 from livekit import rtc
 
 from hands.voice.clips import Reference, Playhead
+from hands.voice.dtln import MAX_DELAY, RATE, Dtln, tflite_stages, weights
 
 # The canceller works on 10 ms frames, in both directions.
 _FRAMES_PER_SECOND = 100
@@ -130,8 +130,17 @@ def mono(audio: bytes, channels: int) -> np.ndarray:
     return np.frombuffer(audio, np.int16).reshape(-1, channels).mean(axis=1) / 32768
 
 
-def echo_path(captured: np.ndarray, rate: int, played: np.ndarray) -> float:
-    """How far above chance the echo of `played` is in `captured`, at `rate`, the same stretch of time each at its own
+@dataclass(frozen=True)
+class Peak:
+    """Where the echo of the speaker's sound is in the microphone's: how far above chance (`score`), and how long after
+    the speaker played it (`lag`, in seconds; negative where the microphone leads the speaker, which no echo does)."""
+
+    score: float
+    lag: float
+
+
+def echo_path(captured: np.ndarray, rate: int, played: np.ndarray) -> Peak:
+    """Where the echo of `played` is in `captured`, at `rate`, the same stretch of time each at its own
     rate: the GCC-PHAT of the two in `_PATH_BAND`, within `_PATH_LAG` either way, its peak over its RMS. The phase
     transform weighs every frequency alike, so the room, which spreads an echo over many lags, still leaves one peak.
     Zero-padded to twice the stretch, so no lag wraps round onto another, each side's bin k is the same frequency at
@@ -147,8 +156,10 @@ def echo_path(captured: np.ndarray, rate: int, played: np.ndarray) -> float:
     lag = round(_PATH_LAG * rate)
     lags = np.concatenate((gcc[: lag + 1], gcc[size - lag :]))
     spread = float(np.sqrt(np.mean(lags**2)))
+    # `lags` is lag 0 to `_PATH_LAG`, then `_PATH_LAG` back to the one before 0.
+    at = int(np.abs(lags).argmax())
     # Nothing in the band on either side, as digital silence captured: no higher above chance than nothing.
-    return float(np.abs(lags).max()) / spread if spread else 0.0
+    return Peak(float(np.abs(lags[at])) / spread if spread else 0.0, (at if at <= lag else at - len(lags)) / rate)
 
 
 class EchoPath:
@@ -167,6 +178,9 @@ class EchoPath:
 
     def __init__(self) -> None:
         self.reading: Reading = "unread"
+        # How long after the speaker played it hands' voice was last read in the microphone, in samples at `RATE`: where
+        # the reference is lined up with its echo. None until a stretch reads there.
+        self.delay: int | None = None
         self._captured: deque[np.ndarray] = deque(maxlen=_PATH_FRAMES)
         # Each frame the speaker played TTS in; None where it played none, made silence at the TTS's rate when read.
         self._played: deque[np.ndarray | None] = deque(maxlen=_PATH_FRAMES)
@@ -182,15 +196,19 @@ class EchoPath:
         self._unplayed = 0 if played is not None else self._unplayed + 1
         # [LAW:dataflow-not-control-flow] every hop is read; a stretch hands played none of reads as saying nothing.
         if self._frames % _PATH_HOP == 0 and len(self._captured) >= _LEAST_FRAMES:
-            self.reading = _verdict(self.reading, *self._read())
+            peak, alone = self._read()
+            self.reading = _verdict(self.reading, peak.score, alone)
+            # An echo trails what the speaker played, never leads it or lands with it: a peak at lag 0 or before, as a
+            # person speaking alone read 22.6 at 0.0 ms in hands_then_a_person_alone.flac, is chance, not the path.
+            self.delay = min(MAX_DELAY, round(peak.lag * RATE)) if peak.score >= _ECHO_PATH and peak.lag > 0 else self.delay
         self.reading = "unread" if self._unplayed >= _FORGET_FRAMES else self.reading
 
-    def _read(self) -> tuple[float, bool]:
+    def _read(self) -> tuple[Peak, bool]:
         """The stretch's reading, nothing above chance where hands played none of it, and whether it was hands alone:
         the stretch whole, hands played at least half of it, and the microphone was quiet over it."""
         tts = [frame for frame in self._played if frame is not None]
         if not tts:
-            return 0.0, False
+            return Peak(0.0, 0.0), False
         captured = np.concatenate(self._captured)
         alone = len(self._captured) == _PATH_FRAMES and 2 * len(tts) >= _PATH_FRAMES and float(np.mean(captured**2)) < 10 ** (_QUIET / 10)
         silence = np.zeros(len(tts[0]))
@@ -205,21 +223,31 @@ def _verdict(was: Reading, reading: float, alone: bool) -> Reading:
 
 
 class EchoCanceller:
-    """WebRTC's AEC3, with its reference paced by the microphone's clock.
+    """DTLN-aec, with its reference paced by the microphone's clock.
 
-    AEC3 expects one frame of reference for every frame of microphone, as a device that plays and records at once
+    The canceller expects one frame of reference for every frame of microphone, as a device that plays and records at once
     gives them. The speaker's device gives its every frame, silence included, as it takes it
     (`hands.voice.microphone.Playout`), on a clock of its own, so what it plays is held, and each microphone frame takes
     the next frame of it, or silence when there is none.
 
-    How much is held is how far the reference lags its echo, and past the two devices' latencies it reaches AEC3 after
-    the echo it would cancel. The speaker starts before the microphone at a reopen, and its clock may run fast against
-    the microphone's, and either leaves frames held that no microphone frame needs. Held through a whole window, they
-    are surplus, and are slipped: dropped, as a jitter buffer drops samples between two clocks.
+    How much is held is how far the reference lags its echo, and past the two devices' latencies it reaches the canceller
+    after the echo it would cancel. DTLN-aec is told how far, the echo path's lag (`EchoPath.delay`), and reads the reference
+    that far back. The speaker starts before the microphone at a reopen, and its clock may run fast against the
+    microphone's, and either leaves frames held that no microphone frame needs. Held through a whole window, they are
+    surplus, and are slipped: dropped, as a jitter buffer drops samples between two clocks.
+
+    What it hears trails the microphone by `Dtln.LATENCY`, whichever it takes, cleaned or as captured, so the two never
+    jump when the echo path's reading changes.
     """
 
     def __init__(self) -> None:
-        self._apm = rtc.AudioProcessingModule(echo_cancellation=True)
+        self._dtln = Dtln(tflite_stages(*weights()))
+        # The microphone as captured, held back as far as DTLN-aec holds what it cleans, so that what is heard moves from
+        # one to the other with the echo path's reading and neither jumps. Silence for the first of it, made in as many
+        # channels as the microphone has, which its first buffer says.
+        self._line = b""
+        # The last frames of the reference in the speaker's own rate, as many as `_sixteen` resamples round one.
+        self._context: list[np.ndarray] = []
         # [LAW:single-enforcer] the one reading of whether hands' voice reaches the microphone; each reference says it.
         self._path = EchoPath()
         # The speaker's audio short of a whole frame, carried to its next buffer, with the syntheses in it. The speaker's
@@ -266,25 +294,31 @@ class EchoCanceller:
         # [LAW:parse-dont-validate] the microphone is opened on 20 ms buffers; any other length is a stream opened wrong.
         if len(audio) % size:
             raise ValueError(f"a microphone buffer of {len(audio)} bytes is not whole 10 ms frames at {sample_rate} Hz")
+        # DTLN-aec was trained on sound at `RATE`, which is what Pipecat opens the microphone at.
+        if sample_rate != RATE:
+            raise ValueError(f"the microphone is at {sample_rate} Hz, not {RATE} Hz")
         cleaned, played = bytearray(), list[Reference | None]()
+        self._line = self._line or bytes(Dtln.LATENCY * channels * SAMPLE_BYTES)
         for start in range(0, len(audio), size):
             # [LAW:dataflow-not-control-flow] every microphone frame is matched with one frame of reference, and goes
-            # through AEC3, which keeps learning the room either way; the echo path says which of the two is heard.
+            # through DTLN-aec, which keeps its state of the room either way; the echo path says which of the two is heard.
             reference, playheads = self._next_played()
-            self._apm.process_reverse_stream(reference)
             captured = audio[start : start + size]
             # The echo path as the frame came: read at a hop, it changes at a frame's edge, never within one. Unread,
             # hands' voice may be in the frame, so its reference says it reached.
             reading = self._path.reading
             tts = referenced(reference, playheads, reading != "none")
-            self._path.heard(mono(captured, channels), None if tts is None else mono(tts.audio, tts.channels))
+            sixteen = self._sixteen(reference)
+            self._path.heard(mono(captured, channels), None if tts is None else sixteen)
             played.append(tts)
-            frame = rtc.AudioFrame(captured, sample_rate, channels, sample_rate // _FRAMES_PER_SECOND)
-            self._apm.process_stream(frame)  # in place
-            # Only an echo path read there has anything to take out. Without one, AEC3 still ducks a person's voice
-            # under hands', 30 to 50 dB on hands_no_echo_and_another.flac, and a person cutting in over a reply's opening
-            # in headphones keeps the path unread: what the microphone captured is heard as it was.
-            cleaned += frame.data.cast("B") if reading == "there" else captured
+            # Only an echo path read there has anything to take out: a canceller told of an echo that is not there takes out
+            # what it takes for one, and a person cutting in over a reply's opening in headphones keeps the path unread.
+            # What the microphone captured is heard as it was.
+            microphone = mono(captured, channels).astype(np.float32)
+            without = self._dtln.cancel(microphone, sixteen, self._path.delay)
+            line = self._line + captured
+            as_captured, self._line = line[:size], line[size:]
+            cleaned += np.repeat(np.clip(np.rint(without * 32768), -32768, 32767).astype(np.int16), channels).tobytes() if reading == "there" else as_captured
             self._counts["unreached"] += tts is not None and reading == "none"
             self._counts["unread"] += tts is not None and reading == "unread"
         self._counts["heard"] += len(audio) // size
@@ -295,12 +329,23 @@ class EchoCanceller:
         return dict(self._counts)
 
     def close(self) -> None:
-        """Let go of the native canceller, once the microphone has stopped capturing.
+        """Nothing is held that outlives the canceller: its model is a pair of interpreters the garbage collector frees."""
 
-        Left to the garbage collector, it is let go of after LiveKit's own exit handler has shut its runtime down, and
-        LiveKit fails an assertion on every exit saying so.
-        """
-        self._apm._ffi_handle.dispose()  # pyright: ignore[reportPrivateUsage]  (LiveKit gives the module no close of its own)
+    def _sixteen(self, reference: rtc.AudioFrame) -> np.ndarray:
+        """The frame of reference at `RATE`, one channel. The speaker's rate is another than the microphone's (24 kHz for
+        the TTS), so the frame is resampled with the frame before and the one after it round it, and what is given is the
+        one before: 10 ms behind the speaker, the same 10 ms whatever the rate, where a streaming resampler gives its sound
+        in bursts that move it against the microphone's by as much as 30 ms.
+
+        [LAW:single-enforcer] it is this stream the echo path reads its lag from and DTLN-aec is given, so the lag is the
+        one the model needs."""
+        samples = mono(bytes(reference.data.cast("B")), reference.num_channels).astype(np.float32)
+        if reference.sample_rate == RATE:
+            return samples
+        self._context = [*(frame for frame in self._context[-2:] if len(frame) == len(samples)), samples]
+        window = np.concatenate([np.zeros(len(samples), np.float32)] * (3 - len(self._context)) + self._context)
+        length = len(samples) * RATE // reference.sample_rate
+        return soxr.resample(window, reference.sample_rate, RATE)[length : 2 * length].astype(np.float32)
 
     def _next_played(self) -> tuple[rtc.AudioFrame, tuple[Playhead, ...]]:
         with self._holding:

@@ -123,7 +123,7 @@ class Playout:
     [LAW:one-source-of-truth] the canceller's reference is taken where the device takes it. Given to the canceller as it
     was written to a blocking stream instead, measured 2026-10-06 on MacBook Pro speakers and microphone, the reference
     moved 20 ms against its echo at the start of a reading after a silence, by where the first write fell between the
-    device's buffers and the microphone's; AEC3 met each move as a new echo path, and let the reading's opening through.
+    device's buffers and the microphone's; the canceller met each move as a new lag to read, and let the reading's opening through.
 
     A write fills WRITE_AHEAD_SECS of waiting sound as the device makes room in it, as a blocking stream's write fills
     its buffer.

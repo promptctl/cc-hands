@@ -312,7 +312,7 @@ Need 8. Where the microphone is.
 - **Wake word with VAD stop.** The `wake word` trigger opens the gate on
   the wake word and closes it when Silero reports the configured silence. Done when a turn completes
   with no button and no own-voice words in the transcript, speakers on.
-- **Acoustic echo cancellation.** WebRTC's AEC3 takes the speaker's echo out of
+- **Acoustic echo cancellation.** DTLN-aec, a neural canceller, takes the speaker's echo out of
   every desk microphone buffer, closing the own-voice bleed bug. Done when barge-in with speakers on yields a clean transcript.
 
 ## Speaker diarization (`promptctl-diarization-lkvp`)

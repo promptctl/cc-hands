@@ -7,10 +7,11 @@ import numpy as np
 import pytest
 
 import echoes
-from echoscore import LATE, TAKES, Line, Take, Word, erle, judged, normal, recorded, scored, summary, words_of
+from echoscore import CHAINS, LATE, TAKES, Line, Take, Word, erle, heard_words, judged, normal, recorded, scored, summary, words_of
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
 from hands.voice.clips import RATE, SLOT, Playhead, Synthesis
+from hands.voice import streaming
 from hands.voice.streaming import Said
 
 HANDS = (Playhead(Synthesis("charles", "Hands here.", begun(VirtualClock())), 0.0),)
@@ -153,3 +154,20 @@ def test_the_takes_hold_what_a_person_and_hands_do_at_the_desk() -> None:
 def test_a_take_whose_samples_and_slots_are_not_one_stretch_is_none() -> None:
     with pytest.raises(ValueError, match="not one stretch"):
         Take("short", np.zeros(SLOT, np.int16), np.zeros(2 * SLOT, np.int16), ((), ()), ())
+
+
+@pytest.fixture(scope="module")
+def pair() -> streaming.Session:
+    return streaming.load(streaming.GATING)
+
+
+@pytest.mark.outside
+@pytest.mark.parametrize("fixture", TAKES, ids=lambda fixture: fixture.name)
+def test_the_desks_canceller_lets_none_of_hands_words_through_and_keeps_a_persons_words_on_every_take(fixture: Path, pair: streaming.Session) -> None:
+    """The epic's numbers, held: over the twelve takes, 0 of hands' words leaked and 1 of 101 of a person's lost. That
+    one, "wait" in hands_no_echo_in_two_voices.flac, is lost with no canceller as well (the `raw` chain), the recognizer's own."""
+    take = recorded(fixture)
+    cleaned = CHAINS["desk"](take)
+    score = scored(take, cleaned, heard_words(pair, cleaned))
+    assert score.leaked == () and score.stray == (), summary(score)
+    assert score.lost == (("wait",) if fixture == echoes.NO_ECHO_TWO_VOICES else ()), summary(score)

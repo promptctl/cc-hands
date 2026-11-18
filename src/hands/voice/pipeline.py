@@ -36,7 +36,7 @@ from hands.voice.ptt import PushToTalk
 from hands.voice.spoken import FenceAggregator, SpokenForm
 from hands.voice.turnstart import TriggerTurnStart, interrupting
 from hands.voice.turnstop import KeyTurnStop
-from hands.voice import conversation, loads, streaming, voiceprints, voices
+from hands.voice import conversation, dtln, loads, streaming, voiceprints, voices
 from hands.voice.recorder import Recorder
 from hands.sessions.wide import annotate
 from hands.voice.clipowner import ClipOwner
@@ -102,6 +102,10 @@ def build_voice(
     # [LAW:one-source-of-truth] the phone's audio is at the pipeline's own rates, as the desk's devices are opened at.
     phone = Phone(clock, key, heard_rate=params.audio_in_sample_rate, played_rate=params.audio_out_sample_rate, record=record)
     transport = KeyedAudioTransport(clock, LocalAudioTransportParams(audio_in_enabled=True, audio_out_enabled=True), key, phone, record, choices=config.devices)
+    # [LAW:nothing-unseen] the echo canceller's model is fetched, the first time, here and not as the microphone opens, where
+    # 41 MB over the network would hold the audio device up; each canceller then reads it from hands' cache.
+    with loads.loading(clock, "echo.loaded", record):
+        dtln.weights()
     # [LAW:nothing-unseen] PocketTTS loads its model as it is made: a load of its own, as every model's is, and made before
     # the streaming pair starts its load on a thread of its own, so neither load's growth is the other's.
     with loads.loading(clock, "tts.loaded", record):

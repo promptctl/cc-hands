@@ -3,7 +3,7 @@
 Each device calls back every 20 ms at a phase of its own. The speaker's sound reaches its converter a fixed latency
 after the callback that took it, crosses a room, and reaches the microphone's buffers a fixed latency before the callback
 that hands them over. Readings are written at whatever moment the pipeline gets to them, with silences between. All of
-it runs on one virtual clock, through hands' own playout and WebRTC's AEC3, so a run is the same on every machine.
+it runs on one virtual clock, through hands' own playout and DTLN-aec, so a run is the same on every machine.
 """
 
 import heapq
@@ -12,9 +12,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
+import soxr
 
+from echoes import CANCELLED, take
 from hands.sessions.wide import begun
 from hands.virtualclock import VirtualClock
+from hands.voice.clips import RATE, SLOT
 from hands.voice.echo import Echo, EchoCanceller
 from hands.voice.microphone import Playout, Pull
 from hands.voice.synthesis import Synthesis, Taken
@@ -73,12 +76,13 @@ def _unfailing(error: Exception) -> None:
 
 
 def _reading(seconds: float, seed: int) -> bytes:
-    """Speech-like sound: noise held below about 4 kHz, in syllables four times a second, about -20 dBFS."""
-    count = int(seconds * PLAYED_RATE)
-    white = np.random.default_rng(seed).normal(0, 6000, count)
-    voiced = np.convolve(white, np.ones(6) / 6, mode="same")
-    syllables = 0.55 + 0.45 * np.sin(np.arange(count) * 2 * np.pi * 4 / PLAYED_RATE)
-    return (voiced * syllables).clip(-32768, 32767).astype(np.int16).tobytes()
+    """Hands' voice: a stretch of what the speaker played in a recorded take (hands_cancelled_and_another.flac), a
+    different one for each seed, at the speaker's rate. DTLN-aec was trained on speech and takes little of noise out."""
+    _, reference, playheads = take(CANCELLED)
+    spoken = [slot for slot, held in enumerate(playheads) if held]
+    first, last, length = spoken[0] * SLOT, spoken[-1] * SLOT, int(seconds * RATE)
+    start = first + seed * 7919 % (last - first - length)
+    return soxr.resample(reference[start : start + length].astype(np.float32), RATE, PLAYED_RATE).astype(np.int16).tobytes()
 
 
 @dataclass(frozen=True)
@@ -175,14 +179,14 @@ def test_every_readings_opening_is_cancelled_wherever_its_first_write_falls() ->
     echo by where the first write fell between the two devices' callbacks, and openings came through."""
     for seed in range(4):
         reductions = opening_reductions(run_room(Playing, seed))
-        # About 36 dB on AEC3 today. Told at the write, three of these four rooms each let an opening through at 6 to 18.
-        assert min(reductions) > 25, (seed, [round(each, 1) for each in reductions])
+        # 16 to 55 dB on DTLN-aec today: the echo path reads the lag the reference keeps, and the model is told it.
+        assert min(reductions) > 12, (seed, [round(each, 1) for each in reductions])
 
 
 def test_a_microphone_started_after_the_speaker_still_meets_the_echo_of_what_it_plays() -> None:
     """PyAudio starts a stream as it opens it, and a reopen opens the speaker first, so the speaker's sound is held for
-    the microphone for as long as the microphone takes to open. Held for good, that reference reached AEC3 after its
-    echo, and nothing was cancelled at all."""
+    the microphone for as long as the microphone takes to open. Held for good, that reference reached the canceller 0.6 s
+    before its echo, which the echo path reads as that much more lag."""
     for seed in range(2):
         reductions = opening_reductions(run_room(Playing, seed, microphone_late=600 * TICKS // 1000))
-        assert min(reductions) > 25, (seed, [round(each, 1) for each in reductions])
+        assert min(reductions) > 12, (seed, [round(each, 1) for each in reductions])
