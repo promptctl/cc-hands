@@ -26,7 +26,7 @@ from urllib.request import Request
 
 from hands.clock import Clock
 from hands.sessions.audit import Entry, Exported, Record
-from hands.sessions.otlp import SERVICE, TIMEOUT_SECONDS, post, traced, why
+from hands.sessions.otlp import SERVICE, STOPPED, TIMEOUT_SECONDS, post, traced, why
 from hands.sessions.wide import Outcome, WideEvent
 
 # The wide event whose sizes are hands_memory_bytes: the process's memory, sampled as the run goes (hands.voice.memory).
@@ -91,26 +91,26 @@ def _escaped(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-class _Stop:
-    """The mark that ends the pusher's queue."""
-
-
 @contextmanager
-def pushing(address: str | None, metrics: Metrics, record: Callable[[Exported], None], clock: Clock, send: Callable[[Request, float], bytes] = post) -> Generator[Record]:
-    """`metrics.record`, and where `address` names a VictoriaMetrics, the metrics pushed there as each memory sample is
-    recorded, and once more as this ends, from a thread of its own. Each push is recorded as an Exported line.
+def pushing(address: str | None, record: Record, clock: Clock, send: Callable[[Request, float], bytes] = post, timeout: float = TIMEOUT_SECONDS) -> Generator[Record]:
+    """`record`, and where `address` names a VictoriaMetrics, each line recorded through it also folded into the
+    metrics, which are pushed there as each memory sample is recorded, and once more as this ends, from a thread of its
+    own. Each push is recorded as an Exported line.
 
     [LAW:no-ambient-temporal-coupling] the sampler (hands.voice.memory) owns the period, so the metrics have no clock of
-    their own: each push carries the sample that set it off."""
+    their own; and the pusher alone writes the metrics out, as it takes each push, so no push carries older metrics than
+    the one before it."""
     if address is None:
-        yield metrics.record
+        yield record
         return
-    expositions: queue.SimpleQueue[str | _Stop] = queue.SimpleQueue()
+    metrics = Metrics(record)
+    # Each push asked for: True for the last, as this ends.
+    last: queue.SimpleQueue[bool] = queue.SimpleQueue()
 
-    def push(exposition: str) -> None:
+    def push() -> None:
         began = clock.now()
         try:
-            send(Request(f"{address}{IMPORT}", data=exposition.encode(), headers={"Content-Type": "text/plain"}, method="POST"), TIMEOUT_SECONDS)
+            send(Request(f"{address}{IMPORT}", data=metrics.exposition().encode(), headers={"Content-Type": "text/plain"}, method="POST"), timeout)
             error = None
         except Exception as failed:
             # Unreachable or an HTTP error status: the push is lost to the store alike, and said alike.
@@ -118,21 +118,24 @@ def pushing(address: str | None, metrics: Metrics, record: Callable[[Exported], 
         record(Exported(address, "metrics", (), (clock.now() - began) * 1000, error, None))
 
     def run() -> None:
-        while not isinstance(taken := expositions.get(), _Stop):
-            push(taken)
+        while not last.get():
+            push()
+        push()
 
     def pushed(entry: Entry) -> None:
         metrics.record(entry)
         if isinstance(entry, WideEvent) and entry.event == MEMORY:
-            expositions.put(metrics.exposition())
+            last.put(False)
 
     pusher = threading.Thread(target=run, name="metrics push", daemon=True)
     pusher.start()
     try:
         yield pushed
     finally:
-        expositions.put(metrics.exposition())
-        expositions.put(_Stop())
-        # [LAW:no-ambient-temporal-coupling] every push is said before this returns: each socket operation of one is held to
-        # TIMEOUT_SECONDS, so a stop waits on a store that is gone no longer than that and the name's resolution.
-        pusher.join()
+        last.put(True)
+        # [LAW:no-ambient-temporal-coupling] a store that is gone holds up a stop by one push's timeout and a second, as it
+        # does the collector's exporter (hands.sessions.otlp.Exporter.close); a push still waiting then, and so the last
+        # push, is said here, as the process may end before it.
+        pusher.join(timeout + 1)
+        if pusher.is_alive():
+            record(Exported(address, "metrics", (), 0.0, f"{STOPPED}: a push was still waiting on the store", None))

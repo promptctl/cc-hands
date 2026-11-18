@@ -29,7 +29,7 @@ from hands.daemon.starting import LAST_BEAT, STOP_SIGNALS, CannotStart, Ended, E
 from hands.core.tmux import Keyboard
 from hands.sessions import audit, backlog, filing, grouping, heartbeat, recall, tmux, wide, wrapper
 from hands.sessions.home import Home, default_home
-from hands.sessions.metrics import Metrics, pushing
+from hands.sessions.metrics import pushing
 from hands.sessions.otlp import Exports, exporting
 from hands.sessions.payload import Rejected
 from hands.threads import off_loop
@@ -546,7 +546,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     # [LAW:one-source-of-truth] what the collector is failing to take is folded from the Exported lines as they are written.
     exports = Exports(audit_log.record, clock)
     # [LAW:one-source-of-truth] the metrics are folded from the wide events as they are written, never counted beside them.
-    with pushing(settings.config.metrics, Metrics(exports.record), exports.record, clock) as pushed, exporting(settings.config.collector, pushed, clock) as exported:
+    with pushing(settings.config.metrics, exports.record, clock) as pushed, exporting(settings.config.collector, pushed, clock) as exported:
         record = told_on_terminal(exported)
         ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
     return ending, shown

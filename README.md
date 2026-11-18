@@ -231,8 +231,8 @@ the whole record either way, and each batch sent is an `Exported` line in it, na
 collector did not take them, why.
 
 With `metrics` set, hands pushes its metrics to that VictoriaMetrics once a minute, as it samples its own memory:
-`hands_events_total`, `hands_event_seconds_total` and `hands_event_counts_total`, by event, outcome and count, folded from
-the same wide events, and `hands_memory_bytes`, its footprint and MLX's live, cached and peak GPU memory. Each push is an
+`hands_events_total` and `hands_event_seconds_total` by event and outcome, and `hands_event_counts_total` by event and
+count, folded from the same wide events, and `hands_memory_bytes`, its footprint and MLX's live, cached and peak GPU memory. Each push is an
 `Exported` line of the `metrics` signal.
 
 hands talks through a harness it drives, never a model API called with a key: `claude`, the brain, is one long-lived
