@@ -18,10 +18,8 @@ MEGABYTE = 2**20
 
 @pytest.fixture
 def limited() -> Generator[None]:
-    # The limit is the process's: MLX's own default, the GPU's whole recommended working set, until limit_cache sets it,
-    # and what it was is put back after, so no other test runs under this one's.
-    was = mx.set_cache_limit(int(mx.device_info()["max_recommended_working_set_size"]))  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
-    limit_cache()
+    # The limit is the process's, so what it was is put back after, and no other test runs under this one's.
+    was = limit_cache()
     yield
     mx.set_cache_limit(was)
     mx.clear_cache()
@@ -66,5 +64,18 @@ async def test_a_footprint_the_kernel_refuses_is_said_on_the_sample_and_the_samp
     assert [(sample.outcome, sample.facts) for sample in samples] == [("ok", {"footprint_error": "[Errno 1] Operation not permitted"})] * 2
 
 
-def test_mlx_says_its_live_cached_and_peak_memory_in_megabytes() -> None:
-    assert memory.mlx_held().keys() == {"mlx_active_mb", "mlx_cache_mb", "mlx_peak_mb"}
+def test_mlx_says_in_megabytes_its_live_arrays_its_cache_and_the_most_live_since_it_was_last_asked(limited: None) -> None:
+    before = memory.mlx_held()
+    held = mx.zeros((256 * MEGABYTE // 4,), mx.float32)
+    mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
+    live = memory.mlx_held()
+    del held
+    # The GPU holds the array's buffer until the work that wrote it is done, and only then is it freed to the cache.
+    mx.synchronize()
+    freed = memory.mlx_held()
+    after = memory.mlx_held()
+    assert round(live["mlx_active_mb"] - before["mlx_active_mb"]) == 256
+    assert round(freed["mlx_cache_mb"] - live["mlx_cache_mb"]) == 256
+    # The peak the array set is said on the sample it rose in, and not on the next.
+    assert live["mlx_peak_mb"] >= live["mlx_active_mb"]
+    assert after["mlx_peak_mb"] == after["mlx_active_mb"]

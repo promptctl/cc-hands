@@ -11,7 +11,7 @@ cache at its limit, with the live arrays and their peak unchanged, and decoded w
 running daemon shared.
 
 [LAW:nothing-unseen] the sample is a `memory.sampled` wide event: the footprint, and MLX's own split of the GPU memory it
-holds, live, cached, and the most live at once since the process began. It goes where every wide event goes, to the
+holds, live, cached, and the most live at once since the sample before. It goes where every wide event goes, to the
 audit log and to the collector where one is set, so a footprint that grows past its size after the loads shows in hands'
 own telemetry.
 """
@@ -30,21 +30,27 @@ SAMPLE_SECONDS = 60.0
 SAMPLED = "memory.sampled"
 
 
-def limit_cache() -> None:
-    """Bound MLX's cache of freed buffers at CACHE_LIMIT, for every model the process runs on MLX."""
+def limit_cache() -> int:
+    """Bound MLX's cache of freed buffers at CACHE_LIMIT, for every model the process runs on MLX, and say the bound
+    it had before."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
-    mx.set_cache_limit(CACHE_LIMIT)
+    return mx.set_cache_limit(CACHE_LIMIT)
 
 
-def mlx_held() -> Mapping[str, Fact]:
-    """MLX's split of the GPU memory it holds: its live arrays, its cache of freed buffers, and the most live at once."""
+def mlx_held() -> Mapping[str, float]:
+    """MLX's split of the GPU memory it holds: its live arrays, its cache of freed buffers, and the most live at once
+    since it was last asked, so a peak that rises after the loads set theirs shows on the sample it rose in."""
     import mlx.core as mx  # pyright: ignore[reportMissingTypeStubs]
 
+    active = mx.get_active_memory()
+    # MLX's peak reads zero after a reset until the next allocation, and what is live now was live in the window.
+    peak = max(mx.get_peak_memory(), active)
+    mx.reset_peak_memory()
     return {
-        "mlx_active_mb": footprint.megabytes(mx.get_active_memory()),
+        "mlx_active_mb": footprint.megabytes(active),
         "mlx_cache_mb": footprint.megabytes(mx.get_cache_memory()),
-        "mlx_peak_mb": footprint.megabytes(mx.get_peak_memory()),
+        "mlx_peak_mb": footprint.megabytes(peak),
     }
 
 
