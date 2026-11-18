@@ -22,7 +22,8 @@ import recordings
 import echoes
 from echoes import HANDS_ALONE, OVER_HANDS, PLAYED, SENTENCES, replayed, take
 from conftest import CALLED, PAIRS, model_facts
-from listening import LEAD, SHAPES, Live, turn, unidentified
+from listening import LEAD, SHAPES, Live, Timed, turn, unidentified
+import echoscore
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
 from hands.sessions.wide import WideEvent, begun, unit
@@ -693,24 +694,6 @@ def test_each_word_is_the_speaker_who_said_it_and_each_clip_closes_its_own_speak
     assert [clip.closed.speakers for clip in ended] == [{0}, {0}, {0}, {0, 1}, {0, 2}, {0}]
 
 
-@dataclass
-class Timed:
-    """The pair's mlx-audio session, keeping each token it decodes as it is fed, with its speaker and when it starts, in
-    seconds of the run: mlx-audio's own alignment, which `Said` leaves out."""
-
-    session: Any
-    tokens: list[tuple[int, float, str]] = field(default_factory=list[tuple[int, float, str]])
-
-    def feed(self, samples: Samples) -> Any:
-        decoded = self.session.feed(samples)
-        self.tokens += [(streaming.speaker(delta.speaker), token.start, token.text) for delta in decoded for token in delta.tokens]
-        return decoded
-
-    def __getattr__(self, name: str) -> Any:
-        # Everything else the pair's close reaches is the session's own.
-        return getattr(self.session, name)
-
-
 # Who says each clip of two_speakers_ami.flac that these cases hear.
 WOMAN = {1: "FEE013", 2: "FEE013", 3: "FEE013", 4: "FEE016", 12: "FEE016"}
 
@@ -1068,3 +1051,21 @@ async def test_hands_alone_over_a_replys_opening_on_the_desks_speaker_cuts_nothi
     end = round(echoes.cut_in(echoes.OPENING) * streaming.RATE)
     closed = (await overheard.held(1, decoded(sound.heard)[:end], slots(sound)[: end // SLOT])).first
     assert (overheard.barge_ins, closed) == ([], None), overheard.identified()
+
+
+# The harness that scores a chain (tests/echoscore.py), held to the real pair it hears through.
+@pytest.mark.outside
+@pytest.mark.parametrize("fixture", echoscore.TAKES, ids=lambda fixture: fixture.name)
+def test_the_real_pair_hears_a_take_with_each_word_dated_by_its_own_token_inside_it(pair: Any, fixture: Path) -> None:
+    take = echoscore.recorded(fixture)
+    heard = echoscore.heard_words(pair, echoscore.raw(take))  # raises where a word is dated past the clip: a pair not begun afresh
+    assert heard, f"{take.name}: the pair decoded nothing"
+    # Dated by its own token and not all at the close, and heard on into where the person speaks.
+    assert len({word.start for word in heard}) > len(heard) // 2
+    assert heard[-1].start > take.cut_in
+
+
+@pytest.mark.outside
+def test_the_microphone_as_captured_is_the_control_that_leaks_hands_at_the_desk(pair: Any) -> None:
+    take = echoscore.recorded(echoes.CANCELLED)
+    assert echoscore.judged(take, echoscore.heard_words(pair, echoscore.raw(take)))[1]

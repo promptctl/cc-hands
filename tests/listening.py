@@ -1,6 +1,11 @@
 """Clips fed to the pair as hands' listener feeds them, for the real-pair tests and the measurements behind them
 (scripts/measuring.py): [LAW:one-source-of-truth] what a test asserts and what a script measured are cut and heard alike."""
 
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
 import numpy as np
 
 from hands.voice import engaged, streaming
@@ -57,3 +62,33 @@ class Live:
         self.stream.silence(silence)
         self.fed += silence
         return live, self.stream.ended()
+
+
+@dataclass
+class Timed:
+    """The pair's mlx-audio session, keeping each token it decodes as it is fed, with its speaker and when it starts, in
+    seconds of the run: mlx-audio's own alignment, which `Said` leaves out."""
+
+    session: Any
+    tokens: list[tuple[int, float, str]] = field(default_factory=list[tuple[int, float, str]])
+
+    def feed(self, samples: Samples) -> Any:
+        decoded = self.session.feed(samples)
+        self.tokens += [(streaming.speaker(delta.speaker), token.start, token.text) for delta in decoded for token in delta.tokens]
+        return decoded
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything else the pair's close reaches is the session's own.
+        return getattr(self.session, name)
+
+
+@contextmanager
+def tapped(pair: Any) -> Generator[Timed]:
+    """The pair's own session tapped in place for the length of the block, and put back after: a copy of the pair
+    (`dataclasses.replace`) wraps the session's step again, and only its first decode would carry the diarizer's frames."""
+    tap = Timed(pair.session)
+    pair.session = tap
+    try:
+        yield tap
+    finally:
+        pair.session = tap.session
