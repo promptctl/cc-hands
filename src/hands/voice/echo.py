@@ -307,9 +307,9 @@ class EchoCanceller:
             # through DTLN-aec, which keeps its state of the room either way; the echo path says which of the two is heard.
             reference, playheads = self._next_played()
             captured = audio[start : start + size]
-            # The echo path as the frame came: read at a hop, it changes at a frame's edge, never within one. Unread,
-            # hands' voice may be in the frame, so its reference says it reached.
-            reading = self._path.reading
+            # The echo path as the frame came: read at a hop, it changes at a frame's edge, never within one, and the
+            # delay is the one of that reading. Unread, hands' voice may be in the frame, so its reference says it reached.
+            reading, delay = self._path.reading, self._path.delay
             tts = referenced(reference, playheads, reading != "none")
             sixteen = self._sixteen(reference)
             self._path.heard(mono(captured, channels), None if tts is None else sixteen)
@@ -318,7 +318,7 @@ class EchoCanceller:
             # what it takes for one, and a person cutting in over a reply's opening in headphones keeps the path unread.
             # What the microphone captured is heard as it was.
             microphone = mono(captured, channels).astype(np.float32)
-            without = self._dtln.cancel(microphone, sixteen, self._path.delay)
+            without = self._dtln.cancel(microphone, sixteen, delay)
             line = self._line + captured
             as_captured, self._line = line[:size], line[size:]
             cleaned += np.clip(np.rint(without * 32768), -32768, 32767).astype(np.int16).tobytes() if reading == "there" else as_captured

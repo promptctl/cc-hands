@@ -114,9 +114,9 @@ def fetched(directory: Path) -> tuple[Path, Path]:
                 body = response.read()
             if (found := hashlib.sha256(body).hexdigest()) != digest:
                 raise ValueError(f"{name} at {REVISION} is {found}, not the {digest} pinned")
-            fetched = path.with_suffix(f".{os.getpid()}.part")
-            fetched.write_bytes(body)
-            fetched.replace(path)
+            beside = path.with_suffix(f".{os.getpid()}.part")
+            beside.write_bytes(body)
+            beside.replace(path)
         paths.append(path)
     first, second = paths
     return first, second
