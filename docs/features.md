@@ -317,7 +317,7 @@ Need 8. Where the microphone is.
 
 ## Speaker diarization (`promptctl-diarization-lkvp`)
 
-So that in conversation hands can tell the owner from another person, and from its own voice.
+So that in conversation hands can tell the owner from another person.
 
 - **Who said each word.** NVIDIA's Nemotron 3 Diarization hears every clip as it is spoken,
   paired with the streaming recognizer in one session for the run, so each word a clip's

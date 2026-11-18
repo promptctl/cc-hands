@@ -415,8 +415,8 @@ class ClipOwner(FrameProcessor):
             async with self._clock.timeout(HEARING_SECONDS - (self._clock.now() - began.began)):
                 heard = await hearing()
             annotate(heard="nothing" if heard.words is None else "words")
-            # A speaker a listener's words cleared cuts while their clip is still open, as one its identification cleared
-            # does. Heard once it has closed, they cut nothing, and the clip's close says what it held.
+            # A speaker a listener's words cleared cuts while their clip is still open. Heard once it has closed, they cut
+            # nothing, and the clip's close says what it held.
             match heard.barge_in_at:
                 case None:
                     annotate(barge_in=False)
