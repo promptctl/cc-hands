@@ -25,6 +25,7 @@ dependencies = [
     "sherpa-onnx>=2.0.1,<3",  # hands.voice.voiceprints runs ERes2Net speaker embeddings with its SpeakerEmbeddingExtractor, on the CPU
     "soxr>=1.0,<2",  # hands.voice.voices resamples the TTS output its own voiceprint is made from
     "ai-edge-litert>=2.3,<3",  # hands.voice.dtln runs DTLN-aec's two TFLite parts with its Interpreter
+    "mlx>=0.32.4,<0.33",  # hands.voice.memory bounds MLX's buffer cache and reads its allocator's counters, whose functions moved from mx.metal once already
 ]
 
 [project.scripts]

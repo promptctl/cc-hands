@@ -24,7 +24,7 @@ from hands.sessions.wide import Fact, annotate, begun, unit
 
 # The most MLX keeps cached of the Metal buffers its arrays free, in bytes.
 CACHE_LIMIT = 2**30
-# How often the memory is sampled.
+# How often `hands run` samples the memory.
 SAMPLE_SECONDS = 60.0
 SAMPLED = "memory.sampled"
 
@@ -44,10 +44,8 @@ def mlx_held() -> Mapping[str, float]:
     return {"mlx_active_mb": footprint.megabytes(mx.get_active_memory()), "mlx_cache_mb": footprint.megabytes(mx.get_cache_memory())}
 
 
-async def keep_sampling(clock: Clock, record: Record, period: float = SAMPLE_SECONDS, read: Callable[[], int] = footprint.footprint, held: Callable[[], Mapping[str, Fact]] = mlx_held) -> None:
-    """Sample the process's memory now and once a period after, until cancelled. A footprint the kernel refuses is on
-    the event as `footprint_error`, and the sampling goes on."""
-    while True:
-        with unit(SAMPLED, record, begun(clock)):
-            annotate(**footprint.size(footprint.measured(read)), **held())
-        await clock.sleep(period)
+def sample(clock: Clock, record: Record, read: Callable[[], int] = footprint.footprint, held: Callable[[], Mapping[str, Fact]] = mlx_held) -> None:
+    """One sample of the process's memory, as one event. A footprint the kernel refuses is on the event as
+    `footprint_error`."""
+    with unit(SAMPLED, record, begun(clock)):
+        annotate(**footprint.size(footprint.measured(read)), **held())

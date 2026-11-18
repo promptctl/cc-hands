@@ -269,7 +269,7 @@ async def start[T](prepare: Callable[[], Coroutine[object, object, T]], heart: h
 
 
 async def keep_beating(beat: Callable[[], None], period: float, clock: Clock) -> None:
-    """Write the heartbeat now and once a period after, until cancelled."""
+    """Beat now and once a period after, until cancelled."""
     while True:
         beat()
         await clock.sleep(period)
