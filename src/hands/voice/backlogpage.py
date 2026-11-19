@@ -221,11 +221,8 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
         try:
             said = await rank(clock, project, move, person)
         except LitFailed as error:
-            if error.changed_nothing:
-                return _refused(502, f"not moved: {error}")
-            # [LAW:no-silent-failure] lit stopped without saying why, and may have written first: neither is claimed.
-            annotate(ranked="unknown")
-            return _refused(502, f"whether lit ranked {ticket} {place} is not known: {error}")
+            halted = _unwritten(error, "ranked", "not moved", f"whether lit ranked {ticket} {place} is not known")
+            return _refused(halted.status, halted.why)
         annotate(ranked="yes", lit_said=said)
         try:
             after = await sighted(clock, store, project)
@@ -333,10 +330,8 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
         try:
             await comment(clock, project, ticket, text, person)
         except LitFailed as error:
-            if error.changed_nothing:
-                return _refused(502, f"not noted: {error}")
-            annotate(noted="unknown")
-            return _refused(502, f"whether lit kept the note on {ticket} is not known: {error}")
+            halted = _unwritten(error, "noted", "not noted", f"whether lit kept the note on {ticket} is not known")
+            return _refused(halted.status, halted.why)
         annotate(noted="yes")
         return web.Response(status=204)
 
@@ -374,9 +369,9 @@ async def _read(clock: Clock, project: Path, unread: str, status: int, untracked
 
 
 def _unwritten(error: LitFailed, fact: str, refused: str, unknown: str) -> Halted:
-    """A leveling's stop when a lit write in it failed: lit's refusal, or a lit never started, proves it wrote nothing, and
-    the answer says `refused`; a lit that stopped without saying why may have written first, so `fact` on the event is
-    "unknown", and the answer says `unknown` [LAW:no-silent-failure]."""
+    """The stop of a drop, a note or a leveling when a lit write in it failed: lit's refusal, or a lit never started, proves
+    it wrote nothing, and the answer says `refused`; a lit that stopped without saying why may have written first, so `fact`
+    on the event is "unknown", and the answer says `unknown` [LAW:no-silent-failure]."""
     if error.changed_nothing:
         return Halted(502, f"{refused}: {error}")
     annotate(**{fact: "unknown"})

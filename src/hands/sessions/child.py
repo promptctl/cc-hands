@@ -80,13 +80,13 @@ class SpawnFailed(OSError):
     """The OS refused to create the child's process, or the files its output goes to: there was no child to have done
     anything. It says what the OS said, with the OS's errno, text and filename.
 
-    The one OSError `run` raises before the child runs; any other came after, from reading what the child wrote.
+    The one OSError `run` raises before the child exists; any other came after it was started.
     """
 
 
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
     """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, SpawnFailed (an OSError) when
-    it cannot start, and a plain OSError when what the child wrote cannot be read after it ran.
+    it cannot start, and a plain OSError for what fails after it was started: reading what it wrote, or its clock.
 
     The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process
     it started are killed, and the child reaped, before the error leaves. Each caller says what a timeout means for

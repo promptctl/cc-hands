@@ -938,12 +938,12 @@ async def test_a_leveling_whose_lit_is_gone_by_its_first_write_is_said_to_have_m
     assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("no", "no")
 
 
-async def test_a_lit_that_ran_and_could_not_be_read_is_not_known_to_have_changed_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_a_lit_that_failed_after_it_was_started_is_not_known_to_have_changed_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def run(*argv: str, **how: object) -> object:
         raise OSError(errno.EIO, "Input/output error")
 
     monkeypatch.setattr(backlog, "run", run)
-    with pytest.raises(LitFailed, match="ran, and what it wrote could not be read") as raised:
+    with pytest.raises(LitFailed, match="was started, and then failed") as raised:
         await comment(VirtualClock(), tmp_path, "a", "Seen again.", Inherited())
     assert not raised.value.changed_nothing
 

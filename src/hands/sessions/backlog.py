@@ -97,19 +97,21 @@ class LitFailed(Exception):
     @property
     def changed_nothing(self) -> bool:
         """Whether lit is known to have changed nothing: it refused, saying why on its reason line, or it was never
-        started. A lit that did not answer, ended without a reason, or ran and could not be read may have written before it stopped."""
+        started. A lit that did not answer, ended without a reason, or failed after it was started may have written before
+        it stopped."""
         return self.reason is not None
 
 
-# The reason of a lit that was never started: hands' own token, since no lit was there to name one.
-NOT_STARTED = "not_started"
-
-
 class LitNotStarted(LitFailed):
-    """lit's process was never created, so there was nothing to write."""
+    """lit's process was never created, so there was nothing to write: no lit was there to name a reason, and it is known
+    to have changed nothing all the same."""
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, NOT_STARTED)
+        super().__init__(message, None)
+
+    @property
+    def changed_nothing(self) -> bool:
+        return True
 
 
 class ProjectGone(LitNotStarted):
@@ -420,7 +422,7 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
     """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
-    when its process was never created, and LitFailed when it did not answer, exited non-zero, or ran and could not be read.
+    when its process was never created, and LitFailed when it did not answer, exited non-zero, or failed after it was started.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
@@ -435,8 +437,8 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
             raise ProjectGone(project) from error
         raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
     except OSError as error:
-        # Not a SpawnFailed: lit ran, and may have written before what it wrote could not be read.
-        raise LitFailed(f"{command} in {project} ran, and what it wrote could not be read: {error}", None) from error
+        # Not a SpawnFailed: lit's process was created, so it may have written before this failed.
+        raise LitFailed(f"{command} in {project} was started, and then failed: {error}", None) from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
         line = ERROR_LINE.match(err)

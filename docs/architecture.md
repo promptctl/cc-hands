@@ -2203,8 +2203,9 @@ ranks the parent instead and exits 0. So a drop is parsed against a fresh read b
 which refuses any move outside one frame; it is made with `lit rank --above` or `--below`; and the
 read after it must have the ticket directly beside its target, or the answer is a conflict saying
 the backlog changed while it was moved, with lit's own words of what it ranked; nothing is undone.
-Only lit's refusal, a non-zero exit with its reason line, or a lit whose process was never created proves a rank wrote nothing; a lit that
-did not answer, ended without a reason, or ran and could not be read afterwards is said to have ranked or not, unknown.
+Only lit's refusal, a non-zero exit with its reason line, or a lit whose process was never created proves a rank wrote
+nothing; a lit that did not answer, ended without a reason, or failed after it was started is said to have ranked or not,
+unknown.
 A rank lit made whose backlog could not be read again is said as exactly that. The page keeps no order of its own: it draws what each
 answer carries, one request at a time in the order they were made. A drag holds that queue until it
 is dropped, so a read asked for meanwhile never redraws the rows it is placed among, and no drag

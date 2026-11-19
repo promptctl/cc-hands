@@ -141,7 +141,7 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
 
 async def test_a_child_that_cannot_start_says_so() -> None:
     with pytest.raises(SpawnFailed):
-        await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+        await run("/nonexistent/hands-no-such-program", timeout=5, clock=VirtualClock())
 
 
 @pytest.mark.outside
@@ -167,7 +167,7 @@ async def test_files_that_cannot_be_made_for_a_childs_output_are_a_child_that_ca
 
     monkeypatch.setattr(tempfile, "TemporaryFile", made)
     with pytest.raises(SpawnFailed, match="Too many open files"):
-        await run("true", timeout=5, clock=SYSTEM)
+        await run("true", timeout=5, clock=VirtualClock())
     assert opened[0].closed, "the first file was left open when the second could not be made"
 
 
