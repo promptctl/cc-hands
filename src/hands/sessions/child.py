@@ -83,6 +83,10 @@ class SpawnFailed(OSError):
     The one OSError `run` raises before the child exists; any other came after it was started.
     """
 
+    def __init__(self, error: OSError) -> None:
+        # What the OS said, whole: its errno, text and filename, or its text alone where it gave no errno.
+        super().__init__(*((error.errno, error.strerror, error.filename) if error.errno is not None else error.args))
+
 
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
     """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, SpawnFailed (an OSError) when
@@ -103,7 +107,7 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
             # The stack closes the files on any failure before the child exists, and lets go of them once it does.
             files.pop_all()
     except OSError as error:
-        raise SpawnFailed(error.errno, error.strerror, error.filename) from error
+        raise SpawnFailed(error) from error
     # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
     # under the read.
     child = reaped(argv[0], process, lambda: _ended(process, out, err))

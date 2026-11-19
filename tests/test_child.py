@@ -155,6 +155,16 @@ async def test_a_child_that_cannot_start_says_so_in_the_systems_words(tmp_path: 
     assert directory.value.errno == errno.ENOENT and str(directory.value.filename) == str(gone)
 
 
+async def test_a_spawn_failure_with_no_errno_keeps_the_text_the_os_gave(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refused(*_args: object, **_how: object) -> None:
+        raise OSError("exec failed")
+
+    monkeypatch.setattr(child.subprocess, "Popen", refused)
+    with pytest.raises(SpawnFailed) as raised:
+        await run("true", timeout=5, clock=VirtualClock())
+    assert str(raised.value) == "exec failed"
+
+
 async def test_files_that_cannot_be_made_for_a_childs_output_are_a_child_that_cannot_start(monkeypatch: pytest.MonkeyPatch) -> None:
     opened: list[IO[bytes]] = []
     really = tempfile.TemporaryFile
