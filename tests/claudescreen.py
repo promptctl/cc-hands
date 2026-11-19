@@ -62,7 +62,7 @@ class ClaudeScreen:
             case _Dialog(amended=str() as amended) as dialog:
                 dialog.amended = amended + text
             case _:
-                pass
+                raise AssertionError(f"the fake Claude Code models no text typed at a dialog with no field open: {text!r}")
 
     def key(self, name: str) -> None:
         match (self.dialog, name):
@@ -70,6 +70,15 @@ class ClaudeScreen:
                 # The chord at the prompt submits the draft, each paste whole.
                 self.turns.append("".join(whole for _, whole in self.draft))
                 self.draft = []
+            case (None, chord) if chord == self.chord:
+                # Nothing drafted, nothing to submit.
+                pass
+            case (None, "C-u"):
+                # The brain's keys that empty a row, which a draft of one row is: C-u kills it to its start.
+                self.draft = []
+            case (None, "C-e" | "C-k" | "C-h" | "C-c" | "Escape"):
+                # At the end of a row with nothing after it and no row before it, or with nothing running, these change nothing.
+                pass
             case (_Dialog(focus=1, amended=None) as dialog, "Tab"):
                 dialog.amended = ""
             case (_Dialog(focus=1), "Enter"):
@@ -79,9 +88,11 @@ class ClaudeScreen:
                 self.dialog = None
             case (_Dialog() as dialog, "Down"):
                 dialog.focus = min(dialog.focus + 1, len(CHOICES))
-            case _:
-                # Every other key, and the chord at a dialog, which answers nothing.
+            case (_Dialog(), chord) if chord == self.chord:
+                # The chord at a dialog answers nothing: the contract's claim.
                 pass
+            case _:
+                raise AssertionError(f"the fake Claude Code models no {name!r} at {'a dialog' if self.dialog else 'the prompt'}")
 
     def shown(self) -> str:
         match self.dialog:

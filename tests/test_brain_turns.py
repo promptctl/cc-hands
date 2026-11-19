@@ -20,7 +20,7 @@ from hands.sessions.tail import Tails
 from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
-from hands.core.session import DenyAndInterrupt, Held, Permission, RequestId
+from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
 from hands.sessions.audit import Entry
 from conftest import events, patiently, settled
 from brains import dialogs, failures, permissions, unasked
@@ -64,15 +64,6 @@ async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_d
     # Claude Code runs a turn it opened itself, and words are left in its input, drawn plain.
     _took(brain, "n1", NOTICE)
     keys.claude_code.type("a person's words")
-    pressed = keys.press
-
-    def press(key: str) -> None:
-        pressed(key)
-        if key == "ctrl_h":
-            keys.claude_code.draft.clear()
-
-    keys.press = press
-
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Seen drafted, emptied, then seen empty and settled: the turn is pasted, and the take runs out on it.
     await passed(clock, SETTLE_SECONDS)
@@ -93,6 +84,8 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
     brain = _owning(clock)
     keys = _keyed(brain, [])
     keys.claude_code.type("a person's words")
+    # An input the brain's keys do not reach: they are pressed, and the words stay.
+    keys.press = lambda key: keys.pressed.append(key)  # pyright: ignore[reportAttributeAccessIssue]
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Each look sees the words, settles, and empties them; the screen still shows them, so the next look sees them again.
     for _ in range(3):
@@ -837,8 +830,9 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
 class _Keys:
     """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order; and its screen, as tmux
     shows it, which shows the prompt unless the test says else: every capture it was read for is counted. Its screen is the
-    fake Claude Code the terminal contract holds to the pinned one (tests/claudescreen.py), so what hands reads here is a
-    screen the pin was held to, and what hands types reaches it as the pin takes it: a paste, then the chord."""
+    fake Claude Code the terminal contract holds to the pinned one on the chord's two claims (tests/claudescreen.py; the rest
+    it plays is the docs' and held by nothing yet), and what hands types reaches it as the pin takes it: a paste, then the
+    chord."""
 
     def __init__(self) -> None:
         self.pressed: list[str] = []
@@ -852,9 +846,9 @@ class _Keys:
         self.claude_code.paste(text)
         self.claude_code.key(CHORD)
 
-    def press(self, key: str) -> None:
+    def press(self, key: Keystroke) -> None:
         self.pressed.append(key)
-        self.claude_code.key(KEYS[key])  # pyright: ignore[reportArgumentType]
+        self.claude_code.key(KEYS[key])
 
     async def screen(self) -> str:
         self.looked += 1

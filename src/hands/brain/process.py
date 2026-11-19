@@ -42,7 +42,7 @@ from hands.core.effects import Allow, AllowWith, Approve, Deny, Heard, HookReply
 from hands.core.events import Ending, Event, Prompted, Stopped
 from hands.core.reducer import UNTOLD
 from hands.core.screen import Box, plain, typable
-from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, Submit, all_told, holds, ids, pasted
+from hands.core.session import DenyAndInterrupt, Keystroke, Permission, PromptId, PromptText, RequestId, Session, SessionId, all_told, holds, ids, pasted
 from hands.core.wire import MainTurn, Observed, Sent, tool_names
 from hands.core.trace import Span
 from hands.core.stopfailure import StopFailed
@@ -137,10 +137,10 @@ INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
 # The chord that sends the brain's prompt. Return is the yes of every dialog; Ctrl-Q, bound to the prompt's submit in the
 # brain's own keybindings, resolves to that submit or to nothing in every context, so no turn hands types can answer a
 # dialog (docs/claude-code-screen.md, "Submitting the prompt with a chord no dialog binds").
-SUBMIT: Submit = "ctrl_q"
-# Claude Code's own name for each chord the brain can be sent by. A SUBMIT with no name here fails at import, never as a
-# keybindings.json that binds nothing.
-CLAUDE_CODE_NAME: Mapping[Submit, str] = {"ctrl_q": "ctrl+q"}
+SUBMIT: Literal["ctrl_q"] = "ctrl_q"
+# Claude Code's own name for each chord the brain can be sent by: the type of SUBMIT admits only the ones named here, so a
+# chord added to it with no name is an error at the edit, never a keybindings.json that binds nothing.
+CLAUDE_CODE_NAME: Mapping[Literal["ctrl_q"], str] = {"ctrl_q": "ctrl+q"}
 # The brain's whole keybindings.json: SUBMIT, in Claude Code's own name for it, bound to the prompt's submit, and Return
 # unbound there, without which the prompt never registers the chord's submit at all.
 KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {CLAUDE_CODE_NAME[SUBMIT]: "chat:submit", "enter": None}}]}

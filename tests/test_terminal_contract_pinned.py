@@ -23,8 +23,6 @@ class Pinned:
     def __init__(self, hands: Hands, mock_api: MockApi) -> None:
         self.hands = hands
         self.mock_api = mock_api
-        # Whether a dialog is the case's to end: the turn it holds is ended as the user would, so the run ends at the prompt.
-        self.dialog = False
 
     async def at_dialog(self) -> None:
         # A symlink is a command no setting of the brain's allows, so Claude Code asks about it in default mode.
@@ -33,7 +31,6 @@ class Pinned:
         await self.hands.connected()
         await self.hands.say("link the file")
         await self.hands.until(lambda: len(self.hands.held()) == 1 and QUESTION in self.hands.shown())
-        self.dialog = True
 
     async def paste(self, text: str) -> None:
         # The model's reply to a turn holding the first and the last line of what is pasted: the turn the chord sends.
@@ -67,13 +64,16 @@ class Pinned:
         await self.hands.until(lambda: any("Say yes to allow it." in said for said in self.hands.out.said()))
         await self.hands.say("no")
         await self.hands.until(lambda: "I left it unmade." in "".join(self.hands.out.said()))
+        # The refusal kept the command from running.
+        assert not await self.ran()
 
 
 @pytest.fixture
 async def terminal(hands: Hands, mock_api: MockApi) -> AsyncGenerator[Pinned]:
     pinned = Pinned(hands, mock_api)
     yield pinned
-    if pinned.dialog:
+    # A dialog still held is ended as the user would, so the run ends at Claude Code's prompt.
+    if hands.held():
         await pinned.finish()
 
 

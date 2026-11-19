@@ -24,11 +24,11 @@ from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStar
 from conftest import RUN, located, new_sessions, running, unread
 from spoken import Received, Spoken
 from hands.brain import pinned
-from hands.brain.fork import REMINDER
+from hands.brain.mcp import SERVER_NAME
 from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
-from hands.core.wire import Sent
+from hands.core.wire import SIDE_QUESTION_OPENING, Sent
 from hands.daemon.run import mind
 from hands.sessions.audit import Entry
 from hands.sessions.home import Home
@@ -52,9 +52,9 @@ PATIENCE_SECONDS = 60.0
 ACCOUNT = Account("claude.ai", "user@example.com")
 # What only the brain's own turns carry, among every request its Claude Code makes: hands' tools offered to the model.
 # A title or a summary Claude Code asks for beside a turn carries the user's words too, but none of hands' tools.
-TURN = "mcp__hands__stay_silent"
+TURN = f"mcp__{SERVER_NAME}__{stay_silent_tool().name}"
 # The words a side question's prompt opens with, past the reminder's tag: nothing in them is escaped in a JSON string.
-SIDE_QUESTION = REMINDER.removeprefix("<system-reminder>").split(".")[0]
+SIDE_QUESTION = SIDE_QUESTION_OPENING.removeprefix("<system-reminder>")
 # What only a request carrying a tool's result holds, as Claude Code's compact JSON writes the block.
 RESULT = '"type":"tool_result"'
 # The outcomes the mock writes its records under that are no fault: a request served, a connection closed, a request
