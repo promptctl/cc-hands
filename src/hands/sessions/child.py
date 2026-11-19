@@ -77,10 +77,10 @@ class Ran:
 
 
 class SpawnFailed(OSError):
-    """The OS refused to create the child's process, or the files its output goes to: there was no child to have done
-    anything. It says what the OS said, with the OS's errno, text and filename.
+    """The OS could not run the program, or make the files its output goes to: the child never ran, so it did nothing.
+    It says what the OS said, with the OS's errno, text and filename.
 
-    The one OSError `run` raises before the child exists; any other came after it was started.
+    The one OSError `run` raises before the child ran; any other came after it was started.
     """
 
     def __init__(self, error: OSError) -> None:
@@ -104,7 +104,7 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
             process = subprocess.Popen(
                 argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
             )
-            # The stack closes the files on any failure before the child exists, and lets go of them once it does.
+            # The stack closes the files on any failure before the child runs, and lets go of them once it does.
             files.pop_all()
     except OSError as error:
         raise SpawnFailed(error) from error

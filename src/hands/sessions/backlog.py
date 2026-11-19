@@ -91,7 +91,7 @@ class LitFailed(Exception):
     the message says why; `reason` is the token that names why, None where nothing does.
 
     `changed_nothing` is whether lit is known to have written nothing, which `_lit` decides where it classifies the failure:
-    true of a refusal that says why on its reason line, and of a lit whose process was never created; false of one that
+    true of a refusal that says why on its reason line, and of a lit whose program never ran; false of one that
     did not answer, ended without a reason, or failed after it was started, any of which may have written before it stopped.
     """
 

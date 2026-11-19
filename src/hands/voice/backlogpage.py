@@ -369,9 +369,8 @@ async def _read(clock: Clock, project: Path, unread: str, status: int, untracked
 
 
 def _unwritten(error: LitFailed, fact: str, refused: str, unknown: str) -> Halted:
-    """The stop of a drop, a note or a leveling when a lit write in it failed: lit's refusal, or a lit never started, proves
-    it wrote nothing, and the answer says `refused`; a lit that stopped without saying why may have written first, so `fact`
-    on the event is "unknown", and the answer says `unknown` [LAW:no-silent-failure]."""
+    """The stop of a drop, a note or a leveling when a lit write in it failed: the answer says `refused` where
+    `LitFailed.changed_nothing`, and else `unknown`, with `fact` on the event "unknown" [LAW:no-silent-failure]."""
     if error.changed_nothing:
         return Halted(502, f"{refused}: {error}")
     annotate(**{fact: "unknown"})
