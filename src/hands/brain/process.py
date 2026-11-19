@@ -30,6 +30,7 @@ import tempfile
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, cast, get_args
 
 from aiohttp import web
@@ -167,7 +168,7 @@ class Station:
     cwd: Path
     model: str
     proxy_url: str
-    # hands' own environment, which each is started in less what environment() keeps out; kept out of the repr, as it
+    # hands' own environment, which each is started in less what build_environment() keeps out; kept out of the repr, as it
     # holds keys, and out of the station's identity, which it is not part of.
     inherited: Mapping[str, str] = field(repr=False, compare=False)
 
@@ -330,12 +331,14 @@ def settings_mode(config_dir: Path) -> Mode | None:
     return mode
 
 
-def environment(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> dict[str, str]:
-    """A slim Claude Code's environment: hands' own, less anything that would stand in for the login in `config_dir`, reaching the API at `base_url`."""
+def build_environment(config_dir: Path, base_url: str, inherited: Mapping[str, str], *, auth_method: str | None = None) -> Mapping[str, str]:
+    """Build a read-only child-process environment using the brain's own authentication."""
     # [LAW:one-source-of-truth] the brain is the same brain wherever hands was started: a daemon started inside a tapped
     # session does not hand the brain that session's tap.
-    kept = {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_LOGINS}
-    return {**kept, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url}
+    kept = {name: value for name, value in untapped(inherited).items() if name not in FOREIGN_LOGINS and name != "CLAUDE_CODE_ENTRYPOINT"}
+    # [LAW:single-enforcer] select the entrypoint from the brain's auth method, never the parent environment.
+    entrypoint = {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"} if auth_method == "api_key" else {}
+    return MappingProxyType({**kept, **SLIM, **EVERY_RUN, "CLAUDE_CONFIG_DIR": str(config_dir), "ANTHROPIC_BASE_URL": base_url, **entrypoint})
 
 
 def workdir(config_dir: Path) -> Path:
@@ -466,7 +469,7 @@ class InTmux:
                 pass
 
 
-async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
+async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace: Path, *, env: Mapping[str, str] | None = None) -> InTmux:
     """Run a slim Claude Code's command in the brain's tmux session on the user's default tmux server, the one `tmux
     attach` reaches, so a person can watch it and type into it.
 
@@ -491,13 +494,14 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
         case Ran():
             pass
     status, pid = workspace / "status", workspace / "pane"
-    # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
+    # env -i: a pane is otherwise given the tmux server's own environment, which would carry what build_environment() keeps
     # out. Its own TMUX and TMUX_PANE name the brain's pane, never the one hands was started in.
-    env = {name: value for name, value in environment(station.config_dir, station.proxy_url, station.inherited).items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
+    process_env = build_environment(station.config_dir, station.proxy_url, station.inherited) if env is None else env
+    pane_env = {name: value for name, value in process_env.items() if name not in ("TMUX", "TMUX_PANE", "TERM")}
     # Read from a file only hands can read, never put on a command line, which anyone on the machine can read with ps;
     # and set as it is, by hands' own Python, whatever a name holds, which a shell would refuse as no identifier.
     (workspace / "env").touch(mode=0o600)
-    (workspace / "env").write_text(json.dumps(env))
+    (workspace / "env").write_text(json.dumps(pane_env))
     # A command that cannot be run is said and exits as a shell's exec does: 127 for one not there, 126 for any other.
     launch = (
         "import json, os, sys\n"
@@ -658,7 +662,7 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
-    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
+    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=build_environment(config_dir, base_url, inherited))
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
@@ -712,7 +716,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
         # A timed-out child is killed and reaped by run itself.
         asked = subprocess.run(
             [brain_claude(config_dir), "auth", "status"],
-            env=environment(config_dir, base_url, inherited),
+            env=build_environment(config_dir, base_url, inherited),
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=AUTH_STATUS_SECONDS,
@@ -1839,9 +1843,11 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
     """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; every bound
     the brain keeps, a typed turn's take among them, passes on `clock`."""
     station = launch.station
+    env = build_environment(station.config_dir, station.proxy_url, station.inherited, auth_method=launch.account.method)
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record, begun(clock)):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
+        annotate(entrypoint=env.get("CLAUDE_CODE_ENTRYPOINT"))
         match launch.conversation:
             case Fresh(untranscribed=untranscribed):
                 annotate(conversation="fresh", untranscribed=untranscribed)
@@ -1874,7 +1880,7 @@ async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
         running: InTmux | None = None
         try:
             try:
-                running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets)
+                running = await in_tmux(clock, station, [str(fritter), "--socket-dir", str(sockets), "--", *command(launch, claude, url, mode)], sockets, env=env)
                 annotate(tmux_session=brain_session(station.config_dir))
                 typist, wrapper = await _typist(clock, running, sockets, launch.session)
                 annotate(pid=wrapper)
