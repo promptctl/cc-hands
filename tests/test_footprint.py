@@ -1,47 +1,32 @@
 """The process's physical footprint counts the memory it holds wherever it was written, and a reading says its size or
 why it was not read."""
 
-from collections.abc import Callable
+import subprocess
+import sys
+from pathlib import Path
 
-import mlx.core as mx
-import numpy as np
 import pytest
 
 from hands import footprint
 
 MEGABYTE = 2**20
+HELD_MB = 200
+HOLD = Path(__file__).resolve().parent / "fixtures" / "footprint_hold.py"
 
 
-# Each hold is uniform random bytes and allocates nothing beside itself: the footprint counts a compressed page at its
-# compressed size, and macOS compresses under the full suite's memory pressure.
-def numpy_array(size: int) -> object:
-    return np.random.default_rng(0).integers(0, 256, size, np.uint8)
+# The reading is of a whole process, so it is taken in one where nothing runs beside the array. In the full suite's own
+# process one reading was 63 MB over the hold, and the cause was not found. No timeout is given here: pytest's is the
+# one that ends a hang. The child's stderr goes to pytest's capture, which shows it where the child fails.
+@pytest.mark.outside
+@pytest.mark.parametrize("hold", ["numpy", "mlx"])
+def test_the_footprint_grows_by_the_memory_the_process_holds(hold: str) -> None:
+    ran = subprocess.run([sys.executable, str(HOLD), hold, str(HELD_MB * MEGABYTE)], stdout=subprocess.PIPE, text=True, check=True)
+    grew = float(ran.stdout)
+    assert HELD_MB - 10 < grew < HELD_MB * 1.3, f"a {hold} hold of {HELD_MB} MB grew the footprint {grew:.1f} MB"
 
 
-def mlx_array(size: int) -> object:
-    # Written by MLX's default device: on Metal, memory the resident set size never counts.
-    # A buffer an earlier test let go of is not taken back from MLX's cache: it is grown anew, as a model's load grows it.
-    mx.clear_cache()
-    # Split keys are raw Threefry bits. mx.random.randint is neither: it scales a float32 uniform, whose low bits are
-    # zeros, through a float32 buffer the size of its output that clearing the cache does not give back.
-    held = mx.random.split(mx.random.key(0), size // 8).view(mx.uint8)
-    mx.eval(held)  # pyright: ignore[reportUnknownMemberType]
-    return held
-
-
-QUARANTINED = pytest.mark.quarantined("promptctl-voice-i15t.65f.fnt", until="2026-11-25")
-
-
-@pytest.mark.parametrize("hold", [pytest.param(numpy_array, marks=QUARANTINED), mlx_array])
-def test_the_footprint_grows_by_the_memory_the_process_holds(hold: Callable[[int], object]) -> None:
-    # The library's own start-up, Metal's device and kernels for MLX, grows the process too; it is had first, so what
-    # is measured is the array alone.
-    hold(MEGABYTE)
-    before = footprint.footprint()
-    held = hold(200 * MEGABYTE)
-    grew = (footprint.footprint() - before) / MEGABYTE
-    del held
-    assert 190 < grew < 260
+def test_the_kernel_reads_this_process_as_holding_something() -> None:
+    assert footprint.footprint() > 10 * MEGABYTE
 
 
 def test_one_reading_says_its_size_or_why_it_was_not_read() -> None:
