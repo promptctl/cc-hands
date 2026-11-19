@@ -29,8 +29,10 @@ def mlx_array(size: int) -> object:
     return held
 
 
-# Only the numpy hold failed in master's full suite (263.5 MB against the window, run 44288853845); the MLX hold passed there.
-@pytest.mark.parametrize("hold", [pytest.param(numpy_array, marks=pytest.mark.quarantined("promptctl-voice-i15t.65f.fnt", until="2026-11-25")), mlx_array])
+QUARANTINED = pytest.mark.quarantined("promptctl-voice-i15t.65f.fnt", until="2026-11-25")
+
+
+@pytest.mark.parametrize("hold", [pytest.param(numpy_array, marks=QUARANTINED), mlx_array])
 def test_the_footprint_grows_by_the_memory_the_process_holds(hold: Callable[[int], object]) -> None:
     # The library's own start-up, Metal's device and kernels for MLX, grows the process too; it is had first, so what
     # is measured is the array alone.
