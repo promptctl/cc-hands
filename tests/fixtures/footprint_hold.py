@@ -1,4 +1,6 @@
-"""A process that holds HELD_MB as numpy or MLX writes it and prints how much its footprint grew, in megabytes.
+"""A process that holds a number of bytes as numpy or MLX writes it and prints how much its footprint grew, in megabytes.
+
+    footprint_hold.py <numpy|mlx> <bytes>
 
 tests/test_footprint.py runs it: the reading is of a whole process, and in a fresh one nothing runs beside the array."""
 
@@ -9,9 +11,6 @@ import mlx.core as mx
 import numpy as np
 
 from hands import footprint
-
-HELD_MB = 200
-_MEGABYTE = 2**20
 
 
 # Each hold is uniform random bytes and allocates nothing beside itself: the footprint counts a compressed page at its
@@ -32,15 +31,15 @@ def mlx_array(size: int) -> object:
 HOLDS: dict[str, Callable[[int], object]] = {"numpy": numpy_array, "mlx": mlx_array}
 
 
-def main(name: str) -> None:
+def main(name: str, size: int) -> None:
     hold = HOLDS[name]
     # The library's own start-up, Metal's device and kernels for MLX, grows the process too (an MLX reading without this
-    # line was 362 MB for the 200): it is had first, so that what is measured is the array alone.
-    hold(_MEGABYTE)
+    # line was 362 MB for 200): it is had first, so that what is measured is the array alone.
+    hold(8)
     before = footprint.footprint()
-    _held = hold(HELD_MB * _MEGABYTE)  # held to the reading, which counts what is alive
+    _held = hold(size)  # held to the reading, which counts what is alive
     print(footprint.megabytes(footprint.footprint() - before))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], int(sys.argv[2]))
