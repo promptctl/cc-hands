@@ -854,6 +854,10 @@ class _Keys:
         self.looked += 1
         return self.claude_code.shown()
 
+    def shown(self) -> str:
+        """The last lines the terminal showed, which the brain's error messages carry."""
+        return self.claude_code.shown()
+
 
 def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
     """A bare brain a turn can be asked of: typed into a keyboard of the test's, read off a screen of the test's, its take

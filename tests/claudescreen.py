@@ -46,9 +46,14 @@ class ClaudeScreen:
     def paste(self, text: str) -> None:
         # A permission dialog with no field open swallows a paste, and one with Yes's field open takes it there (docs/
         # claude-code-screen.md).
-        if self.dialog is not None:
-            self.type(text)
-            return
+        match self.dialog:
+            case _Dialog(amended=str()):
+                self.type(text)
+                return
+            case _Dialog():
+                return
+            case None:
+                pass
         if text.count("\n") + 1 < FOLDED:
             self.draft.append((text, text))
             return
@@ -73,10 +78,11 @@ class ClaudeScreen:
             case (None, chord) if chord == self.chord:
                 # Nothing drafted, nothing to submit.
                 pass
-            case (None, "C-u"):
-                # The brain's keys that empty a row, which a draft of one row is: C-u kills it to its start.
+            case (None, "C-u" | "C-c"):
+                # C-u kills the row to its start, and a draft of one row is all of it; C-c clears the input
+                # (docs/claude-code-behavior.md, app:interrupt).
                 self.draft = []
-            case (None, "C-e" | "C-k" | "C-h" | "C-c" | "Escape"):
+            case (None, "C-e" | "C-k" | "C-h" | "Escape"):
                 # At the end of a row with nothing after it and no row before it, or with nothing running, these change nothing.
                 pass
             case (_Dialog(focus=1, amended=None) as dialog, "Tab"):
