@@ -1,11 +1,14 @@
 """A child run to its end inside a time limit, and never left running by a caller that stops waiting on it."""
 
 import asyncio
+import errno
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from loguru import logger
@@ -13,7 +16,7 @@ from loguru import logger
 from conftest import BrokenClock, VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions import child
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Ran, SpawnFailed, run
 
 
 @pytest.fixture
@@ -137,8 +140,38 @@ async def test_a_failure_reading_what_a_child_wrote_is_its_own(monkeypatch: pyte
 
 
 async def test_a_child_that_cannot_start_says_so() -> None:
-    with pytest.raises(OSError):
+    with pytest.raises(SpawnFailed) as raised:
         await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+    assert not raised.value.cwd_missing
+
+
+@pytest.mark.outside
+async def test_a_child_that_cannot_start_says_so_in_the_systems_words() -> None:
+    with pytest.raises(SpawnFailed, match=r"\[Errno 2\] No such file or directory: '/nonexistent/hands-no-such-program'") as raised:
+        await run("/nonexistent/hands-no-such-program", timeout=5, clock=SYSTEM)
+    assert raised.value.errno == errno.ENOENT
+
+
+async def test_a_child_whose_directory_is_gone_says_it_is_the_directory(tmp_path: Path) -> None:
+    with pytest.raises(SpawnFailed) as raised:
+        await run("true", timeout=5, cwd=tmp_path / "gone", clock=SYSTEM)
+    assert raised.value.cwd_missing
+
+
+async def test_files_that_cannot_be_made_for_a_childs_output_are_a_child_that_cannot_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[IO[bytes]] = []
+    really = tempfile.TemporaryFile
+
+    def made() -> IO[bytes]:
+        if opened:
+            raise OSError(errno.EMFILE, "Too many open files")
+        opened.append(really())
+        return opened[0]
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", made)
+    with pytest.raises(SpawnFailed, match="Too many open files"):
+        await run("true", timeout=5, clock=SYSTEM)
+    assert opened[0].closed, "the first file was left open when the second could not be made"
 
 
 @pytest.mark.outside

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Literal, get_args
+from typing import Literal, get_args
 
 from hands.clock import Clock
 from hands.core.summaries import Thing
@@ -86,27 +86,26 @@ Signer = Person | Inherited
 
 
 class LitFailed(Exception):
-    """lit did not do what it was asked in a directory, and the message says why. As raised bare it proves nothing of what
-    lit wrote: it did not answer, or ended without a reason, and may have written before it stopped. A variant is a failure
-    that proves lit wrote nothing, and `changed_nothing` is where that is said."""
-
-    changed_nothing: ClassVar[bool] = False
+    """lit did not do what it was asked in a directory, and the message says why. Raised bare it proves nothing of what
+    lit wrote: it did not answer, ended without a reason lit documents as given before it writes, or ran and could not
+    be read, and may have written before it stopped [LAW:no-silent-failure]."""
 
 
-class LitRefused(LitFailed):
-    """lit exited non-zero and named its `reason` as a token on its first line: it refuses before it writes."""
+class Unwritten(LitFailed):
+    """A failure that proves lit wrote nothing, so a write that met it is known not to have happened. A subclass is that
+    proof or it is not a subclass."""
 
-    changed_nothing = True
+
+class LitRefused(Unwritten):
+    """lit exited non-zero naming a `reason` its reference documents as given before it writes."""
 
     def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
 
 
-class LitNotStarted(LitFailed):
+class LitNotStarted(Unwritten):
     """lit's process was never created, so there was nothing to write."""
-
-    changed_nothing = True
 
 
 class ProjectGone(LitNotStarted):
@@ -135,6 +134,10 @@ class Untracked:
 # here: `lit init` never ran in this repository, or this is no git repository.
 ERROR_LINE = re.compile(r"error \(code=\d+, reason=(?P<reason>\w+)\): ")
 NO_WORKSPACE = ("workspace_not_initialized", "outside_git_workspace")
+# The reasons lit's reference (docs/cli-reference.md, "Every reason") gives only before it writes: the command is refused as
+# issued, or the store was not got. `command_failed`, `batch_landed_then_failed` and `bulk_partial_failure` are not here:
+# a write may stand under them.
+REFUSED_BEFORE_WRITING = frozenset({"usage_error", "validation_refused", "entity_not_found", "workspace_busy", "workspace_write_blocked", *NO_WORKSPACE})
 
 
 @dataclass(frozen=True)
@@ -417,8 +420,8 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
     """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
-    when its process was never created, LitRefused when it exited non-zero naming a reason, and LitFailed when it did not
-    answer, ended without a reason, or could not be read after it ran.
+    when its process was never created, LitRefused when it exited non-zero naming a reason it gives only before it writes,
+    and LitFailed when it did not answer, ended with another reason or none, or could not be read after it ran.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
@@ -430,15 +433,16 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
     except SpawnFailed as error:
         if error.cwd_missing:
             raise ProjectGone(project) from error
-        raise LitNotStarted(f"lit could not be started in {project}: {error.cause}") from error
+        raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
     except OSError as error:
-        # [LAW:no-silent-failure] past the spawn, so lit ran and may have written before what it wrote could not be read.
+        # Not a SpawnFailed: lit ran, and may have written before what it wrote could not be read.
         raise LitFailed(f"{command} in {project} ran, and what it wrote could not be read: {error}") from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
         said = f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}"
         # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise LitFailed(said) if (line := ERROR_LINE.match(err)) is None else LitRefused(said, line["reason"])
+        line = ERROR_LINE.match(err)
+        raise LitRefused(said, line["reason"]) if line is not None and line["reason"] in REFUSED_BEFORE_WRITING else LitFailed(said)
     return ran.out
 
 

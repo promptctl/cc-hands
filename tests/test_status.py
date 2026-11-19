@@ -319,8 +319,8 @@ async def test_the_heartbeat_is_rewritten_every_period() -> None:
     beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 10, clock))
     seen: list[int] = []
     # [LAW:no-ambient-temporal-coupling] each period is moved once the beat is waiting it out, not after a real while.
-    for period in (10, 20, 30):
-        await clock.sleeping(period)
+    for wakes_at in (10, 20, 30):
+        await clock.sleeping(wakes_at)
         seen.append(len(beats))
         clock.advance(10)
     await clock.sleeping(40)

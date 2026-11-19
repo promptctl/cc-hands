@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from conftest import empty_path
 from hands.clock import SYSTEM, Clock
 from hands.core.effects import Fritter, Summarise, Text, Type
 from hands.core.session import PromptId, PromptText, SessionId
@@ -207,7 +208,7 @@ def test_a_run_that_stops_after_up_says_on_its_event_what_it_reached_and_why_it_
     now = datetime.now(UTC)
     home.root.mkdir()
     heartbeat.write(home.status, heartbeat.Status(os.getpid(), now, now, heartbeat.HEARTBEAT, "running", None, 0, False, (), None))
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    empty_path(tmp_path, monkeypatch)
     assert main(["--home", str(home.root), "smoke"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "FAILED joined: there is no `claude` on PATH"
     [command] = events(home)

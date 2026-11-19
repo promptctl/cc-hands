@@ -417,6 +417,12 @@ def executable(path: Path, text: str) -> Path:
     return path
 
 
+def empty_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave nothing on PATH, so a program the code under test looks for is not found."""
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+
 def stand_in(at: Path) -> Path:
     """A program built at `at` that runs as a session does, until it is killed, signed as the linker signs any program
     not Apple's, as Claude Code and Homebrew's tmux are: macOS 26 kills a copy of one of Apple's own programs as it

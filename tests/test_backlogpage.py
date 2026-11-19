@@ -22,7 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from hands.clock import SYSTEM
 from hands.sessions import backlog
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, LitFailed, Move, NewEpic, Place, ProjectGone, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, LitFailed, Move, NewEpic, Place, ProjectGone, Standing, Untracked, Unwritten, comment, parse_export, parse_level
 from hands.sessions.child import Ran, SpawnFailed
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
@@ -30,7 +30,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from conftest import SYSTEM_PATH, events, executable
+from conftest import SYSTEM_PATH, empty_path, events, executable
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -287,6 +287,8 @@ class Page:
         (b'{"project": "/tmp", "ticket": "a", "text": "  \\n "}', "not blank"),
         # lit would read it as its own flag, and `--help` exits 0 keeping nothing.
         (b'{"project": "/tmp", "ticket": "--help", "text": "Split it"}', "'--help' is a flag"),
+        # lit takes both as arguments, and a process cannot be given one with a NUL in it.
+        (b'{"project": "/tmp", "ticket": "a", "text": "Split\\u0000it"}', "hold no NUL"),
     ],
 )
 def test_a_note_the_page_sends_is_refused_naming_what_is_wrong(body: bytes, why: str) -> None:
@@ -344,12 +346,6 @@ def stub_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **before: str) -> 
     branches = "".join(f'if [ "$1" = {subcommand} ]; then\n{script}\nfi\n' for subcommand, script in before.items())
     executable(stubs / "lit", f'#!/bin/sh\n{branches}exec {LIT} "$@"\n')
     monkeypatch.setenv("PATH", f"{stubs}:{SYSTEM_PATH}")
-
-
-def without_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave no `lit` on PATH."""
-    (tmp_path / "empty").mkdir()
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
 
 
 def epic(workspace: Workspace, title: str, *children: str, topic: str = "page") -> tuple[str, ...]:
@@ -909,7 +905,7 @@ async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: 
 @real_lit
 async def test_a_note_with_no_lit_to_start_is_said_to_have_kept_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    without_lit(tmp_path, monkeypatch)
+    empty_path(tmp_path, monkeypatch)
     status, body = await noted(page, workspace, hey, "Split it")
     assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}")
     [event] = page.events("backlog.noted")
@@ -950,24 +946,38 @@ async def test_a_leveling_whose_lit_is_gone_after_it_made_the_epic_says_the_epic
     assert (event.facts["created"], event.facts["ranked"], event.facts["moved"]) == ("yes", "yes", "no")
 
 
+def exited(code: int, said: str) -> Ran:
+    return Ran(code, b"", said.encode())
+
+
 @pytest.mark.parametrize(
-    ("ending", "changed_nothing"),
+    ("ending", "proves_nothing_was_written"),
     [
-        (SpawnFailed("lit", Path("/tmp"), FileNotFoundError(errno.ENOENT, "No such file or directory", "lit")), True),
+        (SpawnFailed(FileNotFoundError(errno.ENOENT, "No such file or directory", "lit"), cwd_missing=False), True),
+        (SpawnFailed(FileNotFoundError(errno.ENOENT, "No such file or directory", "/gone"), cwd_missing=True), True),
+        (exited(3, "error (code=3, reason=validation_refused): not a level\n"), True),
+        (exited(1, "error (code=1, reason=workspace_busy): the store is locked\n"), True),
+        # Reasons lit's reference gives after a write, or says nothing of: the write may stand.
+        (exited(1, "error (code=1, reason=command_failed): an unclassified fault\n"), False),
+        (exited(1, "error (code=1, reason=bulk_partial_failure): some landed\n"), False),
+        (exited(1, "lit: no reason line\n"), False),
         # Raised once lit ran, from reading what it wrote: it may have written first.
         (OSError(errno.EIO, "Input/output error"), False),
     ],
 )
-async def test_a_lit_is_known_to_have_changed_nothing_only_where_it_was_never_started(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ending: OSError, changed_nothing: bool
+async def test_a_lit_is_known_to_have_written_nothing_only_where_that_is_proved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, ending: OSError | Ran, proves_nothing_was_written: bool
 ) -> None:
     async def run(*argv: str, **how: object) -> Ran:
+        if isinstance(ending, Ran):
+            return ending
         raise ending
 
     monkeypatch.setattr(backlog, "run", run)
     with pytest.raises(LitFailed) as raised:
         await comment(VirtualClock(), tmp_path, "a", "Seen again.", Inherited())
-    assert raised.value.changed_nothing is changed_nothing
+    assert isinstance(raised.value, Unwritten) is proves_nothing_was_written
+    assert isinstance(raised.value, ProjectGone) is (isinstance(ending, SpawnFailed) and ending.cwd_missing)
 
 
 @pytest.mark.outside
