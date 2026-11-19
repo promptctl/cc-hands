@@ -20,10 +20,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import LEVELS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun, unit
+from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
 from conftest import events
@@ -269,6 +270,7 @@ class Page:
     client: TestClient[web.Request, web.Application]
     store: SummaryStore
     recorded: list[Entry]
+    clock: VirtualClock
 
     def events(self, name: str) -> list[WideEvent]:
         return events(self.recorded, name)
@@ -298,10 +300,12 @@ async def page(tmp_path: Path) -> AsyncGenerator[Page]:
     recorded: list[Entry] = []
     store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     app = web.Application()
-    app.add_routes(backlog_routes(SYSTEM, store, KEY, recorded.append, os.environ))
+    # A clock nobody moves unless a test does, so no lit the page runs is ended by the machine being slow.
+    clock = VirtualClock()
+    app.add_routes(backlog_routes(clock, store, KEY, recorded.append, os.environ))
     client = TestClient(TestServer(app))
     await client.start_server()
-    yield Page(client, store, recorded)
+    yield Page(client, store, recorded, clock)
     await client.close()
 
 
@@ -507,6 +511,23 @@ async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, w
     assert workspace.order(mic, parser) == [mic, parser]
     [event] = page.events("backlog.ranked")
     assert event.outcome == "failed" and event.error is not None and "workspace_busy" in event.error and event.facts["ranked"] == "no"
+
+
+@pytest.mark.outside
+async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read_and_is_killed(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "lit").write_text("#!/bin/sh\nexec sleep 600\n")
+    (bin / "lit").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}:/bin:/usr/bin")
+    read = asyncio.create_task(page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED))
+    # The bound is waited out on the page's clock, so it comes due as the test moves the clock to it and no sooner.
+    await page.clock.sleeping(LIT_TIMEOUT_SECONDS)
+    page.clock.advance(LIT_TIMEOUT_SECONDS)
+    response = await read
+    assert response.status == 502 and f"did not answer in {LIT_TIMEOUT_SECONDS:.0f}s" in await response.text()
+    [event] = page.events("backlog.read")
+    assert event.outcome == "failed" and event.error is not None and "did not answer" in event.error
 
 
 @pytest.mark.outside
