@@ -20,6 +20,7 @@ from hands.sessions import audit, heartbeat
 from hands.daemon.cli import Run, launch, main
 from hands.daemon.starting import Ended, QuitKey, Start, Stop, keep_beating
 from hands.threads import off_loop
+from hands.virtualclock import VirtualClock
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -314,10 +315,17 @@ def test_a_heartbeat_whose_pid_went_to_a_later_process_reads_as_down(tmp_path: P
 
 async def test_the_heartbeat_is_rewritten_every_period() -> None:
     beats: list[None] = []
-    beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 0.01, SYSTEM))
-    await asyncio.sleep(0.055)
+    clock = VirtualClock()
+    beating = asyncio.create_task(keep_beating(lambda: beats.append(None), 10, clock))
+    seen: list[int] = []
+    # [LAW:no-ambient-temporal-coupling] each period is moved once the beat is waiting it out, not after a real while.
+    for period in (10, 20, 30):
+        await clock.sleeping(period)
+        seen.append(len(beats))
+        clock.advance(10)
+    await clock.sleeping(40)
     beating.cancel()
-    assert 3 <= len(beats) <= 6
+    assert seen == [1, 2, 3] and len(beats) == 4
 
 
 async def test_work_off_the_loop_returns_its_result_or_raises_its_error() -> None:
