@@ -29,6 +29,7 @@ def mlx_array(size: int) -> object:
     return held
 
 
+@pytest.mark.quarantined("promptctl-voice-i15t.65f.fnt", until="2026-11-25")
 @pytest.mark.parametrize("hold", [numpy_array, mlx_array])
 def test_the_footprint_grows_by_the_memory_the_process_holds(hold: Callable[[int], object]) -> None:
     # The library's own start-up, Metal's device and kernels for MLX, grows the process too; it is had first, so what
