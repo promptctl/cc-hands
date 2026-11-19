@@ -12,10 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
 
 import aiohttp
 import pytest
@@ -27,7 +28,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, build_environment, command, in_tmux, conversation, settings_mode, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -208,19 +209,21 @@ def launch(tmp: Path) -> Launch:
     return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
 
 
-@pytest.mark.parametrize("method", ["api_key", "claude.ai", "oauth_token"])
-@pytest.mark.parametrize("entrypoint", [None, "sdk-cli", "cli"])
-def test_only_the_brains_api_key_login_uses_the_sdk_entrypoint(tmp_path: Path, method: str, entrypoint: str | None) -> None:
-    inherited = {"PATH": "/bin", "ANTHROPIC_API_KEY": "the-shells-key"}
-    if entrypoint is not None:
-        inherited["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+@pytest.mark.parametrize(("auth_method", "expected_entrypoint"), [
+    ("api_key", "sdk-cli"), ("claude.ai", None), ("oauth_token", None), ("unknown", None), (None, None),
+])
+@pytest.mark.parametrize("inherited_entrypoint", [None, "sdk-cli", "cli"])
+def test_build_environment_selects_entrypoint(tmp_path: Path, auth_method: str | None, expected_entrypoint: str | None, inherited_entrypoint: str | None) -> None:
+    inherited = MappingProxyType({
+        "PATH": "/bin", "ANTHROPIC_API_KEY": "parent-api-key",
+        **({"CLAUDE_CODE_ENTRYPOINT": inherited_entrypoint} if inherited_entrypoint is not None else {}),
+    })
     original = dict(inherited)
-    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited)
-    selected = station.for_account(Account(method, None))
-    env = environment(selected.config_dir, selected.proxy_url, selected.inherited)
-    assert env.get("CLAUDE_CODE_ENTRYPOINT") == ("sdk-cli" if method == "api_key" else None)
+    env = build_environment(tmp_path / "brain", "http://127.0.0.1:1", inherited, auth_method=auth_method)
+    assert env.get("CLAUDE_CODE_ENTRYPOINT") == expected_entrypoint
     assert "ANTHROPIC_API_KEY" not in env
     assert inherited == original
+    assert not isinstance(env, MutableMapping)
 
 
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
@@ -300,7 +303,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert {event: hooks.pop(event) for event in waits} == {event: [{"hooks": [{"type": "http", "url": f"http://127.0.0.1:7/{event}", "timeout": wait}]}] for event, wait in waits.items()}
     # A permission is held while the user is asked, as long as a working session's is.
     assert hooks == {"PermissionRequest": [{"hooks": [{"type": "http", "url": "http://127.0.0.1:7/PermissionRequest", "timeout": PERMISSION_HOOK_TIMEOUT_SECONDS}]}]}
-    env = environment(tmp_path / "brain", "http://127.0.0.1:1", {
+    env = build_environment(tmp_path / "brain", "http://127.0.0.1:1", {
         "PATH": "/bin",
         # A command its setup's skill runs, firecrawl among them, is logged in by its own key or by what it stored under HOME.
         "HOME": "/home/u",
@@ -326,7 +329,7 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
 def test_the_brain_is_not_given_hands_hugging_face_token(tmp_path: Path) -> None:
     # Set for the voice library's fetches, and inherited by whatever the brain runs: the brain has no use for it.
     inherited = {"PATH": "/usr/bin:/bin", "HF_TOKEN": "a-hub-token"}
-    assert "HF_TOKEN" not in environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
+    assert "HF_TOKEN" not in build_environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)
 
 
 @pytest.mark.outside
@@ -338,7 +341,7 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
     recorder.write_text(f'#!/bin/sh\nprintf "updater=%s" "${{DISABLE_AUTOUPDATER-unset}}" > {tmp_path / "seen"}\n')
     recorder.chmod(0o755)
     inherited = {name: value for name, value in os.environ.items() if name != "DISABLE_AUTOUPDATER"} | given
-    assert environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
+    assert build_environment(tmp_path / "brain", "http://127.0.0.1:1", inherited)["DISABLE_AUTOUPDATER"] == "1"
     workspace = Path(tempfile.mkdtemp(dir="/tmp"))
     try:
         running = await in_tmux(SYSTEM, Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited), [str(recorder)], workspace)
@@ -349,25 +352,26 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
 
 
 @pytest.mark.outside
-@pytest.mark.parametrize("method", ["api_key", "claude.ai"])
-async def test_the_brains_process_gets_only_its_accounts_entrypoint(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+@pytest.mark.parametrize(("auth_method", "expected_entrypoint"), [("api_key", "sdk-cli"), ("claude.ai", "unset")])
+async def test_brain_process_entrypoint(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, auth_method: str, expected_entrypoint: str) -> None:
     # Prove the launch wiring once per authentication behavior; the full inherited-value matrix stays in process.
-    fake_claude.write_text(fake_claude.read_text().replace(
-        "import datetime,",
-        f"import os, pathlib\npathlib.Path({str(tmp_path / 'entrypoint')!r}).write_text(os.environ.get('CLAUDE_CODE_ENTRYPOINT', 'unset'))\nimport datetime,",
-        1,
-    ))
+    shebang, _, script = fake_claude.read_text().partition("\n")
+    fake_claude.write_text(
+        f"{shebang}\nimport os\nfrom pathlib import Path\n"
+        f"Path({str(tmp_path / 'entrypoint')!r}).write_text(os.environ.get('CLAUDE_CODE_ENTRYPOINT', 'unset'))\n"
+        f"{script}"
+    )
     pin(monkeypatch, fake_claude)
     launched = launch(tmp_path)
-    launched = replace(launched, account=Account(method, None), station=replace(
+    launched = replace(launched, account=Account(auth_method, None), station=replace(
         launched.station, inherited={**launched.station.inherited, "CLAUDE_CODE_ENTRYPOINT": "sdk-cli"},
     ))
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launched, recorded.append)
     try:
-        assert (tmp_path / "entrypoint").read_text() == ("sdk-cli" if method == "api_key" else "unset")
+        assert (tmp_path / "entrypoint").read_text() == expected_entrypoint
         [event] = events(recorded, "brain.launch")
-        assert event.facts["entrypoint"] == ("sdk-cli" if method == "api_key" else None)
+        assert event.facts["account"] == Account(auth_method, None)
     finally:
         await brain.stop()
 
@@ -1304,7 +1308,7 @@ async def test_a_stopped_brain_waits_for_its_fritters_status_and_leaves_no_sessi
 
 @pytest.mark.outside
 async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_path: Path) -> None:
-    # A server the user started holds their environment, a key among it; the brain is given only what environment() keeps.
+    # A server the user started holds their environment, a key among it; the brain is given only what build_environment() keeps.
     holder = tmux_at("new-session", "-d", "-s", "theirs", "-e", "ANTHROPIC_API_KEY=theirs", "sleep 60")
     assert holder.returncode == 0, holder.stderr
     tmux_at("set-environment", "-g", "ANTHROPIC_API_KEY", "theirs")
@@ -1462,8 +1466,8 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
     # a loaded machine a second can pass before the pane is drawn, and the refusal would show only tmux's status line.
     panes: list[InTmux] = []
 
-    async def recording(clock: Clock, station: Station, argv: Sequence[str], workspace: Path) -> InTmux:
-        panes.append(await in_tmux(clock, station, argv, workspace))
+    async def recording(clock: Clock, station: Station, argv: Sequence[str], workspace: Path, *, env: Mapping[str, str] | None = None) -> InTmux:
+        panes.append(await in_tmux(clock, station, argv, workspace, env=env))
         return panes[-1]
 
     monkeypatch.setattr("hands.brain.process.in_tmux", recording)
