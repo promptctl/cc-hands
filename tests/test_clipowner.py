@@ -15,6 +15,7 @@ from conftest import Running, running
 from hands.clock import SYSTEM, Clock
 from hands.sessions.audit import Entry, Levels
 from hands.sessions.wide import WideEvent, begun
+from hands.virtualclock import VirtualClock
 from hands.voice import clipowner
 from hands.voice.clipowner import ClipOwner
 from hands.voice.clips import Clip, Fate, Heard, Hearing, Hearings, Recording, Reference, Sound, Playhead, Synthesis, Transcriber, voices
@@ -461,6 +462,24 @@ async def test_a_clip_the_voice_opened_that_the_transcriber_heard_nobody_in_cuts
         await rig.clip([frame_of(3)], by="wake word", voices=("charles",))
         await rig.until(lambda: ("resolved", 2) in rig.seen.seen)
         assert barge_ins(rig) == []
+
+
+async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_given_up_on_at_the_bound_and_cuts_nothing() -> None:
+    # Nothing was heard while the clip was open, so hands talks on until its transcription returns: `_closing` cuts on the
+    # words of one that does. One that does not is given up on at the bound, the most hands talks on.
+    clock, bound, transcriber = VirtualClock(), clipowner.TRANSCRIBING_SECONDS, Scripted([asyncio.Event()])
+    async with rigged(transcriber, (Heeding("streaming", hearings=hands_words),), clock) as rig:
+        await rig.clip([frame_of(3)], by="engaged conversation")
+        # The transcriber records a clip once it is inside the bound, whose deadline is then set.
+        await rig.until(lambda: len(transcriber.given) == 1)
+        clock.advance(bound)
+        await rig.until(lambda: ("resolved", 1) in rig.seen.seen and len(rig.run.errors) == 1)
+        assert barge_ins(rig) == []
+        [clip] = rig.events("clip")
+        assert (clip.facts["transcript"], "cut" in clip.facts, clip.duration_ms) == ("failed", False, bound * 1000)
+        # [LAW:no-silent-failure] the owner says it, as the error the system speaks.
+        [failed] = rig.run.errors
+        assert failed.processor is rig.owner and failed.error == f"Clip 1 could not be transcribed: nothing after {bound:g} s"
 
 
 async def test_a_clip_the_hand_opened_was_cut_as_it_opened_so_its_close_cuts_nothing_whoever_it_heard() -> None:
