@@ -2515,6 +2515,26 @@ async def test_a_stop_of_the_turn_shown_ends_it_as_the_user_asked_and_never_as_a
     rig.brain.end()
 
 
+async def test_the_brain_s_running_call_is_shown_with_its_input_and_its_stop_ends_the_turn_to_idle_and_the_next_is_answered(rig: Rig) -> None:
+    assert rig.stage.work() == Idle()
+    await rig.say("wait a while")
+    exchange, _ = rig.request()
+    rig.call(exchange, "t1", "Bash", '{"command": "sleep 120"}')
+    work = rig.stage.work()
+    assert isinstance(work, Working)
+    [call] = work.calls
+    assert isinstance(call, Running) and (call.tool, call.input) == ("Bash", {"command": "sleep 120"})
+    assert rig.stage.stop(work.turn) == Stopping()
+    rig.brain.end(BrainStopped())
+    await rig.turned()
+    assert rig.stage.work() == Idle()
+    await rig.say("say hello")
+    answering, _ = rig.request()
+    rig.stream(answering, "Hello.")
+    rig.brain.end()
+    await rig.until(lambda: "Hello." in "".join(rig.out.said()))
+
+
 async def test_a_turn_stopped_before_any_of_its_reply_was_held_is_told_the_brain_with_the_next(rig: Rig) -> None:
     await rig.say("write me a long story")
     exchange, _ = rig.request()

@@ -25,7 +25,7 @@ from hands.sessions.audit import Entry
 from conftest import events, patiently, settled
 from brains import dialogs, failures, permissions, unasked
 
-from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
+from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
 from hands.core.session import Membership, PromptId, PromptText, SessionId
 from hands.core.wire import MainTurn, Sent
@@ -559,6 +559,89 @@ async def test_a_dialog_of_a_turn_hands_broke_is_refused_and_never_put_to_the_us
     turn.broken = RuntimeError("no voice")
     assert await brain.posted("PermissionRequest", _permission_hook("p1")) == hook_output(Deny(BROKEN))
     assert (asked, permissions(recorded)) == ([], [("p1", "Write", Deny(BROKEN))])
+
+
+async def _interrupted(brain: Brain, prompt: str) -> None:
+    """Claude Code's answer to an Escape on turn `prompt`: the record of the interrupt in its transcript, then its idle."""
+    await brain._apply(Interrupted(SessionId("b1"), PromptId(prompt), 9.0))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Idle(), Stamp(9000)), 9.0))  # pyright: ignore[reportPrivateUsage]
+
+
+async def _held_at(count: int, recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, VirtualClock, "_Keys", list["asyncio.Future[HookReply]"]]:
+    """A brain in a turn Claude Code took as p1, at a keyboard of the test's, holding `count` dialogs Claude Code stacked:
+    each posted as its hook, the later beneath the earlier, and each put to `asks`."""
+    brain, _ = await _in_turn(recorded, asks)
+    keys = _keyed(brain, recorded)
+    posts = [asyncio.ensure_future(brain.posted("PermissionRequest", _permission_hook("p1", f"/tmp/{each}"))) for each in range(count)]
+    await until(lambda: len(dialogs(brain)) == count)
+    return brain, brain._clock, keys, posts  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_two_dialogs_claude_code_stacks_are_held_in_the_order_asked_and_each_refusal_reaches_the_one_it_answers() -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain, _, _, posts = await _held_at(2, recorded, asked.append)
+    # The model holds them as Claude Code stacked them, and hands puts each to the user in that order.
+    assert [dialog.on for dialog in dialogs(brain)] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
+    assert [each.permission for each in asked] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
+    # The second is refused first: its refusal goes to it, and the first stays held.
+    asked[1].settle(Deny("no"))
+    assert await posts[1] == hook_output(Deny("no"))
+    assert (posts[0].done(), [dialog.on for dialog in dialogs(brain)]) == (False, [Permission("Write", {"file_path": "/tmp/0"})])
+    asked[0].settle(Deny("not that either"))
+    assert await posts[0] == hook_output(Deny("not that either"))
+    assert dialogs(brain) == ()
+
+
+@pytest.mark.parametrize("count", [1, 2], ids=["one dialog held", "two dialogs stacked"])
+async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_interrupt_ends_stopped_and_holds_none(count: int) -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain, _, keys, posts = await _held_at(count, recorded, asked.append)
+    turn = brain._turn  # pyright: ignore[reportPrivateUsage]
+    assert turn is not None
+    assert brain.interrupt(brain.answering()) is True
+    # Escape went, and each dialog is refused in the step it went, whether or not Claude Code has read the key.
+    await settled()
+    assert "escape" in keys.pressed
+    assert [post.result() if post.done() else None for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
+    # Claude Code stops what the Escape stopped, writes the record of it, and is at its prompt.
+    await _interrupted(brain, "p1")
+    await settled()
+    assert (turn.answered.result() if turn.answered.done() else None, dialogs(brain)) == (BrainStopped(), ())
+    assert [await each.decided() for each in asked] == [DenyAndInterrupt(STOPPED)] * count
+    # A yes after the stop answers nothing.
+    asked[0].settle(Allow())
+    assert await asked[0].decided() == DenyAndInterrupt(STOPPED)
+    assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(STOPPED))] * count
+
+
+async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_with_interrupt_and_ends_broken() -> None:
+    recorded: list[Entry] = []
+    asks = 0
+
+    def broken(_: Asked) -> None:
+        nonlocal asks
+        asks += 1
+        raise RuntimeError("no voice")
+
+    brain, _ = await _in_turn(recorded, broken)
+    keys = _keyed(brain, recorded)
+    turn = brain._turn  # pyright: ignore[reportPrivateUsage]
+    assert turn is not None
+    said, sink = failures()
+    try:
+        reply = await brain.posted("PermissionRequest", _permission_hook("p1"))
+    finally:
+        logger.remove(sink)
+    # The dialog is refused as the turn is broken, in the step it is learned, and the turn is stopped as an Escape stops it.
+    assert (reply, asks, said) == (hook_output(DenyAndInterrupt(BROKEN)), 1, ["the brain's own work failed: RuntimeError('no voice')"])
+    await settled()
+    assert "escape" in keys.pressed
+    await _interrupted(brain, "p1")
+    await settled()
+    assert (type(turn.answered.exception()) if turn.answered.done() else None, dialogs(brain)) == (RuntimeError, ())
+    assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(BROKEN))]
 
 
 async def test_a_permission_whose_event_cannot_be_written_is_refused_at_its_hook_and_said_once() -> None:
