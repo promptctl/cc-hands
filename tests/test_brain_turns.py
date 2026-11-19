@@ -20,16 +20,19 @@ from hands.sessions.tail import Tails
 from hands.brain.process import ClaudeTurns, BROKEN, LET_GO, NOBODY, STOPPED, SUBMIT, LOOK_SECONDS, SETTLE_SECONDS, TAKE_SECONDS, UNREAD, UNVOICED, Asked, Brain, BrainAnswered, BrainStopped, Untaken, _listen, _Turn, model  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, HookReply, Submitted, Summarise
 from hands.sessions.hooks import hook_output
-from hands.core.session import DenyAndInterrupt, Held, Permission, RequestId
+from hands.core.session import DenyAndInterrupt, Held, Keystroke, Permission, RequestId
 from hands.sessions.audit import Entry
 from conftest import events, patiently, settled
 from brains import dialogs, failures, permissions, unasked
 
-from hands.core.events import Abandoned, Dequeued, Ending, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
+from hands.core.events import Abandoned, Dequeued, Ending, Interrupted, Located, Prompted, Removed, StatusReported, Stopped, Taken, Unqueued
 from hands.core.status import Busy, Idle, Report, Stamp
 from hands.core.session import Membership, PromptId, PromptText, SessionId
 from hands.core.wire import MainTurn, Sent
 from hands.sessions.wide import WideEvent, begun, here, root, unit
+from claudescreen import ClaudeScreen
+from hands.sessions.tmux import KEYS
+from terminalcontract import CHORD
 
 
 async def until(check: Callable[[], bool]) -> None:
@@ -41,7 +44,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, [])
-    keys.shown = DIALOG_SHOWN
+    keys.claude_code.at_dialog()
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Each look that sees the dialog waits a look's pause, so four pauses waited out are four looks.
     for _ in range(4):
@@ -49,7 +52,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
     clock.advance_to(TAKE_SECONDS)
     with pytest.raises(Untaken, match="showed no empty prompt to type the turn at.*`hands login` answers them") as untaken:
         await asking
-    assert DIALOG_SHOWN in str(untaken.value)
+    assert keys.claude_code.shown() in str(untaken.value)
     assert keys.pressed == []
 
 
@@ -60,16 +63,7 @@ async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_d
     keys = _keyed(brain, recorded)
     # Claude Code runs a turn it opened itself, and words are left in its input, drawn plain.
     _took(brain, "n1", NOTICE)
-    keys.shown = DRAFTED_SHOWN
-    pressed = keys.press
-
-    def press(key: str) -> None:
-        pressed(key)
-        if key == "ctrl_h":
-            keys.shown = PROMPT_SHOWN
-
-    keys.press = press
-
+    keys.claude_code.type("a person's words")
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Seen drafted, emptied, then seen empty and settled: the turn is pasted, and the take runs out on it.
     await passed(clock, SETTLE_SECONDS)
@@ -89,7 +83,9 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, [])
-    keys.shown = DRAFTED_SHOWN
+    keys.claude_code.type("a person's words")
+    # An input the brain's keys do not reach: they are pressed, and the words stay.
+    keys.press = lambda key: keys.pressed.append(key)  # pyright: ignore[reportAttributeAccessIssue]
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Each look sees the words, settles, and empties them; the screen still shows them, so the next look sees them again.
     for _ in range(3):
@@ -561,6 +557,92 @@ async def test_a_dialog_of_a_turn_hands_broke_is_refused_and_never_put_to_the_us
     assert (asked, permissions(recorded)) == ([], [("p1", "Write", Deny(BROKEN))])
 
 
+async def _interrupted(brain: Brain, prompt: str) -> None:
+    """Claude Code's answer to an Escape on turn `prompt`: the record of the interrupt in its transcript, then its idle."""
+    await brain._apply(Interrupted(SessionId("b1"), PromptId(prompt), 9.0))  # pyright: ignore[reportPrivateUsage]
+    await brain._apply(StatusReported(SessionId("b1"), Report(Idle(), Stamp(9000)), 9.0))  # pyright: ignore[reportPrivateUsage]
+
+
+async def _held_at(count: int, recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, "_Keys", list["asyncio.Task[Mapping[str, object]]"]]:
+    """A brain in a turn Claude Code took as p1, at a keyboard of the test's, holding `count` dialogs Claude Code stacked:
+    each posted as its hook, the later beneath the earlier, and each put to `asks`."""
+    brain, _ = await _in_turn(recorded, asks)
+    keys = _keyed(brain, recorded)
+    posts = [asyncio.ensure_future(brain.posted("PermissionRequest", _permission_hook("p1", f"/tmp/{each}"))) for each in range(count)]
+    await until(lambda: len(dialogs(brain)) == count)
+    return brain, keys, posts
+
+
+async def test_two_dialogs_claude_code_stacks_are_held_in_the_order_asked_and_each_refusal_reaches_the_one_it_answers() -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain, _, posts = await _held_at(2, recorded, asked.append)
+    # The model holds them as Claude Code stacked them, and hands puts each to the user in that order.
+    assert [dialog.on for dialog in dialogs(brain)] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
+    assert [each.permission for each in asked] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
+    # The second is refused first: its refusal goes to it, and the first stays held.
+    asked[1].settle(Deny("no"))
+    assert await posts[1] == hook_output(Deny("no"))
+    assert (posts[0].done(), [dialog.on for dialog in dialogs(brain)]) == (False, [Permission("Write", {"file_path": "/tmp/0"})])
+    asked[0].settle(Deny("not that either"))
+    assert await posts[0] == hook_output(Deny("not that either"))
+    assert dialogs(brain) == ()
+
+
+@pytest.mark.parametrize("count", [1, 2], ids=["one dialog held", "two dialogs stacked"])
+async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_interrupt_ends_stopped_and_holds_none(count: int) -> None:
+    recorded: list[Entry] = []
+    asked: list[Asked] = []
+    brain, keys, posts = await _held_at(count, recorded, asked.append)
+    turn = brain._turn  # pyright: ignore[reportPrivateUsage]
+    assert turn is not None
+    assert brain.interrupt(brain.answering()) is True
+    # Escape went, and each dialog is refused in the step it went, whether or not Claude Code has read the key.
+    await settled()
+    assert "escape" in keys.pressed
+    assert all(post.done() for post in posts)
+    assert [post.result() for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
+    # Claude Code stops what the Escape stopped, writes the record of it, and is at its prompt.
+    await _interrupted(brain, "p1")
+    await settled()
+    assert turn.answered.done()
+    assert (turn.answered.result(), dialogs(brain)) == (BrainStopped(), ())
+    assert [await each.decided() for each in asked] == [DenyAndInterrupt(STOPPED)] * count
+    # A yes after the stop answers nothing.
+    asked[0].settle(Allow())
+    assert await asked[0].decided() == DenyAndInterrupt(STOPPED)
+    assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(STOPPED))] * count
+
+
+async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_with_interrupt_and_ends_broken() -> None:
+    recorded: list[Entry] = []
+    asks = 0
+
+    def broken(_: Asked) -> None:
+        nonlocal asks
+        asks += 1
+        raise RuntimeError("no voice")
+
+    brain, _ = await _in_turn(recorded, broken)
+    keys = _keyed(brain, recorded)
+    turn = brain._turn  # pyright: ignore[reportPrivateUsage]
+    assert turn is not None
+    said, sink = failures()
+    try:
+        reply = await brain.posted("PermissionRequest", _permission_hook("p1"))
+    finally:
+        logger.remove(sink)
+    # The dialog is refused as the turn is broken, in the step it is learned, and the turn is stopped as an Escape stops it.
+    assert (reply, asks, said) == (hook_output(DenyAndInterrupt(BROKEN)), 1, ["the brain's own work failed: RuntimeError('no voice')"])
+    await settled()
+    assert "escape" in keys.pressed
+    await _interrupted(brain, "p1")
+    await settled()
+    assert turn.answered.done() and not turn.answered.cancelled()
+    assert (type(turn.answered.exception()), dialogs(brain)) == (RuntimeError, ())
+    assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(BROKEN))]
+
+
 async def test_a_permission_whose_event_cannot_be_written_is_refused_at_its_hook_and_said_once() -> None:
     """Never left unanswered, which would leave it to Claude Code's own dialog on a screen nobody sees."""
     recorded: list[Entry] = []
@@ -745,36 +827,36 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
     assert (scheduled.opener, scheduled.ended.result(), scheduled.matched) == ("scheduled", BrainAnswered(PromptId("p1"), None), "id")
 
 
-# The brain's screen with its prompt taking keys, and with a permission dialog up in its place.
-PROMPT_SHOWN = f"{'─' * 40}\n❯ \n{'─' * 40}"
-
-
-DRAFTED_SHOWN = f"{'─' * 40}\n❯\u00a0a person's words\x1b[7m \x1b[0m\n{'─' * 40}"
-
-
-DIALOG_SHOWN = " Write file\n Do you want to create notes.txt?\n ❯ 1. Yes\n   2. No"
-
-
 class _Keys:
     """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order; and its screen, as tmux
-    shows it, which shows the prompt unless the test says else: every capture it was read for is counted."""
+    shows it, which shows the prompt unless the test says else: every capture it was read for is counted. Its screen is the
+    fake Claude Code the terminal contract holds to the pinned one on the chord's two claims (tests/claudescreen.py; the rest
+    it plays is the docs' and held by nothing yet), and what hands types reaches it as the pin takes it: a paste, then the
+    chord."""
 
     def __init__(self) -> None:
         self.pressed: list[str] = []
-        self.shown = PROMPT_SHOWN
+        self.claude_code = ClaudeScreen(CHORD)
         self.looked = 0
 
     def type(self, text: str, submit: str) -> None:
         # Every turn is sent by the brain's own chord, never by Return.
         assert submit == SUBMIT
         self.pressed.append(text)
+        self.claude_code.paste(text)
+        self.claude_code.key(CHORD)
 
-    def press(self, key: str) -> None:
+    def press(self, key: Keystroke) -> None:
         self.pressed.append(key)
+        self.claude_code.key(KEYS[key])
 
     async def screen(self) -> str:
         self.looked += 1
-        return self.shown
+        return self.claude_code.shown()
+
+    def shown(self) -> str:
+        """The last lines the terminal showed, which the brain's error messages carry."""
+        return self.claude_code.shown()
 
 
 def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
@@ -1061,14 +1143,15 @@ async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_p
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, recorded)
-    keys.shown = DIALOG_SHOWN
+    keys.claude_code.at_dialog()
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Looked at four times over, the screen still shows the dialog: a dialog would drop the paste, so nothing goes in.
     for _ in range(3):
         await passed(clock, LOOK_SECONDS)
     await clock.sleeping(clock.at + LOOK_SECONDS)
     assert (keys.looked, keys.pressed) == (4, [])
-    keys.shown = PROMPT_SHOWN
+    # The dialog is answered at Claude Code's own keyboard, and the prompt takes its place.
+    keys.claude_code.key("Escape")
     clock.advance(LOOK_SECONDS)
     await passed(clock, SETTLE_SECONDS)
     await until(lambda: keys.pressed == [" and now?"])

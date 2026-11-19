@@ -34,6 +34,16 @@ feeds than it was made from fails `recorded`, naming it. A recording is made one
 real --record-decodes` writes the recording of each run a passing `real` case made. Run it after a pin bump or an edit to the
 pair's code, and commit what it changes; the diff is what the pair now decodes differently.
 
+## The brain's terminal, and its one smoke test
+
+hands' decisions about what Claude Code does (a dialog held, a stop, a turn opened by a background task) are asserted in the
+unit layer: a bare `Brain` and `BrainStage` on a `VirtualClock`, Claude Code's turns played from tests/turns.py. What hands
+relies on of Claude Code's own terminal is a contract, tests/terminalcontract.py, written once and run by two modules: against
+the fake Claude Code (tests/claudescreen.py) in `make check` (test_terminal_contract.py), and against the pinned Claude Code in
+a terminal of hands' own, with the mock of Anthropic's API as its model, in `make check-rest` (test_terminal_contract_pinned.py).
+A claim the pin stops keeping fails the second, and the fake is changed to match. tests/test_pinned_brain.py is the brain's one
+smoke test, the happy path through hands' proxy. The rig the two pinned modules share is tests/pinnedbrain.py.
+
 ## The commands
 
 - `make check`: the unit layer, `pyright`, and wake-training's `pyright`. Run it on every turn.

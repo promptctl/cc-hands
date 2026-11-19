@@ -38,7 +38,8 @@ from test_clock_boundary import offenders, reached, written
 CLOCK_TESTS = ("test_clock.py", "test_clock_boundary.py", "test_clockwatch.py")
 
 # Test modules whose verdict still waits on the machine's time, struck off as each moves onto a VirtualClock it
-# advances. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
+# advances. test_pinned_brain.py and test_terminal_contract_pinned.py are not among those to move: they read a real
+# Claude Code's screen, and nothing tells them it changed. Which facilities a module reaches is not recorded: a library reaches some only on a race, as
 # subprocess's communicate sleeps only while its child still runs, and a module is moved whole or not at all.
 UNMOVED = frozenset({
     "conftest.py",
@@ -51,7 +52,6 @@ UNMOVED = frozenset({
     "test_audit.py",
     "test_backlogpage.py",
     "test_brain.py",
-    "test_brain_e2e.py",
     "test_brain_turns.py",
     "test_brainpage.py",
     "test_catch_up.py",
@@ -89,6 +89,7 @@ UNMOVED = frozenset({
     "test_phone.py",
     "test_phonepage.py",
     "test_pinned.py",
+    "test_pinned_brain.py",
     "test_playback.py",
     "test_progress.py",
     "test_proxy.py",
@@ -118,6 +119,7 @@ UNMOVED = frozenset({
     "test_talking_over.py",
     "test_timeouts.py",
     "test_tap.py",
+    "test_terminal_contract_pinned.py",
     "test_tool_runs.py",
     "test_transcript.py",
     "test_transcription_weights.py",
