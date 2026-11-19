@@ -567,20 +567,20 @@ async def _interrupted(brain: Brain, prompt: str) -> None:
     await brain._apply(StatusReported(SessionId("b1"), Report(Idle(), Stamp(9000)), 9.0))  # pyright: ignore[reportPrivateUsage]
 
 
-async def _held_at(count: int, recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, VirtualClock, "_Keys", list["asyncio.Future[HookReply]"]]:
+async def _held_at(count: int, recorded: list[Entry], asks: Callable[[Asked], None]) -> tuple[Brain, "_Keys", list["asyncio.Task[Mapping[str, object]]"]]:
     """A brain in a turn Claude Code took as p1, at a keyboard of the test's, holding `count` dialogs Claude Code stacked:
     each posted as its hook, the later beneath the earlier, and each put to `asks`."""
     brain, _ = await _in_turn(recorded, asks)
     keys = _keyed(brain, recorded)
     posts = [asyncio.ensure_future(brain.posted("PermissionRequest", _permission_hook("p1", f"/tmp/{each}"))) for each in range(count)]
     await until(lambda: len(dialogs(brain)) == count)
-    return brain, brain._clock, keys, posts  # pyright: ignore[reportPrivateUsage]
+    return brain, keys, posts
 
 
 async def test_two_dialogs_claude_code_stacks_are_held_in_the_order_asked_and_each_refusal_reaches_the_one_it_answers() -> None:
     recorded: list[Entry] = []
     asked: list[Asked] = []
-    brain, _, _, posts = await _held_at(2, recorded, asked.append)
+    brain, _, posts = await _held_at(2, recorded, asked.append)
     # The model holds them as Claude Code stacked them, and hands puts each to the user in that order.
     assert [dialog.on for dialog in dialogs(brain)] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
     assert [each.permission for each in asked] == [Permission("Write", {"file_path": "/tmp/0"}), Permission("Write", {"file_path": "/tmp/1"})]
@@ -597,7 +597,7 @@ async def test_two_dialogs_claude_code_stacks_are_held_in_the_order_asked_and_ea
 async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_interrupt_ends_stopped_and_holds_none(count: int) -> None:
     recorded: list[Entry] = []
     asked: list[Asked] = []
-    brain, _, keys, posts = await _held_at(count, recorded, asked.append)
+    brain, keys, posts = await _held_at(count, recorded, asked.append)
     turn = brain._turn  # pyright: ignore[reportPrivateUsage]
     assert turn is not None
     assert brain.interrupt(brain.answering()) is True
