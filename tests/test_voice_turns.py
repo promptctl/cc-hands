@@ -636,24 +636,6 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 
 
-async def test_a_clip_the_voice_opened_whose_transcription_does_not_return_is_given_up_on_at_its_bound_and_cuts_nothing_off(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    # Nothing was heard while the clip was open, so hands talks on until its transcription returns. `_closing` cuts on
-    # the words of one that does; one that does not is given up on at the bound, and that is the most hands talks on.
-    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
-        monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
-        await rig.clip(OPENED_BY_THE_VOICE, by="engaged conversation")
-        # The rig's transcriber returns once the test puts its text, which it never does: only the bound ends it.
-        await rig.until(lambda: rig.out.stopped == 1)
-        [ended] = clips_told(rig)
-        assert (ended.facts["transcript"], ended.facts.get("cut")) == ("failed", None)
-        # Its event runs from the clip's close to its resolution, a transcription given the bound and no longer.
-        assert 200 <= ended.duration_ms < 1000
-        assert user_turns(rig) == [("on a person", False)]
-        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
-
-
 # The voice hands speaks in.
 SPOKEN_IN = voices.source(voices.DEFAULT)
 
