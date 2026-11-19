@@ -2,6 +2,7 @@
 level that moves a ticket into its topic's epic for it."""
 
 import asyncio
+import errno
 import getpass
 import json
 import os
@@ -19,8 +20,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from hands.clock import SYSTEM
+from hands.sessions import backlog
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, LitFailed, Move, NewEpic, Place, ProjectGone, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun, unit
@@ -341,6 +343,12 @@ def stub_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **before: str) -> 
     branches = "".join(f'if [ "$1" = {subcommand} ]; then\n{script}\nfi\n' for subcommand, script in before.items())
     executable(stubs / "lit", f'#!/bin/sh\n{branches}exec {LIT} "$@"\n')
     monkeypatch.setenv("PATH", f"{stubs}:{SYSTEM_PATH}")
+
+
+def without_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave no `lit` on PATH, so no stub or patch stands in for the spawn failure."""
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
 
 
 def epic(workspace: Workspace, title: str, *children: str, topic: str = "page") -> tuple[str, ...]:
@@ -893,6 +901,58 @@ async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: 
     assert status == 502 and body.startswith(f"whether lit kept the note on {hey} is not known: ")
     [event] = page.events("backlog.noted")
     assert event.outcome == "failed" and event.facts["noted"] == "unknown"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_note_with_no_lit_to_start_is_said_to_have_kept_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    without_lit(tmp_path, monkeypatch)
+    status, body = await noted(page, workspace, hey, "Split it")
+    assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}")
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "failed" and event.facts["noted"] == "no"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_rank_whose_lit_is_gone_by_the_write_is_said_to_have_moved_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    # lit reads the backlog, then is gone from PATH before the page runs it to write: the write never started.
+    stub_lit(tmp_path, monkeypatch, export='rm -- "$0"')
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}")
+    assert workspace.order(mic, parser) == [mic, parser]
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.facts["ranked"] == "no"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_leveling_whose_lit_is_gone_by_its_first_write_is_said_to_have_made_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    stub_lit(tmp_path, monkeypatch, export='rm -- "$0"')
+    status, body = await leveled(page, workspace, hey, "high")
+    assert status == 502 and body.startswith(f"not leveled: lit could not be started in {workspace.root}")
+    [event] = page.events("backlog.leveled")
+    assert event.outcome == "failed" and (event.facts["created"], event.facts["moved"]) == ("no", "no")
+
+
+async def test_a_lit_that_ran_and_could_not_be_read_is_not_known_to_have_changed_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def run(*argv: str, **how: object) -> object:
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(backlog, "run", run)
+    with pytest.raises(LitFailed, match="ran, and what it wrote could not be read") as raised:
+        await comment(VirtualClock(), tmp_path, "a", "Seen again.", Inherited())
+    assert not raised.value.changed_nothing
+
+
+@pytest.mark.outside
+async def test_a_lit_run_in_a_removed_directory_is_a_lit_that_never_started_there(tmp_path: Path) -> None:
+    with pytest.raises(ProjectGone, match="no longer exists") as raised:
+        await comment(VirtualClock(), tmp_path / "cleaned-up-worktree", "a", "Seen again.", Inherited())
+    assert raised.value.changed_nothing
 
 
 @pytest.mark.outside

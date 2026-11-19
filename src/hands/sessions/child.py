@@ -6,6 +6,7 @@ import signal
 import subprocess
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, overload
@@ -75,23 +76,34 @@ class Ran:
     err: bytes
 
 
+class SpawnFailed(OSError):
+    """The OS refused to create the child's process, or the files its output goes to: there was no child to have done
+    anything. It says what the OS said, with the OS's errno, text and filename.
+
+    The one OSError `run` raises before the child runs; any other came after, from reading what the child wrote.
+    """
+
+
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
-    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, and OSError when it cannot start.
+    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, SpawnFailed (an OSError) when
+    it cannot start, and a plain OSError when what the child wrote cannot be read after it ran.
 
     The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process
     it started are killed, and the child reaped, before the error leaves. Each caller says what a timeout means for
     it. Its output goes to files, which the child's own thread reads once it has reaped it.
     """
-    out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
     try:
-        # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
-        process = subprocess.Popen(
-            argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
-        )
-    except BaseException:
-        out.close()
-        err.close()
-        raise
+        with ExitStack() as files:
+            out = files.enter_context(tempfile.TemporaryFile())
+            err = files.enter_context(tempfile.TemporaryFile())
+            # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
+            process = subprocess.Popen(
+                argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
+            )
+            # The stack closes the files on any failure before the child exists, and lets go of them once it does.
+            files.pop_all()
+    except OSError as error:
+        raise SpawnFailed(error.errno, error.strerror, error.filename) from error
     # The files are the thread's from here, and it closes them: a caller that leaves early cannot pull them from
     # under the read.
     child = reaped(argv[0], process, lambda: _ended(process, out, err))

@@ -6,6 +6,7 @@ order is changed by `lit rank` alone.
 """
 
 import asyncio
+import errno
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from typing import Literal, get_args
 
 from hands.clock import Clock
 from hands.core.summaries import Thing
-from hands.sessions.child import run
+from hands.sessions.child import SpawnFailed, run
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
@@ -86,25 +87,36 @@ Signer = Person | Inherited
 
 
 class LitFailed(Exception):
-    """lit did not do what it was asked in a directory: it could not run, did not answer, or failed or refused, and the
-    message says why; `reason` is the token lit's refusal names, None where lit named none."""
+    """lit did not do what it was asked in a directory: it was not started, did not answer, or failed or refused, and
+    the message says why; `reason` is the token that names why, None where nothing does."""
 
     def __init__(self, message: str, reason: str | None) -> None:
         super().__init__(message)
         self.reason = reason
 
     @property
-    def refused(self) -> bool:
-        """Whether lit refused, saying why on its reason line: the one failure that proves it changed nothing. A lit that
-        did not answer, could not be run, or ended without a reason may have written before it stopped."""
+    def changed_nothing(self) -> bool:
+        """Whether lit is known to have changed nothing: it refused, saying why on its reason line, or it was never
+        started. A lit that did not answer, ended without a reason, or ran and could not be read may have written before it stopped."""
         return self.reason is not None
 
 
-class ProjectGone(LitFailed):
+# The reason of a lit that was never started: hands' own token, since no lit was there to name one.
+NOT_STARTED = "not_started"
+
+
+class LitNotStarted(LitFailed):
+    """lit's process was never created, so there was nothing to write."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, NOT_STARTED)
+
+
+class ProjectGone(LitNotStarted):
     """The directory lit was to run in no longer exists: lit never started there."""
 
     def __init__(self, project: Path) -> None:
-        super().__init__(f"{project} no longer exists", None)
+        super().__init__(f"{project} no longer exists")
 
 
 @dataclass(frozen=True)
@@ -407,8 +419,8 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
 
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
-    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitFailed when
-    it could not run, did not answer, or exited non-zero.
+    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
+    when its process was never created, and LitFailed when it did not answer, exited non-zero, or ran and could not be read.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
@@ -417,11 +429,14 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
         ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
     except TimeoutError:
         raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
-    except OSError as error:
+    except SpawnFailed as error:
         # The spawn names the missing path: the project directory, not lit, is what is gone.
-        if isinstance(error, FileNotFoundError) and str(error.filename) == str(project):
+        if error.errno == errno.ENOENT and str(error.filename) == str(project):
             raise ProjectGone(project) from error
-        raise LitFailed(f"cannot run lit in {project}: {error}", None) from error
+        raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
+    except OSError as error:
+        # Not a SpawnFailed: lit ran, and may have written before what it wrote could not be read.
+        raise LitFailed(f"{command} in {project} ran, and what it wrote could not be read: {error}", None) from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
         line = ERROR_LINE.match(err)
