@@ -3,24 +3,23 @@ why it was not read."""
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
+import footprint_hold
 from footprint_hold import HELD_MB, HOLDS
 from hands import footprint
 
 MEGABYTE = 2**20
 
 
-# The reading is of a whole process, so it is taken in one that holds nothing but the array: the full suite's own
-# process reads high by whatever else has grown it. No timeout is given here: pytest's is the one that ends a hang.
+# The reading is of a whole process, so it is taken in one where nothing runs beside the array. In the full suite's own
+# process one reading was 63 MB over the hold, and the cause was not found. No timeout is given here: pytest's is the
+# one that ends a hang, and a child's stderr is not captured, so a child that fails says why in the report.
 @pytest.mark.outside
 @pytest.mark.parametrize("hold", HOLDS)
 def test_the_footprint_grows_by_the_memory_the_process_holds(hold: str) -> None:
-    script = Path(__file__).with_name("footprint_hold.py")
-    # Its stderr is not captured: a child that fails says why in the report.
-    ran = subprocess.run([sys.executable, str(script), hold], stdout=subprocess.PIPE, text=True, check=True)
+    ran = subprocess.run([sys.executable, footprint_hold.__file__, hold], stdout=subprocess.PIPE, text=True, check=True)
     grew = float(ran.stdout)
     assert HELD_MB - 10 < grew < HELD_MB * 1.3, f"a {hold} hold of {HELD_MB} MB grew the footprint {grew:.1f} MB"
 
