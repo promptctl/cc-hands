@@ -9,11 +9,7 @@ import pytest
 from hands.core.brainwork import Idle
 from pinnedbrain import RESULT, TURN, Hands, MockApi
 from pinnedbrain import claude_code, hands, mock_api, mock_binary  # pyright: ignore[reportUnusedImport]
-from terminalcontract import (
-    QUESTION,
-    test_the_submit_chord_typed_into_a_held_permission_dialog_answers_nothing,  # pyright: ignore[reportUnusedImport]
-    test_words_pasted_at_the_prompt_are_sent_by_the_submit_chord,  # pyright: ignore[reportUnusedImport]
-)
+from terminalcontract import QUESTION, TerminalContract
 
 pytestmark = pytest.mark.outside
 
@@ -31,13 +27,13 @@ class Pinned:
         self.dialog = False
 
     async def at_dialog(self) -> None:
-        self.dialog = True
         # A symlink is a command no setting of the brain's allows, so Claude Code asks about it in default mode.
         self.mock_api.script("1-left", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "I left it unmade."})
         self.mock_api.script("2-link", {"lastUserContains": ["link the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"ln -s target {self.hands.workdir / 'made'}"}}, stop="tool_use")
         await self.hands.connected()
         await self.hands.say("link the file")
         await self.hands.until(lambda: len(self.hands.held()) == 1 and QUESTION in self.hands.shown())
+        self.dialog = True
 
     async def paste(self, text: str) -> None:
         # The model's reply to a turn holding the first and the last line of what is pasted: the turn the chord sends.
@@ -55,6 +51,10 @@ class Pinned:
     async def shows(self, text: str) -> str:
         await self.hands.until(lambda: text in self.hands.shown())
         return self.hands.shown()
+
+    async def ran(self) -> bool:
+        # The symlink the dialog's command makes: a chord that said yes would have it run.
+        return (self.hands.workdir / "made").is_symlink()
 
     async def took(self, words: Sequence[str]) -> None:
         # What Claude Code took as a turn reaches the model as the last of what the brain sends, among its own turns.
@@ -75,3 +75,7 @@ async def terminal(hands: Hands, mock_api: MockApi) -> AsyncGenerator[Pinned]:
     yield pinned
     if pinned.dialog:
         await pinned.finish()
+
+
+class TestThePin(TerminalContract):
+    pass

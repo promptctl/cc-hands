@@ -99,7 +99,7 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
             line = await asyncio.wait_for(served.stdout.readline(), PATIENCE_SECONDS)
             ready = json.loads(line)
             api = MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
-        except (TimeoutError, ValueError, KeyError) as error:
+        except (TimeoutError, ValueError, KeyError, TypeError) as error:
             raise AssertionError(f"the mock did not say where it listens ({error!r}): {log.read_text()}") from error
         # Every old tool result is asked as a side question forked from the brain's turn, whose body also holds what the
         # turn's own scripts match: its answer is named ahead of them all.
@@ -126,7 +126,8 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     # [LAW:one-source-of-truth] what a login the mock accepts looks like is the mock's to say, never a copy here.
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
-    assert starting_settings(brain)
+    wrote = starting_settings(brain)
+    assert wrote
     # No command is allowed beyond what the brain's own settings allow: the contract's dialog case is a command they do not
     # (test_terminal_contract_pinned.py), and how hands puts a dialog to the user is the unit layer's.
 
@@ -257,5 +258,5 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
                     assert not run.errors, run.errors
     finally:
         await proxy.close()
-        # [LAW:nothing-unseen] what the brain sent is kept beside the mock's log, for a failure to be read from.
+        # What the brain sent is kept beside the mock's log, for a failure to be read from.
         (tmp_path / "sent.json").write_text(json.dumps([request.body for request in sent], indent=1))

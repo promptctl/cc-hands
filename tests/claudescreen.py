@@ -1,10 +1,10 @@
 """Claude Code's terminal, as the unit layer plays it: what its screen shows and takes of the keys hands sends, for the claims
 tests/test_terminal_contract.py holds to the pinned Claude Code itself.
 
-[LAW:one-source-of-truth] what each screen text and each key does here is the contract's to say: a behavior this plays that
-the contract does not hold the pinned Claude Code to is a guess, and one the contract holds it to is a recording (docs/
-claude-code-behavior.md has the measured version of each). A pin bump that changes one fails the contract's real case, and
-this is changed to match in the same commit.
+[LAW:one-source-of-truth] what each screen text and each key does here is the contract's to say: the contract holds the pinned
+Claude Code to the submit chord's two claims, and everything else here is played from docs/claude-code-screen.md and docs/
+claude-code-behavior.md, a guess until a case of the contract holds it. A pin bump that changes a held claim fails the
+contract's real case, and this is changed to match in the same commit.
 """
 
 from collections.abc import Sequence
@@ -37,13 +37,17 @@ class ClaudeScreen:
     # The turns Claude Code took, in order, as the words its prompt hook says.
     turns: list[str] = field(default_factory=lambda: [])
     pastes: int = 0
+    # Whether Claude Code ran the command its dialog asked about: only Yes does that.
+    ran: bool = False
 
     def at_dialog(self) -> None:
         self.dialog = _Dialog()
 
     def paste(self, text: str) -> None:
-        # A permission dialog swallows a paste (docs/claude-code-behavior.md, permission-dialog).
+        # A permission dialog with no field open swallows a paste, and one with Yes's field open takes it there (docs/
+        # claude-code-screen.md).
         if self.dialog is not None:
+            self.type(text)
             return
         if text.count("\n") + 1 < FOLDED:
             self.draft.append((text, text))
@@ -66,8 +70,13 @@ class ClaudeScreen:
                 # The chord at the prompt submits the draft, each paste whole.
                 self.turns.append("".join(whole for _, whole in self.draft))
                 self.draft = []
-            case (_Dialog(amended=None) as dialog, "Tab"):
+            case (_Dialog(focus=1, amended=None) as dialog, "Tab"):
                 dialog.amended = ""
+            case (_Dialog(focus=1), "Enter"):
+                # Return is the yes key of every dialog (docs/claude-code-screen.md).
+                self.ran, self.dialog = True, None
+            case (_Dialog(), "Escape"):
+                self.dialog = None
             case (_Dialog() as dialog, "Down"):
                 dialog.focus = min(dialog.focus + 1, len(CHOICES))
             case _:

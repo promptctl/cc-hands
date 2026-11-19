@@ -2440,6 +2440,8 @@ async def test_the_brain_s_running_call_is_shown_with_its_input_and_its_stop_end
     [call] = work.calls
     assert isinstance(call, Running) and (call.tool, call.input) == ("Bash", {"command": "sleep 120"})
     assert rig.stage.stop(work.turn) == Stopping()
+    # The stop reached the brain, which is what ends the turn; the test ends it as the brain would.
+    assert rig.brain.interrupts == 1
     rig.brain.end(BrainStopped())
     await rig.turned()
     assert rig.stage.work() == Idle()

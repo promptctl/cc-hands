@@ -138,9 +138,12 @@ INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
 # brain's own keybindings, resolves to that submit or to nothing in every context, so no turn hands types can answer a
 # dialog (docs/claude-code-screen.md, "Submitting the prompt with a chord no dialog binds").
 SUBMIT: Submit = "ctrl_q"
+# Claude Code's own name for each chord the brain can be sent by. A SUBMIT with no name here fails at import, never as a
+# keybindings.json that binds nothing.
+CLAUDE_CODE_NAME: Mapping[Submit, str] = {"ctrl_q": "ctrl+q"}
 # The brain's whole keybindings.json: SUBMIT, in Claude Code's own name for it, bound to the prompt's submit, and Return
-# unbound there, without which the prompt never registers the chord's submit at all. A change to SUBMIT is a change here.
-KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {SUBMIT.replace("_", "+"): "chat:submit", "enter": None}}]}
+# unbound there, without which the prompt never registers the chord's submit at all.
+KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {CLAUDE_CODE_NAME[SUBMIT]: "chat:submit", "enter": None}}]}
 # The keys that delete one row of the brain's input from its end: to the row's end, to its start, and the newline before it.
 _EMPTY_ROW: tuple[Keystroke, ...] = ("ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h")
 

@@ -5,11 +5,7 @@ from collections.abc import Sequence
 import pytest
 
 from claudescreen import ClaudeScreen
-from terminalcontract import (
-    CHORD,
-    test_the_submit_chord_typed_into_a_held_permission_dialog_answers_nothing,  # pyright: ignore[reportUnusedImport]
-    test_words_pasted_at_the_prompt_are_sent_by_the_submit_chord,  # pyright: ignore[reportUnusedImport]
-)
+from terminalcontract import CHORD, TerminalContract
 
 
 class Fake:
@@ -37,7 +33,14 @@ class Fake:
     async def took(self, words: Sequence[str]) -> None:
         assert self.screen.took(words), f"Claude Code took {self.screen.turns!r}"
 
+    async def ran(self) -> bool:
+        return self.screen.ran
+
 
 @pytest.fixture
 def terminal() -> Fake:
     return Fake()
+
+
+class TestTheFake(TerminalContract):
+    pass

@@ -31,6 +31,7 @@ from hands.core.session import Membership, PromptId, PromptText, SessionId
 from hands.core.wire import MainTurn, Sent
 from hands.sessions.wide import WideEvent, begun, here, root, unit
 from claudescreen import ClaudeScreen
+from hands.sessions.tmux import KEYS
 from terminalcontract import CHORD
 
 
@@ -43,7 +44,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, [])
-    keys.shown = DIALOG_SHOWN
+    keys.claude_code.at_dialog()
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Each look that sees the dialog waits a look's pause, so four pauses waited out are four looks.
     for _ in range(4):
@@ -51,7 +52,7 @@ async def test_a_turn_whose_screen_never_shows_the_prompt_is_untaken_saying_what
     clock.advance_to(TAKE_SECONDS)
     with pytest.raises(Untaken, match="showed no empty prompt to type the turn at.*`hands login` answers them") as untaken:
         await asking
-    assert DIALOG_SHOWN in str(untaken.value)
+    assert keys.claude_code.shown() in str(untaken.value)
     assert keys.pressed == []
 
 
@@ -62,13 +63,13 @@ async def test_words_left_in_the_input_while_claude_code_runs_its_own_turn_are_d
     keys = _keyed(brain, recorded)
     # Claude Code runs a turn it opened itself, and words are left in its input, drawn plain.
     _took(brain, "n1", NOTICE)
-    keys.shown = DRAFTED_SHOWN
+    keys.claude_code.type("a person's words")
     pressed = keys.press
 
     def press(key: str) -> None:
         pressed(key)
         if key == "ctrl_h":
-            keys.shown = PROMPT_SHOWN
+            keys.claude_code.draft.clear()
 
     keys.press = press
 
@@ -91,7 +92,7 @@ async def test_a_turn_whose_input_keeps_its_words_is_untaken_saying_what_it_show
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, [])
-    keys.shown = DRAFTED_SHOWN
+    keys.claude_code.type("a person's words")
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Each look sees the words, settles, and empties them; the screen still shows them, so the next look sees them again.
     for _ in range(3):
@@ -833,42 +834,31 @@ async def test_a_turn_of_a_kind_added_to_the_openers_opens_and_ends_with_no_othe
     assert (scheduled.opener, scheduled.ended.result(), scheduled.matched) == ("scheduled", BrainAnswered(PromptId("p1"), None), "id")
 
 
-# The brain's screen with its prompt taking keys, and with a permission dialog up in its place.
-PROMPT_SHOWN = f"{'─' * 40}\n❯ \n{'─' * 40}"
-
-
-DRAFTED_SHOWN = f"{'─' * 40}\n❯\u00a0a person's words\x1b[7m \x1b[0m\n{'─' * 40}"
-
-
-def _dialog_shown() -> str:
-    screen = ClaudeScreen(CHORD)
-    screen.at_dialog()
-    return screen.shown()
-
-
-DIALOG_SHOWN = _dialog_shown()
-
-
 class _Keys:
     """The brain's keyboard, as fritter's typist takes keys: each typing and press, in order; and its screen, as tmux
-    shows it, which shows the prompt unless the test says else: every capture it was read for is counted."""
+    shows it, which shows the prompt unless the test says else: every capture it was read for is counted. Its screen is the
+    fake Claude Code the terminal contract holds to the pinned one (tests/claudescreen.py), so what hands reads here is a
+    screen the pin was held to, and what hands types reaches it as the pin takes it: a paste, then the chord."""
 
     def __init__(self) -> None:
         self.pressed: list[str] = []
-        self.shown = PROMPT_SHOWN
+        self.claude_code = ClaudeScreen(CHORD)
         self.looked = 0
 
     def type(self, text: str, submit: str) -> None:
         # Every turn is sent by the brain's own chord, never by Return.
         assert submit == SUBMIT
         self.pressed.append(text)
+        self.claude_code.paste(text)
+        self.claude_code.key(CHORD)
 
     def press(self, key: str) -> None:
         self.pressed.append(key)
+        self.claude_code.key(KEYS[key])  # pyright: ignore[reportArgumentType]
 
     async def screen(self) -> str:
         self.looked += 1
-        return self.shown
+        return self.claude_code.shown()
 
 
 def _keyed(brain: Brain, recorded: list[Entry]) -> _Keys:
@@ -1155,14 +1145,15 @@ async def test_a_turn_is_typed_only_once_the_brains_screen_shows_its_prompt_in_p
     clock = VirtualClock()
     brain = _owning(clock)
     keys = _keyed(brain, recorded)
-    keys.shown = DIALOG_SHOWN
+    keys.claude_code.at_dialog()
     asking = asyncio.ensure_future(brain.ask("and now?", unasked))
     # Looked at four times over, the screen still shows the dialog: a dialog would drop the paste, so nothing goes in.
     for _ in range(3):
         await passed(clock, LOOK_SECONDS)
     await clock.sleeping(clock.at + LOOK_SECONDS)
     assert (keys.looked, keys.pressed) == (4, [])
-    keys.shown = PROMPT_SHOWN
+    # The dialog is answered at Claude Code's own keyboard, and the prompt takes its place.
+    keys.claude_code.key("Escape")
     clock.advance(LOOK_SECONDS)
     await passed(clock, SETTLE_SECONDS)
     await until(lambda: keys.pressed == [" and now?"])

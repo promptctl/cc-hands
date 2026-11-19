@@ -41,9 +41,8 @@ class Spoken(FrameProcessor):
         # How many frames have reached it: what a test's wait sees move while the stage has work it is getting through.
         self.received = 0
         self.frames: list[Frame] = []
-        # Markers not yet played, while `holding`: what is ahead of them is still being said.
+        # While set, a marker is not played, as when what is ahead of it is still being said.
         self.holding = False
-        self.markers: list[Marker] = []
         # How many key releases have passed the stage, the ones it was told to throw away included.
         self.releases = 0
         # How many of the user's turns have stopped past the stage.
@@ -69,7 +68,7 @@ class Spoken(FrameProcessor):
             case Marker(played=played) if not self.holding:
                 played()
             case Marker():
-                self.markers.append(frame)
+                pass
             case VADUserStoppedSpeakingFrame():
                 self.releases += 1
                 await self.push_frame(frame, direction)
