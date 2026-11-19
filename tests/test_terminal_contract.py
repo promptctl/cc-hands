@@ -5,8 +5,8 @@ from collections.abc import Sequence
 import pytest
 
 from claudescreen import ClaudeScreen
-from pinnedbrain import CHORD
 from terminalcontract import (
+    CHORD,
     test_the_submit_chord_typed_into_a_held_permission_dialog_answers_nothing,  # pyright: ignore[reportUnusedImport]
     test_words_pasted_at_the_prompt_are_sent_by_the_submit_chord,  # pyright: ignore[reportUnusedImport]
 )

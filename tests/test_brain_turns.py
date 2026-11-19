@@ -30,6 +30,8 @@ from hands.core.status import Busy, Idle, Report, Stamp
 from hands.core.session import Membership, PromptId, PromptText, SessionId
 from hands.core.wire import MainTurn, Sent
 from hands.sessions.wide import WideEvent, begun, here, root, unit
+from claudescreen import ClaudeScreen
+from terminalcontract import CHORD
 
 
 async def until(check: Callable[[], bool]) -> None:
@@ -604,11 +606,13 @@ async def test_a_turn_stopped_while_its_dialogs_are_held_refuses_each_with_inter
     # Escape went, and each dialog is refused in the step it went, whether or not Claude Code has read the key.
     await settled()
     assert "escape" in keys.pressed
-    assert [post.result() if post.done() else None for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
+    assert all(post.done() for post in posts)
+    assert [post.result() for post in posts] == [hook_output(DenyAndInterrupt(STOPPED))] * count
     # Claude Code stops what the Escape stopped, writes the record of it, and is at its prompt.
     await _interrupted(brain, "p1")
     await settled()
-    assert (turn.answered.result() if turn.answered.done() else None, dialogs(brain)) == (BrainStopped(), ())
+    assert turn.answered.done()
+    assert (turn.answered.result(), dialogs(brain)) == (BrainStopped(), ())
     assert [await each.decided() for each in asked] == [DenyAndInterrupt(STOPPED)] * count
     # A yes after the stop answers nothing.
     asked[0].settle(Allow())
@@ -640,7 +644,8 @@ async def test_a_turn_whose_asker_breaks_while_its_dialog_is_held_is_refused_wit
     assert "escape" in keys.pressed
     await _interrupted(brain, "p1")
     await settled()
-    assert (type(turn.answered.exception()) if turn.answered.done() else None, dialogs(brain)) == (RuntimeError, ())
+    assert turn.answered.done() and not turn.answered.cancelled()
+    assert (type(turn.answered.exception()), dialogs(brain)) == (RuntimeError, ())
     assert permissions(recorded) == [("p1", "Write", DenyAndInterrupt(BROKEN))]
 
 
@@ -835,7 +840,13 @@ PROMPT_SHOWN = f"{'─' * 40}\n❯ \n{'─' * 40}"
 DRAFTED_SHOWN = f"{'─' * 40}\n❯\u00a0a person's words\x1b[7m \x1b[0m\n{'─' * 40}"
 
 
-DIALOG_SHOWN = " Write file\n Do you want to create notes.txt?\n ❯ 1. Yes\n   2. No"
+def _dialog_shown() -> str:
+    screen = ClaudeScreen(CHORD)
+    screen.at_dialog()
+    return screen.shown()
+
+
+DIALOG_SHOWN = _dialog_shown()
 
 
 class _Keys:

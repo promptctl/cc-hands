@@ -10,8 +10,9 @@ this is changed to match in the same commit.
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-# What the permission dialog of a command Claude Code runs shows: the question, and the choices, the first focused.
-QUESTION = "Do you want to proceed?"
+from terminalcontract import QUESTION
+
+# What the permission dialog of a command Claude Code runs shows beside the contract's question: the choices, the first focused.
 CHOICES = ("Yes", "Yes, and don't ask again", "No")
 # A paste of this many lines or more is folded into a placeholder in the draft, and kept whole for the prompt it makes.
 FOLDED = 4
@@ -76,7 +77,7 @@ class ClaudeScreen:
     def shown(self) -> str:
         match self.dialog:
             case None:
-                return "\n".join(["─" * 40, "❯ " + "".join(shown for shown, _ in self.draft), "─" * 40])
+                return "\n".join(["─" * 40, "❯\u00a0" + "".join(shown for shown, _ in self.draft), "─" * 40])
             case _Dialog(focus=focus, amended=amended):
                 rows = [f"{'❯' if at == focus else ' '} {at}. {label}{'' if at != 1 or amended is None else ': ' + amended}" for at, label in enumerate(CHOICES, start=1)]
                 return "\n".join(["Bash command", QUESTION, *rows])

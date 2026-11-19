@@ -6,10 +6,11 @@ from collections.abc import AsyncGenerator, Sequence
 
 import pytest
 
-from claudescreen import QUESTION
 from hands.core.brainwork import Idle
 from pinnedbrain import RESULT, TURN, Hands, MockApi
+from pinnedbrain import claude_code, hands, mock_api, mock_binary  # pyright: ignore[reportUnusedImport]
 from terminalcontract import (
+    QUESTION,
     test_the_submit_chord_typed_into_a_held_permission_dialog_answers_nothing,  # pyright: ignore[reportUnusedImport]
     test_words_pasted_at_the_prompt_are_sent_by_the_submit_chord,  # pyright: ignore[reportUnusedImport]
 )
@@ -26,8 +27,11 @@ class Pinned:
     def __init__(self, hands: Hands, mock_api: MockApi) -> None:
         self.hands = hands
         self.mock_api = mock_api
+        # Whether a dialog is the case's to end: the turn it holds is ended as the user would, so the run ends at the prompt.
+        self.dialog = False
 
     async def at_dialog(self) -> None:
+        self.dialog = True
         # A symlink is a command no setting of the brain's allows, so Claude Code asks about it in default mode.
         self.mock_api.script("1-left", {"bodyContains": [TURN, RESULT]}, {"type": "text", "text": "I left it unmade."})
         self.mock_api.script("2-link", {"lastUserContains": ["link the file"], "bodyContains": [TURN]}, {"type": "tool_use", "name": "Bash", "input": {"command": f"ln -s target {self.hands.workdir / 'made'}"}}, stop="tool_use")
@@ -69,5 +73,5 @@ class Pinned:
 async def terminal(hands: Hands, mock_api: MockApi) -> AsyncGenerator[Pinned]:
     pinned = Pinned(hands, mock_api)
     yield pinned
-    if hands.held():
+    if pinned.dialog:
         await pinned.finish()

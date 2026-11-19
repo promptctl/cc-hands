@@ -6,6 +6,7 @@ recorded, and what hands relies on of its terminal is tests/test_terminal_contra
 import pytest
 
 from pinnedbrain import TURN, Hands, MockApi
+from pinnedbrain import claude_code, hands, mock_api, mock_binary  # pyright: ignore[reportUnusedImport]
 
 pytestmark = pytest.mark.outside
 

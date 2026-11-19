@@ -140,7 +140,7 @@ INTERRUPT_SECONDS = ESCAPE_SECONDS + READ_SECONDS + UNTOLD / 1000
 SUBMIT: Submit = "ctrl_q"
 # The brain's whole keybindings.json: SUBMIT, in Claude Code's own name for it, bound to the prompt's submit, and Return
 # unbound there, without which the prompt never registers the chord's submit at all. A change to SUBMIT is a change here.
-KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {"ctrl+q": "chat:submit", "enter": None}}]}
+KEYBINDINGS: Mapping[str, object] = {"bindings": [{"context": "Chat", "bindings": {SUBMIT.replace("_", "+"): "chat:submit", "enter": None}}]}
 # The keys that delete one row of the brain's input from its end: to the row's end, to its start, and the newline before it.
 _EMPTY_ROW: tuple[Keystroke, ...] = ("ctrl_e", "ctrl_u", "ctrl_k", "ctrl_h")
 

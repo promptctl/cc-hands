@@ -117,11 +117,12 @@ jobs:
           echo "$GOBIN" >> "$GITHUB_PATH"
       # A Claude Code policy in its folder and its plists, as a developer's Mac or a managed one has: the run's sandbox must
       # keep it from every Claude Code the run starts (tests/offline.sb), and the run stops before any test if it finds it.
-      # [LAW:verifiable-goals] WebFetch allowed, a Claude Code that applied this policy would fetch without asking, and the
-      # e2e's WebFetch dialog tests would wait for a dialog that never comes (docs/claude-code-behavior.md, machine policy allow).
+      # [LAW:verifiable-goals] The policy allows the command the terminal contract's pinned case needs a permission dialog for
+      # (tests/test_terminal_contract_pinned.py, a symlink): a Claude Code that applied it would run the command without
+      # asking, and that case would wait for a dialog that never comes.
       - name: A machine's Claude Code policy
         run: |
-          policy='{"permissions": {"allow": ["WebFetch"]}}'
+          policy='{"permissions": {"allow": ["Bash(ln:*)"]}}'
           settings="/Library/Application Support/ClaudeCode/managed-settings.d"
           preferences="/Library/Managed Preferences"
           account="$preferences/$(id -un)"

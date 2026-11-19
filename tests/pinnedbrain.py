@@ -7,7 +7,7 @@ Code, from npm's registry, and the mock are fetched before the run, into pytest'
 
 Only what is a claim about the pinned Claude Code, or about the wiring of the assembled system, is proven here: each of
 hands' own decisions is asserted in the unit layer, on Claude Code's turns as recorded (tests/turns.py). The fixtures are
-registered as a plugin (conftest's `pytest_plugins`)."""
+imported by the modules that use them."""
 
 import asyncio
 import json
@@ -22,9 +22,10 @@ import pytest
 from pipecat.frames.frames import ErrorFrame, Frame, InterruptionFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 
 from conftest import RUN, located, new_sessions, running, unread
+from spoken import Received, Spoken
 from hands.brain import pinned
 from hands.brain.fork import REMINDER
-from hands.brain.process import SUBMIT, starting_settings, workdir
+from hands.brain.process import starting_settings, workdir
 from hands.clock import SYSTEM
 from hands.core.attention import Attention
 from hands.core.wire import Sent
@@ -33,7 +34,7 @@ from hands.sessions.audit import Entry
 from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
-from hands.sessions.tmux import KEYS, ran_at
+from hands.sessions.tmux import ran_at
 from hands.sessions.child import Ran
 from hands.brain.stage import BrainStage
 from hands.voice import voices
@@ -44,7 +45,6 @@ from hands.voice.refocus import Refocus
 from hands.voice.summaries import SummaryStore
 from hands.voice.tools import stay_silent_tool
 from hands.sessions.wide import WideEvent
-from test_stage import Received, Spoken
 
 # A turn of the real Claude Code against the mock takes a few seconds; a minute is a hang. The one wait the pinned Claude
 # Code's screen forces: nothing tells a test its screen changed, so it is read until it shows what the test waits for.
@@ -57,9 +57,6 @@ TURN = "mcp__hands__stay_silent"
 SIDE_QUESTION = REMINDER.removeprefix("<system-reminder>").split(".")[0]
 # What only a request carrying a tool's result holds, as Claude Code's compact JSON writes the block.
 RESULT = '"type":"tool_result"'
-# [LAW:one-source-of-truth] the brain's submit chord, as tmux names the key: the one hands types and binds in the brain's
-# keybindings.json, which hands writes at every start.
-CHORD = KEYS[SUBMIT]
 # The outcomes the mock writes its records under that are no fault: a request served, a connection closed, a request
 # whose client left before its answer, as Claude Code leaves a call it no longer needs, and the serve command's own end.
 FINE = ("SERVED ", "CLOSED ", "ABORTED ", "OK ")
@@ -96,12 +93,14 @@ async def mock_api(tmp_path: Path, mock_binary: Path) -> AsyncGenerator[MockApi]
         served = await asyncio.create_subprocess_exec(str(mock_binary), "serve", "--port", "0", "--scenarios", str(scenarios), stdout=asyncio.subprocess.PIPE, stderr=stderr)
     assert served.stdout is not None
     try:
-        # [LAW:no-silent-failure] a mock that never says where it listens fails the test with what it logged.
-        line = await asyncio.wait_for(served.stdout.readline(), PATIENCE_SECONDS)
-        if not line:
-            raise AssertionError(f"the mock exited before it listened: {log.read_text()}")
-        ready = json.loads(line)
-        api = MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
+        # [LAW:no-silent-failure] a mock that never says where it listens, or says it unreadably, fails the test with what it
+        # logged.
+        try:
+            line = await asyncio.wait_for(served.stdout.readline(), PATIENCE_SECONDS)
+            ready = json.loads(line)
+            api = MockApi(f"http://127.0.0.1:{ready['port']}", Path(ready["ca"]), scenarios)
+        except (TimeoutError, ValueError, KeyError) as error:
+            raise AssertionError(f"the mock did not say where it listens ({error!r}): {log.read_text()}") from error
         # Every old tool result is asked as a side question forked from the brain's turn, whose body also holds what the
         # turn's own scripts match: its answer is named ahead of them all.
         api.script("0-aside", {"bodyContains": [SIDE_QUESTION]}, {"type": "text", "text": "It ran."})
@@ -128,12 +127,8 @@ def logged_in(brain: Path, mock_binary: Path) -> None:
     subprocess.run([str(mock_binary), "login", str(brain), "--trust", str(workdir(brain).resolve())], check=True)
     # [LAW:one-source-of-truth] the settings a brain home starts with are the ones hands writes for every brain.
     assert starting_settings(brain)
-    # The commands the tests script, allowed as a brain's own settings allow a command, so no permission waits on a person:
-    # how hands puts one to the user is the unit layer's.
-    settings = brain / "settings.json"
-    said = json.loads(settings.read_text())
-    allowed = [*said["permissions"].get("allow", []), "Bash(touch:*)", "Bash(sleep:*)", "Bash(nc:*)", "Bash(cat:*)"]
-    settings.write_text(json.dumps({**said, "permissions": {**said["permissions"], "allow": allowed}}))
+    # No command is allowed beyond what the brain's own settings allow: the contract's dialog case is a command they do not
+    # (test_terminal_contract_pinned.py), and how hands puts a dialog to the user is the unit layer's.
 
 
 @dataclass(frozen=True)
@@ -201,6 +196,7 @@ class Hands:
     def held(self) -> tuple[object, ...]:
         """The dialogs the brain's model holds now: what Claude Code has stacked, the first on its screen."""
         session = self.stage._brain._modelled()  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+        # Before the brain's first hook there is no session, and nothing is held: a wait on this is for that to change.
         return () if session is None else session.dialogs  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def at_the_pane(self, *command: str) -> None:
@@ -236,17 +232,17 @@ async def hands(tmp_path: Path, mock_api: MockApi, mock_binary: Path, claude_cod
     # [LAW:effects-at-boundaries] the change from the run's own wiring, beside the pinned claude: the upstream hands' proxy
     # forwards to.
     proxy = await serve_proxy(mock_api.url, wire.observe, wire.route, clock=SYSTEM)
-    home = tmp_path / "home"
-    home.mkdir()
-    # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
-    # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
-    # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
-    environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
-    refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
-    config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
-    out = Spoken()
-    store = SummaryStore(Summaries(tmp_path / "summaries.db"))
     try:
+        home = tmp_path / "home"
+        home.mkdir()
+        # Every other host Claude Code calls is reached through the mock, and nothing reaches past it.
+        # Claude Code clones its official plugin marketplace from GitHub at launch, which the mock does not answer (refused, and the
+        # test fails on it); the marketplace is no part of what these tests prove, so the switch keeps the clone out of the run.
+        environment = os.environ | {"HOME": str(home), "HTTPS_PROXY": mock_api.url, "HTTP_PROXY": mock_api.url, "NODE_EXTRA_CA_CERTS": str(mock_api.ca), "NO_PROXY": "127.0.0.1,localhost", "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1"}
+        refocus = Refocus(new_sessions(clock=SYSTEM, record=recorded.append), Home(tmp_path / "hands"), recorded.append)
+        config = VoiceConfig(llm=ClaudeCodeBackend(model="claude-sonnet-5", config_dir=brain, account=ACCOUNT), voice=voices.DEFAULT)
+        out = Spoken()
+        store = SummaryStore(Summaries(tmp_path / "summaries.db"))
         async with mind(SYSTEM, config, [stay_silent_tool()], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, proxy.url, wire, store, tmp_path / "audit", "hands", recorded.append, environment, out.next_barge_in, Attention) as minded:
             async with running([minded.llm, out]) as run:
                 watches = [asyncio.create_task(watch.run(), name=watch.name) for watch in minded.watches]
