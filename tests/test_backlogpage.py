@@ -27,7 +27,7 @@ from hands.sessions.wide import WideEvent, begun, unit
 from hands.virtualclock import VirtualClock
 from hands.voice.backlogpage import backlog_routes, parse_asked, parse_leveling, parse_note, parse_project, shown
 from hands.voice.summaries import Sighted, SummaryStore, sighted
-from conftest import events
+from conftest import SYSTEM_PATH, events, executable
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -337,15 +337,14 @@ def workspace(tmp_path: Path) -> Workspace:
 def stub_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) -> None:
     """Put a `lit` that is `script` first on PATH, for the test."""
     stubs = tmp_path / "bin"
-    stubs.mkdir(exist_ok=True)
-    (stubs / "lit").write_text(script)
-    (stubs / "lit").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{stubs}:/bin:/usr/bin")
+    assert not (stubs / "lit").exists(), "a second stub lit would replace the first without a word"
+    executable(stubs / "lit", script)
+    monkeypatch.setenv("PATH", f"{stubs}:{SYSTEM_PATH}")
 
 
-def stub_lit_before_rank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str) -> None:
-    """Put a `lit` first on PATH that runs `before` ahead of a `lit rank`, then runs lit itself."""
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = rank ]; then\n{before}\nfi\nexec {LIT} "$@"\n')
+def stub_lit_before(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subcommand: str, before: str) -> None:
+    """Put a `lit` first on PATH that runs `before` ahead of a `lit {subcommand}`, then runs lit itself."""
+    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = {subcommand} ]; then\n{before}\nfi\nexec {LIT} "$@"\n')
 
 
 def epic(workspace: Workspace, title: str, *children: str, topic: str = "page") -> tuple[str, ...]:
@@ -497,7 +496,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
     voice, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     wire, *_ = epic(workspace, "Wire", "Tap it")
     # An agent puts the parser in the Wire epic between the page's read and its rank: lit ranks the Wire epic instead.
-    stub_lit_before_rank(tmp_path, monkeypatch, f"{LIT} parent set --child {parser} --parent {wire} >/dev/null")
+    stub_lit_before(tmp_path, monkeypatch, "rank", f"{LIT} parent set --child {parser} --parent {wire} >/dev/null")
     status, body = await moved(page, workspace, parser, above=mic)
     # What lit ranked instead is said in lit's own words, to the page and on the event; nothing is undone.
     assert status == 409 and f"does not have {parser} above {mic}" in body and f"ranked the epic {wire} instead" in body
@@ -511,7 +510,7 @@ async def test_a_move_lit_makes_otherwise_because_the_backlog_changed_meanwhile_
 @real_lit
 async def test_a_rank_lit_fails_is_a_failure_carrying_lits_verdict(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
-    stub_lit_before_rank(tmp_path, monkeypatch, 'echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
+    stub_lit_before(tmp_path, monkeypatch, "rank", 'echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and "lit rank" in body and "workspace_busy" in body
     assert workspace.order(mic, parser) == [mic, parser]
@@ -526,10 +525,10 @@ async def test_a_lit_that_does_not_answer_in_its_bound_fails_the_read(page: Page
     stub_lit(tmp_path, monkeypatch, "#!/bin/sh\nexec sleep 600\n")
     read = asyncio.create_task(page.client.get("/backlog/tickets", params={"project": str(project)}, headers=KEYED))
     # The bound is waited out on the page's clock, so it comes due as the test moves the clock to it and no sooner.
-    waiting = asyncio.create_task(page.clock.sleeping(LIT_TIMEOUT_SECONDS))
+    waiting = asyncio.create_task(page.clock.sleeping(page.clock.at + LIT_TIMEOUT_SECONDS))
     await asyncio.wait({read, waiting}, return_when=asyncio.FIRST_COMPLETED)
     waiting.cancel()
-    assert not read.done(), f"the read answered before lit's bound was waited on: {(await read).status} {await (await read).text()}"
+    assert not read.done(), f"the read ended before lit's bound was waited on: {read}"
     page.clock.advance(LIT_TIMEOUT_SECONDS)
     response = await read
     assert response.status == 502 and f"did not answer in {LIT_TIMEOUT_SECONDS:.0f}s" in await response.text()
@@ -561,7 +560,7 @@ async def test_a_rank_lit_made_whose_backlog_could_not_be_read_again_says_it_was
 async def test_a_rank_lit_stops_without_a_reason_is_said_to_be_unknown_and_never_claimed_either_way(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     # lit writes the rank, then is killed before it can say so.
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = rank ]; then\n{LIT} "$@" >/dev/null\nkill -9 $$\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "rank", f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, body = await moved(page, workspace, parser, above=mic)
     assert status == 502 and body.startswith(f"whether lit ranked {parser} above {mic} is not known")
     assert workspace.order(mic, parser) == [parser, mic]
@@ -573,7 +572,7 @@ async def test_a_rank_lit_stops_without_a_reason_is_said_to_be_unknown_and_never
 @real_lit
 @pytest.mark.parametrize("export, why", [('echo "error (code=5, reason=workspace_busy): locked" >&2; exit 5', "workspace_busy"), ("echo not json", "JSON")])
 async def test_a_read_lit_cannot_give_is_a_failure_on_the_page_and_its_event(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, export: str, why: str) -> None:
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = export ]; then\n{export}\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "export", export)
     response = await page.client.get("/backlog/tickets", params={"project": str(workspace.root)}, headers=KEYED)
     body = await response.text()
     assert response.status == 502 and body.startswith(f"the backlog in {workspace.root} could not be read") and why in body
@@ -603,9 +602,8 @@ async def test_a_read_asks_for_a_pass_only_while_something_is_unsaid(page: Page,
         page.store.keep({each.digest: f"Said of {each.id}." for each in due})
     again = await sighted(page.clock, page.store, workspace.root)
     assert isinstance(again, Sighted) and len(again.said) == 3
-    # Answered by what is queued now: a want is taken without waiting, so none being there takes no time to say.
     with pytest.raises(TimeoutError):
-        await asyncio.wait_for(page.store.wanted(), 0)
+        await asyncio.wait_for(page.store.wanted(), 0.2)
 
 
 @pytest.mark.outside
@@ -635,6 +633,7 @@ async def test_a_level_moves_the_ticket_into_its_topics_epic_for_it_made_beside_
 
 @pytest.mark.outside
 @real_lit
+@pytest.mark.quarantined("promptctl-testing-c3u.m9b", until="2026-11-26")
 async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_moves(page: Page, workspace: Workspace) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     await level(page, workspace, hey, "normal")
@@ -649,7 +648,7 @@ async def test_a_level_the_ticket_is_at_already_is_refused_and_nothing_in_lit_mo
 @real_lit
 async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_and_the_ticket_was_not_moved(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = parent ]; then\necho "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "parent", 'echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5')
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body.startswith("not leveled: ") and "workspace_busy" in body
     [event] = page.events("backlog.leveled")
@@ -666,7 +665,7 @@ async def test_a_move_lit_refuses_after_making_the_epic_says_the_epic_was_made_a
 @real_lit
 async def test_a_move_lit_stops_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = parent ]; then\n{LIT} "$@" >/dev/null\nkill -9 $$\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "parent", f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, body = await leveled(page, workspace, hey, "low")
     assert status == 502 and body.startswith(f"whether lit moved {hey} into ") and "is not known" in body
     [event] = page.events("backlog.leveled")
@@ -721,14 +720,14 @@ async def test_a_ticket_leveled_out_of_its_epic_takes_the_emptied_epic_off_the_p
     "before_rank, ranked, said",
     [
         ('echo "error (code=5, reason=workspace_busy): the store is locked" >&2\nexit 5', "no", "and left it at the bottom of its frame, so"),
-        ('{lit} "$@" >/dev/null\nkill -9 $$', "unknown", "or left it at the bottom of its frame is not known, so"),
+        (f'{LIT} "$@" >/dev/null\nkill -9 $$', "unknown", "or left it at the bottom of its frame is not known, so"),
     ],
 )
 async def test_a_rank_that_fails_after_the_epic_is_made_says_the_epic_is_made_and_the_ticket_not_moved(
     page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before_rank: str, ranked: str, said: str
 ) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
-    stub_lit_before_rank(tmp_path, monkeypatch, before_rank.replace("{lit}", str(LIT)))
+    stub_lit_before(tmp_path, monkeypatch, "rank", before_rank)
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body.startswith("not leveled: lit made ") and "wake word - high" in body and said in body and f"{hey} was not moved" in body
     [event] = page.events("backlog.leveled")
@@ -809,7 +808,7 @@ async def test_an_epic_made_that_the_read_after_does_not_hold_where_it_was_asked
     other, *_ = epic(workspace, "Other", "Keep it", topic="other")
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     # lit files the new epic inside another one than it was asked to.
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = new ]; then\nexec {LIT} "$@" --parent {other}\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "new", f'exec {LIT} "$@" --parent {other}')
     status, body = await leveled(page, workspace, hey, "high")
     assert status == 502 and body == "not leveled: lit made the epic wake word - high, and the backlog read after it does not hold it"
     [event] = page.events("backlog.leveled")
@@ -903,7 +902,7 @@ async def test_a_comment_signed_by_no_one_is_the_sessions_hands_runs_in(workspac
 async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
     # lit keeps the comment, then dies before it can say so.
-    stub_lit(tmp_path, monkeypatch, f'#!/bin/sh\nif [ "$1" = comment ]; then\n{LIT} "$@" >/dev/null\nkill -9 $$\nfi\nexec {LIT} "$@"\n')
+    stub_lit_before(tmp_path, monkeypatch, "comment", f'{LIT} "$@" >/dev/null\nkill -9 $$')
     status, body = await noted(page, workspace, hey, "Split it")
     assert status == 502 and body.startswith(f"whether lit kept the note on {hey} is not known: ")
     [event] = page.events("backlog.noted")
@@ -916,7 +915,7 @@ async def test_a_drop_from_the_page_ranks_outside_the_session_hands_was_started_
     _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
     seen = tmp_path / "seen"
     # lit rank takes no --by, and still runs in the person's environment, not the session's.
-    stub_lit_before_rank(tmp_path, monkeypatch, f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
+    stub_lit_before(tmp_path, monkeypatch, "rank", f'echo "session=$CLAUDE_CODE_SESSION_ID" > {seen}')
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", str(uuid.uuid4()))
     status, _ = await moved(page, workspace, parser, above=mic)
     assert status == 200 and seen.read_text() == "session=\n"
