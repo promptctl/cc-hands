@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, get_args
+from typing import ClassVar, Literal, get_args
 
 from hands.clock import Clock
 from hands.core.summaries import Thing
-from hands.sessions.child import run
+from hands.sessions.child import SpawnFailed, run
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
@@ -86,32 +86,30 @@ Signer = Person | Inherited
 
 
 class LitFailed(Exception):
-    """lit did not do what it was asked in a directory: it could not run, did not answer, or failed or refused, and the
-    message says why; `reason` is the token lit's refusal names, None where lit named none."""
+    """lit did not do what it was asked in a directory, and the message says why. As raised bare it proves nothing of what
+    lit wrote: it did not answer, or ended without a reason, and may have written before it stopped. A variant is a failure
+    that proves lit wrote nothing, and `changed_nothing` is where that is said."""
 
-    def __init__(self, message: str, reason: str | None) -> None:
+    changed_nothing: ClassVar[bool] = False
+
+
+class LitRefused(LitFailed):
+    """lit exited non-zero and named its `reason` as a token on its first line: it refuses before it writes."""
+
+    changed_nothing = True
+
+    def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
 
-    @property
-    def changed_nothing(self) -> bool:
-        """Whether lit is known to have changed nothing: it refused, saying why on its reason line. A lit that did not
-        answer, or ended without a reason, may have written before it stopped."""
-        return self.reason is not None
 
-
-class NotStarted(LitFailed):
+class LitNotStarted(LitFailed):
     """lit's process was never created, so there was nothing to write."""
 
-    def __init__(self, message: str) -> None:
-        super().__init__(message, None)
-
-    @property
-    def changed_nothing(self) -> bool:
-        return True
+    changed_nothing = True
 
 
-class ProjectGone(NotStarted):
+class ProjectGone(LitNotStarted):
     """The directory lit was to run in no longer exists: lit never started there."""
 
     def __init__(self, project: Path) -> None:
@@ -375,8 +373,8 @@ async def read_backlog(clock: Clock, project: Path) -> Backlog | Untracked:
         out = await _lit(clock, project, "export", environment=None)
     except ProjectGone:
         return Untracked(project, gone=True)
-    except LitFailed as failed:
-        if failed.reason in NO_WORKSPACE:
+    except LitRefused as refused:
+        if refused.reason in NO_WORKSPACE:
             return Untracked(project)
         raise
     # Off the loop: the largest export takes tens of milliseconds to parse, which the voice pipeline would hear.
@@ -408,7 +406,7 @@ async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title:
     filed = await _lit(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
     said = filed.decode(errors="replace").split()
     if not said:
-        raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
+        raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id")
     return said[0]
 
 
@@ -418,8 +416,9 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
 
 
 async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
-    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitFailed when
-    it could not run, did not answer, or exited non-zero.
+    """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
+    when its process was never created, LitRefused when it exited non-zero naming a reason, and LitFailed when it did not
+    answer, ended without a reason, or could not be read after it ran.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
@@ -427,17 +426,19 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
     try:
         ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
     except TimeoutError:
-        raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
-    except OSError as error:
-        # The spawn names the missing path: the project directory, not lit, is what is gone.
-        if isinstance(error, FileNotFoundError) and str(error.filename) == str(project):
+        raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s") from None
+    except SpawnFailed as error:
+        if error.cwd_missing:
             raise ProjectGone(project) from error
-        raise NotStarted(f"lit could not be started in {project}: {error}") from error
+        raise LitNotStarted(f"lit could not be started in {project}: {error.cause}") from error
+    except OSError as error:
+        # [LAW:no-silent-failure] past the spawn, so lit ran and may have written before what it wrote could not be read.
+        raise LitFailed(f"{command} in {project} ran, and what it wrote could not be read: {error}") from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
-        line = ERROR_LINE.match(err)
+        said = f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}"
         # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else line["reason"])
+        raise LitFailed(said) if (line := ERROR_LINE.match(err)) is None else LitRefused(said, line["reason"])
     return ran.out
 
 

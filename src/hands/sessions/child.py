@@ -75,8 +75,38 @@ class Ran:
     err: bytes
 
 
+class SpawnFailed(OSError):
+    """The OS refused to create `argv0`'s process, so it never ran and wrote nothing; `cause` is what it said.
+
+    The one OSError `run` raises about a child that never existed: an OSError out of `run` that is not this one came after
+    the child ran, from reading what it wrote.
+    """
+
+    def __init__(self, argv0: str, cwd: Path | None, cause: OSError) -> None:
+        super().__init__(f"{argv0} could not be started: {cause}")
+        self.argv0 = argv0
+        self.cwd = cwd
+        self.cause = cause
+
+    @property
+    def cwd_missing(self) -> bool:
+        """Whether the directory it was to run in is what the OS could not find, rather than `argv0`: the spawn names the missing path."""
+        return self.cwd is not None and isinstance(self.cause, FileNotFoundError) and str(self.cause.filename) == str(self.cwd)
+
+
+def _spawned(argv: tuple[str, ...], cwd: Path | None, env: Mapping[str, str] | None, out: IO[bytes], err: IO[bytes]) -> subprocess.Popen[bytes]:
+    try:
+        # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
+        return subprocess.Popen(
+            argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
+        )
+    except OSError as error:
+        raise SpawnFailed(argv[0], cwd, error) from error
+
+
 async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ran:
-    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, and OSError when it cannot start.
+    """Run `argv` to its exit; raises TimeoutError when it runs past `timeout` on `clock`, SpawnFailed (an OSError) when
+    it cannot start, and a plain OSError when what the child wrote cannot be read after it ran.
 
     The one place hands runs a child to completion: timed out, its caller cancelled or its clock failed, the child and every process
     it started are killed, and the child reaped, before the error leaves. Each caller says what a timeout means for
@@ -84,10 +114,7 @@ async def run(*argv: str, timeout: float, cwd: Path | None = None, env: Mapping[
     """
     out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
     try:
-        # A session of its own, so its process group is everything it starts: a git's filters, a lit's helpers.
-        process = subprocess.Popen(
-            argv, cwd=cwd, env=None if env is None else dict(env), stdin=subprocess.DEVNULL, stdout=out, stderr=err, start_new_session=True
-        )
+        process = _spawned(argv, cwd, env, out, err)
     except BaseException:
         out.close()
         err.close()
