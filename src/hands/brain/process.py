@@ -171,6 +171,15 @@ class Station:
     # holds keys, and out of the station's identity, which it is not part of.
     inherited: Mapping[str, str] = field(repr=False, compare=False)
 
+    def for_account(self, account: Account) -> "Station":
+        """The brain's launch environment on its own account, independent of the launching shell's entrypoint."""
+        # [LAW:one-source-of-truth] the brain's known login selects SDK API billing; an inherited entrypoint cannot
+        # select it for a subscription login or override it for an API key.
+        inherited = {name: value for name, value in self.inherited.items() if name != "CLAUDE_CODE_ENTRYPOINT"}
+        if account.method == "api_key":
+            inherited["CLAUDE_CODE_ENTRYPOINT"] = "sdk-cli"
+        return replace(self, inherited=inherited)
+
 
 @dataclass(frozen=True)
 class Launch:
@@ -1838,10 +1847,11 @@ class Brain:
 async def start(clock: Clock, launch: Launch, record: Record) -> Brain:
     """Start the brain under fritter in its tmux session (`in_tmux`), on the login its backend was parsed with; every bound
     the brain keeps, a typed turn's take among them, passes on `clock`."""
-    station = launch.station
+    station = launch.station.for_account(launch.account)
     # [LAW:nothing-unseen] the launch is one event, from the spawn until the brain's input is up, or what failed it.
     with unit("brain.launch", record, begun(clock)):
         annotate(session=launch.session, account=launch.account, model=station.model, config_dir=station.config_dir, cwd=station.cwd)
+        annotate(entrypoint=station.inherited.get("CLAUDE_CODE_ENTRYPOINT"))
         match launch.conversation:
             case Fresh(untranscribed=untranscribed):
                 annotate(conversation="fresh", untranscribed=untranscribed)

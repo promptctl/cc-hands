@@ -248,6 +248,8 @@ there; then, on a brain Claude Code has not finished its first run on, it runs t
 runs in, where you answer its first screens, its login among them, and `/exit`. On a brain that has been through it,
 it logs the brain in again, or onto another account: a Claude plan, or with `hands login --console` an Anthropic Console
 key. Either way it says which account the brain holds after, and how it is logged in.
+On an API-key login, hands sets `CLAUDE_CODE_ENTRYPOINT=sdk-cli` for the brain automatically. On other logins it
+leaves that variable unset, including when hands inherited it from your shell. Restart hands after changing its login.
 Its tools, its permission rules and mode, and its MCP servers are that directory's, as for any Claude Code:
 `~/.hands/brain/settings.json`, and `CLAUDE_CONFIG_DIR=~/.hands/brain claude mcp add -s user ...`; hands adds only its
 own MCP server, which it may use without asking, and its hooks, and it keeps the account's claude.ai connectors out.

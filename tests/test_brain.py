@@ -208,6 +208,21 @@ def launch(tmp: Path) -> Launch:
     return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
 
 
+@pytest.mark.parametrize("method", ["api_key", "claude.ai", "oauth_token"])
+@pytest.mark.parametrize("entrypoint", [None, "sdk-cli", "cli"])
+def test_only_the_brains_api_key_login_uses_the_sdk_entrypoint(tmp_path: Path, method: str, entrypoint: str | None) -> None:
+    inherited = {"PATH": "/bin", "ANTHROPIC_API_KEY": "the-shells-key"}
+    if entrypoint is not None:
+        inherited["CLAUDE_CODE_ENTRYPOINT"] = entrypoint
+    original = dict(inherited)
+    station = Station(tmp_path / "brain", tmp_path, "claude-sonnet-5", "http://127.0.0.1:1", inherited)
+    selected = station.for_account(Account(method, None))
+    env = environment(selected.config_dir, selected.proxy_url, selected.inherited)
+    assert env.get("CLAUDE_CODE_ENTRYPOINT") == ("sdk-cli" if method == "api_key" else None)
+    assert "ANTHROPIC_API_KEY" not in env
+    assert inherited == original
+
+
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
     """A brain turn's facts but how long it waited for the prompt, which no test can name in advance."""
     return {name: fact for name, fact in facts.items() if name != "at_prompt_after"}
@@ -334,6 +349,30 @@ async def test_every_claude_code_of_hands_own_runs_with_its_auto_updater_off(tmp
 
 
 @pytest.mark.outside
+@pytest.mark.parametrize("method", ["api_key", "claude.ai"])
+async def test_the_brains_process_gets_only_its_accounts_entrypoint(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    # Prove the launch wiring once per authentication behavior; the full inherited-value matrix stays in process.
+    fake_claude.write_text(fake_claude.read_text().replace(
+        "import datetime,",
+        f"import os, pathlib\npathlib.Path({str(tmp_path / 'entrypoint')!r}).write_text(os.environ.get('CLAUDE_CODE_ENTRYPOINT', 'unset'))\nimport datetime,",
+        1,
+    ))
+    pin(monkeypatch, fake_claude)
+    launched = launch(tmp_path)
+    launched = replace(launched, account=Account(method, None), station=replace(
+        launched.station, inherited={**launched.station.inherited, "CLAUDE_CODE_ENTRYPOINT": "sdk-cli"},
+    ))
+    recorded: list[Entry] = []
+    brain = await start(SYSTEM, launched, recorded.append)
+    try:
+        assert (tmp_path / "entrypoint").read_text() == ("sdk-cli" if method == "api_key" else "unset")
+        [event] = events(recorded, "brain.launch")
+        assert event.facts["entrypoint"] == ("sdk-cli" if method == "api_key" else None)
+    finally:
+        await brain.stop()
+
+
+@pytest.mark.outside
 async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_brains_launch_turns_and_run_are_one_event_each(tmp_path: Path, fake_claude: Path, fritter: Path) -> None:
     recorded: list[Entry] = []
     brain = await start(SYSTEM, launch(tmp_path), recorded.append)
@@ -357,7 +396,7 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
+        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd", "entrypoint": None,
         "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
         "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
