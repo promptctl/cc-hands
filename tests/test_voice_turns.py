@@ -636,6 +636,26 @@ async def test_a_clip_the_voice_opened_not_heard_while_open_cuts_on_the_words_it
         assert [(event.facts["clip"], event.facts.get("cut")) for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"] == [(1, "at close")]
 
 
+async def test_a_clip_the_voice_opened_whose_transcription_never_returns_is_the_most_hands_talks_on_and_then_cuts_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Where nothing was heard while the clip was open, hands talks on until its transcription returns, and the transcription
+    # is given up on at its bound: the one a person waits out, and what it ends in is no cut, as with any that says nothing.
+    async def hung(_self: Whisper, clip: int, sound: Sound, prompt: str | None) -> ClipHeard:
+        await asyncio.Event().wait()
+        raise AssertionError("a transcription that never returns returned")
+
+    async with reading(monkeypatch, tmp_path) as (rig, cut, line):
+        monkeypatch.setattr(Whisper, "_heard", hung)
+        monkeypatch.setattr(clipowner, "TRANSCRIBING_SECONDS", 0.2)
+        await rig.clip(OPENED_BY_THE_VOICE, by="engaged conversation")
+        await rig.until(lambda: user_turns(rig) == [("on a person", False)])
+        # The clip's end says it failed, with no cut at its close; its turn is ended and the reading plays on.
+        [ended] = [event for event in rig.recorded if isinstance(event, WideEvent) and event.event == "clip"]
+        assert (ended.facts["transcript"], ended.facts.get("cut")) == ("failed", None)
+        assert (rig.out.started, rig.out.interrupted, cut, line.done()) == (0, 0, [], False)
+
+
 # The voice hands speaks in.
 SPOKEN_IN = voices.source(voices.DEFAULT)
 
