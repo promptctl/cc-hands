@@ -51,7 +51,6 @@ UNMOVED = frozenset({
     "test_audit.py",
     "test_backlogpage.py",
     "test_brain.py",
-    "test_brain_e2e.py",
     "test_brain_turns.py",
     "test_brainpage.py",
     "test_catch_up.py",

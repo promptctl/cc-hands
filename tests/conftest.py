@@ -69,6 +69,9 @@ def in_ci[R: pytest.TestReport | pytest.CollectReport](report: R) -> R:
     return report
 
 
+# The brain end to end: the rig the tests that must have the pinned Claude Code run against (tests/pinnedbrain.py).
+pytest_plugins = ["pinnedbrain"]
+
 # The layers a run can be held to (tests/offline.py): `unit` runs the tests that do not say they need the outside, and
 # `audit` the ones that do, each under the unit layer's hold.
 LAYERS = ("unit", "audit")
