@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hands.clock import SYSTEM
 from hands.sessions.audit import Entry
-from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
+from hands.sessions.backlog import LEVELS, LIT_TIMEOUT_SECONDS, Inherited, Level, Leveling, LitFailed, Move, NewEpic, Place, Standing, Untracked, comment, parse_export, parse_level
 from hands.sessions.payload import Rejected
 from hands.sessions.summaries import Summaries
 from hands.sessions.wide import WideEvent, begun, unit
@@ -893,6 +893,39 @@ async def test_a_note_lit_stops_on_without_a_reason_is_said_to_be_unknown(page: 
     assert status == 502 and body.startswith(f"whether lit kept the note on {hey} is not known: ")
     [event] = page.events("backlog.noted")
     assert event.outcome == "failed" and event.facts["noted"] == "unknown"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_note_with_no_lit_to_start_is_said_to_have_kept_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, hey = epic(workspace, "Train a new wake word", "Hey hands", topic="wake-word")
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    status, body = await noted(page, workspace, hey, "Split it")
+    assert status == 502 and body.startswith(f"not noted: lit could not be started in {workspace.root}")
+    [event] = page.events("backlog.noted")
+    assert event.outcome == "failed" and event.facts["noted"] == "no"
+
+
+@pytest.mark.outside
+@real_lit
+async def test_a_rank_whose_lit_is_gone_by_the_write_is_said_to_have_moved_nothing(page: Page, workspace: Workspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, mic, parser = epic(workspace, "Voice", "Fix the mic", "Fix the parser")
+    # lit reads the backlog, then is gone from PATH before the page runs it to write: the write never started.
+    stub_lit(tmp_path, monkeypatch, export='rm -- "$0"')
+    status, body = await moved(page, workspace, parser, above=mic)
+    assert status == 502 and body.startswith(f"not moved: lit could not be started in {workspace.root}")
+    assert workspace.order(mic, parser) == [mic, parser]
+    [event] = page.events("backlog.ranked")
+    assert event.outcome == "failed" and event.facts["ranked"] == "no"
+
+
+@pytest.mark.outside
+async def test_a_lit_run_in_a_removed_directory_is_known_to_have_changed_nothing(tmp_path: Path) -> None:
+    gone = tmp_path / "cleaned-up-worktree"
+    with pytest.raises(LitFailed, match="no longer exists") as raised:
+        await comment(VirtualClock(), gone, "a", "Seen again.", Inherited())
+    assert raised.value.changed_nothing
 
 
 @pytest.mark.outside

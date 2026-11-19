@@ -94,17 +94,28 @@ class LitFailed(Exception):
         self.reason = reason
 
     @property
-    def refused(self) -> bool:
-        """Whether lit refused, saying why on its reason line: the one failure that proves it changed nothing. A lit that
-        did not answer, could not be run, or ended without a reason may have written before it stopped."""
+    def changed_nothing(self) -> bool:
+        """Whether lit is known to have changed nothing: it refused, saying why on its reason line. A lit that did not
+        answer, or ended without a reason, may have written before it stopped."""
         return self.reason is not None
 
 
-class ProjectGone(LitFailed):
+class NotStarted(LitFailed):
+    """lit's process was never created, so there was nothing to write."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, None)
+
+    @property
+    def changed_nothing(self) -> bool:
+        return True
+
+
+class ProjectGone(NotStarted):
     """The directory lit was to run in no longer exists: lit never started there."""
 
     def __init__(self, project: Path) -> None:
-        super().__init__(f"{project} no longer exists", None)
+        super().__init__(f"{project} no longer exists")
 
 
 @dataclass(frozen=True)
@@ -421,7 +432,7 @@ async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mappin
         # The spawn names the missing path: the project directory, not lit, is what is gone.
         if isinstance(error, FileNotFoundError) and str(error.filename) == str(project):
             raise ProjectGone(project) from error
-        raise LitFailed(f"cannot run lit in {project}: {error}", None) from error
+        raise NotStarted(f"lit could not be started in {project}: {error}") from error
     if ran.returncode != 0:
         err = ran.err.decode(errors="replace")
         line = ERROR_LINE.match(err)
