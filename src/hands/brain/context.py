@@ -17,7 +17,6 @@ from loguru import logger
 from hands.brain.asides import AsideFailed, TimeLimit
 from hands.clock import Clock
 from hands.core.context import Result, aged, key, line, question, results
-from hands.core.session import SessionId
 from hands.core.summaries import Digest
 from hands.core.wire import (
     COMPACTION_OPENING,
@@ -80,10 +79,9 @@ class Store(Protocol):
 class Keeper:
     """The changes hands makes to the brain's history on the way out, and the side questions that make them possible."""
 
-    def __init__(self, clock: Clock, session: SessionId, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
+    def __init__(self, clock: Clock, ask: Callable[[str], Awaitable[str]], store: Store, every: int, record: Record) -> None:
         self._clock = clock
-        # The session the brain's requests carry, and what answers a side question.
-        self._session = session
+        # What answers a side question.
         self._ask = ask
         self._store = store
         self._every = every
@@ -100,8 +98,6 @@ class Keeper:
 
     def changes(self, sent: Sent) -> tuple[Change, ...]:
         """What a request of the brain's goes with: its old results as lines, and a compaction its steered prompt."""
-        if sent.session != self._session:
-            return ()
         match sent.kind:
             case MainTurn():
                 # [LAW:single-enforcer] only the brain's own loop moves the boundary: a fork carries its question as one
@@ -117,15 +113,13 @@ class Keeper:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(session=session, kind=MainTurn(), body=body) if session == self._session:
+            case Sent(kind=MainTurn(), body=body):
                 fresh = [result for result in results(body) if result.call not in self._heard]
                 self._heard.update(result.call for result in fresh)
                 self._unsaid.update((result.call, result) for result in fresh if self._store.known(key(result)) is None)
-            case Exchanged(session=session, kind=MainTurn(), reply=Synthetic()) if session == self._session:
+            case Exchanged(kind=MainTurn(), reply=Synthetic()):
                 self._turn_ended()
-            case Exchanged(session=session, kind=MainTurn(), reply=Reached(body=Written(message=message))) if (
-                session == self._session and message.stop_reason != "tool_use"
-            ):
+            case Exchanged(kind=MainTurn(), reply=Reached(body=Written(message=message))) if message.stop_reason != "tool_use":
                 self._turn_ended()
             case _:
                 pass

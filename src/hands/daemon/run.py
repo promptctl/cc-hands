@@ -30,7 +30,7 @@ from pipecat.frames.frames import Frame
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.workers.runner import WorkerRunner
 
-from hands.clock import Clock, dashed
+from hands.clock import Clock
 from hands.daemon.config import CLAUDE_MODELS, OwnModel, Settings
 from hands.sessions import heartbeat, tmux
 from hands.sessions.typing import type_into
@@ -105,7 +105,6 @@ from hands.brain.context import EVERY, LINE_TIME, Keeper, Kept, Store
 from hands.brain.stage import BrainStage
 from hands.brain.usage import Usage
 from hands.spotify import Catalogue, credentials
-from hands.core.session import SessionId
 
 # How late a settled burst of a session's progress can be heard.
 TICK_SECONDS = 1.0
@@ -186,24 +185,23 @@ async def mind(
     `brain_tools` beside `tools`: what it does with a shell, to find what they act on, and a skill saying when."""
     llm = config.llm
     spans = CallSpans()
-    talk = conversation(llm.config_dir, SessionId(dashed(clock)))
     # The brain is behind hands' proxy, so its usage is read off the wire, and it has a tool to ask it with.
-    usage = Usage(talk.session)
+    usage = Usage()
     tools = [*tools, *brain_tools, audited(clock, usage_tool(usage), record)]
     server = await serve_mcp(clock, tools, record, spans)
     try:
         station = Station(llm.config_dir, workdir(llm.config_dir), llm.model, proxy_url, environment)
         try:
-            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), talk), record)
+            brain = await start_brain(clock, Launch(station, llm.account, brain_instruction(log, llm.config_dir, hands, config.personality), server.config(), conversation(llm.config_dir)), record)
         except Unstartable as error:
             # hands runs on no brain it could not start: its start is refused, saying why.
             raise CannotStart(str(error)) from error
         # [LAW:single-enforcer] everything hands asks in the background is asked here, as a /btw forked from the
         # brain's newest main turn: nothing but the user's turns is ever typed into the brain.
-        asides = Asides(clock, proxy_url, Newest(brain.session), record)
+        asides = Asides(clock, proxy_url, Newest(), record)
         try:
             stage = BrainStage(brain, tools, tail, refocus, front, modality, opened, record, spans, next_barge_in, aloud, clock)
-            keeper = Keeper(clock, brain.session, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
+            keeper = Keeper(clock, partial(asides.ask, AsideKind.LINE, within=LINE_TIME), store, EVERY, record)
             with wire.joined(Kept(stage, keeper, asides, brain, usage)):
                 watches = (Watch("the brain", lambda: outlived(brain)), Watch("the brain's turns", stage.ask_each), Watch("the brain's context", keeper.keep_asking))
                 # A summary is as long as its reply makes it: only its time is the summary's own.
@@ -250,15 +248,17 @@ async def run(
         hooks = await serve_hooks(home, sessions, names, record, reader)
         held.push_async_callback(hooks.cleanup)
         run_start.heard(hooks=home.socket)
-        wire = Wire(clock, wire_to(record))
+        logged = wire_to(record)
+        wire = Wire(clock, logged)
         proxy = await serve_proxy(UPSTREAM, wire.observe, wire.route, clock=clock)
         held.push_async_callback(proxy.close)
         # The url a Claude Code process's ANTHROPIC_BASE_URL is set to.
         run_start.heard(proxy=proxy.url, upstream=UPSTREAM)
-        # [LAW:one-source-of-truth] the working sessions' exchanges reach the same observer as the brain's, so the log and
-        # whatever listens hear one wire; and what they say of a turn reaches the registry as it is heard, as a hook does.
+        # [LAW:one-source-of-truth] the working sessions' exchanges reach the same log as the brain's, and what they say of a
+        # turn reaches the registry as it is heard, as a hook does. The wire's listener is the brain's: what comes through
+        # the proxy is the brain's, whatever session it carries, and nothing tapped is.
         def tapped(observed: Observed) -> None:
-            wire.observe(observed)
+            logged(observed)
             for move in moves(observed):
                 sessions.hear(move)
 

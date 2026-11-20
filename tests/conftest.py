@@ -736,7 +736,7 @@ def fake_claude(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script = tmp_path / "bin" / "claude"
     script.parent.mkdir()
     script.write_text(f"""#!{sys.executable}
-import datetime, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request
+import datetime, glob, itertools, json, os, select, signal, sys, termios, threading, time, tty, urllib.request, uuid
 first_run = sys.argv[1:] == ["--setting-sources", "user"]
 if sys.argv[1:2] == ["auth"] or first_run:
     login = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "login.json")
@@ -761,11 +761,14 @@ if sys.argv[1:3] == ["auth", "status"]:
     print(json.dumps({{"loggedIn": os.environ["LOGGED_IN"] == "1" or os.path.exists(login), "authMethod": method, "apiProvider": os.environ.get("API_PROVIDER", "firstParty"), **holder}}))
     sys.exit(0)
 hooks = json.loads(sys.argv[sys.argv.index("--settings") + 1])["hooks"] if "--settings" in sys.argv else {{}}
-session = sys.argv[sys.argv.index("--session-id" if "--session-id" in sys.argv else "--resume") + 1]
 sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
 import turns
+project = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()))
+# Its session is its own to name, as Claude Code's is: the newest conversation in its directory it continues, or a new one.
+continued = sorted(glob.glob(os.path.join(project, "*.jsonl")), key=os.path.getmtime) if "--continue" in sys.argv else []
+session = os.path.basename(continued[-1])[: -len(".jsonl")] if continued else str(uuid.uuid4())
 # Where Claude Code keeps the session's transcript, and the file it keeps its status in, under its config directory.
-transcript = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", turns.project_name(os.getcwd()), session + ".jsonl")
+transcript = os.path.join(project, session + ".jsonl")
 status = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "sessions", f"{{os.getpid()}}.json")
 def post(event, **fields):
     [[url]] = [[hook["url"] for hook in matcher["hooks"]] for matcher in hooks[event]]

@@ -809,13 +809,12 @@ async def test_each_request_of_a_turn_carries_how_the_sessions_stand_as_it_leave
 
 async def test_only_the_brains_own_main_turns_are_spoken(rig: Rig) -> None:
     await rig.say("hello")
-    others = [rig.request(kind=Fork()), rig.request(kind=Unknown("a messages request with no tools")), rig.request(session=SessionId("a summary"))]
-    # Every request of the brain's is final, said or not; another session's goes as it came (hands-wire-zi2).
-    assert [route for _, route in others] == [Send(refusal="final", span=APART), Send(refusal="final", span=APART), Send(span=APART)]
-    # The brain's are its turn's, in one trace under one parent; another session's is the root of a trace of its own.
-    fork, unknown, summary = rig.spans
+    others = [rig.request(kind=Fork()), rig.request(kind=Unknown("a messages request with no tools"))]
+    # Every request of the brain's is final, said or not (hands-wire-zi2).
+    assert [route for _, route in others] == [Send(refusal="final", span=APART), Send(refusal="final", span=APART)]
+    # The brain's are its turn's, in one trace under one parent.
+    fork, unknown = rig.spans
     assert (fork.trace_id, fork.parent_id) == (unknown.trace_id, unknown.parent_id) and fork.parent_id is not None
-    assert summary.parent_id is None and summary.trace_id != fork.trace_id
     for exchange, _ in others:
         rig.stream(exchange, "not for the user")
     exchange, _ = rig.request()

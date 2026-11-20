@@ -99,7 +99,7 @@ def test_markers_the_loop_put_on_earlier_messages_stay_and_a_lone_message_has_no
 
 
 async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_reply_once_read() -> None:
-    newest = Newest(BRAIN)
+    newest = Newest()
     waiting = asyncio.create_task(newest.turn())
     message = reply(Text("Done."))
     clock = VirtualClock()
@@ -107,10 +107,8 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     def exchanged(exchange: str, session: SessionId) -> Exchanged:
         return Exchanged(exchange, session, MainTurn(None), "main", "POST", "/v1/messages", 0, (), 0.0, 0.0, Reached(200, 0.0, 0.0, 0, Written(message, True)), False, root(clock))
 
-    # Another session's main turn, and a fork of the brain's, are never what a question forks from.
+    # A fork of the brain's is never what a question forks from.
     for observed in (
-        Sent("o1", SessionId("other"), MainTurn(None), "main", {}),
-        Forwarded("o1", "/v1/messages", HEADERS, b"{}"),
         Sent("f1", BRAIN, Fork(), "auxiliary", {}),
         Forwarded("f1", "/v1/messages", HEADERS, b"{}"),
     ):
@@ -120,9 +118,12 @@ async def test_the_newest_is_the_brains_last_main_turn_as_forwarded_with_its_rep
     newest.hear(Sent("x1", BRAIN, MainTurn(None), "main", {"messages": []}))
     newest.hear(Forwarded("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}'))
     assert await waiting == Turn("x1", "/v1/messages?beta=true", HEADERS, b'{"messages": [1]}', None)
-    newest.hear(exchanged("o1", SessionId("other")))
     newest.hear(exchanged("x1", BRAIN))
     assert (await newest.turn()).reply == message
+    # The conversation a clear begins is the brain's, whatever its session.
+    newest.hear(Sent("y1", SessionId("after-the-clear"), MainTurn(None), "main", {"messages": []}))
+    newest.hear(Forwarded("y1", "/v1/messages", HEADERS, b'{"messages": [2]}'))
+    assert (await newest.turn()).exchange == "y1"
 
 
 def sse(event: dict[str, object]) -> bytes:
@@ -213,7 +214,7 @@ async def brain() -> AsyncIterator[Callable[[list[Entry]], Awaitable[Brain]]]:
         clock = VirtualClock(epoch=datetime.fromtimestamp(0, UTC))
         wire = Wire(clock, lambda _observed: None)
         proxy = await serve_proxy(f"http://127.0.0.1:{upstream.addresses[0][1]}", wire.observe, wire.route, clock=clock)
-        asides = Asides(clock, proxy.url, Newest(BRAIN), recorded.append)
+        asides = Asides(clock, proxy.url, Newest(), recorded.append)
 
         class Listening:
             def route(self, sent: Sent) -> Route:
@@ -458,7 +459,7 @@ async def test_a_timeout_that_is_not_its_askers_fails_the_question_broken_not_ti
         async def turn(self) -> Turn:
             raise TimeoutError("a wait of its own")
 
-    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(BRAIN), lambda _entry: None)
+    asides = Asides(VirtualClock(), "http://127.0.0.1:9", TimesOut(), lambda _entry: None)
     try:
         with pytest.raises(AsideFailed, match="not its asker's time") as failed:
             await asides.ask(AsideKind.LINE, "q", Deadline(10))

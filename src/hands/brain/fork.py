@@ -13,7 +13,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-from hands.core.session import SessionId
 from hands.core.wire import (
     CLASS_HEADER,
     cache_marked,
@@ -109,8 +108,7 @@ def fork(turn: Turn, question: str) -> tuple[tuple[tuple[str, str], ...], dict[s
 class Newest:
     """The brain's newest main turn, heard off the wire: the one thing a side question is forked from."""
 
-    def __init__(self, session: SessionId) -> None:
-        self._session = session
+    def __init__(self) -> None:
         # Main turns of the brain's told and not yet forwarded: its request is held once its bytes go upstream.
         self._main: set[str] = set()
         self._turn: Turn | None = None
@@ -124,7 +122,7 @@ class Newest:
 
     def hear(self, observed: Observed) -> None:
         match observed:
-            case Sent(exchange=exchange, session=session, kind=MainTurn()) if session == self._session:
+            case Sent(exchange=exchange, kind=MainTurn()):
                 self._main.add(exchange)
             case Forwarded(exchange=exchange, path=path, headers=headers, body=body) if exchange in self._main:
                 self._main.discard(exchange)

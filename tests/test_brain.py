@@ -27,7 +27,7 @@ from hands.core.playback import Bookmark
 from hands.brain import pinned, process
 from hands.brain.mcp import TOOL_USE_ID, CallSpans, McpServer, serve_mcp
 from hands.brain.asides import AsideFailed, Deadline, Unanswered, Within
-from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, Fresh, InTmux, Launch, NotLoggedIn, Resumed, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
+from hands.brain.process import BROKEN, HOOKS, KEYBINDINGS, NOBODY, STOPPED, SLIM, SUBMIT, INTERRUPT_SECONDS, TAKE_SECONDS, UNANSWERED, Asked, Brain, BrainAnswered, BrainEnded, BrainGone, BrainStopped, InTmux, Launch, NotLoggedIn, Station, StopUnrecorded, Unstartable, Untaken, Mode, _child_of, account_kept_out, brain_session, command, in_tmux, conversation, settings_mode, environment, logged_in, start, unanswered, workdir  # pyright: ignore[reportPrivateUsage]
 from hands.core.effects import Allow, Deny, Effect, Summarise
 from hands.core.permissions import heard
 from hands.core.session import DenyAndInterrupt, Permission
@@ -205,7 +205,7 @@ def station(tmp: Path) -> Station:
 
 
 def launch(tmp: Path) -> Launch:
-    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', Fresh(SessionId("b1"), None))
+    return Launch(station(tmp), Account("claude.ai", "brain@example.com"), "You are hands.", '{"mcpServers": {}}', "begun")
 
 
 def untimed(facts: Mapping[str, Fact]) -> dict[str, Fact]:
@@ -269,7 +269,9 @@ def test_the_brain_is_interactive_on_its_own_setup_beside_hands_server_and_its_o
     assert json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())["name"] == "hands"
     for skill in ("chat", "prompt"):
         assert (plugin / "skills" / skill / "SKILL.md").read_text().startswith(f"---\nname: {skill}\n")
-    assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt", "--session-id")] == ["user", "You are hands.", "b1"]
+    assert [argv[argv.index(flag) + 1] for flag in ("--setting-sources", "--append-system-prompt")] == ["user", "You are hands."]
+    # Claude Code names the brain's session, at its start and at every /clear: hands names none.
+    assert not {"--session-id", "--resume", "--continue"} & set(argv)
     # The instruction this hands writes goes on every request, never the one its conversation first had.
     assert argv[argv.index("--system-prompt-snapshot") + 1] == "off"
     settings = json.loads(argv[argv.index("--settings") + 1])
@@ -357,12 +359,12 @@ async def test_a_turn_is_typed_behind_a_space_and_ends_at_its_stop_hook_and_the_
     ]
     assert (launched.event, launched.outcome, launched.parent_id) == ("brain.launch", "ok", None)
     assert launched.facts == {
-        "session": "b1", "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
-        "conversation": "fresh", "untranscribed": None, "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
+        "account": Account("claude.ai", "brain@example.com"), "model": "claude-sonnet-5", "config_dir": tmp_path / "brain", "cwd": tmp_path / "brain" / "cwd",
+        "conversation": "begun", "fritter": fritter, "claude": fake_claude, "mode": None, "keybindings": SUBMIT,
         "tmux_session": brain_session(tmp_path / "brain"), "pid": brain.pid,
     }
-    # Held once the brain is up, for the next start to resume, as Claude Code keeps the transcript of its turns.
-    assert conversation(tmp_path / "brain", SessionId("b2")) == Resumed(SessionId("b1"))
+    # Claude Code keeps the transcript of its turns, so the next start goes on from it.
+    assert conversation(tmp_path / "brain") == "continued"
     # Its run is a part of its launch, from its input coming up to its process's end.
     assert (ran.event, ran.outcome, ran.trace_id, ran.parent_id) == ("brain.run", "ok", launched.trace_id, launched.span_id)
     assert ran.facts["pid"] == brain.pid and isinstance(ran.facts["code"], int) and isinstance(ran.facts["shown"], str)
@@ -375,18 +377,15 @@ def transcript(config_dir: Path, session: str) -> None:
     (project / f"{session}.jsonl").write_text("{}\n")
 
 
-def test_a_brain_starts_new_until_one_has_held_a_conversation_and_resumes_it_while_claude_code_keeps_its_transcript(tmp_path: Path) -> None:
+def test_a_brain_begins_a_conversation_until_claude_code_keeps_a_transcript_and_then_continues_its_newest(tmp_path: Path) -> None:
     brain = tmp_path / "brain"
     brain.mkdir()
-    assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), None)
-    (brain / "conversation").write_text("c1\n")
-    # A conversation Claude Code has no transcript of has nothing to resume: the one held is named as untranscribed.
-    assert conversation(brain, SessionId("n1")) == Fresh(SessionId("n1"), SessionId("c1"))
+    assert conversation(brain) == "begun"
     transcript(brain, "c1")
-    assert conversation(brain, SessionId("n1")) == Resumed(SessionId("c1"))
-    # Resumed under its own session, which Claude Code keeps: never a session id of its own beside it.
-    argv = command(replace(launch(tmp_path), conversation=Resumed(SessionId("c1"))), Path("/real/claude"), "http://127.0.0.1:7", None)
-    assert argv[argv.index("--resume") + 1] == "c1" and "--session-id" not in argv
+    assert conversation(brain) == "continued"
+    # Whichever conversation Claude Code was last in, a cleared one's too: never a session named by hands.
+    argv = command(replace(launch(tmp_path), conversation="continued"), Path("/real/claude"), "http://127.0.0.1:7", None)
+    assert "--continue" in argv and not {"--session-id", "--resume"} & set(argv)
 
 
 def test_the_mode_the_brains_settings_name_is_said_on_its_command_line_too_so_claude_code_offers_no_other(tmp_path: Path) -> None:
@@ -1434,26 +1433,6 @@ async def test_a_brain_that_never_turns_its_input_on_is_refused_with_what_it_sho
 
 
 @pytest.mark.outside
-async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_start_begins_anew(
-    tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("hands.brain.process.START_SECONDS", 1.0)
-    # As Claude Code does with a transcript it cannot read.
-    fake_claude.write_text("#!/bin/sh\necho No conversation found with session ID: c1\n")
-    pin(monkeypatch, fake_claude)
-    brain = tmp_path / "brain"
-    brain.mkdir()
-    (brain / "conversation").write_text("c1\n")
-    transcript(brain, "c1")
-    recorded: list[Entry] = []
-    with pytest.raises(Unstartable, match="No conversation found"):
-        await start(SYSTEM, replace(launch(tmp_path), conversation=conversation(brain, SessionId("n1"))), recorded.append)
-    [launched] = events(recorded, "brain.launch")
-    assert (launched.outcome, launched.facts["conversation"], launched.facts["let_go"]) == ("failed", "resumed", "c1")
-    assert conversation(brain, SessionId("n2")) == Fresh(SessionId("n2"), None)
-
-
-@pytest.mark.outside
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == Account("claude.ai", "brain@example.com")
     monkeypatch.setenv("LOGGED_IN", "0")
@@ -1675,16 +1654,16 @@ async def test_the_run_starts_the_brain_beside_hands_mcp_server(tmp_path: Path, 
     with wire.joined(minded.llm):
         pass
     # The next run's brain takes the conversation up again, while Claude Code keeps its transcript.
-    transcript(tmp_path / "brain", str(launched.facts["session"]))
+    transcript(tmp_path / "brain", "c1")
     async with mind(SYSTEM, claude, [tool(echo)], [], lambda: "", unread, lambda: "screen", lambda: "shortcut", refocus, "http://127.0.0.1:1", wire, store, tmp_path / "audit", "hands", recorded.append, os.environ, never_barged_in, Attention) as minded:
-        # Its usage is heard under the session it resumed, not one begun for it.
-        wire.observe(Sent("x", SessionId(str(launched.facts["session"])), MainTurn(None), None, {}))
+        # Its usage is heard whatever session its requests carry.
+        wire.observe(Sent("x", SessionId("c1"), MainTurn(None), None, {}))
         wire.observe(Heard("x", MessageStarted("msg_x", "claude-sonnet-5", {"input_tokens": 7, "output_tokens": 1})))
         assert isinstance(minded.llm, BrainStage)
         reported = await minded.llm._tools["mcp__hands__context_usage"].body()  # pyright: ignore[reportPrivateUsage]
         assert reported["in_context_tokens"] == 8
     [_, again] = events(recorded, "brain.launch")
-    assert (again.facts["session"], again.facts["conversation"]) == (launched.facts["session"], "resumed")
+    assert (launched.facts["conversation"], again.facts["conversation"]) == ("begun", "continued")
 
 
 @pytest.mark.outside
