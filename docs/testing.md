@@ -61,6 +61,12 @@ parallel, and the check `test` passes when all three did. Together they are the 
 layers: the pair has one of its own because it is proven in full every run and is the longest. Green on `make check` is not green
 on CI, which also runs the `outside` tests, fritter's Go tests and wake-training's suite.
 
+## The phone's pages
+
+A page's own script is run in node by tests/pagescript.py, as the phone's browser runs it: a DOM of plain objects, `fetch`
+answered from what the test took from hands' own routes, given back in the order the page asks, and a virtual clock, so a
+page that waits out hands' restart waits none of it. A start of node is a process, so these tests are `outside`.
+
 ## Placing a new test
 
 Write it as a unit test: in process, on fakes, on a virtual clock. If `make check` says the unit layer refused it, ask

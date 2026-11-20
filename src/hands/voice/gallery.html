@@ -50,7 +50,7 @@
   <select id="model" aria-label="Model"></select>
   <button type="submit">Switch model</button>
 </form>
-<p class="muted">Switching restarts hands. This page loses its connection for a few seconds while it does.</p>
+<p class="muted">Switching restarts hands. The page waits while it does, and comes back once hands is back on the model.</p>
 
 <script>
 // The phone's key travels in the fragment, which the browser never sends with the page's own request.
@@ -68,6 +68,11 @@ function say(text, failed = false) {
 
 // A request hands does not answer within a minute is given up on by the page, not by hands: the choice may still be made.
 const ANSWER_MS = 60000;
+// How long the page waits to read hands again after a read that failed, or that found hands not back yet.
+const AGAIN_MS = 2000;
+// How long a restart has to bring hands back on the model chosen, the 90 s `hands restart` gives it
+// (hands.daemon.restart.BACK_WITHIN): past it, the page shows the model hands does answer on.
+const BACK_MS = 90000;
 
 async function call(method, path, body) {
   const init = { method, headers: { "Authorization": `Bearer ${key}` }, signal: AbortSignal.timeout(ANSWER_MS) };
@@ -104,29 +109,24 @@ function setBusy(value) {
   document.querySelectorAll("button, select").forEach(control => { control.disabled = value; });
 }
 
-// A choice that restarts hands is not refreshed after: the restart drops the connection the refresh would read on.
-async function act(path, body, readback, restarts = false) {
+// A choice, then hands' state read until `back` takes it: `back(result, state, waited)` is the line said once hands is
+// back after the choice, or undefined while it is not, and `waiting(result)` what is said meanwhile.
+async function act(path, body, back, waiting = () => "") {
   if (busy) return;
   setBusy(true);
-  let restarting = false;
+  let result;
   try {
-    const result = await call("POST", path, body);
-    say(readback(result));
-    // Once hands restarts, its controls stay off: the page is loaded again when it is back.
-    if (restarts) {
-      restarting = true;
-      return;
-    }
-    await refresh();
+    result = await call("POST", path, body);
   } catch (error) {
     say(error.message, true);
-  } finally {
-    if (!restarting) setBusy(false);
+    setBusy(false);
+    return;
   }
+  await settle((state, waited) => back(result, state, waited), waiting(result));
 }
 
 function render(state) {
-  // What was picked in the model list and not yet switched to is kept across a refresh.
+  // What was picked in the model list and not yet switched to is kept across a redraw.
   const pending = document.getElementById("model").value;
 
   document.getElementById("voices").replaceChildren(...state.voices.map(voice => {
@@ -165,8 +165,27 @@ function render(state) {
   }));
 }
 
-async function refresh() {
-  render(await call("GET", "/gallery/state"));
+// [LAW:single-enforcer] the page's one read of hands' state: read until hands answers one `back` takes, every failed read
+// said and made again, so a page whose hands restarted, or was down when it opened, comes back on its own with no reload.
+// `back(state, waited)` is the line said once it is taken, or undefined while hands is not back, `waiting` said meanwhile.
+async function settle(back, waiting) {
+  const began = performance.now();
+  for (;;) {
+    try {
+      const state = await call("GET", "/gallery/state");
+      const line = back(state, performance.now() - began);
+      if (line !== undefined) {
+        setBusy(false);
+        render(state);
+        say(line);
+        return;
+      }
+      say(waiting);
+    } catch (error) {
+      say(error instanceof TypeError ? "hands is out of reach; reading it again…" : `${error.message}; reading hands again…`, true);
+    }
+    await new Promise(done => setTimeout(done, AGAIN_MS));
+  }
 }
 
 // A library voice is named by its path there, which is what hands is told to speak in, so the path is shown whole.
@@ -199,13 +218,18 @@ document.getElementById("library-form").addEventListener("submit", event => {
 document.getElementById("model-form").addEventListener("submit", event => {
   event.preventDefault();
   const model = document.getElementById("model").value;
-  act("/gallery/model", { model }, result => `${result.said} Reload this page when hands is back.`, true);
+  // [LAW:one-source-of-truth] hands is back once its own state says it runs on the model switched to.
+  act("/gallery/model", { model }, (result, state, waited) =>
+    state.running_on === result.switching_to ? `hands is back, on ${result.switching_to}.`
+      : waited > BACK_MS ? `hands did not come back on ${result.switching_to}: it runs on ${state.running_on}, and \`hands log\` says why.`
+      : undefined,
+    result => `${result.said} The page reads hands again until it is back.`);
 });
 
 if (!key) {
   say("Open this page from the address `hands phone` prints, with gallery on its path.", true);
 } else {
-  refresh().catch(error => say(error.message, true));
+  settle(() => "", "");
 }
 </script>
 </body>

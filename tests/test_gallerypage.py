@@ -24,6 +24,7 @@ from hands.voice.trigger import described
 from hands.voice.voices import VOICES, Voice
 from hands.voice.wakeword import Pretrained
 from conftest import events
+from pagescript import Answered, Submit, Unreachable, run_page
 
 KEY = "the-phones-key"
 KEYED = {"Authorization": f"Bearer {KEY}"}
@@ -322,3 +323,40 @@ def test_the_routes_are_the_gallery_and_its_five_choices_and_a_read() -> None:
         "GET /gallery", "GET /gallery/state", "GET /gallery/library", "POST /gallery/hear", "POST /gallery/use",
         "POST /gallery/level", "POST /gallery/modality", "POST /gallery/model",
     ])
+
+
+async def _answered(page: Page, method: str, path: str, body: object | None = None) -> Answered:
+    response = await page.client.request(method, path, headers=KEYED, json=body)
+    return Answered(method, path, response.status, await response.text())
+
+
+@pytest.mark.outside
+async def test_a_model_switch_comes_back_on_its_own_once_hands_is_back_on_the_model(page: Page) -> None:
+    before = await _answered(page, "GET", "/gallery/state")
+    switched = await _answered(page, "POST", "/gallery/model", {"model": "claude-opus-5-5"})
+    # The run before it answers once more as it goes; the restart's own run answers on the model switched to.
+    page.own.running_on = "claude-opus-5-5"
+    after = await _answered(page, "GET", "/gallery/state")
+    opened, back = run_page("gallery.html", [before, switched, before, Unreachable("GET", "/gallery/state", times=3), after], [Submit("model-form", {"model": "claude-opus-5-5"})])
+    assert (opened.running, opened.disabled) == ("hands runs on claude-sonnet-5-5.", 0)
+    assert back.asked == ["POST /gallery/model", *["GET /gallery/state"] * 5]
+    assert (back.running, back.status, back.failed) == ("hands runs on claude-opus-5-5.", "hands is back, on claude-opus-5-5.", False)
+    assert back.controls == opened.controls and back.disabled == 0
+
+
+@pytest.mark.outside
+async def test_a_page_opened_while_hands_is_out_of_reach_reads_it_until_it_answers(page: Page) -> None:
+    state = await _answered(page, "GET", "/gallery/state")
+    [opened] = run_page("gallery.html", [Unreachable("GET", "/gallery/state", times=4), state], [])
+    assert (opened.running, opened.status, opened.disabled) == ("hands runs on claude-sonnet-5-5.", "", 0)
+    assert opened.controls > 0 and opened.at_ms == 4 * 2000
+
+
+@pytest.mark.outside
+async def test_a_switch_hands_never_comes_back_on_is_said_with_the_model_it_runs_on(page: Page) -> None:
+    before = await _answered(page, "GET", "/gallery/state")
+    switched = await _answered(page, "POST", "/gallery/model", {"model": "claude-opus-5-5"})
+    # Read every 2 s, the run before answers past the 90 s a restart has to come back in.
+    _, gave_up = run_page("gallery.html", [before, switched, Answered(before.method, before.path, before.status, before.body, times=47)], [Submit("model-form", {"model": "claude-opus-5-5"})])
+    assert gave_up.status == "hands did not come back on claude-opus-5-5: it runs on claude-sonnet-5-5, and `hands log` says why."
+    assert (gave_up.running, gave_up.disabled) == ("hands runs on claude-sonnet-5-5.", 0)
