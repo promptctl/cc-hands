@@ -94,17 +94,22 @@ class Sighted:
 
 async def sighted(clock: Clock, store: SummaryStore, project: Path) -> Sighted | tracker.Untracked:
     """The backlog in `project` read fresh with every summary already said of it, or that lit has no workspace there;
-    raises LitFailed when lit cannot say, and Rejected when what it said does not parse.
-
-    [LAW:one-source-of-truth] the one place a backlog read is a sighting, whoever reads it: what it finds unsaid is asked
-    for, to be said in the background, never while the read waits.
-    """
+    raises LitFailed when lit cannot say, and Rejected when what it said does not parse."""
     match await tracker.read_backlog(clock, project):
         case tracker.Untracked() as untracked:
             return untracked
         case backlog:
-            reckoning = store.reckon(backlog.thing())
-            # A thing waiting on its parts has a part due, so nothing due is nothing to say: no pass, and no export for it.
-            if reckoning.due:
-                store.want(project)
-            return Sighted(backlog, reckoning.said)
+            return sighting(store, project, backlog)
+
+
+def sighting(store: SummaryStore, project: Path, backlog: tracker.Backlog) -> Sighted:
+    """`backlog`, already read from `project`, with every summary already said of it.
+
+    [LAW:one-source-of-truth] the one place a backlog read to be shown is a sighting, whoever shows it: what it finds unsaid is asked
+    for, to be said in the background, never while the read waits.
+    """
+    reckoning = store.reckon(backlog.thing())
+    # A thing waiting on its parts has a part due, so nothing due is nothing to say: no pass, and no export for it.
+    if reckoning.due:
+        store.want(project)
+    return Sighted(backlog, reckoning.said)

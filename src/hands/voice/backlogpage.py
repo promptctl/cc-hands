@@ -7,30 +7,31 @@ from the address `hands phone` prints with `backlog?project=<directory>` on its 
 can reach the port; what it reads and moves is not: each request carries the phone's key, which the page takes from its
 address's fragment as the phone's page does.
 
-[LAW:one-source-of-truth] the order is lit's: every read is `lit export` run fresh, a drop is one `lit rank`, a level a
-`lit parent set` and the `lit rank` that puts the ticket last in its epic, after a `lit new` and its `lit rank` where the
-epic is made, and the page is answered with the backlog as lit holds it after. Nothing here keeps an order of its own,
-or which epic is which level.
+[LAW:one-source-of-truth] the order is lit's: every read is `lit export` run fresh; a drop is one `lit rank`; a level a
+`lit parent set` and the `lit rank` that puts the ticket last among its epic's open tickets, after a `lit new` and its
+`lit rank` where the epic is made; a note one `lit comment add`. Each write is settled by the backlog lit holds after
+it, and a drop is answered with that backlog. Nothing here keeps an order of its own, or which epic is which level.
 """
 
 import asyncio
 import getpass
 import json
 from collections import defaultdict
-from collections.abc import Awaitable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
 from importlib import resources
 from pathlib import Path
+from typing import Literal
 
 from aiohttp import web
 
 from hands.clock import Clock
 from hands.sessions.audit import Record
-from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
+from hands.sessions.backlog import LEVELS, Backlog, Level, LitFailed, LitNotStarted, Move, NewEpic, Person, Place, Standing, Status, Untracked, adopt, comment, make_epic, parse_level, rank, read_backlog
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.summaries import Sighted, SummaryStore, sighted
+from hands.voice.summaries import Sighted, SummaryStore, sighting
 
 
 def parse_project(query: str | None) -> Path:
@@ -92,9 +93,6 @@ def parse_note(body: bytes) -> tuple[Path, str, str]:
     except ValueError as error:
         raise Rejected(f"a note is JSON: {error}") from error
     match sent:
-        case {"ticket": str(ticket)} if ticket.startswith("-"):
-            # lit would read it as a flag: `--help` says its help and exits 0, keeping nothing.
-            raise Rejected(f"a note's ticket is a ticket's id, and {ticket!r} is a flag")
         case {"project": str(project), "ticket": str(ticket), "text": str(text)} if text.strip():
             return parse_project(project), ticket, text.strip()
         case _:
@@ -162,10 +160,13 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
     ticket into its topic's epic for it, and a note left on a ticket as a lit comment.
 
     [LAW:nothing-unseen] each read is one `backlog.read` event, how many open tickets it showed and how many of them had a
-    summary; each drop one `backlog.ranked`, which ticket was put where, whether lit ranked anything and what it said,
-    and what it showed after; each level one `backlog.leveled`, which ticket at which level, the epic it went into,
-    whether lit made that epic, ranked it, moved the ticket, and ranked it last there; each note one `backlog.noted`,
-    which ticket, how long, and whether lit kept it; each refused or failed says why.
+    summary; each drop one `backlog.ranked`, which ticket was put where, whether the backlog lit holds after has it
+    there, and what it showed after; each level one `backlog.leveled`, which ticket at which level, the epic it went
+    into, and whether the backlog lit holds after each write has the epic made, the epic ranked, the ticket in it, and
+    the ticket last there; each note one `backlog.noted`, which ticket, how long, and whether the backlog after has the
+    note. A write's fact is on the event once lit is asked for it, "unknown" until the read after settles it, and a
+    step the request never reached is not on it; each has what lit said of it beside it, as `<fact>_said`. Each refused
+    or failed says why.
     """
     page = resources.files("hands.voice").joinpath("backlog.html").read_text()
     # Every write from the page is a person's at the page, and lit signs it as the one hands runs as.
@@ -182,11 +183,14 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
             fail(str(error))
             return web.Response(status=400, text=str(error))
         annotate(project=project)
-        try:
-            return web.json_response(shown(await sighted(clock, store, project)))
-        except (LitFailed, Rejected) as error:
-            fail(f"cannot read the backlog: {error}")
-            return web.Response(status=502, text=f"the backlog in {project} could not be read: {error}")
+        match await _read(clock, project):
+            case Backlog() as backlog:
+                return web.json_response(shown(sighting(store, project, backlog)))
+            case Untracked() as untracked:
+                return web.json_response(shown(untracked))
+            case Unread(why=why):
+                fail(why)
+                return web.Response(status=502, text=why)
 
     # [LAW:no-ambient-temporal-coupling] the one owner of a project's lit writes from this page: a drop, a level, and a
     # note in it each run alone, a drop and a level from the read they are checked against to the read that shows them,
@@ -196,162 +200,75 @@ def backlog_routes(clock: Clock, store: SummaryStore, key: str, record: Record, 
 
     @keyed(clock, "backlog.ranked", record, key, counts=("tickets", "summarised"))
     async def ranked(request: web.Request) -> web.Response:
-        try:
-            project, ticket, place = parse_asked(await request.read())
-        except Rejected as error:
-            return _refused(400, f"not moved: {error}")
-        async with writing[project]:
-            return await _answered(ranking(project, ticket, place))
+        writes = Writes("not moved")
+        return await writes.answered(ranking(writes, await request.read()))
 
-    async def ranking(project: Path, ticket: str, place: Place) -> web.Response:
-        # [LAW:nothing-unseen] whether lit ranked anything, "no", "yes", or "unknown", is on the event however the drop ends.
-        annotate(project=project, ticket=ticket, place=place, ranked="no")
-        before = await _read(clock, project, f"not moved: the backlog in {project} could not be read", 404, f"not moved: {project} has no backlog to rank")
-        try:
-            move = before.move(ticket, place)
-        except Rejected as error:
-            raise Halted(400, f"not moved: {error}") from error
-        try:
-            said = await rank(clock, project, move, person)
-        except LitFailed as error:
-            raise _unwritten(error, "ranked", "not moved", f"whether lit ranked {ticket} {place} is not known") from error
-        annotate(ranked="yes", lit_said=said)
-        try:
-            after = await sighted(clock, store, project)
-        except (LitFailed, Rejected) as error:
-            raise Halted(502, f"lit ranked {ticket} as it was asked to go {place}, and the backlog could not be read again to show it: {error}") from error
-        match after:
-            case Untracked(why=why):
-                raise Halted(502, f"lit ranked {ticket} as it was asked to go {place}, and lit no longer tracks {project}: {why}")
-            case Sighted(backlog=backlog):
-                pass
-        # [LAW:no-silent-failure] the read after is the evidence: lit ranks the parent instead of a ticket another
-        # writer moved out of its frame meanwhile, and exits 0 all the same, saying what it ranked.
-        if not backlog.landed(move):
-            raise Halted(409, f"the backlog lit holds after the rank does not have {ticket} {place}: it changed while it was moved. lit said: {said}")
-        return web.json_response(shown(after))
+    async def ranking(writes: "Writes", body: bytes) -> web.Response:
+        project, ticket, place = parse_asked(body)
+        async with writing[project]:
+            annotate(project=project, ticket=ticket, place=place)
+            move = (await _before(clock, project)).move(ticket, place)
+            after, _ = await writes.settled(clock, project, rank(clock, project, move, person), _beside("ranked", move))
+            return web.json_response(shown(sighting(store, project, after)))
 
     @keyed(clock, "backlog.leveled", record, key)
     async def leveled(request: web.Request) -> web.Response:
-        try:
-            project, ticket, level = parse_leveling(await request.read())
-        except Rejected as error:
-            return _refused(400, f"not leveled: {error}")
-        async with writing[project]:
-            return await _answered(leveling(project, ticket, level))
+        writes = Writes("not leveled")
+        return await writes.answered(leveling(writes, await request.read()))
 
-    async def leveling(project: Path, ticket: str, level: Level) -> web.Response:
-        # [LAW:nothing-unseen] whether lit made an epic, ranked it, moved the ticket, and ranked it last in its epic, each
-        # "no", "yes", or "unknown", are on the event however the leveling ends.
-        annotate(project=project, ticket=ticket, level=level, created="no", ranked="no", moved="no", placed="no")
-        before = await _read(clock, project, f"not leveled: the backlog in {project} could not be read", 404, f"not leveled: {project} has no backlog to level")
-        try:
-            asked = before.leveling(ticket, level)
-        except Rejected as error:
-            raise Halted(400, f"not leveled: {error}") from error
-        # The ranks the read after must have: the new epic's among its topic's levels, where one is made, and the ticket's
-        # last in its epic.
-        ranks: tuple[Move, ...] = ()
-        match asked.epic:
-            case str(epic):
-                annotate(epic=epic)
-                unmoved, unknown = "not leveled", f"whether lit moved {ticket} into {epic} is not known"
-            case NewEpic(topic=topic, title=title, parent=frame, place=place) as new:
-                try:
-                    await make_epic(clock, project, new, person)
-                except LitFailed as error:
-                    raise _unwritten(error, "created", "not leveled", f"whether lit made the epic {title} is not known") from error
-                annotate(created="yes")
-                made = await _read(clock, project, f"not leveled: lit made the epic {title}, and the backlog could not be read again to rank it", 502, f"not leveled: lit made the epic {title}, and lit no longer tracks {project}")
-                found = made.level_epics(topic, frame).get(level)
-                if found is None:
-                    raise Halted(502, f"not leveled: lit made the epic {title}, and the backlog read after it does not hold it")
-                annotate(epic=found)
-                try:
-                    move = made.move(found, place)
-                except Rejected as error:
-                    raise Halted(409, f"not leveled: lit made {found}, {title}, at the bottom of its frame, and it cannot be ranked {place}: {error}") from error
-                epic = found
-                try:
-                    await rank(clock, project, move, person)
-                except LitFailed as error:
-                    raise _unwritten(
-                        error,
-                        "ranked",
-                        f"not leveled: lit made {epic}, {title}, and left it at the bottom of its frame, so {ticket} was not moved",
-                        f"not leveled: lit made {epic}, {title}, and whether it ranked it {place} or left it at the bottom of its frame is not known, so {ticket} was not moved",
-                    ) from error
-                annotate(ranked="yes")
-                ranks = (move,)
-                unmoved = f"not leveled: lit made {epic}, {title}, and ranked it {place}, and did not move {ticket} into it"
-                unknown = f"lit made {epic}, {title}, and ranked it {place}, and whether it moved {ticket} into it is not known"
-        try:
-            await adopt(clock, project, ticket, epic, person)
-        except LitFailed as error:
-            raise _unwritten(error, "moved", unmoved, unknown) from error
-        annotate(moved="yes")
-        # lit keeps a ticket's rank when it moves it, which falls anywhere among its new epic's: it is ranked below the
-        # last of the others, or left where it is when it is alone there.
-        moved = await _read(clock, project, f"lit moved {ticket} into {epic}, and the backlog could not be read again to rank it last there", 502, f"lit moved {ticket} into {epic}, and lit no longer tracks {project}")
-        others = [child for child in moved.open_children(epic) if child != ticket]
-        try:
-            lasts = tuple(moved.move(ticket, Place("below", other)) for other in others[-1:])
-        except Rejected as error:
-            raise Halted(409, f"lit moved {ticket} into {epic}, and it cannot be ranked last there: {error}") from error
-        for last in lasts:
-            try:
-                await rank(clock, project, last, person)
-            except LitFailed as error:
-                raise _unwritten(error, "placed", f"lit moved {ticket} into {epic}, and did not rank it last there", f"lit moved {ticket} into {epic}, and whether it ranked it last there is not known") from error
-            annotate(placed="yes")
-        ranks = (*ranks, *lasts)
-        after = await _read(clock, project, f"lit moved {ticket} into {epic}, and the backlog could not be read again to check it", 502, f"lit moved {ticket} into {epic}, and lit no longer tracks {project}")
-        # [LAW:no-silent-failure] the read after is the evidence, as a drop's is. The page drew the press when it was made
-        # and redraws nothing, so a leveling that holds is answered with nothing more.
-        if not (after.parent.get(ticket) == epic and after.open_children(epic)[-1:] == (ticket,) and all(after.landed(move) for move in ranks)):
-            raise Halted(409, f"the backlog lit holds after the leveling does not have {ticket} last in {epic} where it was put: it changed while it was leveled")
-        return web.Response(status=204)
+    async def leveling(writes: "Writes", body: bytes) -> web.Response:
+        project, ticket, level = parse_leveling(body)
+        async with writing[project]:
+            annotate(project=project, ticket=ticket, level=level)
+            now = await _before(clock, project)
+            match now.leveling(ticket, level).epic:
+                case str(epic):
+                    annotate(epic=epic)
+                    _landed("unneeded", "created", "ranked")
+                case NewEpic(topic=topic, title=title, parent=frame, place=place) as new:
+                    now, epic = await writes.settled(clock, project, make_epic(clock, project, new, person), Write("created", lambda backlog: backlog.level_epics(topic, frame).get(level), f"the epic {title}"))
+                    annotate(epic=epic)
+                    try:
+                        move = now.move(epic, place)
+                    except Rejected as error:
+                        raise Halted(409, f"lit made {epic}, {title}, at the bottom of its frame, and it cannot be ranked {place}: {error}") from error
+                    await writes.settled(clock, project, rank(clock, project, move, person), _beside("ranked", move))
+            now, _ = await writes.settled(clock, project, adopt(clock, project, ticket, epic, person), Write("moved", lambda backlog: epic if backlog.parent.get(ticket) == epic else None, f"{ticket} in {epic}"))
+            # lit keeps a ticket's rank when it moves it, which falls anywhere among its new epic's: it is ranked below
+            # the last of the others, unless it is the last there already, alone there included.
+            match now.open_children(epic):
+                case (*_, last) if last != ticket:
+                    below = now.move(ticket, Place("below", last))
+                    await writes.settled(clock, project, rank(clock, project, below, person), Write("placed", lambda backlog: ticket if backlog.open_children(epic)[-1:] == (ticket,) else None, f"{ticket} last in {epic}"))
+                case _:
+                    _landed("unneeded", "placed")
+            # The page drew the press when it was made and redraws nothing, so a leveling that holds is answered with nothing more.
+            return web.Response(status=204)
 
     @keyed(clock, "backlog.noted", record, key)
     async def noted(request: web.Request) -> web.Response:
-        try:
-            project, ticket, text = parse_note(await request.read())
-        except Rejected as error:
-            return _refused(400, f"not noted: {error}")
-        async with writing[project]:
-            return await _answered(noting(project, ticket, text))
+        writes = Writes("not noted")
+        return await writes.answered(noting(writes, await request.read()))
 
-    async def noting(project: Path, ticket: str, text: str) -> web.Response:
-        # [LAW:nothing-unseen] whether lit kept the note, "no", "yes", or "unknown", is on the event however it ends.
-        annotate(project=project, ticket=ticket, chars=len(text), noted="no")
-        try:
-            await comment(clock, project, ticket, text, person)
-        except LitFailed as error:
-            raise _unwritten(error, "noted", "not noted", f"whether lit kept the note on {ticket} is not known") from error
-        annotate(noted="yes")
-        return web.Response(status=204)
+    async def noting(writes: "Writes", body: bytes) -> web.Response:
+        project, ticket, text = parse_note(body)
+        async with writing[project]:
+            annotate(project=project, ticket=ticket, chars=len(text))
+            before = await _before(clock, project)
+            # [LAW:single-enforcer] also what keeps an id lit would read as its own flag, `--help`, from `lit comment add`,
+            # which takes no `--`: no ticket lit keeps is one.
+            if ticket not in before.kept:
+                raise Halted(404, f"lit holds no ticket {ticket} in {project}")
+            # The note is kept where the backlog after it holds one more of these words by the page's signer than before.
+            held = _notes(before, ticket, text, person.name)
+            await writes.settled(clock, project, comment(clock, project, ticket, text, person), Write("noted", lambda backlog: text if _notes(backlog, ticket, text, person.name) > held else None, f"the note on {ticket}"))
+            return web.Response(status=204)
 
     return [web.get("/backlog", page_served), web.get("/backlog/tickets", read), web.post("/backlog/rank", ranked), web.post("/backlog/level", leveled), web.post("/backlog/note", noted)]
 
 
-def _refused(status: int, why: str) -> web.Response:
-    """A drop's, a leveling's, or a note's answer when it did not end as asked: its event fails saying why, and the page is
-    told the same."""
-    fail(why)
-    return web.Response(status=status, text=why)
-
-
-async def _answered(write: Awaitable[web.Response]) -> web.Response:
-    """A drop's, a leveling's, or a note's answer: what `write` answers, or, where it halted, its status and words."""
-    try:
-        return await write
-    except Halted as halted:
-        return _refused(halted.status, halted.why)
-
-
 class Halted(Exception):
-    """A drop, a leveling, or a note that stopped short of what was asked: the status and the words its answer and its
-    event carry."""
+    """A drop, a leveling, or a note that did not end as asked: the status its answer carries, and why."""
 
     def __init__(self, status: int, why: str) -> None:
         super().__init__(why)
@@ -359,25 +276,121 @@ class Halted(Exception):
         self.why = why
 
 
-async def _read(clock: Clock, project: Path, unread: str, status: int, untracked: str) -> Backlog:
-    """The backlog in `project` read fresh before or partway through a write; raises Halted saying `unread` and lit's error when
-    it cannot be read, and `untracked` with `status` when it has no backlog, saying why."""
+@dataclass(frozen=True)
+class Unread:
+    """A backlog lit could not give, and why: lit failed, or what it said does not parse."""
+
+    why: str
+
+
+async def _read(clock: Clock, project: Path) -> Backlog | Untracked | Unread:
+    """The backlog in `project` read fresh, before a write or after one; each caller says what each answer is for it."""
     try:
-        read = await read_backlog(clock, project)
+        return await read_backlog(clock, project)
     except (LitFailed, Rejected) as error:
-        raise Halted(502, f"{unread}: {error}") from error
-    match read:
-        case Untracked():
-            raise Halted(status, f"{untracked}: {read.why}")
-        case Backlog():
-            return read
+        return Unread(f"the backlog in {project} could not be read: {error}")
 
 
-def _unwritten(error: LitFailed, fact: str, unchanged: str, unknown: str) -> Halted:
-    """A drop's, a leveling's, or a note's stop when a lit write in it failed: where lit is known to have written
-    nothing, the answer says `unchanged`; else it may have written first, so `fact` on the event is "unknown", and the
-    answer says `unknown` [LAW:no-silent-failure]."""
-    if error.wrote_nothing:
-        return Halted(502, f"{unchanged}: {error}")
-    annotate(**{fact: "unknown"})
-    return Halted(502, f"{unknown}: {error}")
+async def _before(clock: Clock, project: Path) -> Backlog:
+    """The backlog in `project` a write is checked against; raises Halted where lit holds none there or cannot give it."""
+    match await _read(clock, project):
+        case Backlog() as backlog:
+            return backlog
+        case Untracked(why=why):
+            raise Halted(404, f"{project} has no backlog: {why}")
+        case Unread(why=why):
+            raise Halted(502, why)
+
+
+# The lit writes a drop, a leveling, and a note make, each by the name of its fact on the event.
+Step = Literal["ranked", "created", "moved", "placed", "noted"]
+# Whether what a write asked for holds in the backlog read after it: "unknown" from when lit is asked until that read
+# settles it, and where it cannot; "unneeded" where the read before already had it.
+Landed = Literal["yes", "no", "unknown", "unneeded"]
+
+
+def _landed(landed: Landed, *steps: Step) -> None:
+    """Each of `steps` as `landed`, on the event of the unit of work open here."""
+    annotate(**dict.fromkeys(steps, landed))
+
+
+@dataclass(frozen=True)
+class Write[T]:
+    """One lit write in a drop, a leveling, or a note: its step, what `holds` proves of the backlog read after it where
+    what was asked holds there (None where it does not), and what was `asked`, as the answer says it."""
+
+    step: Step
+    holds: Callable[[Backlog], T | None]
+    asked: str
+
+
+def _beside(step: Step, move: Move) -> Write[Move]:
+    """A `lit rank`'s write: the backlog after it has the ticket directly beside its target."""
+    return Write(step, lambda backlog: move if backlog.landed(move) else None, f"{move.ticket} {move.place}")
+
+
+@dataclass
+class Writes:
+    """One drop's, leveling's, or note's lit writes, as each is asked and settled.
+
+    [LAW:single-enforcer] the one owner of what the request's event says of each write and of how its answer is worded:
+    a step is on the event once lit is asked for it, and not before, and its answer opens with `verb`, what was not
+    done, only while no lit has run for it, since a lit that ran may have written.
+    """
+
+    verb: str
+    ran: bool = False
+
+    async def answered(self, request: Awaitable[web.Response]) -> web.Response:
+        """What `request` answers, or, where it did not end as asked, why, on its event and to the page."""
+        try:
+            return await request
+        except Rejected as error:
+            status, why = 400, str(error)
+        except Halted as halted:
+            status, why = halted.status, halted.why
+        said = why if self.ran else f"{self.verb}: {why}"
+        fail(said)
+        return web.Response(status=status, text=said)
+
+    async def settled[T](self, clock: Clock, project: Path, lit: Awaitable[str], write: Write[T]) -> tuple[Backlog, T]:
+        """The backlog lit holds after `lit` made `write`, and what `write.holds` proves of it, and the step is "yes";
+        raises Halted where it does not hold there, and the step is "no", and where the backlog cannot be read again to
+        see, and the step stays "unknown" [LAW:no-silent-failure].
+
+        [LAW:one-source-of-truth] whether a write landed is read off the one backlog read after it, whatever lit's exit,
+        and the request goes on from that read. lit's reference (docs/cli-reference.md in links, "Every reason") says of
+        no failure that it comes before any write, its code 6 is a write that already holds, and lit exits 0 having
+        ranked the epic of a ticket another writer moved meanwhile. What lit said is on the event, and decides nothing.
+        """
+        # Asked, and so unknown until the read after settles it, however the request ends meanwhile: cancelled included.
+        _landed("unknown", write.step)
+        try:
+            said = f"lit exited 0: {await lit}"
+        except LitNotStarted as error:
+            # `_lit` raises it only where child.run could not spawn lit: no lit ran, so nothing was written, and no lit
+            # can run to read the backlog either. hands' own record, not lit's.
+            annotate(**{f"{write.step}_said": str(error)})
+            _landed("no", write.step)
+            raise Halted(502, str(error)) from error
+        except LitFailed as error:
+            said = str(error)
+        self.ran = True
+        annotate(**{f"{write.step}_said": said})
+        match await _read(clock, project):
+            case Backlog() as after if (proof := write.holds(after)) is not None:
+                _landed("yes", write.step)
+                return after, proof
+            case Backlog():
+                _landed("no", write.step)
+                raise Halted(409, f"the backlog lit holds after does not have {write.asked}; {said}")
+            case Untracked(why=why):
+                unseen = f"lit no longer tracks {project}: {why}"
+            case Unread(why=why):
+                unseen = why
+        raise Halted(502, f"whether lit holds {write.asked} is not known; {said}; and {unseen}")
+
+
+def _notes(backlog: Backlog, ticket: str, text: str, by: str) -> int:
+    """How many comments on `ticket` in `backlog` say exactly `text`, signed `by`."""
+    return sum(note.body == text and note.by == by for note in backlog.comments.get(ticket, ()))
