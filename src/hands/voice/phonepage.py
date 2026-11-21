@@ -145,8 +145,8 @@ class _Served:
     def __init__(self, own: tuple[Path, Path]) -> None:
         self.context = server_context(*own)
         self._tailnet: Tailnet | None = None
-        # How many times running Tailscale has refused with nothing served: the backoff's exponent.
-        self._refusals = 0
+        # The wait after the next refusal with nothing served: exponential backoff, doubling up to a day.
+        self._backoff = ASK_AGAIN_SECONDS
         self.context.sni_callback = self._chosen  # pyright: ignore[reportAttributeAccessIssue]  (typeshed types the callback for SSLSocket alone)
 
     def answered(self, answer: Tailnet | Untailed) -> float:
@@ -164,9 +164,9 @@ class _Served:
         match self._tailnet:
             case Tailnet(name=name, not_after=ends):
                 annotate(tailnet=name, tailnet_not_after=ends)
-                wait, self._refusals = RENEW_SECONDS, 0
+                wait, self._backoff = RENEW_SECONDS, ASK_AGAIN_SECONDS
             case None:
-                wait, self._refusals = min(ASK_AGAIN_SECONDS * 2**self._refusals, RENEW_SECONDS), self._refusals + 1
+                wait, self._backoff = self._backoff, min(self._backoff * 2, RENEW_SECONDS)
         annotate(asked_again_in=datetime.timedelta(seconds=wait))
         return wait
 
