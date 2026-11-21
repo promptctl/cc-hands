@@ -91,7 +91,7 @@
 </section>
 <audio id="out" autoplay playsinline></audio>
 <script type="module">
-import {asked, carriesKey, handsNow, reading, unanswered} from "/hands.js";
+import {asked, carriesKey, handsNow, reading} from "/hands.js";
 
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
@@ -517,7 +517,12 @@ stopButton.addEventListener("click", async () => {
   drawBrain();
   try {
     const outcome = await asked("POST", "/brain/stop", {turn: work.turn}, STOP_MS);
-    sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
+    // A Stop whose answer was lost may have reached hands all the same: the line above says whether the brain stopped.
+    switch (outcome.kind) {
+      case "answered": sayOfStop({text: outcome.body.readback, bad: false}); break;
+      case "refused": sayOfStop({text: `Could not stop it: ${outcome.text}`, bad: true}); break;
+      case "lost": sayOfStop({text: `Whether the brain stopped is not known: ${outcome.why}.`, bad: true}); break;
+    }
   } catch (error) {
     sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
   } finally {

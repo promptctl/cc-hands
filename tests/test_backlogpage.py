@@ -325,13 +325,17 @@ class Workspace:
         return [entry["id"] for entry in sorted(exported["issues"], key=lambda entry: entry["rank"]) if entry["id"] in ids]
 
 
-@pytest.fixture
-def workspace(tmp_path: Path) -> Workspace:
-    root = tmp_path / "project"
+def a_workspace(root: Path) -> Workspace:
+    """A git repository at `root`, made, with a lit workspace of its own."""
     root.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run([str(LIT), "init"], cwd=root, check=True, capture_output=True)
     return Workspace(root)
+
+
+@pytest.fixture
+def workspace(tmp_path: Path) -> Workspace:
+    return a_workspace(tmp_path / "project")
 
 
 def stub_lit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **before: str) -> None:
