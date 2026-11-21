@@ -479,6 +479,11 @@ working hands: `hands status` says only whether the daemon is running.
 `hands run` needs the Input Monitoring grant for the terminal app it runs in (System Settings > Privacy &
 Security > Input Monitoring) to hear Right Shift from other apps; without it, it names the grant and exits.
 
+A passing run proves timing only where the test sets the timing. Running a test over and over, or with every CPU
+busy, is load testing, and it is not done here: what it finds depends on the machine it runs on, and a row of passes
+gives confidence nothing earned. A race is shown by forcing its interleaving inside the test, a delay or a gate put
+into a fake at the step in question, and it is fixed when that forced test passes.
+
 `pytest` and `pyright` judge the code. The eval judges what a listener hears: it tells four
 real turns, lifted whole out of real transcripts, and checks that the facts are there, that
 no code name reached the ear, that what is spoken stays within its configured length, and

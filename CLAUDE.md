@@ -2,6 +2,7 @@
 
 - NO WORK PROCEEDS WITHOUT A LIT TICKET.  ALL TICKETS MUST BE IN AN EPIC
 - NO WORK PROCEEDS WHEN THERE ARE FAILING TESTS.   Create a ticket and fix the tests first.
+- Running the tests over and over, or with every CPU busy, is load testing and is not allowed: what it finds depends on the machine, and its passes are confidence nothing earned. A race is proven by forcing its interleaving in the test (a delay or gate in a fake at that step), never by a run of greens.
 - A test that fails and then passes on a re-run is a flake: it is never re-run until green. Quarantine it as docs/flakes.md says.
 - No work proceeds except on a fresh work tree.  the work tree is cleaned up when the ticket is finished.
 - master merges through a merge queue: merge a PR with `scripts/merge-pr.sh <pr>`, and its ticket closes only on that command's exit 0.
