@@ -122,11 +122,11 @@ class Configured:
     settings: Settings
 
 
-def configured_from(home: Home, settings: Settings, environment: Mapping[str, str]) -> Configured:
+def configured_from(home: Home, settings: Settings, environment: Mapping[str, str], clock: Clock) -> Configured:
     """The process boundary: the settings the run started on and the environment's secrets in, typed configuration out;
     CannotStart where hands cannot run on them."""
     try:
-        llm = backend(settings.config.llm, home, environment)
+        llm = backend(settings.config.llm, home, environment, clock)
     except Rejected as error:
         raise CannotStart(str(error)) from error
     return Configured(VoiceConfig(llm=llm, voice=_voice(home), personality=settings.config.personality, wake=settings.config.wake, devices=settings.config.devices), settings)

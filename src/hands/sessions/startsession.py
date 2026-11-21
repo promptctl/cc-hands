@@ -18,7 +18,7 @@ from hands.clock import Clock
 from hands.core.session import Membership, SessionId
 from hands.core.tmux import Unanswered
 from hands.sessions import audit, wide
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run
 from hands.sessions.home import Home
 from hands.sessions.terminals import Process, process_table
 from hands.sessions.tmux import ran_at, shown
@@ -167,10 +167,10 @@ async def _opened(clock: Clock, tmux: str, terminal: Mapping[str, str], name: st
     return False, _window(window)
 
 
-def _window(opened: Ran) -> _Window:
+def _window(opened: Exited) -> _Window:
     # The socket last: the one field that may hold a space. Every tmux hands runs on names it: #{socket_path} is 2.2's,
     # and the -f filters hands lists panes by are 3.2's.
-    pane, pid, socket = opened.out.decode().rstrip("\n").split(" ", 2)
+    pane, pid, socket = opened.out.rstrip("\n").split(" ", 2)
     return _Window(pane, int(pid), Path(socket))
 
 
@@ -183,11 +183,11 @@ async def _joined(clock: Clock, members: Callable[[], Iterable[Membership]], fol
         match await ran_at(clock, tmux, window.socket, ("list-panes", "-t", pane, "-f", f"#{{==:#{{pane_id}},{pane}}}", "-F", "#{pane_dead}")):
             case Unanswered(reason=reason):
                 raise NotStarted(f"whether `claude` in {folder} still runs in tmux pane {pane} could not be read: {reason}")
-            case Ran(returncode=returncode) if returncode != 0:
+            case Exited(returncode=returncode) if returncode != 0:
                 raise NotStarted(f"`claude` in {folder} ended before it joined hands, and its window closed with it")
-            case Ran(out=out) if out.strip() == b"1":
+            case Exited(out=out) if out.strip() == "1":
                 raise NotStarted(f"`claude` in {folder} ended before it joined hands; tmux pane {pane} showed:\n{await _shown(clock, terminal, window)}")
-            case Ran():
+            case Exited():
                 pass
         if clock.now() > deadline:
             raise NotStarted(f"`claude` in {folder} has not joined hands in {JOIN_SECONDS:.0f} seconds, and is still running in tmux pane {pane}, which shows:\n{await _shown(clock, terminal, window)}")
@@ -204,17 +204,20 @@ async def _shown(clock: Clock, terminal: Mapping[str, str], window: _Window) -> 
             return f"(tmux could not show it: {reason})"
 
 
-def _said(ran: Ran) -> str:
-    return ran.err.decode(errors="replace").strip()
+def _said(ran: Exited) -> str:
+    return ran.err.strip()
 
 
-async def _tmux(clock: Clock, tmux: str, terminal: Mapping[str, str], *arguments: str) -> Ran:
+async def _tmux(clock: Clock, tmux: str, terminal: Mapping[str, str], *arguments: str) -> Exited:
     # The terminal's environment: a tmux server this starts takes it as every window's, so it holds nothing of hands'.
     # The home the session reports to is given its window by name.
-    try:
-        return await run(tmux, *arguments, timeout=ANSWER_SECONDS, env=terminal, clock=clock)
-    except TimeoutError as error:
-        raise NotStarted(f"tmux {arguments[0]} did not answer in {ANSWER_SECONDS:.0f} seconds") from error
+    match await run(tmux, *arguments, timeout=ANSWER_SECONDS, env=terminal, clock=clock):
+        case Exited() as exited:
+            return exited
+        case TimedOut():
+            raise NotStarted(f"tmux {arguments[0]} did not answer in {ANSWER_SECONDS:.0f} seconds")
+        case NeverStarted(error=error):
+            raise NotStarted(f"{tmux} could not be run to {arguments[0]}: {error}") from error
 
 
 def _processes() -> dict[int, Process]:

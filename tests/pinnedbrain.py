@@ -35,7 +35,7 @@ from hands.sessions.home import Home
 from hands.sessions.proxy import Wire, serve_proxy
 from hands.sessions.summaries import Summaries
 from hands.sessions.tmux import ran_at
-from hands.sessions.child import Ran
+from hands.sessions.child import Exited
 from hands.brain.stage import BrainStage
 from hands.voice import voices
 from hands.voice.backends import Account, ClaudeCodeBackend
@@ -205,7 +205,7 @@ class Hands:
         pane, and the pane's fritter forwards them to Claude Code byte for byte."""
         claude = self._claude()
         ran = await ran_at(SYSTEM, claude._tmux, claude._socket, command)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType, reportPrivateUsage]
-        assert isinstance(ran, Ran) and ran.returncode == 0, ran
+        assert isinstance(ran, Exited) and ran.returncode == 0, ran
 
     async def keyed(self, *keys: str) -> None:
         """`keys`, as tmux's send-keys names them, typed into the brain's pane."""

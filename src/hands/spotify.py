@@ -13,7 +13,7 @@ from typing import Literal, cast
 import aiohttp
 
 from hands.clock import Clock
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Ended, Exited, NeverStarted, TimedOut, run
 from hands.sessions.wide import annotate
 
 # osascript answers in a fraction of a second once Spotify is up; starting Spotify to play takes some seconds.
@@ -50,10 +50,10 @@ class Refused(Exception):
     """Spotify, or macOS on its behalf, did not do what it was told; the message says why in words for the user."""
 
 
-type Tell = Callable[[Sequence[str], Sequence[str]], Awaitable[Ran]]
+type Tell = Callable[[Sequence[str], Sequence[str]], Awaitable[Ended]]
 
 
-async def osascript(clock: Clock, script: Sequence[str], argv: Sequence[str]) -> Ran:
+async def osascript(clock: Clock, script: Sequence[str], argv: Sequence[str]) -> Ended:
     # Every value goes in as an argument, never spliced into the script, so nothing in it needs quoting.
     return await run("osascript", *(part for line in script for part in ("-e", line)), "--", *argv, timeout=TELL_SECONDS, clock=clock)
 
@@ -136,18 +136,17 @@ class Player:
             raise Refused("Spotify is not running")
 
     async def _run(self, script: Sequence[str], argv: Sequence[str]) -> str:
-        try:
-            ran = await self._tell(script, argv)
-        except TimeoutError as error:
-            raise Refused(f"Spotify did not answer in {TELL_SECONDS:.0f}s") from error
-        except OSError as error:
-            raise Refused(f"osascript could not start: {error}") from error
-        if ran.returncode != 0:
-            err = ran.err.decode().strip()
-            if _NOT_PERMITTED in err:
+        match await self._tell(script, argv):
+            case Exited(returncode=0, out=out):
+                return out.strip()
+            case Exited(err=err) if _NOT_PERMITTED in err:
                 raise Refused("macOS has not let hands control Spotify: allow it under System Settings, Privacy & Security, Automation")
-            raise Refused(f"Spotify refused: {err}")
-        return ran.out.decode().strip()
+            case Exited(err=err):
+                raise Refused(f"Spotify refused: {err.strip()}")
+            case TimedOut():
+                raise Refused(f"Spotify did not answer in {TELL_SECONDS:.0f}s")
+            case NeverStarted(error=error):
+                raise Refused(f"osascript could not start: {error}") from error
 
 
 @dataclass(frozen=True)

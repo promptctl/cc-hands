@@ -11,7 +11,6 @@ import os
 import pty
 import re
 import struct
-import subprocess
 import termios
 import threading
 from collections.abc import Mapping, Sequence
@@ -19,7 +18,7 @@ from pathlib import Path
 
 from hands.clock import Clock
 from hands.core.session import ESCAPES
-from hands.sessions.child import Child, reaped
+from hands.sessions.child import Child, reaped, start
 
 # The terminal a Claude Code of hands' own draws on. Nobody looks at it; it is sized so a long line is not wrapped into many.
 ROWS, COLS = 50, 200
@@ -109,15 +108,7 @@ async def on_terminal(clock: Clock, argv: Sequence[str], cwd: Path, environment:
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         # Not asyncio's subprocesses, for the reason `hands.sessions.child.Child` gives.
-        process = subprocess.Popen(
-            _holding_terminal(os.ttyname(slave), argv),
-            cwd=cwd,
-            env={**environment, "TERM": "xterm-256color"},
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
+        process = start(_holding_terminal(os.ttyname(slave), argv), cwd=cwd, env={**environment, "TERM": "xterm-256color"}, stdin=slave, stdout=slave, stderr=slave)
     except BaseException:
         os.close(master)
         raise

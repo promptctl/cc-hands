@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 from hands.clock import Clock
-from hands.sessions.child import run
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run
 from hands.sessions.home import Home
 from hands.sessions.payload import Rejected
 
@@ -61,7 +61,7 @@ async def tailnet_name(clock: Clock) -> str | Untailed:
     match status:
         case Untailed():
             return status
-        case bytes():
+        case str():
             pass
     try:
         described: object = json.loads(status)
@@ -77,7 +77,7 @@ async def tailnet_name(clock: Clock) -> str | Untailed:
         case {"BackendState": str(state)}:
             return Untailed(f"Tailscale is not connected to the tailnet: its state is {state}")
         case _:
-            return Untailed(f"tailscale status said no state of its own: {status[:200].decode(errors='replace')}")
+            return Untailed(f"tailscale status said no state of its own: {status[:200]}")
 
 
 async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
@@ -95,7 +95,7 @@ async def tailnet(clock: Clock, home: Home) -> Tailnet | Untailed:
     match issued:
         case Untailed():
             return issued
-        case bytes():
+        case str():
             pass
     # [LAW:parse-dont-validate] a Tailnet is a pair that has loaded: one Tailscale wrote torn, or out of step, is Untailed.
     # Tailscale writes these files only when hands asks it to, so the chain loaded and the one read are the same.
@@ -119,23 +119,23 @@ def not_after(cert: bytes) -> datetime.datetime:
     return x509.load_pem_x509_certificate(cert).not_valid_after_utc
 
 
-async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> bytes | Untailed:
+async def _tailscale(clock: Clock, subcommand: str, *arguments: str) -> str | Untailed:
     """What `tailscale subcommand` said, or why it said nothing."""
     # [LAW:one-source-of-truth] the one place the command is found: every asking runs the same tailscale.
     command = shutil.which("tailscale")
     if command is None:
         return Untailed("the tailscale command is not on the PATH")
     asked = f"tailscale {subcommand}"
-    try:
-        # [LAW:single-enforcer] ended as `run` ends each child it runs: killed and reaped on a timeout, and on a shutdown.
-        ran = await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=clock)
-    except TimeoutError:
-        return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
-    except OSError as error:
-        return Untailed(f"cannot run {asked}: {error}")
-    if ran.returncode != 0:
-        return Untailed(f"{asked} failed ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
-    return ran.out
+    # [LAW:single-enforcer] ended as `run` ends each child it runs: killed and reaped on a timeout, and on a shutdown.
+    match await run(command, subcommand, *arguments, timeout=TAILSCALE_TIMEOUT_SECONDS, clock=clock):
+        case Exited(returncode=0, out=out):
+            return out
+        case Exited(returncode=code, err=err):
+            return Untailed(f"{asked} failed ({code}): {err.strip()}")
+        case TimedOut():
+            return Untailed(f"{asked} took over {TAILSCALE_TIMEOUT_SECONDS:.0f}s")
+        case NeverStarted(error=error):
+            return Untailed(f"cannot run {asked}: {error}")
 
 
 def _private(clock: Clock, path: Path, data: bytes) -> Path:

@@ -16,12 +16,12 @@ from hands.clock import Clock
 from hands.core.effects import Command, Input, Key, Text
 from hands.core.session import Keystroke
 from hands.core.tmux import InPane, Keyboard, Listed, Pane, PaneUnread, Server, Unanswered, keyboard_of, pane_of
-from hands.sessions.child import Ran, run
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run
 from hands.sessions.terminals import Process, Undescribed, ancestor_terminals, ancestors, directory_of, environment_of, front_terminal, process_table
 
 # What tmux says, on stderr, for a socket no server listens on any more, as a server that exited leaves behind, and
 # for one that is gone; never "error connecting to" for any other reason, as a path too long for a socket.
-_NO_SERVER = re.compile(rb"no server running on |error connecting to .* \(No such file or directory\)$")
+_NO_SERVER = re.compile(r"no server running on |error connecting to .* \(No such file or directory\)$")
 # $TMUX as tmux sets it in a pane: its server's socket, the server's pid, and the session's index.
 _TMUX = re.compile(r"(?P<socket>.+),(?P<server>\d+),\d+")
 # How long a server has to answer: one that does not is wedged.
@@ -114,12 +114,12 @@ def socket_directory(environment: Mapping[str, str]) -> Path:
 
 async def _answer(clock: Clock, tmux: str, socket: Path, arguments: Sequence[str]) -> Answer:
     match await ran_at(clock, tmux, socket, arguments):
-        case Ran(returncode=0, out=out):
-            return Answered(socket, out.decode().splitlines())
-        case Ran(err=err) if _NO_SERVER.match(err):
+        case Exited(returncode=0, out=out):
+            return Answered(socket, out.splitlines())
+        case Exited(err=err) if _NO_SERVER.match(err):
             return Answered(socket, ())
-        case Ran(err=err):
-            return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {err.decode(errors='replace').strip()}")
+        case Exited(err=err):
+            return Unanswered(f"tmux at {socket} did not answer {arguments[0]}: {err.strip()}")
         case Unanswered() as unanswered:
             return unanswered
 
@@ -148,10 +148,10 @@ async def styled(clock: Clock, tmux: str, socket: Path, pane: str) -> str | Unan
 async def _capture(clock: Clock, tmux: str, socket: Path, pane: str, how: tuple[str, ...]) -> str | Unanswered:
     # [LAW:no-silent-failure] a server gone since the pane was named is said, never read as a blank screen.
     match await ran_at(clock, tmux, socket, ("capture-pane", *how, "-t", pane)):
-        case Ran(returncode=0, out=out):
-            return out.decode(errors="replace").rstrip()
-        case Ran(err=err):
-            return Unanswered(f"tmux at {socket} did not show pane {pane}: {err.decode(errors='replace').strip()}")
+        case Exited(returncode=0, out=out):
+            return out.rstrip()
+        case Exited(err=err):
+            return Unanswered(f"tmux at {socket} did not show pane {pane}: {err.strip()}")
         case Unanswered() as unanswered:
             return unanswered
 
@@ -173,11 +173,11 @@ async def typed(clock: Clock, environment: Mapping[str, str], pane: Pane, input:
         pasted.write(_pasted(input))
         pasted.close()
         match await ran_at(clock, tmux, pane.socket, _typing(pane.id, input, buffer, pasted.name)):
-            case Ran(returncode=0):
+            case Exited(returncode=0):
                 await clock.sleep(_quiet(input))
                 return None
-            case Ran(err=err):
-                return Unanswered(f"tmux at {pane.socket} did not type into pane {pane.id}: {err.decode(errors='replace').strip()}")
+            case Exited(err=err):
+                return Unanswered(f"tmux at {pane.socket} did not type into pane {pane.id}: {err.strip()}")
             case Unanswered() as unanswered:
                 return unanswered
 
@@ -244,14 +244,15 @@ KEYS: Mapping[Keystroke, str] = {
 }
 
 
-async def ran_at(clock: Clock, tmux: str, socket: Path, arguments: Sequence[str]) -> Ran | Unanswered:
+async def ran_at(clock: Clock, tmux: str, socket: Path, arguments: Sequence[str]) -> Exited | Unanswered:
     """How the tmux server at `socket` exited from `arguments`, or why it gave no answer: wedged, or `tmux` not run."""
-    try:
-        return await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS, clock=clock)
-    except TimeoutError:
-        return Unanswered(f"tmux at {socket} did not answer {arguments[0]} in {ANSWER_SECONDS:.0f} seconds")
-    except OSError as error:
-        return Unanswered(f"{tmux} could not be run to ask tmux at {socket}: {error}")
+    match await run(tmux, "-S", str(socket), *arguments, timeout=ANSWER_SECONDS, clock=clock):
+        case Exited() as exited:
+            return exited
+        case TimedOut():
+            return Unanswered(f"tmux at {socket} did not answer {arguments[0]} in {ANSWER_SECONDS:.0f} seconds")
+        case NeverStarted(error=error):
+            return Unanswered(f"{tmux} could not be run to ask tmux at {socket}: {error}")
 
 
 async def panes(clock: Clock, pids: Sequence[int], environment: Mapping[str, str]) -> list[InPane]:

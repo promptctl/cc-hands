@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TextIO, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, TextIO, cast
 
 from loguru import logger
 
@@ -204,6 +204,10 @@ def entry() -> int:
     return main()
 
 
+def _exiting(number: int, _: object) -> NoReturn:
+    raise SystemExit(128 + number)
+
+
 # [LAW:effects-at-boundaries] the one clock every command reads time, ids, and randomness from, bound here alone.
 def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     parser = argparse.ArgumentParser(prog="hands")
@@ -236,11 +240,16 @@ def main(argv: Sequence[str] | None = None, clock: Clock = SYSTEM) -> int:
     recalling.add_argument("words", nargs="*", help="words every moment printed holds, in any case")
     recalling.add_argument("-n", "--most", type=int, default=20, help="how many of the newest matching moments to print")
     arguments = parser.parse_args(argv)
+    # [LAW:single-enforcer] a hangup or a kill ends a command as Ctrl-C does, through Python's exit, which kills every
+    # child it is waiting on (hands.sessions.child); their default action ends it with none of that, the children left
+    # running. A run's loop takes both over as its stop.
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, _exiting)
     # [LAW:no-ambient-temporal-coupling] before any command reads the configuration, which may fetch a library voice: the
     # token a command needs is in the process's environment by then. After parsing, so --help and --version read nothing.
     from hands.voice.library import hub_token
 
-    token = hub_token(os.environ)
+    token = hub_token(os.environ, clock)
     if token is not None:
         os.environ["HF_TOKEN"] = token
     try:
@@ -546,7 +555,7 @@ def run_here(clock: Clock, home: Home, restarted: int | None, after_crash: bool,
     exports = Exports(audit_log.record, clock)
     with exporting(settings.config.collector, exports.record, clock) as exported:
         record = told_on_terminal(exported)
-        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, home), settings, clock), record, run_start, clock))
+        ending = asyncio.run(launch(lambda: loaded(clock, home, settings, heart, record, exports.degraded, after_crash, run_start), heart, exports.degraded, lambda: edited(home, record, partial(reachable, clock, home), settings, clock), record, run_start, clock))
     return ending, shown
 
 
@@ -624,11 +633,11 @@ async def launch(
             loop.remove_signal_handler(signal_number)
 
 
-def reachable(home: Home, settings: Config) -> None:
+def reachable(clock: Clock, home: Home, settings: Config) -> None:
     """Raises Rejected where a start on `settings` could not reach its model: the start's own check, made before the
     restart an edit asks for, so an edit hands could not start on, its brain logged out among them, is refused and
     outlived, not restarted on."""
-    backend(settings.llm, home, os.environ)
+    backend(settings.llm, home, os.environ, clock)
 
 
 def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart, record: audit.Record, degraded: Callable[[], tuple[heartbeat.Degradation, ...]], after_crash: bool, run_start: Start) -> Run:
@@ -651,9 +660,9 @@ def loaded(clock: Clock, home: Home, settings: Settings, heart: heartbeat.Heart,
             case CannotStart() as error:
                 # Refused on its backend or on its kept voice: the reason names which, so the line claims neither.
                 reached = readiness.Missing("hands cannot start on its settings", "hands cannot start on its settings", str(error))
-        survey(readiness.check(home, path, True, reached, running, partial(keyboards, clock)))
+        survey(readiness.check(home, path, True, reached, running, partial(keyboards, clock), clock))
 
-    return lambda stop: run(lambda environment: configured_from(home, settings, environment), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, home)), clock)
+    return lambda stop: run(lambda environment: configured_from(home, settings, environment, clock), surveyed, home, heart, record, degraded, stop, after_crash, os.environ, run_start, OwnModel(home, settings, partial(reachable, clock, home)), clock)
 
 
 def start_indicator(home: Home) -> int:
@@ -663,7 +672,7 @@ def start_indicator(home: Home) -> int:
     # Its output shares this terminal, so an indicator that fails is seen where the daemon's own failures are. A restart
     # keeps the pid, so the indicator stays a child of the run after it, which ends it by that pid (retire).
     argv = invocation(home, "indicator", "--parent", str(os.getpid()))
-    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)
+    return os.posix_spawn(sys.executable, argv, os.environ, file_actions=[(os.POSIX_SPAWN_OPEN, 0, os.devnull, os.O_RDONLY, 0)], setsid=True)  # owner: the indicator, and retire
 
 
 # What became of the indicator the run before a restart showed: ended as this run asked, killed by it once it had not
@@ -756,8 +765,8 @@ def show_segment(clock: Clock, home: Home) -> int:
 
 
 def check(clock: Clock, home: Home, granted: bool, verbose: bool) -> exits.Exit:
-    reached = readiness.configured(home, os.environ)
-    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(keyboards, clock))
+    reached = readiness.configured(home, os.environ, clock)
+    findings = readiness.check(home, os.environ.get("PATH", ""), granted, reached, readiness.daemon(home, clock.wall()), partial(keyboards, clock), clock)
     wide.annotate(findings=tuple(findings))
     print(checklist(findings, verbose))
     missing = [finding for finding in findings if isinstance(finding, readiness.Missing)]
@@ -860,7 +869,7 @@ def updated(clock: Clock, home: Home) -> exits.Exit:
             runs_from = None
     wide.annotate(runs_from=None if runs_from is None else str(runs_from))
     with tempfile.TemporaryDirectory(prefix="hands-update-") as work:
-        installed = update.install(home, prefix, runs_from, os.environ, Path(work), update.run)
+        installed = update.install(home, prefix, runs_from, os.environ, Path(work), update.runner(clock))
     # [LAW:nothing-unseen] each step, the command it ran, and how it exited; the commit installed, or the step that failed.
     match installed:
         case update.Failed(step=step, said=why, ran=ran):
@@ -942,7 +951,7 @@ def login(clock: Clock, home: Home, method: "Method", record: audit.Record) -> e
         try:
             # Before any run of Claude Code on this home, so that none ever syncs the account's skills or plugins.
             wide.annotate(settings_written=starting_settings(home.brain))
-            signed = brain_login(home.brain, UPSTREAM, os.environ, method)
+            signed = brain_login(home.brain, UPSTREAM, os.environ, method, clock)
         except (LoginFailed, NotLoggedIn, Unstartable, OSError) as error:
             wide.fail(str(error))
             return refused("hands login", 1, str(error))

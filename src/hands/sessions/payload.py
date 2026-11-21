@@ -21,11 +21,11 @@ class Payload:
     fields: Mapping[str, object]
 
     @classmethod
-    def parse(cls, raw: bytes) -> Self:
+    def parse(cls, raw: str | bytes) -> Self:
         return cls.of(_decoded(raw), "the JSON")
 
     @classmethod
-    def parse_list(cls, raw: bytes, each: str) -> list[Self]:
+    def parse_list(cls, raw: str | bytes, each: str) -> list[Self]:
         """A JSON list of objects; `each` names one when it is not an object."""
         value = _decoded(raw)
         match value:
@@ -126,7 +126,7 @@ class Payload:
         return Rejected(f"field {key!r} should be {expected}, got {type(got).__name__}")
 
 
-def _decoded(raw: bytes) -> object:
+def _decoded(raw: str | bytes) -> object:
     try:
         return json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as error:

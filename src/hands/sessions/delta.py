@@ -28,7 +28,7 @@ from loguru import logger
 from hands.core.delta import Branched, Changed, Commit, Delta, PullRequested, Pushed
 from hands.core.session import SessionId
 from hands.sessions.audit import Record, said
-from hands.sessions.child import run, settled
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run, settled
 from hands.clock import Clock, wait
 from hands.sessions.hookconfig import POST_TIMEOUT_SECONDS
 from hands.sessions.wide import annotate, begun, count, unit
@@ -634,24 +634,29 @@ class Deltas:
         began = self._clock.now()
         if deadline <= began:
             return (), Asked("unanswered", 0.0)
-        try:
-            ran = await run(
-                gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=baseline.root,
-                env=self._inherited, clock=self._clock,
-            )
-        except TimeoutError:
-            return (), Asked("unanswered", round(self._clock.now() - began, 3))
+        ended = await run(
+            gh, "pr", "list", "--head", branch, "--author", "@me", "--state", "all", "--json", "number,url,createdAt", timeout=deadline - began, cwd=baseline.root,
+            env=self._inherited, clock=self._clock,
+        )
         took = round(self._clock.now() - began, 3)
-        if ran.returncode != 0:
-            # Not a GitHub remote, not signed in, no default repository: gh says which.
-            logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: {ran.err.decode(errors='replace').strip()}")
-            return (), Asked("refused", took)
+        match ended:
+            case Exited(returncode=0, out=out):
+                pass
+            case Exited(err=err):
+                # Not a GitHub remote, not signed in, no default repository: gh says which.
+                logger.info(f"gh would not list the pull requests of {branch} in {baseline.root}: {err.strip()}")
+                return (), Asked("refused", took)
+            case TimedOut():
+                return (), Asked("unanswered", took)
+            case NeverStarted(error=error):
+                logger.warning(f"{gh} could not be run to list the pull requests of {branch} in {baseline.root}: {error}")
+                return (), Asked("refused", took)
         # The forge stamps to the second, so a pull request opened in the second the baseline was taken is still since it; and
         # on its own clock, so one opened as the turn ended is still before its end on a forge's clock SKEW ahead.
         since = baseline.at.replace(microsecond=0)
         until += SKEW
         try:
-            listed: object = json.loads(ran.out)
+            listed: object = json.loads(out)
         except ValueError as error:
             logger.warning(f"gh said something about the pull requests of {branch} that is not JSON, so none is told: {error}")
             return (), Asked("refused", took)
@@ -705,23 +710,21 @@ class Deltas:
             count(git_unanswered=1)
             logger.warning(f"there was no time left to run git {args[0]} in {cwd}, so the turn is told without it")
             return None
-        try:
-            ran = await run(
-                "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
-                clock=self._clock,
-            )
-        except TimeoutError:
-            count(git_unanswered=1)
-            logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
-            return None
-        except OSError as error:
-            count(git_unanswered=1)
-            logger.error(f"cannot run git in {cwd}: {error}")
-            return None
-        if ran.returncode != 0:
-            logger.debug(f"git {args[0]} in {cwd}: {ran.err.decode(errors='replace').strip()}")
-            return None
-        return ran.out.decode(errors="replace").strip()
+        match await run(
+            "git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**self._inherited, "GIT_OPTIONAL_LOCKS": "0", **(env or {})},
+            clock=self._clock,
+        ):
+            case Exited(returncode=0, out=out):
+                return out.strip()
+            case Exited(err=err):
+                logger.debug(f"git {args[0]} in {cwd}: {err.strip()}")
+            case TimedOut():
+                count(git_unanswered=1)
+                logger.error(f"git {args[0]} in {cwd} did not answer in {left:.1f}s, so the turn is told without it")
+            case NeverStarted(error=error):
+                count(git_unanswered=1)
+                logger.error(f"cannot run git in {cwd}: {error}")
+        return None
 
     async def _waited(self, captures: Collection[Capture], deadline: float) -> float:
         """How long a turn's start waited on the captures under way as it began: until every one was over, or the deadline.

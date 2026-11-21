@@ -15,7 +15,7 @@ from typing import Literal, NoReturn
 
 from hands.clock import Clock
 from hands.daemon.restart import RESTART_SIGNAL
-from hands.sessions import heartbeat
+from hands.sessions import child, heartbeat
 from hands.sessions.home import Home
 from hands.sessions import wide
 from hands.sessions.wide import Fact, WideEvent, begun
@@ -231,15 +231,17 @@ def invocation(home: Home, *arguments: str) -> list[str]:
 
 
 def execv(argv: list[str]) -> NoReturn:
-    """Start the run again as `argv`, in this process: the same pid, terminal, and children, with the code on disk now.
+    """Start the run again as `argv`, in this process: the same pid, terminal, and indicator, with the code on disk now.
     The start after it says it was restarted.
 
     [LAW:one-source-of-truth] the pid stays the run's, so the menu-bar indicator watching it waits out the start until
     the run after ends it for its own, and the sessions a run lists are read again from the home, where they outlive any one run.
     """
-    # exec replaces the process without running Python's exit: what is buffered for the terminal is written first.
+    # exec replaces the process without running Python's exit: what is buffered for the terminal is written first, and
+    # every child still running is killed, as the exit would.
     sys.stdout.flush()
     sys.stderr.flush()
+    child.sweep()
     os.execv(argv[0], argv)
 
 

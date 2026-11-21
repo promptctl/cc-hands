@@ -36,7 +36,6 @@ not restarted, so the running hands goes on as it was and never restarts onto a 
 """
 
 import re
-import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
@@ -45,10 +44,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
+from hands.clock import Clock
 from hands.daemon import readiness
 from hands.daemon.starting import invocation
 from hands.sessions.home import Home
 from hands.sessions.hookconfig import PLUGIN_ID
+from hands.sessions.child import Ended, Exited, NeverStarted, TimedOut, run_blocking, told
 from hands.sessions.payload import Rejected
 from hands.sessions.wrapper import Installing
 
@@ -57,10 +58,8 @@ BRANCH = "master"
 # The name `uv tool install` gives hands' environment in its tool directory: the package's.
 TOOL = "hands"
 COMMIT = re.compile(r"[0-9a-f]{40}")
-# The exit `run` gives a command that could not start.
-UNSTARTABLE = 127
-# Every exit but success, for a step that is said and gone past whichever way it fails.
-ANY_FAILURE = frozenset(range(1, 256))
+# A clone, an install, or the brain's ~230 MB download takes minutes; a step still running at this has hung.
+STEP_SECONDS = 900.0
 # The marketplace hands' plugin comes from, named by the plugin's own id.
 MARKETPLACE = PLUGIN_ID.partition("@")[2]
 # What `hands plugin` rendered its digest directories under, in the home: nothing writes or reads it any more, so its
@@ -122,25 +121,20 @@ class Step(StrEnum):
     RENDERED_PLUGINS = "rendered-plugins"
 
 
-@dataclass(frozen=True)
-class Done:
-    """What one command did: its exit code, what it printed to its output, and what to its errors."""
+# One command run in a directory and an environment, within a time limit, to how it ended.
+type Run = Callable[[Sequence[str], Path, Mapping[str, str], float], Ended]
 
-    code: int
-    output: str
-    errors: str
-
-
-type Run = Callable[[Sequence[str], Path, Mapping[str, str]], Done]
+# Which of a step's failures it says and goes on past, rather than stopping the update on.
+type Past = Callable[[Ended], bool]
 
 
 @dataclass(frozen=True)
 class Ran:
-    """One step as the update's event records it: the step, the command it ran, and its exit code."""
+    """One step as the update's event records it: the step, the command it ran, and how it ended, nothing it wrote."""
 
     step: Step
     argv: tuple[str, ...]
-    code: int
+    ended: str
 
 
 @dataclass(frozen=True)
@@ -205,26 +199,34 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
     def ending(name: Step, said: str) -> _Stopped:
         return _Stopped(Failed(name, said, tuple(ran)) if installed is None else Unfinished(*installed, name, said, tuple(ran)))
 
-    def step(name: Step, argv: Sequence[str], cwd: Path, past: frozenset[int] = frozenset(), env: Mapping[str, str] = caller) -> Done:
-        """What the step did; it stops the update on any exit but 0 and those in `past`, which it says and goes on past."""
-        done = run(argv, cwd, env)
-        ran.append(Ran(name, tuple(argv), done.code))
-        if done.code in past:
-            advised.append(Advised(name, done.errors.strip()))
-        elif done.code != 0:
-            raise ending(name, f"`{' '.join(argv)}` exited {done.code}:\n{done.errors}{done.output}")
-        return done
+    def step(name: Step, argv: Sequence[str], cwd: Path, past: Past = lambda _: False, env: Mapping[str, str] = caller, limit: float = STEP_SECONDS) -> str | None:
+        """What the step printed to its output, or None for a failure `past` says and goes on past; any other failure
+        stops the update."""
+        ended = run(argv, cwd, env, limit)
+        ran.append(Ran(name, tuple(argv), told(ended)))
+        match ended:
+            case Exited(returncode=0, out=out):
+                return out
+            case _ if past(ended):
+                advised.append(Advised(name, errors(ended).strip()))
+                return None
+            case _:
+                raise ending(name, f"`{' '.join(argv)}` {told(ended)}:\n{errors(ended)}{printed(ended)}")
+
+    def output(name: Step, argv: Sequence[str], cwd: Path) -> str:
+        # A step with nothing gone past either printed its output or stopped the update.
+        return cast(str, step(name, argv, cwd))
 
     def commit(cwd: Path, of: str) -> str:
         # [LAW:parse-dont-validate] the commit as git names it, or the step fails saying what git printed instead.
-        sha = step(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).output.strip()
+        sha = output(Step.COMMIT, ("git", "rev-parse", "--verify", "HEAD^{commit}"), cwd).strip()
         if not COMMIT.fullmatch(sha):
             raise ending(Step.COMMIT, f"git named the commit {of} is at as {sha!r}, not a commit's 40 hex digits")
         return sha
 
     clone, constraints = work / "cc-hands", work / "constraints.txt"
     try:
-        tool = Path(step(Step.WHERE, ("uv", "tool", "dir"), work).output.strip()) / TOOL
+        tool = Path(output(Step.WHERE, ("uv", "tool", "dir"), work).strip()) / TOOL
         target = parse_target(prefix, tool)
         if isinstance(target, Unsupported):
             raise ending(Step.WHERE, f"this hands runs from {prefix}, which is neither {tool}, the uv tool environment the update installs master into, nor the .venv of a checkout of hands, so a restart would not run what it updated: run `hands update` with the hands `uv tool install` put on PATH, or from a checkout's own .venv")
@@ -247,20 +249,21 @@ def install(home: Home, prefix: Path, runs_from: Path | None, caller: Mapping[st
                 installed = (target, sha)
                 step(Step.SYNC, ("uv", "sync", "--locked", "--reinstall-package", TOOL), root)
         # Run by the interpreter the install just filled, so each is the target's own command.
-        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, frozenset({Installing.UNFOUND}))
+        step(Step.INSTALL_FRITTER, invocation(home, "install-fritter"), work, lambda ended: isinstance(ended, Exited) and ended.returncode == Installing.UNFOUND)
         step(Step.INSTALL_BRAIN, invocation(home, "install-brain"), work)
         # [LAW:one-source-of-truth] hands check's own command, environment, and reading of the list: the plugin is
         # installed for the user or it is not; no claude at all is no plugin.
         under = readiness.plugin_environment(home, caller)
-        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, frozenset({UNSTARTABLE}), under)
+        listing = step(Step.PLUGIN_LIST, readiness.PLUGIN_LIST, work, lambda ended: isinstance(ended, NeverStarted), under, readiness.LIST_TIMEOUT_SECONDS)
         try:
-            held = listing.code != UNSTARTABLE and bool(readiness.installed_everywhere(listing.output))
+            held = listing is not None and bool(readiness.installed_everywhere(listing))
         except Rejected as error:
             raise ending(Step.PLUGIN_LIST, f"`claude plugin list --json` printed what hands cannot read: {error}") from None
         if held:
             step(Step.MARKETPLACE, ("claude", "plugin", "marketplace", "update", MARKETPLACE), work, env=under)
             step(Step.PLUGIN, ("claude", "plugin", "update", PLUGIN_ID, "--scope", "user"), work, env=under)
-        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, ANY_FAILURE)
+        # Said and gone past however rm exits, a signal's death among them; one that never ends stops the update.
+        step(Step.RENDERED_PLUGINS, ("rm", "-rf", str(home.root / RENDERED)), work, lambda ended: isinstance(ended, Exited))
     except _Stopped as stopped:
         return stopped.stopped
     return Installed(target, sha, tuple(ran), tuple(advised))
@@ -271,22 +274,31 @@ def made_from() -> str:
     return cast(str, getattr(sys, "_base_executable"))
 
 
-def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> Done:
-    """Run `argv` in `cwd`, with nothing to read and no terminal to ask on, and what it did."""
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
-            env={**env, "GIT_TERMINAL_PROMPT": "0"},
-            stdin=subprocess.DEVNULL,
-            # Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning
-            # on its errors is no part of that.
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-    except OSError as error:
-        # [LAW:no-silent-failure] a command that could not start, uv or git missing, is the step failing with why.
-        return Done(UNSTARTABLE, "", str(error))
-    return Done(completed.returncode, completed.stdout, completed.stderr)
+def runner(clock: Clock) -> Run:
+    """Each command run with nothing to read and no terminal to ask on, within its limit on `clock`."""
+
+    def run(argv: Sequence[str], cwd: Path, env: Mapping[str, str], limit: float) -> Ended:
+        # git asks for a login on the terminal when a fetch is refused; the brain's has nobody at it.
+        return run_blocking(*argv, timeout=limit, cwd=cwd, env={**env, "GIT_TERMINAL_PROMPT": "0"}, clock=clock)
+
+    return run
+
+
+# Apart: what a command prints to its output is what the update reads, a path or a commit, and a warning on its errors
+# is no part of that.
+def errors(ended: Ended) -> str:
+    """What a step printed to its errors, or why it never ran."""
+    match ended:
+        case Exited(err=err) | TimedOut(err=err):
+            return err
+        case NeverStarted(error=error):
+            return str(error)
+
+
+def printed(ended: Ended) -> str:
+    """What a step printed to its output; none, for one that never ran."""
+    match ended:
+        case Exited(out=out) | TimedOut(out=out):
+            return out
+        case NeverStarted():
+            return ""

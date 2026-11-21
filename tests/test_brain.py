@@ -1175,7 +1175,7 @@ async def test_the_brain_runs_in_a_tmux_session_of_its_own_on_the_default_server
         session = brain_session(tmp_path / "brain")
         assert session.startswith("hands-brain-")
         # The pane runs the brain's fritter, which a person attached to it watches and types into.
-        assert _child_of(int(tmux_at("display-message", "-p", "-t", f"={session}:", "#{pane_pid}").stdout)) == brain.pid
+        assert await _child_of(SYSTEM, int(tmux_at("display-message", "-p", "-t", f"={session}:", "#{pane_pid}").stdout)) == brain.pid
     finally:
         await brain.stop()
     # Stopped with nobody attached, it leaves no session behind.
@@ -1284,7 +1284,7 @@ async def test_the_brains_pane_has_none_of_the_tmux_servers_own_environment(tmp_
 # How a hands starts a Claude Code of its own, and the pids of what it started: its brain under fritter.
 BRAIN = """
 brain = await start(SYSTEM, launch, lambda _entry: None)
-print(brain.pid, _child_of(brain.pid), flush=True)
+print(brain.pid, await _child_of(SYSTEM, brain.pid), flush=True)
 """
 @pytest.mark.outside
 @pytest.mark.parametrize("started", [BRAIN], ids=["brain"])
@@ -1455,10 +1455,10 @@ async def test_a_conversation_the_brain_cannot_come_up_in_is_let_go_so_the_next_
 
 @pytest.mark.outside
 def test_a_brain_with_no_login_is_refused_naming_the_command(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == Account("claude.ai", "brain@example.com")
+    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ, SYSTEM) == Account("claude.ai", "brain@example.com")
     monkeypatch.setenv("LOGGED_IN", "0")
     with pytest.raises(NotLoggedIn, match="`hands login` gives it one"):
-        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ, SYSTEM)
 
 
 def logins(home: Path) -> list[tuple[str, dict[str, object]]]:
@@ -1582,7 +1582,7 @@ def test_hands_login_console_logs_a_brain_in_with_an_anthropic_console_key(tmp_p
 @pytest.mark.parametrize(("method", "account"), [("api_key", Account("api_key", "brain@example.com")), ("oauth_token", Account("oauth_token", None))])
 def test_a_brain_on_any_anthropic_login_starts(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch, method: str, account: Account) -> None:
     monkeypatch.setenv("AUTH_METHOD", method)
-    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ) == account
+    assert logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ, SYSTEM) == account
 
 
 @pytest.mark.outside
@@ -1613,7 +1613,7 @@ def test_hands_login_on_a_brain_whose_settings_set_a_key_claude_code_never_asked
 def test_a_brain_reaching_claude_through_a_cloud_provider_is_refused_naming_it(tmp_path: Path, fake_claude: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_PROVIDER", "bedrock")
     with pytest.raises(NotLoggedIn, match="through bedrock, not the Anthropic API hands' proxy forwards to"):
-        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ)
+        logged_in(tmp_path / "brain", "http://127.0.0.1:1", os.environ, SYSTEM)
 
 
 @pytest.mark.outside

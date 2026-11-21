@@ -74,7 +74,7 @@ def listed(id: str, enabled: bool, scope: str = "user") -> dict[str, object]:
 
 @pytest.mark.outside
 def test_an_enabled_plugin_is_ready(root: Path) -> None:
-    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]))
+    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", False), listed(PLUGIN_ID, True)]), SYSTEM)
     assert isinstance(found, Ready) and "/reload-plugins" in found.said
 
 
@@ -89,7 +89,7 @@ def test_a_disabled_plugin_is_missing_and_says_how_to_enable_it() -> None:
 
 @pytest.mark.outside
 def test_a_plugin_not_installed_is_missing_and_says_how_to_install_it(root: Path) -> None:
-    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]))
+    found = readiness.plugin(Home(root / "home"), claude_listing(root, [listed("other@elsewhere", True)]), SYSTEM)
     assert isinstance(found, Missing) and f"claude plugin install {PLUGIN_ID}" in found.said
 
 
@@ -113,13 +113,13 @@ def test_a_listing_hands_cannot_read_is_unknown_not_missing(printed: str) -> Non
 @pytest.mark.outside
 def test_a_claude_that_fails_to_list_is_unknown_and_says_why(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\necho 'not logged in' >&2\nexit 3\n")
-    found = readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}")
+    found = readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}", SYSTEM)
     assert isinstance(found, Unknown) and "(3)" in found.said and "not logged in" in found.said
 
 
 def test_a_listing_that_is_not_text_is_unknown(root: Path) -> None:
     executable(root / "real" / "claude", "#!/bin/sh\nprintf '\\377\\376'\n")
-    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Unknown)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}", SYSTEM), Unknown)
 
 
 @pytest.mark.outside
@@ -127,11 +127,11 @@ def test_the_claude_asked_for_its_plugins_runs_with_its_auto_updater_off(root: P
     monkeypatch.setenv("DISABLE_AUTOUPDATER", "0")
     listing = json.dumps([listed(PLUGIN_ID, True)])
     executable(root / "real" / "claude", f"#!/bin/sh\n[ \"$DISABLE_AUTOUPDATER\" = 1 ] || {{ echo \"updater=$DISABLE_AUTOUPDATER\" >&2; exit 3; }}\ncat <<'EOF'\n{listing}\nEOF\n")
-    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}"), Ready)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'real'}:{SYSTEM_PATH}", SYSTEM), Ready)
 
 
 def test_no_claude_to_ask_is_unknown(root: Path) -> None:
-    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'empty'}:{SYSTEM_PATH}"), Unknown)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'empty'}:{SYSTEM_PATH}", SYSTEM), Unknown)
 
 
 @pytest.mark.outside
@@ -140,7 +140,7 @@ def test_the_plugin_is_asked_of_the_shim_as_a_session_would_ask_it(root: Path) -
     executable(root / "bin" / "fritter", "#!/bin/sh\necho fritter ran >&2\nexit 9\n")
     executable(root / "bin" / "claude", shim_script(root / "bin" / "fritter", root / "wire.sock"))
     path = claude_listing(root, [listed(PLUGIN_ID, True)])
-    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'bin'}:{path}"), Ready)
+    assert isinstance(readiness.plugin(Home(root / "home"), f"{root / 'bin'}:{path}", SYSTEM), Ready)
 
 
 # The shim
@@ -819,12 +819,12 @@ def hands_printing(root: Path, said: str, code: int = 0) -> str:
 
 @pytest.mark.outside
 def test_this_hands_on_path_is_ready(root: Path) -> None:
-    found = readiness.installed(hands_printing(root, f"hands {version('hands')}"))
+    found = readiness.installed(hands_printing(root, f"hands {version('hands')}"), SYSTEM)
     assert isinstance(found, Ready) and str(root / "tools" / "hands") in found.said
 
 
 def test_no_hands_on_path_is_missing_and_says_how_uv_puts_it_there(root: Path) -> None:
-    found = readiness.installed(f"{root / 'empty'}:{SYSTEM_PATH}")
+    found = readiness.installed(f"{root / 'empty'}:{SYSTEM_PATH}", SYSTEM)
     assert isinstance(found, Missing) and "`hands-shim`" in found.said and "`uv tool update-shell`" in found.said
 
 
@@ -833,7 +833,7 @@ def test_a_hands_with_no_shim_beside_it_is_missing_since_the_plugin_s_hooks_cann
     # As with a hands from before the plugin ran `hands-shim`: its `hands` answers, and every hook of the plugin fails.
     path = hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
-    found = readiness.installed(path)
+    found = readiness.installed(path, SYSTEM)
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and "`hands update`" in found.fix
 
 
@@ -843,20 +843,20 @@ def test_a_shim_in_another_directory_is_not_the_one_beside_hands(root: Path) -> 
     hands_printing(root, f"hands {version('hands')}")
     (root / "tools" / "hands-shim").unlink()
     executable(root / "other" / "hands-shim", "#!/bin/sh\n")
-    found = readiness.installed(f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}")
+    found = readiness.installed(f"{root / 'tools'}:{root / 'other'}:{SYSTEM_PATH}", SYSTEM)
     assert isinstance(found, Missing) and found.step == "`hands-shim` not beside `hands` on PATH" and str(root / "other" / "hands-shim") in found.said
 
 
 @pytest.mark.outside
 def test_another_hands_on_path_is_missing_naming_both(root: Path) -> None:
     # As after an upgrade that left an older install ahead on PATH: sessions would run its hooks.
-    found = readiness.installed(hands_printing(root, "hands 0.0.1"))
+    found = readiness.installed(hands_printing(root, "hands 0.0.1"), SYSTEM)
     assert isinstance(found, Missing) and "is hands 0.0.1, not this hands" in found.said
 
 
 @pytest.mark.outside
 def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
-    found = readiness.installed(hands_printing(root, "broken", 3))
+    found = readiness.installed(hands_printing(root, "broken", 3), SYSTEM)
     assert isinstance(found, Unknown) and "(3)" in found.said
 
 
@@ -866,7 +866,7 @@ def test_a_hands_that_cannot_say_its_version_is_unknown(root: Path) -> None:
 @pytest.mark.outside
 def test_a_brain_with_no_login_is_missing_and_names_the_command(root: Path, monkeypatch: pytest.MonkeyPatch, fake_claude: Path) -> None:
     monkeypatch.setenv("LOGGED_IN", "0")
-    found = readiness.configured(Home(root / "home"), os.environ)
+    found = readiness.configured(Home(root / "home"), os.environ, SYSTEM)
     assert isinstance(found, Missing) and "`hands login` gives it one" in found.said
 
 
@@ -874,14 +874,14 @@ def test_settings_hands_cannot_read_are_missing_naming_the_file(root: Path) -> N
     home = Home(root / "home")
     home.root.mkdir(parents=True)
     home.config.write_text("[llm\n")
-    reached = readiness.configured(home, {})
+    reached = readiness.configured(home, {}, SYSTEM)
     # The refusal, which names the file, is the detail, and the fix names the file without the refusal again.
     assert isinstance(reached, Missing) and reached.fix == f"correct {home.config}"
     assert reached.detail.startswith(f"hands cannot read its settings: {home.config}: not TOML") and reached.detail.count(str(home.config)) == 1
 
 
 def test_a_setting_in_the_environment_is_missing_as_the_start_refuses_it(root: Path) -> None:
-    found = readiness.configured(Home(root / "home"), {"HANDS_DEBUG": "1"})
+    found = readiness.configured(Home(root / "home"), {"HANDS_DEBUG": "1"}, SYSTEM)
     assert isinstance(found, Missing) and "HANDS_DEBUG set, and hands reads no setting from the environment" in found.said
 
 
@@ -892,7 +892,7 @@ def test_a_brain_that_cannot_be_asked_is_unknown(root: Path, monkeypatch: pytest
         raise PermissionError("claude is not executable")
 
     monkeypatch.setattr(readiness, "resolve", unspawnable)
-    found = readiness.configured(home, {})
+    found = readiness.configured(home, {}, SYSTEM)
     assert isinstance(found, Unknown) and "claude is not executable" in found.said
 
 
@@ -935,7 +935,7 @@ def test_a_heartbeat_hands_cannot_read_is_unknown(root: Path) -> None:
 STEPS = ["claude", "portaudio", "tmux", "hands", "shim", "plugin", "brain_claude", "backend", "grant", "running", "sessions"]
 
 
-def logged_in(_llm: object, home: Home, _environment: object) -> ClaudeCodeBackend:
+def logged_in(_llm: object, home: Home, _environment: object, _clock: object) -> ClaudeCodeBackend:
     """The brain as its login check finds it logged in: that check is the start's, tested beside it."""
     return ClaudeCodeBackend(model="claude-sonnet-5-5", config_dir=home.brain, account=Account("claude.ai", "brain@example.com"))
 

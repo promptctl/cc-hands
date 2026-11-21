@@ -40,7 +40,7 @@ from hands.daemon.exits import Exit, Failed
 from hands.sessions.startsession import as_from_a_terminal, joined
 from hands.sessions.terminals import process_table
 from hands.sessions import audit, heartbeat
-from hands.sessions.child import run
+from hands.sessions.child import Exited, run, told
 from hands.sessions.home import Home
 from hands.sessions.liveness import live
 from hands.sessions.payload import Rejected
@@ -489,9 +489,13 @@ async def _synthesized(clock: Clock, text: str) -> bytes:
     with tempfile.TemporaryDirectory(prefix="hands-smoke-") as directory:
         spoken = Path(directory) / "said.wav"
         # The test's own voice, no part of hands: its failure is the test's, raised, never named as a stage of the pipeline.
-        ran = await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=clock)
-        if ran.returncode != 0:
-            raise RuntimeError(f"`say` could not synthesize what the test says ({ran.returncode}): {ran.err.decode(errors='replace').strip()}")
+        match await run("say", "-o", str(spoken), f"--data-format=LEI16@{RATE}", text, timeout=30.0, clock=clock):
+            case Exited(returncode=0):
+                pass
+            case Exited(err=err) as ended:
+                raise RuntimeError(f"`say` could not synthesize what the test says: it {told(ended)}: {err.strip()}")
+            case ended:
+                raise RuntimeError(f"`say` could not synthesize what the test says: it {told(ended)}")
         with wave.open(str(spoken), "rb") as read:
             return read.readframes(read.getnframes())
 

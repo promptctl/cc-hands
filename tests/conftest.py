@@ -29,6 +29,7 @@ import mlx.core as mx
 import mlx_whisper
 import nltk
 import pytest
+from loguru import logger
 from packaging.specifiers import SpecifierSet
 from hands.voice.engaged import Ears, Hears
 from pipecat.frames.frames import ErrorFrame, Frame
@@ -39,7 +40,8 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 from hands.brain import pinned
-from hands.clock import SYSTEM
+from hands.clock import SYSTEM, Clock
+from hands.sessions.child import Ended
 from hands.virtualclock import VirtualClock
 from hands.voice import dtln
 from hands.core.front import FrontUnread, InFront
@@ -353,7 +355,44 @@ KEYCHAIN_READER = library._keychain_token  # pyright: ignore[reportPrivateUsage]
 def no_keychain_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Asking the keychain for the Hugging Face token starts `security` and reads the machine's keychain, which no test is
     about but the one that checks the question, on KEYCHAIN_READER."""
-    monkeypatch.setattr(library, "_keychain_token", lambda: None)
+    def none(_clock: Clock) -> None:
+        return None
+
+    monkeypatch.setattr(library, "_keychain_token", none)
+
+
+@pytest.fixture
+def logged() -> Iterator[list[str]]:
+    """Every line logged at INFO and above while the test runs."""
+    messages: list[str] = []
+    sink = logger.add(lambda message: messages.append(message.record["message"]), level="INFO")
+    yield messages
+    logger.remove(sink)
+
+
+@dataclass(frozen=True)
+class Asked:
+    """One command a caller ran: what it ran, within what time, in what environment."""
+
+    argv: tuple[str, ...]
+    timeout: float
+    env: Mapping[str, str] | None
+
+
+class Answering:
+    """The runner, starting nothing: each command is recorded in `asked` and answered with the next of `ended`, as
+    `hands.sessions.child.run` answers a coroutine and `run_blocking` a thread."""
+
+    def __init__(self, *ended: Ended) -> None:
+        self._ended = list(ended)
+        self.asked: list[Asked] = []
+
+    def blocking(self, *argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ended:
+        self.asked.append(Asked(argv, timeout, env))
+        return self._ended.pop(0)
+
+    async def run(self, *argv: str, timeout: float, cwd: Path | None = None, env: Mapping[str, str] | None = None, clock: Clock) -> Ended:
+        return self.blocking(*argv, timeout=timeout, cwd=cwd, env=env, clock=clock)
 
 
 @pytest.fixture(autouse=True)

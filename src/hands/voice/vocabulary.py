@@ -19,7 +19,7 @@ from mlx_whisper.tokenizer import get_encoding
 
 from hands.clock import Clock
 from hands.sessions.audit import Primed, Record
-from hands.sessions.child import run, settled
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run, settled
 from hands.sessions.focus import Unreadable, focused
 from hands.sessions.home import Home
 from hands.sessions.registry import Listing, Sessions
@@ -159,20 +159,19 @@ async def _git(clock: Clock, cwd: Path, environment: Mapping[str, str], deadline
     left = deadline - clock.now()
     if left <= 0:
         raise GitFailed(f"reading the sessions' names spent the vocabulary's {READING:.1f}s before git {args[0]} in {cwd} could run")
-    try:
-        # git says why it failed in the C locale's words, which are the ones read below.
-        ran = await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=clock)
-    except TimeoutError:
-        raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s") from None
-    except OSError as error:
-        raise GitFailed(f"cannot run git in {cwd}: {error}") from None
-    said = ran.err.decode(errors="replace").strip()
-    # [LAW:domain-language] git's own words for a directory outside every repository, and the exit code it gives them.
-    if ran.returncode == 128 and "not a git repository" in said:
-        raise NotARepository(said)
-    if ran.returncode != 0:
-        raise GitFailed(f"git {args[0]} in {cwd} exited {ran.returncode}: {said}")
-    return ran.out.decode(errors="replace")
+    # git says why it failed in the C locale's words, which are the ones read below.
+    match await run("git", "--no-optional-locks", "-C", str(cwd), *args, timeout=left, env={**environment, "LC_ALL": "C"}, clock=clock):
+        case Exited(returncode=0, out=out):
+            return out
+        # [LAW:domain-language] git's own words for a directory outside every repository, and the exit code it gives them.
+        case Exited(returncode=128, err=err) if "not a git repository" in err:
+            raise NotARepository(err.strip())
+        case Exited(returncode=code, err=err):
+            raise GitFailed(f"git {args[0]} in {cwd} exited {code}: {err.strip()}")
+        case TimedOut():
+            raise GitFailed(f"git {args[0]} in {cwd} was still running when reading the vocabulary had spent its {READING:.1f}s")
+        case NeverStarted(error=error):
+            raise GitFailed(f"cannot run git in {cwd}: {error}")
 
 
 def _unique(words: Sequence[str]) -> tuple[str, ...]:

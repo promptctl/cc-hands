@@ -53,7 +53,7 @@ from hands.sessions.tail import Tails
 from hands.sessions.hookconfig import BRAIN_REPLY_BY_SECONDS, TAKE_SECONDS, brain_declared
 from hands.sessions.hooks import Hook, PermissionHook, hook_output, parse_own_hook
 from hands.sessions.payload import Payload, Rejected
-from hands.sessions.child import Ran
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run, run_blocking, told
 from hands.sessions.pseudoterminal import COLS, ROWS, STOP_SECONDS, ClaudeCode, on_terminal
 from hands.sessions.tmux import Unanswered, ran_at, socket_directory, styled
 from hands.sessions.typing import Typist, Untyped
@@ -121,6 +121,9 @@ PASTE = re.compile(r'\n\n<pasted_content id="(\w+)">\n(.*)</pasted_content id="\
 
 # `claude auth status` answers in about a second; one that has not answered in this long is not going to.
 AUTH_STATUS_SECONDS = 20.0
+
+# pgrep reads the process table in milliseconds; past this the machine is not going to start the brain either.
+PGREP_SECONDS = 5.0
 # How long fritter has to start the brain and open its socket, and the brain to turn its input on.
 START_SECONDS = 10.0
 # How far apart two Ctrl-Cs are pressed into the brain: Claude Code exits on a second within 800ms of one that found its
@@ -364,7 +367,7 @@ PANE_ENDED = 256
 
 
 # What tmux says to a kill-session for a session it does not hold, on a server that runs or one that does not.
-_UNHELD = re.compile(rb"can't find session|no server running on |error connecting to .* \(No such file or directory\)")
+_UNHELD = re.compile(r"can't find session|no server running on |error connecting to .* \(No such file or directory\)")
 
 
 def _pid(path: Path) -> int | None:
@@ -463,9 +466,9 @@ class InTmux:
         match await ran_at(self._clock, self._tmux, self._socket, ("kill-session", "-t", f"={self._session}")):
             case Unanswered() as unanswered:
                 logger.warning(f"the brain's tmux server did not end its session: {unanswered.reason}")
-            case Ran(returncode=code, err=err) if code != 0 and not _UNHELD.search(err):
-                logger.warning(f"the brain's tmux server did not end its session: {err.decode(errors='replace').strip()}")
-            case Ran():
+            case Exited(returncode=code, err=err) if code != 0 and not _UNHELD.search(err):
+                logger.warning(f"the brain's tmux server did not end its session: {err.strip()}")
+            case Exited():
                 pass
 
 
@@ -485,13 +488,13 @@ async def in_tmux(clock: Clock, station: Station, argv: Sequence[str], workspace
     # Two brains on one config directory would share one conversation: one left by a hands that ended while a person
     # was attached is ended first.
     match await ran_at(clock, tmux, socket, ("kill-session", "-t", f"={session}")):
-        case Ran(returncode=0):
+        case Exited(returncode=0):
             logger.info(f"ended tmux session {session}, a brain left by an earlier hands")
         case Unanswered() as unanswered:
             raise Unstartable(f"the brain's tmux server did not answer: {unanswered.reason}")
-        case Ran(err=err) if not _UNHELD.search(err):
-            raise Unstartable(f"the brain's tmux server did not end a session left by an earlier hands: {err.decode(errors='replace').strip()}")
-        case Ran():
+        case Exited(err=err) if not _UNHELD.search(err):
+            raise Unstartable(f"the brain's tmux server did not end a session left by an earlier hands: {err.strip()}")
+        case Exited():
             pass
     status, pid = workspace / "status", workspace / "pane"
     # env -i: a pane is otherwise given the tmux server's own environment, which would carry what environment() keeps
@@ -646,7 +649,7 @@ type Method = Literal["claudeai", "console"]
 AUTH_METHODS: dict[Method, str] = {"claudeai": "claude.ai", "console": "api_key"}
 
 
-def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method) -> Login:
+def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method: Method, clock: Clock) -> Login:
     """Log `config_dir` in with Claude Code's own login, at this terminal, in the directory the brain runs in; the
     account it holds after.
 
@@ -661,12 +664,14 @@ def login(config_dir: Path, base_url: str, inherited: Mapping[str, str], method:
     # directory, which the daemon reads, no credential of this shell's stands in for the one being made, and the first
     # run's screens are answered under the settings the brain starts with.
     argv, ran = (["auth", "login", f"--{method}"], "`claude auth login` for the brain") if first_run is None else (["--setting-sources", "user"], "the brain's first run of Claude Code")
-    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))
+    # In the terminal's foreground group, to read the person's keys, so Ctrl-C ends it with hands; and no time limit, since
+    # a person is answering its screens.
+    signed = subprocess.run([brain_claude(config_dir), *argv], cwd=workdir(config_dir), env=environment(config_dir, base_url, inherited))  # owner: the person at the terminal
     if signed.returncode != 0:
         raise LoginFailed(f"{ran} exited {signed.returncode}")
     # A first run quit before its last screen exits 0 as one that answered them all.
     answered(config_dir)
-    held = logged_in(config_dir, base_url, inherited)
+    held = logged_in(config_dir, base_url, inherited, clock)
     # [LAW:no-silent-failure] a first run's screen, or a login its settings.json sets ahead of the one made, can leave the
     # brain on another login than the one asked for.
     if held.method != AUTH_METHODS[method]:
@@ -708,22 +713,19 @@ def account_kept_out(config_dir: Path) -> None:
         raise Unstartable(f"the brain would load its account's {' and '.join(synced)}: {fix}")
 
 
-def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> Account:
+def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str], clock: Clock) -> Account:
     """The account `config_dir` is logged in as; raises NotLoggedIn, naming the command that makes a login, when it has
-    none, or one whose requests do not reach hands' proxy."""
+    none, or one whose requests do not reach hands' proxy, and Unstartable when `claude auth status` never answered.
+
+    Blocking, on the caller's thread: the brain's claude is hashed on the way, which no loop may wait on."""
+    # Read whatever it exits with: a brain logged out says so in its status, with a nonzero exit.
+    match run_blocking(str(brain_claude(config_dir)), "auth", "status", timeout=AUTH_STATUS_SECONDS, env=environment(config_dir, base_url, inherited), clock=clock):
+        case Exited() as asked:
+            pass
+        case TimedOut() | NeverStarted() as ended:
+            raise Unstartable(f"`claude auth status` for the brain {told(ended)}")
     try:
-        # A timed-out child is killed and reaped by run itself.
-        asked = subprocess.run(
-            [brain_claude(config_dir), "auth", "status"],
-            env=environment(config_dir, base_url, inherited),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=AUTH_STATUS_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        raise NotLoggedIn(f"`claude auth status` for the brain did not answer in {AUTH_STATUS_SECONDS:.0f}s") from None
-    try:
-        status = Payload.parse(asked.stdout)
+        status = Payload.parse(asked.out)
         if not status.flag("loggedIn"):
             raise NotLoggedIn("the brain has no login: `hands login` gives it one")
         # [LAW:no-silent-failure] hands' proxy, which hears what the brain says, forwards to Anthropic's API alone, so a
@@ -732,7 +734,7 @@ def logged_in(config_dir: Path, base_url: str, inherited: Mapping[str, str]) -> 
             raise NotLoggedIn(f"the brain reaches Claude through {provider}, not the Anthropic API hands' proxy forwards to: {config_dir / 'settings.json'} or the machine's managed settings choose {provider}")
         return Account(status.text("authMethod"), status.optional_text("email") or status.optional_text("apiKeySource"))
     except Rejected as error:
-        raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.stdout[:200]!r} {asked.stderr[:200]!r}, not its status: {error}") from None
+        raise NotLoggedIn(f"`claude auth status` for the brain answered {asked.out[:200]!r} {asked.err[:200]!r}, not its status: {error}") from None
 
 
 @dataclass(frozen=True)
@@ -1938,8 +1940,8 @@ async def _typist(clock: Clock, running: InTmux, sockets: Path, session: Session
     while clock.now() < deadline and not running.exit.done():
         found = [path for path in sockets.rglob("*") if path.is_socket()]
         wrapper = running.fritter
-        child = None if wrapper is None else await asyncio.to_thread(_child_of, wrapper)
-        if found and wrapper is not None and child is not None:
+        # Asked only once there is a socket to type into: until then, what fritter started is no use.
+        if found and wrapper is not None and (child := await _child_of(clock, wrapper)) is not None:
             typist = Typist(session, found[0], child)
             try:
                 await asyncio.to_thread(typist.pasting)
@@ -1969,7 +1971,14 @@ def exited(code: int) -> str:
     return "the brain's tmux session was ended under it" if code == PANE_ENDED else f"fritter exited ({code})"
 
 
-def _child_of(pid: int) -> int | None:
-    """The process `pid` started: fritter starts one, the claude it wraps."""
-    found = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()
-    return int(found[0]) if found else None
+async def _child_of(clock: Clock, pid: int) -> int | None:
+    """The process `pid` started, none yet: fritter starts one, the claude it wraps. Raises Unstartable when pgrep could
+    not say."""
+    match await run("pgrep", "-P", str(pid), timeout=PGREP_SECONDS, clock=clock):
+        case Exited(returncode=0, out=out):
+            return int(out.split()[0])
+        # pgrep's own word for none matched; 2 and 3 are its errors.
+        case Exited(returncode=1):
+            return None
+        case ended:
+            raise Unstartable(f"pgrep could not say what fritter ({pid}) started: it {told(ended)}")

@@ -13,7 +13,7 @@ from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.errors import ErrorCategory
 
-from conftest import running
+from conftest import Answering, running
 from hands.virtualclock import VirtualClock
 from hands.clock import SYSTEM
 from hands.sessions import heartbeat
@@ -21,6 +21,7 @@ from hands.daemon.cli import crashed_before
 from hands.sessions.audit import Announced, Entry
 from hands.daemon import notify
 from hands.daemon.notify import notification_command, post_notification
+from hands.sessions.child import TimedOut
 from hands.sessions.home import Home
 from hands.voice.player import LineFrame, Lines, Player
 from hands.voice.system import (
@@ -414,10 +415,7 @@ def test_the_notification_text_is_an_argument_not_part_of_the_script() -> None:
 
 
 async def test_a_notification_osascript_never_posts_is_refused_and_said(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def stuck(*_argv: str, timeout: float, clock: object) -> None:
-        raise TimeoutError
-
-    monkeypatch.setattr(notify, "run", stuck)
+    monkeypatch.setattr(notify, "run", Answering(TimedOut(notify.POST_TIMEOUT_SECONDS, "", "")).run)
     errors: list[str] = []
     sink = logger.add(lambda message: errors.append(message.record["message"]), level="ERROR")
     try:

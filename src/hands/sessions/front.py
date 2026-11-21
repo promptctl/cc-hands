@@ -18,7 +18,7 @@ from hands.clock import Clock
 from hands.core.front import Candidate, FrontUnread, InFront, Screen, in_front
 from hands.core.session import SessionId
 from hands.core.tmux import Unanswered
-from hands.sessions.child import run
+from hands.sessions.child import Exited, run, told
 from hands.sessions import tmux
 from hands.sessions.terminals import Process, ancestor_terminals, process_table
 from hands.threads import SerialThread
@@ -89,10 +89,13 @@ async def _front_app(clock: Clock) -> _App:
 
 
 async def _ran(clock: Clock, *argv: str) -> str:
-    ran = await run(*argv, timeout=2, clock=clock)
-    if ran.returncode != 0:
-        raise _Unread(f"{' '.join(argv)} exited {ran.returncode}: {ran.err.decode(errors='replace').strip()}")
-    return ran.out.decode()
+    match await run(*argv, timeout=2, clock=clock):
+        case Exited(returncode=0, out=out):
+            return out
+        case Exited(err=err) as ended:
+            raise _Unread(f"{' '.join(argv)} {told(ended)}: {err.strip()}")
+        case ended:
+            raise _Unread(f"{' '.join(argv)} {told(ended)}")
 
 
 async def _screen(app: _App, processes: Mapping[int, Process]) -> Screen:

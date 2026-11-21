@@ -6,13 +6,14 @@ hands.
 """
 
 import asyncio
-import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from huggingface_hub import list_repo_files
+from loguru import logger
 
 from hands.clock import Clock
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run_blocking
 
 LIBRARY_REPO = "kyutai/tts-voices"
 LIBRARY_URL_PREFIX = f"hf://{LIBRARY_REPO}/"
@@ -98,7 +99,7 @@ class Library:
             return Found(matches, listing.listed_at, from_cache)
 
 
-def hub_token(environment: Mapping[str, str]) -> str | None:
+def hub_token(environment: Mapping[str, str], clock: Clock) -> str | None:
     """The Hugging Face token the cloning weights are fetched with: the environment's where it has one, else the keychain's,
     else None. A voice whose weights need a token and get none fails at its choice, naming the cloning model.
 
@@ -106,13 +107,28 @@ def hub_token(environment: Mapping[str, str]) -> str | None:
     environment is the only channel it reads; cli.main writes the token there, once, where a process starts. The token is
     never logged or written to a file.
     """
-    return environment.get("HF_TOKEN") or _keychain_token()
+    return environment.get("HF_TOKEN") or _keychain_token(clock)
 
 
-def _keychain_token() -> str | None:
-    try:
-        # `security` prints the password on stdout alone; neither stream is logged.
-        found = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"], capture_output=True, text=True, check=False, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return found.stdout.strip() or None
+# `security` answers at once; one still waiting this long waits on a locked keychain's prompt nobody answers.
+KEYCHAIN_SECONDS = 10.0
+# What `security` exits with when the keychain holds no such item: errSecItemNotFound.
+NO_ITEM = 44
+
+
+def _keychain_token(clock: Clock) -> str | None:
+    # `security` prints the password on stdout alone; neither stream is logged.
+    match run_blocking("security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w", timeout=KEYCHAIN_SECONDS, clock=clock):
+        case Exited(returncode=0, out=out):
+            return out.strip() or None
+        case Exited(returncode=code) if code == NO_ITEM:
+            return None
+        # [LAW:no-silent-failure] a keychain that could not be read is said, so a voice that later needs the token is
+        # not taken to have none.
+        case Exited(returncode=code):
+            logger.warning(f"the keychain's {KEYCHAIN_ITEM} could not be read: `security` exited {code}")
+        case TimedOut():
+            logger.warning(f"the keychain's {KEYCHAIN_ITEM} could not be read: `security` waited {KEYCHAIN_SECONDS:.0f}s, on a locked keychain")
+        case NeverStarted(error=error):
+            logger.warning(f"the keychain's {KEYCHAIN_ITEM} could not be read: `security` never started: {error}")
+    return None

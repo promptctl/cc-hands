@@ -17,7 +17,7 @@ from typing import Literal, get_args
 
 from hands.clock import Clock
 from hands.core.summaries import Thing
-from hands.sessions.child import SpawnFailed, run
+from hands.sessions.child import Exited, NeverStarted, TimedOut, run
 from hands.sessions.payload import Payload, Rejected
 
 # The largest backlog on this machine (links, 8.6 MB of export) takes 5 s to export; past this lit is stuck, not slow.
@@ -391,7 +391,7 @@ async def rank(clock: Clock, project: Path, move: Move, by: Signer) -> str:
 
     lit's words are the one account of a rank it made otherwise than asked: it says it ranked the parent instead.
     """
-    return (await _lit(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)).decode(errors="replace").strip()
+    return (await _lit(clock, project, "rank", move.ticket, f"--{move.place.side}", move.place.target, environment=by.runs_in)).strip()
 
 
 async def make_epic(clock: Clock, project: Path, new: NewEpic, by: Signer) -> None:
@@ -408,7 +408,7 @@ async def file_ticket(clock: Clock, project: Path, epic: str, topic: str, title:
     """Have lit in `project` file a bug under `epic`, at the top of it, carrying `label`; the id of the ticket it filed,
     the first word lit says. Raises LitFailed when it fails, or says no id."""
     filed = await _lit(clock, project, "new", "--type", "bug", "--parent", epic, "--topic", topic, "--title", title, "--labels", label, "--top", "--description", description, environment=None)
-    said = filed.decode(errors="replace").split()
+    said = filed.split()
     if not said:
         raise LitFailed(f"lit new in {project} exited 0 and said no ticket's id", None)
     return said[0]
@@ -419,33 +419,30 @@ async def comment(clock: Clock, project: Path, ticket: str, body: str, by: Signe
     await _lit(clock, project, "comment", "add", ticket, "--body", body, *by.signature, environment=by.runs_in)
 
 
-async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> bytes:
+async def _lit(clock: Clock, project: Path, *arguments: str, environment: Mapping[str, str] | None) -> str:
     """What lit run in `project` with `arguments`, in `environment` (None: hands' own), wrote out; raises LitNotStarted
-    when it never ran, and LitFailed when it did not answer, exited non-zero, or failed once it was running.
+    when it never ran, and LitFailed when it did not answer or exited non-zero.
 
     [LAW:single-enforcer] the one place hands runs lit, under one bound, and reads its failure.
     """
     command = f"lit {arguments[0]}"
-    try:
-        ran = await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock)
-    except TimeoutError:
-        raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None) from None
-    except SpawnFailed as error:
-        # The spawn names the path it could not use: the project directory as given, where the chdir failed, not lit.
-        if error.errno == errno.ENOENT and str(error.filename) == str(project):
-            raise ProjectGone(project) from error
-        raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
-    except OSError as error:
-        raise LitFailed(f"{command} in {project} ran, and then failed: {error}", None) from error
-    if ran.returncode != 0:
-        err = ran.err.decode(errors="replace")
-        line = ERROR_LINE.match(err)
-        # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
-        raise LitFailed(f"{command} in {project} exited {ran.returncode}: {err.strip()[:300]}", None if line is None else line["reason"])
-    return ran.out
+    match await run("lit", *arguments, timeout=LIT_TIMEOUT_SECONDS, cwd=project, env=environment, clock=clock):
+        case Exited(returncode=0, out=out):
+            return out
+        case Exited(returncode=code, err=err):
+            line = ERROR_LINE.match(err)
+            # The head of what lit said: its first line is its verdict, and the remediation after it is for a reader.
+            raise LitFailed(f"{command} in {project} exited {code}: {err.strip()[:300]}", None if line is None else line["reason"])
+        case TimedOut():
+            raise LitFailed(f"{command} in {project} did not answer in {LIT_TIMEOUT_SECONDS:.0f}s", None)
+        case NeverStarted(error=error):
+            # The spawn names the path it could not use: the project directory as given, where the chdir failed, not lit.
+            if error.errno == errno.ENOENT and str(error.filename) == str(project):
+                raise ProjectGone(project) from error
+            raise LitNotStarted(f"lit could not be started in {project}: {error}") from error
 
 
-def parse_export(raw: bytes) -> Backlog:
+def parse_export(raw: str | bytes) -> Backlog:
     """`lit export`'s JSON, parsed once [LAW:parse-dont-validate]: each ticket, its place in the tree, and what was said on it."""
     export = Payload.parse(raw)
     if (version := export.integer("version")) not in EXPORT_VERSIONS:
