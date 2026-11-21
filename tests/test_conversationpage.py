@@ -132,7 +132,8 @@ async def test_a_read_that_has_seen_the_conversation_waits_for_it_to_change(page
 async def test_a_read_whose_conversation_never_changes_is_answered_with_it_as_it_is(page: Page, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(longpoll, "WAIT_SECONDS", 0.3)
     read = await page.client.get("/conversation/moments", params={"seen": "0"}, headers=KEYED)
-    assert (await read.json()) == {"seen": 0, "waits": 0.3, "shown": {"moments": []}}
+    body = await read.json()
+    assert ({**body, "now": None}, isinstance(body["now"], float)) == ({"seen": 0, "waits": 0.3, "now": None, "shown": {"moments": []}}, True)
     [event] = page.events("conversation.read")
     assert isinstance(waited := event.facts["waited_ms"], float) and waited >= 300
     assert event.facts["seen"] == 0 and event.facts["changed"] is False and isinstance(looks := event.facts["looks"], int) and looks > 1

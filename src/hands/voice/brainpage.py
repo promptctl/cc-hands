@@ -17,7 +17,7 @@ from hands.sessions.audit import Record
 from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import read_answer, version_of, waited
+from hands.voice.longpoll import version_of, waited
 
 
 class Watched(Protocol):
@@ -94,11 +94,12 @@ def brain_routes(clock: Clock, brain: Watched, key: str, record: Record) -> list
 
     @keyed(clock, "brain.read", record, key, counts=("calls",))
     async def read(request: web.Request) -> web.Response:
-        version, work = await waited(clock, look, request.query.get("seen"))
+        read = await waited(clock, look, request.query.get("seen"))
+        work = read["shown"]
         annotate(doing=type(work).__name__)
         count(calls=len(running(work)))
-        # The Mac's clock as it answers, beside the version: the page times the brain's work by it, never by its own.
-        return web.json_response(read_answer(version, {"now": clock.wall().timestamp(), "work": shown(work)}))
+        # The page is shown the work as it draws it, which is what the read's version is the version of.
+        return web.json_response({**read, "shown": shown(work)})
 
     @keyed(clock, "brain.stop", record, key)
     async def stop(request: web.Request) -> web.Response:

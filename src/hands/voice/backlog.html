@@ -82,9 +82,9 @@
 <p id="state" role="status"></p>
 <main id="tree" aria-label="Open tickets in rank order"></main>
 <div id="drop"></div>
-<script src="/hands.js"></script>
-<script>
-"use strict";
+<script type="module">
+import {asked} from "/hands.js";
+
 const project = new URLSearchParams(location.search).get("project");
 const tree = document.getElementById("tree");
 const state = document.getElementById("state");
@@ -134,18 +134,23 @@ function inTurn(work) {
   return queue;
 }
 
-// What hands answered at `path`, read with no `sent` and changed with it. Throws what hands said instead; or, when no
-// answer came, why, after `unknown`: what the page cannot know of a change it sent.
-async function answered(path, sent, unknown = "") {
-  const outcome = await asked(sent === undefined ? "GET" : "POST", path, sent);
+// What hands answered, or thrown: its refusal, or why no answer came, after `unknown`, what the page cannot know of a
+// change it sent when none did, which a read has nothing of.
+function answer(outcome, unknown) {
   if (outcome.kind === "answered") return outcome.body;
   throw new Error(outcome.kind === "refused" ? outcome.text : `${unknown}${outcome.why}.`);
 }
+const got = async path => answer(await asked("GET", path), "");
+const changed = async (path, sent, unknown) => answer(await asked("POST", path, sent), unknown);
 
-// The backlog as hands answered it, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth].
-// Throws as `answered` does; a project lit does not track is said as such.
-async function drawnFrom(path, sent, unknown) {
-  const read = await answered(path, sent, unknown);
+// A job in its turn whose own outcome is its caller's: inTurn's queue goes on to the next job whatever this one meets.
+function turned(work) {
+  return new Promise((resolve, reject) => inTurn(() => work().then(resolve, reject)));
+}
+
+// A backlog read hands answered, drawn whole: the page keeps no order of its own [LAW:one-source-of-truth]. A project lit
+// does not track is said as such.
+function drawnFrom(read) {
   if (!read.tracked) { tree.replaceChildren(); throw new Error(`${project} has no backlog: ${read.why}.`); }
   levels = read.levels;
   tree.replaceChildren(listed(read.items));
@@ -339,7 +344,7 @@ function restored(id, why) {
   return inTurn(async () => {
     let level, said;
     try {
-      const read = await answered(TICKETS);
+      const read = await got(TICKETS);
       const node = read.tracked ? [...everyNode(read.items)].find(each => each.id === id) : undefined;
       level = node?.standing?.level ?? null;
       said = node === undefined ? `${why}\nlit's open backlog no longer holds ${id}.` : why;
@@ -430,22 +435,22 @@ function noting(id) {
   });
 }
 
-// A note sent to hands; resolves once lit has it, rejects with what hands said.
-async function noted(ticket, text) {
-  await answered("/backlog/note", {project, ticket, text}, `Whether lit kept the note on ${ticket} is not known: `);
+// A note sent to hands in its turn behind every request made before it; resolves once lit has it, rejects with what
+// hands said.
+function noted(ticket, text) {
+  return turned(() => changed("/backlog/note", {project, ticket, text}, `Whether lit kept the note on ${ticket} is not known: `));
 }
 
 // A level press sent to hands in its turn behind every request made before it, so lit moves tickets in the order they
 // were pressed. Resolves once lit holds the move, rejects with what hands said.
 function putAt(ticket, level) {
-  return new Promise((resolve, reject) => inTurn(() =>
-    answered("/backlog/level", {project, ticket, level}, `Whether lit moved ${ticket} is not known: `).then(resolve, reject)));
+  return turned(() => changed("/backlog/level", {project, ticket, level}, `Whether lit moved ${ticket} is not known: `));
 }
 
 function read() {
   return inTurn(async () => {
     try {
-      await drawnFrom(TICKETS);
+      drawnFrom(await got(TICKETS));
       say("");
     } catch (error) {
       say(error.message, true);
@@ -458,7 +463,7 @@ function wrote(path, sent, doing, unknown) {
   return inTurn(async () => {
     say(doing);
     try {
-      await drawnFrom(path, sent, unknown);
+      drawnFrom(await changed(path, sent, unknown));
       say("");
       return;
     } catch (error) {
@@ -467,7 +472,7 @@ function wrote(path, sent, doing, unknown) {
     }
     // [LAW:no-silent-failure] a change that failed is shown, and the backlog drawn again as lit has it.
     try {
-      await drawnFrom(TICKETS);
+      drawnFrom(await got(TICKETS));
     } catch (error) {
       say(`${state.textContent}\nThe backlog could not be read again, so what is drawn may not be lit's order now: ${error.message}`, true);
     }
@@ -560,10 +565,9 @@ reload.addEventListener("click", () => read());
 window.addEventListener("beforeunload", event => {
   if (sending() > 0 || [...notes.values()].some(note => note.saving > 0 || note.draft.trim())) event.preventDefault();
 });
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && key && project) read(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && project) read(); });
 
-if (!key) say("Open this page from the address `hands phone` prints, with backlog?project=<directory> on its path.", true);
-else if (!project) say("Name the project on this page's address: backlog?project=<the directory lit tracks it in>.", true);
+if (!project) say("Name the project on this page's address: backlog?project=<the directory lit tracks it in>.", true);
 else read();
 </script>
 </body>

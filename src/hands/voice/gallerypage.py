@@ -21,7 +21,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.wide import annotate, fail
 from hands.voice.desk import LEVELS, Level
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import read_answer, version_of, waited
+from hands.voice.longpoll import version_of, waited
 from hands.voice.modelswitch import Heard, OwnModel, switch_model
 from hands.voice.trigger import described
 from hands.voice.library import Found
@@ -154,9 +154,10 @@ def gallery_routes(clock: Clock, gallery: Gallery, key: str, record: Record) -> 
     # brings up, are on the page by the next answer.
     @keyed(clock, "gallery.read", record, key)
     async def read_state(request: web.Request) -> web.Response:
-        version, state = await waited(clock, look, request.query.get("seen"))
+        read = await waited(clock, look, request.query.get("seen"))
+        state = read["shown"]
         annotate(speaking_in=state["speaking_in"], level=state["level"], modality=state["modality"], running_on=state["running_on"])
-        return web.json_response(read_answer(version, state))
+        return web.json_response(read)
 
     @keyed(clock, "gallery.hear", record, key)
     async def hear_voice(request: web.Request) -> web.Response:

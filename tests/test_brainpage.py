@@ -73,11 +73,11 @@ async def test_the_read_shows_the_call_the_brain_runs_with_its_input_and_the_mac
     page.brain.work_now = SLEEPING
     answered = await page.client.get("/brain", headers=KEYED)
     body = await answered.json()
-    assert body["shown"]["work"] == {
+    assert body["shown"] == {
         "doing": "working", "turn": "turn-1", "since": 1000.0,
         "calls": [{"tool": "Bash", "since": 1002.0, "input": {"command": "sleep 30", "description": "Wait"}}],
     }
-    assert isinstance(body["shown"]["now"], float) and isinstance(body["seen"], str)
+    assert isinstance(body["now"], float) and isinstance(body["seen"], str)
     [read] = page.events("brain.read")
     assert (read.outcome, read.facts["doing"], read.counts["calls"]) == ("ok", "Working", 1)
 
@@ -85,7 +85,7 @@ async def test_the_read_shows_the_call_the_brain_runs_with_its_input_and_the_mac
 async def test_an_input_that_could_not_be_read_is_shown_as_such(page: Page) -> None:
     page.brain.work_now = Working("turn-1", Epoch(1000.0), (Running("Bash", Unreadable("tool call Bash's input is not JSON"), Epoch(1002.0)),))
     body = await (await page.client.get("/brain", headers=KEYED)).json()
-    assert body["shown"]["work"]["calls"] == [{"tool": "Bash", "since": 1002.0, "unreadable": "tool call Bash's input is not JSON"}]
+    assert body["shown"]["calls"] == [{"tool": "Bash", "since": 1002.0, "unreadable": "tool call Bash's input is not JSON"}]
 
 
 async def test_a_read_that_has_seen_the_work_answers_once_the_call_ends(page: Page) -> None:
@@ -96,7 +96,7 @@ async def test_a_read_that_has_seen_the_work_answers_once_the_call_ends(page: Pa
     assert not waiting.done()
     page.brain.work_now = Working("turn-1", Epoch(1000.0), ())
     body = await (await waiting).json()
-    assert body["shown"]["work"]["calls"] == [] and body["seen"] != seen
+    assert body["shown"]["calls"] == [] and body["seen"] != seen
     _, read = page.events("brain.read")
     assert read.facts["changed"] is True and read.counts["calls"] == 0
 

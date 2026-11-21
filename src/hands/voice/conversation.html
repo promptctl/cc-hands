@@ -54,9 +54,9 @@
   <textarea id="text" rows="1" placeholder="Type to hands" aria-label="Type to hands" enterkeyhint="send"></textarea>
   <button id="send" type="submit">Send</button>
 </form>
-<script src="/hands.js"></script>
-<script>
-"use strict";
+<script type="module">
+import {asked, reading} from "/hands.js";
+
 const moments = document.getElementById("moments");
 const state = document.getElementById("state");
 const form = document.getElementById("typing");
@@ -123,8 +123,13 @@ async function sending(event) {
   send.disabled = true;
   try {
     const outcome = await asked("POST", "/conversation/typed", {text: words});
-    if (outcome.kind === "answered") { text.value = ""; unsay("sending"); }
-    else say("sending", `Not sent: ${unanswered(outcome)}`, true);
+    // Words whose answer was lost may have reached hands all the same: the conversation says whether they did, before
+    // they are sent again.
+    switch (outcome.kind) {
+      case "answered": text.value = ""; unsay("sending"); break;
+      case "refused": say("sending", `Not sent: ${outcome.text}`, true); break;
+      case "lost": say("sending", `Whether hands has it is not known: ${outcome.why}. If it is not in the conversation, send it again.`, true); break;
+    }
   } finally {
     send.disabled = false;
     text.focus();

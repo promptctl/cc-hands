@@ -25,7 +25,7 @@ from hands.sessions.payload import Rejected
 from hands.sessions.recall import Moment, Moments, Reading
 from hands.sessions.wide import annotate, count, fail
 from hands.voice.keyed import keyed
-from hands.voice.longpoll import read_answer, waited
+from hands.voice.longpoll import waited
 
 # How many of the newest moments a page is given: an hour's talk and more, never the whole log.
 NEWEST = 200
@@ -111,10 +111,10 @@ def conversation_routes(clock: Clock, conversation: Conversation, typed: Callabl
         except Rejected as error:
             fail(str(error))
             return web.Response(status=400, text=str(error))
-        changes, moments = await waited(clock, conversation.caught_up, seen)
-        annotate(changes=changes)
-        count(moments=len(moments))
-        return web.json_response(read_answer(changes, {"moments": [_shown(moment) for moment in moments]}))
+        read = await waited(clock, conversation.caught_up, seen)
+        annotate(changes=read["seen"])
+        count(moments=len(read["shown"]))
+        return web.json_response({**read, "shown": {"moments": [_shown(moment) for moment in read["shown"]]}})
 
     @keyed(clock, "conversation.typed", record, key)
     async def sent(request: web.Request) -> web.Response:

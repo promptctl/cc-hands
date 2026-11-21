@@ -54,8 +54,9 @@
 <p class="muted">Switching restarts hands. This page shows hands out of reach while it does, and what it runs on once it is back.</p>
 </fieldset>
 
-<script src="/hands.js"></script>
-<script>
+<script type="module">
+import {asked, reading, unanswered} from "/hands.js";
+
 // The name a voice, level, or modality is shown by: bill_boerst is Bill Boerst, audio-only is Audio Only.
 const label = text => text.replace(/[_-]/g, " ").replace(/\b\w/g, letter => letter.toUpperCase());
 

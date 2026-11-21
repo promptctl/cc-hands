@@ -90,9 +90,9 @@
   <p id="brain-said" role="status" aria-live="polite"></p>
 </section>
 <audio id="out" autoplay playsinline></audio>
-<script src="/hands.js"></script>
-<script>
-"use strict";
+<script type="module">
+import {asked, handsNow, reading, unanswered} from "/hands.js";
+
 // This page's own name, made as it opened: a call it makes again after a drop is one hands knows for this page's.
 const PAGE = crypto.randomUUID();
 // hands sends its voice every 20 ms, silence and all, for as long as the call is up: a call it has sent nothing over
@@ -113,9 +113,10 @@ const doing = document.getElementById("doing");
 const calls = document.getElementById("calls");
 const stopButton = document.getElementById("stop");
 const brainSaid = document.getElementById("brain-said");
-// What a Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the
-// brain stands from then on.
-const SAID_MS = 30000;
+// hands answers a Stop at once: one unanswered for this long went to an address the phone can no longer reach. What a
+// Stop said is said of that tap alone, so it is shown for a while and then taken away: the line above says how the brain
+// stands from then on.
+const STOP_MS = 10000, SAID_MS = 30000;
 document.getElementById("conversation").href = `/conversation${location.hash}`;
 document.getElementById("gallery").href = `/gallery${location.hash}`;
 
@@ -421,7 +422,6 @@ function place(claim) {
 
 function down(event) {
   event.preventDefault();
-  if (!key) { say("Open this page from the address `hands phone` prints.", true); return; }
   if (!call && !retry) { place("take"); return; }
   if (!call || call.channel.readyState !== "open" || held) return;
   talk.setPointerCapture(event.pointerId);
@@ -465,11 +465,9 @@ document.addEventListener("visibilitychange", () => {
 // One closed hangs up.
 addEventListener("pagehide", () => end("This page hung up."));
 
-// The brain's work as hands last said it; how far the Mac's clock stood ahead of this page's as it said it, so a call is
-// timed by the Mac's clock, never by a phone's that runs fast or slow; whether a Stop is still being answered; what the
-// last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
+// The brain's work as hands last said it, its calls timed by hands' clock; whether a Stop is still being answered; what
+// the last Stop said, until SAID_MS have passed; and why the brain could not be read, until it is read again.
 let work = {doing: "idle"};
-let ahead = 0;
 let stopping = false;
 let said = null;
 let unread = null;
@@ -480,7 +478,7 @@ function running() { return work.doing === "working" ? work.calls : []; }
 
 // The line that says what the brain is doing, and for how long: redrawn each second, as the time is.
 function drawDoing() {
-  const now = (Date.now() / 1000) + ahead;
+  const now = handsNow();
   const [first, ...rest] = running();
   const [what, since] = work.doing !== "working" ? ["Idle", null]
     : first === undefined ? ["Thinking", work.since]
@@ -517,8 +515,10 @@ stopButton.addEventListener("click", async () => {
   stopping = true;
   drawBrain();
   try {
-    const outcome = await asked("POST", "/brain/stop", {turn: work.turn});
+    const outcome = await asked("POST", "/brain/stop", {turn: work.turn}, STOP_MS);
     sayOfStop(outcome.kind === "answered" ? {text: outcome.body.readback, bad: false} : {text: `Could not stop it: ${unanswered(outcome)}`, bad: true});
+  } catch (error) {
+    sayOfStop({text: `Could not stop it: ${error.message}`, bad: true});
   } finally {
     stopping = false;
     drawBrain();
@@ -533,11 +533,9 @@ function sayOfStop(stopSaid) {
 
 drawBrain();
 setInterval(drawDoing, 1000);
-// The brain is read for as long as the page is open, its work and how far the Mac's clock stood ahead of this page's as
-// hands said it.
-reading("/brain", read => {
-  work = read.work;
-  ahead = read.now - Date.now() / 1000;
+// The brain is read for as long as the page is open.
+reading("/brain", shown => {
+  work = shown;
   unread = null;
   drawBrain();
 }, why => { unread = {text: `Could not read the brain: ${why}`, bad: true}; drawBrain(); });

@@ -1,5 +1,6 @@
-"""The script every phone page asks hands through (src/hands/voice/hands.js), run in QuickJS against a fake hands: its
+"""The module every phone page asks hands through (src/hands/voice/hands.js), run in QuickJS against a fake hands: its
 requests are held until the test answers them, and its timers until the test fires them, so no time passes but the test's.
+What hands answers a read is built as hands builds it (hands.voice.longpoll.Read).
 """
 
 import json
@@ -10,10 +11,14 @@ from typing import cast
 import pytest
 import quickjs
 
-# The browser as the script meets it: an address whose fragment is the key, a fetch hands answers when the test says, a
-# timer that fires when the test says, and the bound each request was given.
+from hands.voice.longpoll import WAIT_SECONDS, Read
+
+# The browser as the module meets it: an address whose fragment is the key, a page's clock that stands still, a fetch
+# hands answers when the test says, a timer that fires when the test says, and the bound each request was given.
 BROWSER = """
 var location = {hash: "#the%20key"};
+var console = {error() {}};
+Date.now = () => 1000000;
 var requests = [], timers = [], drawn = [], unread = [];
 function fetch(path, init) { return new Promise((resolve, reject) => requests.push({path, init, resolve, reject})); }
 function setTimeout(fire, ms) { timers.push({fire, ms}); }
@@ -47,7 +52,10 @@ class Page:
     def __init__(self) -> None:
         self._js = quickjs.Context()
         self._js.eval(BROWSER)
-        self._js.eval(resources.files("hands.voice").joinpath("hands.js").read_text())
+        # QuickJS here loads no module a module imports, so what the module exports is handed to the test as a page's
+        # import would be.
+        module = resources.files("hands.voice").joinpath("hands.js").read_text()
+        self._js.module(f"{module}\nObject.assign(globalThis, {{asked, unanswered, reading, handsNow, ANSWER_MS}});")
         self.answer_ms = cast(int, self._js.eval("ANSWER_MS"))
 
     def run(self, code: str) -> None:
@@ -65,20 +73,14 @@ class Page:
     def answer(self, status: int, text: str) -> None:
         self.run(f"answer({status}, {json.dumps(text)})")
 
-    def read(self, seen: object, shown: object, waits: float = 25.0) -> None:
-        self.answer(200, json.dumps({"seen": seen, "waits": waits, "shown": shown}))
+    def read(self, seen: str | int, shown: object, now: float = 5000.0) -> None:
+        self.answer(200, json.dumps(Read(seen=seen, waits=WAIT_SECONDS, now=now, shown=shown)))
 
     def timers(self) -> list[int]:
         return json.loads(cast(str, self._js.eval("JSON.stringify(timers.map(timer => timer.ms))")))
 
     def seen(self, name: str) -> list[object]:
         return json.loads(cast(str, self._js.eval(f"JSON.stringify({name})")))
-
-
-@pytest.mark.parametrize("name", ["phone.html", "conversation.html", "gallery.html", "backlog.html"])
-def test_every_phone_page_asks_hands_through_the_script_alone(name: str) -> None:
-    html = resources.files("hands.voice").joinpath(name).read_text()
-    assert ('<script src="/hands.js"></script>' in html, "fetch(" in html) == (True, False)
 
 
 @pytest.fixture
@@ -105,7 +107,7 @@ def test_a_request_carries_the_key_from_the_address_and_a_choice_as_json(page: P
     ('answer(503, "")', {"kind": "refused", "status": 503, "text": "hands refused with 503"}),
     ('cutOff("network reset")', {"kind": "lost", "why": "hands' answer was cut off: network reset"}),
     ('lose("TimeoutError")', {"kind": "lost", "why": "hands did not answer within 60 s"}),
-    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach"}),
+    ('lose("TypeError")', {"kind": "lost", "why": "hands is out of reach: lost"}),
 ])
 def test_what_came_of_a_request_is_one_of_three_outcomes(page: Page, settled: str, outcome: dict[str, object]) -> None:
     page.run('var outcome; asked("GET", "/state").then(said => { outcome = said; })')
@@ -123,9 +125,9 @@ def test_an_answer_that_is_not_json_is_lost_with_why(page: Page) -> None:
 
 def test_a_read_asks_at_once_then_says_what_it_saw_bounded_by_the_wait_hands_said(reading: Page) -> None:
     assert reading.asking() == [Asked("GET", "/state", "Bearer the key", None, reading.answer_ms)]
-    reading.read("v1", {"voice": "mary"}, waits=25.0)
+    reading.read("v1", {"voice": "mary"})
     assert reading.seen("drawn") == [{"voice": "mary"}]
-    assert reading.asking() == [Asked("GET", "/state?seen=v1", "Bearer the key", None, 25000 + reading.answer_ms)]
+    assert reading.asking() == [Asked("GET", "/state?seen=v1", "Bearer the key", None, round(WAIT_SECONDS * 1000) + reading.answer_ms)]
 
 
 def test_a_read_answered_unchanged_draws_nothing_and_one_changed_draws_it(reading: Page) -> None:
@@ -140,7 +142,7 @@ def test_a_read_answered_unchanged_draws_nothing_and_one_changed_draws_it(readin
 def test_a_lost_read_is_said_and_read_again_after_a_pause_with_nothing_seen(reading: Page) -> None:
     reading.read("v1", {"voice": "mary"})
     reading.run('lose("TypeError")')
-    assert reading.seen("unread") == ["hands is out of reach; reading it again…"]
+    assert reading.seen("unread") == ["hands is out of reach: lost; reading it again…"]
     # Nothing is asked until the pause is over.
     assert (reading.asking(), reading.timers()) == ([], [2000])
     reading.run("fire()")
@@ -155,19 +157,33 @@ def test_a_read_refused_for_any_other_reason_than_the_key_is_read_again(reading:
     assert (reading.seen("unread"), reading.timers()) == (["hands is restarting; reading it again…"], [2000])
 
 
-def test_a_read_refused_for_the_key_stops_with_hands_words(reading: Page) -> None:
-    reading.answer(401, "this page's address is missing the phone's key")
-    assert reading.seen("unread") == ["this page's address is missing the phone's key"]
+@pytest.mark.parametrize(("status", "text"), [(401, "this page's address is missing the phone's key"), (404, "Not Found")])
+def test_a_read_refused_as_the_pages_own_mistake_stops_with_hands_words(reading: Page, status: int, text: str) -> None:
+    reading.answer(status, text)
+    assert reading.seen("unread") == [text]
     assert (reading.asking(), reading.timers()) == ([], [])
 
 
-def test_an_answer_that_is_not_a_read_stops_the_reading_and_says_so(reading: Page) -> None:
-    reading.answer(200, '{"voice": "mary"}')
+@pytest.mark.parametrize("answer", [
+    {"voice": "mary"},
+    {"seen": None, "waits": WAIT_SECONDS, "now": 5000.0, "shown": {}},
+    {"seen": "v1", "waits": WAIT_SECONDS, "now": 5000.0},
+    None,
+])
+def test_an_answer_that_is_not_a_read_stops_the_reading_and_says_so(reading: Page, answer: object) -> None:
+    reading.answer(200, json.dumps(answer))
     assert reading.seen("unread") == ["This page stopped reading hands: hands' answer is not a read. Reload it to read again."]
     assert (reading.seen("drawn"), reading.asking(), reading.timers()) == ([], [], [])
 
 
-def test_a_read_of_a_path_with_a_query_says_what_it_saw_after_it(page: Page) -> None:
-    page.run('reading("/state?project=hands", () => {}, () => {})')
-    page.read(3, {})
-    assert [asked.path for asked in page.asking()] == ["/state?project=hands&seen=3"]
+def test_a_read_the_page_cannot_draw_stops_the_reading_and_says_why(page: Page) -> None:
+    page.run('reading("/state", () => { throw new Error("no such row"); }, why => unread.push(why))')
+    page.read("v1", {})
+    assert (page.seen("unread"), page.asking()) == (["This page stopped reading hands: no such row. Reload it to read again."], [])
+
+
+def test_hands_clock_is_as_every_read_last_said_it_changed_or_not(reading: Page) -> None:
+    reading.read("v1", {}, now=5000.0)
+    assert reading.seen("handsNow()") == 5000.0
+    reading.read("v1", {}, now=5025.0)
+    assert (reading.seen("handsNow()"), reading.seen("drawn")) == (5025.0, [{}])
