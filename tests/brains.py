@@ -1,6 +1,6 @@
 """What the brain's tests read a turn, a permission, or a failure by, whether the brain is a launched one or built bare."""
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import pytest
 from loguru import logger
@@ -22,10 +22,25 @@ def permissions(recorded: Sequence[Entry]) -> list[tuple[Fact, Fact, Fact]]:
     return [(event.facts["prompt"], event.facts["tool"], event.facts["decision"]) for event in events(recorded, "brain.permission")]
 
 
-def failures() -> tuple[list[str], int]:
-    """What is said on the terminal as an error, as it is said, and the sink that hears it."""
+@pytest.fixture
+def said() -> Iterator[list[str]]:
+    """[LAW:no-silent-failure] every error hands says while a test that uses it runs, what the brain's own work raised
+    among them (`_broke`): one the test does not take (`taken`) fails it, so work that broke where the test did not look
+    is never a pass. A module of the brain's tests uses it for each of its tests (`pytestmark`)."""
     said: list[str] = []
-    return said, logger.add(lambda message: said.append(message.record["message"]), level="ERROR")
+    sink = logger.add(lambda message: said.append(message.record["message"]), level="ERROR", filter="hands")
+    try:
+        yield said
+        assert said == [], f"said and never asserted: {said}"
+    finally:
+        logger.remove(sink)
+
+
+def taken(said: list[str]) -> list[str]:
+    """What `said` holds, taken out of it, for the test to assert."""
+    lines = said[:]
+    said.clear()
+    return lines
 
 
 def dialogs(brain: Brain) -> tuple[Held, ...]:
